@@ -89,6 +89,7 @@ failure handling in #32 has proven itself.
 | #28 | notifications |
 | #38 | **task surface & stuck-state handling**: page variants, the empty boost page, reset rule, route choice |
 | #39 | **quiz question bank**: record, learn, answer from the bank |
+| #43 | **roster observation log**: re-enumerate and diff after every completion |
 
 ### #5 Epic: reliability & manual operation — M3
 
@@ -152,7 +153,8 @@ and the policy (#21) are in place, and the task surface is variable enough to be
    derived from the frame, scrolling as a search. The ladder is where portability is won or lost.
 4. **#16, #15** — classifier and glyph matching, in parallel.
 5. **#17, #18, #19, #20** — the control layer; testable offline once the perception ladder exists.
-6. **#21 → #22 → #38 → #23/#24** — the first real earning path, with conditional-rows handling.
+6. **#21 → #22 → #38 → #43 → #23/#24** — the first real earning path, with conditional rows
+   and a roster log that records what the app offers and what changes as tasks complete.
 7. **#25 → #39** — the quiz and its question bank.
 8. **#30, #31, #32, #40** — make a manual run trustworthy.
 9. **#34, #35, #36, #37, #41** — packaging, automation, harness, docs, release gate.

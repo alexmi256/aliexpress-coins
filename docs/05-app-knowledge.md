@@ -100,12 +100,25 @@ The boost page has one failure mode that matters, and it is silent: the honest-l
 
 ## 5. Reward mechanics
 
-* **Daily check-in** — a `Collect` control in the streak row. Tapping it: balance moves, the
-  control disappears, no dialog. Claimed once per day; the streak shows `N days streak`.
+* **Daily check-in — there are two, and they are independent.** (measured 2026-11-20)
+  1. the streak-row `Collect` on the coin page: balance `C$0.26` → `C$0.29`, a "You've got +2"
+     toast, the control disappears, the streak advances;
+  2. the boost-page row `Daily check-in` / "Finish today's check-in" (+1): still present *after*
+     the streak claim, and tapping it paid +1.
+
+  A run must claim both; neither is evidence that the other is done. The 2×2 widget's "Check in
+  now" CTA only navigates to the coin page — it does not create collectability (`aewidget_status`
+  is state, not a trigger).
 * **Quiz** — one True/False question per visit. The result page prints **`Correct answer: X`** and
   `Your answer: Y`, then `You got +6`. A wrong answer still pays something.
-* **Browse tasks** — open a collection page, wait, and the progress badge advances (`1/6`).
-  The countdown was not observed directly; 15 s is the brief's number and remains ⬜.
+* **Browse tasks** — open a collection page and wait out a dwell requirement. The requirement is
+  **observable**, so it does not need to be timed:
+
+  a floating chip at the right edge (`x ≈ 0.97 · width`, mid-height) shows an orange clock with a
+  **red `Ns` pill** while the timer runs, then a **green pill with a white check**. OCR reads the
+  digits (`12s`, `1s`), so the executor polls for `\b\d+s\b` and proceeds when it disappears.
+  Measured on one run: `12s` at t=1 s, `1s` at t=3 s, green check from t≈6 s. The timer starts
+  during page load, so the first reading can be well under 15 s.
 * **Launcher items** — the operator completed both tasks simply by **adding** the shortcut and the
   widget. Nothing suggests a launch from the item is required, and the widget/shortcut visits may
   be what credits a *different* (repeatable) task. ❓ one more observation would settle it.
