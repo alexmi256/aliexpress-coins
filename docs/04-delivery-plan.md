@@ -26,6 +26,17 @@ The screens and the transitions between them are drawn in
 by, and the stuck states with their recovery. The perception (#16) and task (#38) issues reference
 it directly.
 
+## The project board
+
+There is a GitHub Project (v2) at `/users/alexmi256/projects/3` mirroring these issues, with `Area`
+and `Priority` fields copied from the labels and a `Status` field for flow. It is a **view**, not a
+second source of truth: labels, sub-issues and `blocked by` edges in the issues remain authoritative,
+and `tools/setup_project_board.py` re-syncs the board from them.
+
+Use it for one question — *what can be started now*: filter `Status = Todo`, `Area = Perception` and
+look at the `blocked by` list on each item. The roadmap view is deliberately absent until the
+milestones carry real dates; a roadmap of guesses is worse than none.
+
 ## Milestones
 
 | milestone | issues | done when |
