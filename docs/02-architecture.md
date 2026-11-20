@@ -97,6 +97,32 @@ that geometry. `doctor` reports the screen size and `Controller` clamps every ta
 different device is a supported future change only after re-measuring — see
 [`adr/`](adr/).
 
+## Geometry independence
+
+The reference device is a tablet; users will run this on phones. Measured by driving the same device
+at a simulated phone geometry (`wm size 1080x1920`, density 320):
+
+| assumption | 1200×2000 | 1080×1920 | verdict |
+|---|---|---|---|
+| `Earn more` found by label | (1025,946) | (922,851) | label lookup ports |
+| coin-page markers | present | present | text ports |
+| title → `GO` offset | ≈100 px | ≈68–70 px | a fixed tolerance is wrong at both |
+| modal close control as a fraction of height | 0.826 | 0.789 | even fractions drift with aspect ratio |
+| scroll distance | absolute swipe | overshoots/shorter | not portable |
+| close-button template crop | 1200-wide | wrong scale | not portable |
+
+Rules that follow, and that the perception layer must satisfy (tracked as #42):
+
+1. **No stored pixels.** Targets come from the current frame's OCR boxes.
+2. **Proportional tolerances.** Row pairing tolerance derives from the median text-box height, not a
+   constant.
+3. **Scrolling is a search.** Swipe a fraction of the content height, re-capture, look again; stop on
+   found or on a stable frame. Never a fixed distance.
+4. **Scale-aware templates**, or structural detection that needs no template (a circular control on
+   the modal's centre axis below the panel).
+5. **Per-device calibration** for the last-resort popup coordinates, keyed by a profile id that
+   `doctor` prints. No calibration means `unclosable`, not a guess.
+
 ## What is deliberately not built yet
 
 * Executors for quiz / surprise items / shortcut / widget / notifications (the policy and

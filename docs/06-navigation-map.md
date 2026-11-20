@@ -99,6 +99,21 @@ flowchart TD
 | product collection | `Bundle Deals` / `Hot picks for you` + prices | any product page looks like this |
 | coupon page | `Sale coupons` + `Collect all: C$…` | — |
 
+## 3b. What ports between devices, and what does not
+
+Verified by re-running the map at 1080×1920 @ 320 dpi on the same hardware:
+
+* **ports** — screen markers (§3), because they are text; label lookups, because OCR finds the box
+  wherever it is; the run loop's topology (§2), because it keys on markers.
+* **does not port** — every coordinate, every scroll distance, and every template crop. Even the
+  modal's close control, expressed as a fraction of height, moved from 0.826 to 0.789 because the
+  aspect ratio changed.
+
+The boost page also served a **different task roster** at the second geometry: `Search for what you
+love` (0/2, "Earn by using keywords to explore items") appeared where `Browse surprise items` had
+been. The catalogue must therefore be pattern-based and tolerate absent tasks — which is what
+`specs/tasks.yaml` already does.
+
 ## 4. Transitions and what they cost
 
 | from | action | to | verification |

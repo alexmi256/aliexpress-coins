@@ -64,6 +64,7 @@ failure handling in #32 has proven itself.
 | #14 | row/section inference — row-relative tap targets |
 | #15 | template matching for glyph-only controls |
 | #16 | screen-state classifier (loading / page / popup / error) |
+| #42 | **geometry independence**: device profiles, proportional tolerances, scaled templates |
 
 ### #3 Epic: control and safety — M1
 
@@ -147,7 +148,8 @@ and the policy (#21) are in place, and the task surface is variable enough to be
 1. **#33** scaffold — unblocks nine other issues and makes every later change reviewable.
 2. **#10 + #11** — one more device session for the surprise-items and notification flows and the
    popup corpus. Everything else can proceed without it, but those executors need it.
-3. **#12 → #13 → #14** — the perception ladder, each with a recorded-frame test.
+3. **#12 → #13 → #14**, with **#42** as a constraint on all three — no stored pixels, tolerances
+   derived from the frame, scrolling as a search. The ladder is where portability is won or lost.
 4. **#16, #15** — classifier and glyph matching, in parallel.
 5. **#17, #18, #19, #20** — the control layer; testable offline once the perception ladder exists.
 6. **#21 → #22 → #38 → #23/#24** — the first real earning path, with conditional-rows handling.

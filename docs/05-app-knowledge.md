@@ -73,8 +73,13 @@ Full list observed on one page (2026-11-20), in order:
 | Turn on notifications | Stay informed when rewards drop | +1 | — | system dialog |
 | Add a coins shortcut | One tap away from your daily rewards | +1 | — | launcher item |
 | Add & start using our widget | Add our widget to your homescreen to use | +1 | — | launcher item |
+| Search for what you love | Earn by using keywords to explore items | +1 | `0/2` | browse-and-wait (search page) |
 | *coin page only:* Take the coins quiz | — | +3~6 coins, +0~US$0.01 | — | quiz |
 | *coin page only:* Merge Boss / Play & Earn / Prize Land | — | +30 / +900 | — | **refused** (games) |
+
+The roster is **server-driven and changes between loads**: at a second geometry `Browse surprise
+items` was replaced by `Search for what you love` on the same account, minutes later. The catalogue
+must therefore match by pattern and treat any missing task as normal.
 
 Five of the twelve rows are refusals, all on the page the executor must open. That is the argument
 for enforcing the deny list at dispatch rather than per-executor: the order, cart, water and share
