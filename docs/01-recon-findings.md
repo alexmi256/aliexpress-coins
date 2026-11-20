@@ -146,21 +146,26 @@ adb shell am start -a android.intent.action.VIEW -d "https://www.aliexpress.com/
 ```
 
 It lands in the container but as a **web fallback** that never renders — no coins, no error, no
-retry. Kept in the code as a fallback route, disabled in practice by the `is_coins_page`
-assertion. Do not build on it.
+retry.
 
-### Launcher shortcut and widget — ❓ not present, not yet reversed
+**Correction (2026-11-20):** the bare `https://` URL is the wrong shape. The app's own route is
+the `aliexpress://goto?url=<that URL, encoded>` wrapper, which `DispatcherActivity` resolves into
+the native `AdcActivity` coin page. That wrapper is now the primary route — see §7 and
+[`05-app-knowledge.md`](05-app-knowledge.md) §2. The bare-URL form stays documented because it is
+the mistake to avoid repeating.
 
-The brief said a shortcut and a widget were placed on the home screen. They are **not there
-now**:
+### Launcher shortcut and widget — ✅ reversed on 2026-11-20
 
-* `uiautomator dump` of the workspace shows 13 app icons, the Google search widget and the
-  clock widget — no AliExpress shortcut, no coins widget;
-* the launcher database agrees (`/data/data/com.android.launcher3/databases/launcher_6_by_5.db`):
-  one `AliExpress` entry (`com.aliexpress.app.FirstActivity`) and two `itemType=4` widgets
-  (Google search, Digital clock).
+At first inspection neither item existed (the workspace held one AliExpress app icon and two
+unrelated widgets). The operator has since installed both by completing the app's own tasks, and
+their intents are now captured — the shortcut is a pinned **deep shortcut** (`coinsPromotion`
+firing `aliexpress://goto?url=…/p/coin-index/…`), and the widget is
+`AECoin2x2NormalWidget` firing the same page with a `from=widget` parameter set. Both are
+replayable with `am start`.
 
-What *does* exist is the app's ability to create them:
+Full detail, including the exact URIs and what each visit renders, is in
+[`05-app-knowledge.md`](05-app-knowledge.md) §2–§3. The app-side evidence that made this
+possible:
 
 ```
 split_widget.apk  -> res/layout/widget_coins_{init,login_signed,login_unsign,…}.xml
@@ -194,14 +199,36 @@ project never issues a raw coordinate tap outside a popup fallback.
 
 ---
 
-## 7. Open items
+## 7. Session 2 — 2026-11-20
+
+A second session with the launcher items installed. It answered the route question, captured the
+check-in and the quiz end to end, and disproved one assumption in the original brief.
+
+| finding | result |
+|---|---|
+| shortcut | pinned deep shortcut `coinsPromotion` → `aliexpress://goto?url=…/p/coin-index/index.html…` ✅ |
+| widget | `AECoin2x2NormalWidget` → same page with `from=widget` + `aewidget_*` parameters ✅ |
+| replay from adb | works: one `am start`, lands on `AdcActivity` with `adc_manifest=coinindex` ✅ |
+| Account-page route | unreliable — the promo card rotates between a coins card and a **coupon** card ⚠️ |
+| daily check-in | `Collect` in the streak row; balance +2 coins; no dialog ✅ |
+| quiz | one True/False question; result page prints **`Correct answer: X`**; `+6` on a correct answer ✅ |
+| "Earn more" | opens a **`Coins boost`** page, empty every time — it is *not* the full task list ❌ |
+| task rows | **conditional**: absent on some page loads, present after a widget visit ⚠️ |
+| post-task interstitial | `YOU CAN NOW REDEEM!` — no OCR-visible close; BACK exits it (a second BACK exits the app) ⚠️ |
+
+The app model those findings produce — entry points, page variants, task surface, reward
+mechanics — is written up in [`05-app-knowledge.md`](05-app-knowledge.md).
+
+## 8. Open items
 
 | item | state | next step |
 |---|---|---|
-| coins page `wh_pid` / canonical URL | ❓ | read `dumpsys activity` right after the UI route reaches it, or capture the navigation intent |
-| shortcut intent | ❓ | let the app create the shortcut, then diff the launcher DB and `dumpsys shortcut` |
-| widget click intent | ❓ | add the widget, tap it, read the resulting `AdcActivity` intent |
-| quiz flow | ❓ | open the quiz, capture the question/answer layout and the wrong-answer interstitial |
+| coins page canonical URL | ✅ answered | `aliexpress://goto?url=…/p/coin-index/index.html` (see §7 / doc 05) |
+| shortcut intent | ✅ answered | deep shortcut `coinsPromotion`, intent captured |
+| widget click intent | ✅ answered | `from=widget` + `aewidget_*` parameter set captured |
+| quiz flow | ✅ answered | one question, answer shown afterwards; bank is buildable |
+| why task rows are sometimes absent | ❓ | observe across a day boundary; check whether they return after the daily reset |
 | surprise-items flow | ❓ | capture the page, the item tiles, and the round popups |
 | notification task | ❓ | capture the system permission dialog and the post-grant state |
+| `YOU CAN NOW REDEEM!` exit | ❓ | is there a close control off-screen, or is BACK the only exit? |
 | API feasibility | ❓ | mitmproxy capture of a task run: are the coin awards plain HTTP the UI merely reflects? |

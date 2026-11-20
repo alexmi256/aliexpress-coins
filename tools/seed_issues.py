@@ -38,8 +38,9 @@ MILESTONES = {
     "M0 Recon & decisions": "Answer the questions that change the architecture. Nothing here ships code that runs unsupervised.",
     "M1 Perception & control": "See the screen reliably, tap it safely, close what interrupts.",
     "M2 Task engine": "One executor per task family, plus the policy that refuses the bad ones.",
-    "M3 Unattended operation": "Schedule, state, reports, failure handling. This is what makes it nightly.",
-    "M4 Delivery": "Container, CI, image per merge, test harness, docs.",
+    "M3 Reliability & manual operation": "State, reports, retries and Apprise. Manual runs first: scheduling is deliberately a later milestone.",
+    "M4 Delivery": "Container, CI, image per merge, test harness, docs, and the gate for going public.",
+    "M5 Scheduled operation": "Only after manual runs are reliable: nightly schedule, run window, jitter, budget.",
 }
 
 
@@ -898,6 +899,104 @@ ISSUES: list[dict] = [
             "Depends on: #P2, #C1.",
         ),
     },
+
+    {
+        "key": "T9",
+        "parent": "E4",
+        "title": "Task-surface handling: page variants, conditional rows, route choice",
+        "labels": ["area:tasks", "type:feature", "priority:p0"],
+        "milestone": "M2 Task engine",
+        "body": b(
+            "Measured 2026-11-20: the same coins page renders differently per entry point, and the task rows are "
+            "not always there. A plain deep-link visit showed no rows and no Collect control; a visit fired by the "
+            "widget (`from=widget`) showed a Collect control and the quiz/sponsored/surprise rows. `Earn more` is "
+            "not the task list either — it opens an empty `Coins boost` page.",
+            [
+                "Classify the page variant on arrival: rows present / rows absent / boost page / redeem interstitial",
+                "Route policy: shortcut deep link first, then the widget intent as a fallback when rows are absent",
+                "One refresh attempt (re-fire the intent) before concluding `nothing available today`",
+                "Record the variant and the chosen route in the run report",
+            ],
+            [
+                "A run against a page with no rows reports `nothing available`, not an error",
+                "A run against a page with rows executes them without re-navigation",
+                "The route taken is visible in `summary.md`",
+            ],
+            "Depends on: #14, #18, #22. Blocks #24's reliability.",
+        ),
+    },
+    {
+        "key": "T10",
+        "parent": "E4",
+        "title": "Quiz question bank: record, learn, answer from the bank",
+        "labels": ["area:tasks", "type:feature", "priority:p1"],
+        "milestone": "M2 Task engine",
+        "body": b(
+            "Measured: the quiz result page prints `Correct answer: True` / `Your answer: True` before the reward. "
+            "That means the project can learn the answer for free on first encounter and answer correctly "
+            "afterwards — +6 coins instead of a random guess.",
+            [
+                "Record `{question, options, chosen, correct, source}` to a bank file (JSON, human-editable)",
+                "Normalise questions so punctuation/OCR noise does not create duplicates",
+                "Answer from the bank when the question is recognised; otherwise choose an option and record the result",
+                "Ship the bank as data, outside the code, so it grows without a release",
+            ],
+            [
+                "A repeated question is answered correctly without guessing",
+                "A new question is recorded with the correct answer after the first attempt",
+                "The bank file is committed to the repo once it has content (no account data in it)",
+            ],
+            "Depends on: #25. Blocks nothing.",
+        ),
+    },
+    {
+        "key": "O5",
+        "parent": "E5",
+        "title": "Apprise notifications with standard log levels",
+        "labels": ["area:ops", "type:feature", "priority:p1"],
+        "milestone": "M3 Reliability & manual operation",
+        "body": b(
+            "Notifications are not this project's problem to solve: the operator runs an Apprise server so users "
+            "configure their own targets (ntfy, mail, Discord, whatever). The project's job is to emit a clear "
+            "message at a sensible log level.",
+            [
+                "Log with real levels (`INFO` per task, `WARNING` for a skipped/refused task, `ERROR` for a failed run)",
+                "Send one Apprise message per run: status, balance delta, tasks, error if any",
+                "Configuration through the Apprise URL(s); no message content that leaks the account name",
+                "A failed notification is logged and never fails the run",
+            ],
+            [
+                "A run with no Apprise configured behaves exactly as before",
+                "A failed run produces an ERROR-level log line and an Apprise message",
+                "A broken Apprise endpoint does not change the run's exit status",
+            ],
+            "Depends on: #31. Blocks nothing.",
+        ),
+    },
+    {
+        "key": "I6",
+        "parent": "E6",
+        "title": "Release readiness gate: five-minute onboarding, two-week stability",
+        "labels": ["area:delivery", "type:docs", "priority:p2"],
+        "milestone": "M4 Delivery",
+        "body": b(
+            "The operator's condition for open-sourcing: a developer can get it running in five minutes or less, "
+            "and it has been stable for a couple of weeks. That is a gate with criteria, not a vibe.",
+            [
+                "Measure the onboarding path on a clean machine: clone → Docker → first successful run, timed",
+                "Write the stability log: dated unattended runs with their outcomes, over two weeks",
+                "Document the portability limits: device serial, screen geometry, store region",
+                "Flip the repository public only when every row of the gate passes",
+            ],
+            [
+                "The onboarding path is timed and is ≤5 minutes, with the timing recorded",
+                "Two consecutive weeks of runs have no unrecoverable failure",
+                "Each failure class in #32 has a documented response",
+            ],
+            "Depends on: #37, #32. Gates the open-source decision (Q1).",
+        ),
+    },
+
     {
         "key": "I5",
         "parent": "E6",
@@ -974,13 +1073,19 @@ def main() -> None:
         created += 1
         print(f"new   #{number} {title}")
 
-    # sub-issue links for epics
+    # sub-issue links for epics (idempotent: skip a child that already has this parent)
     linked = 0
+    existing_children: dict[int, set[int]] = {}
     for spec in ISSUES:
         parent_key = spec.get("parent")
         if not parent_key:
             continue
         parent_no, child_no = numbers[parent_key], numbers[spec["key"]]
+        if parent_no not in existing_children:
+            raw = json.loads(gh("api", f"repos/{REPO}/issues/{parent_no}/sub_issues?per_page=100"))
+            existing_children[parent_no] = {item["number"] for item in raw}
+        if child_no in existing_children[parent_no]:
+            continue
         parent_id = gh("api", f"repos/{REPO}/issues/{parent_no}", "--jq", ".node_id")
         child_id = gh("api", f"repos/{REPO}/issues/{child_no}", "--jq", ".node_id")
         query = (

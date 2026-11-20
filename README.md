@@ -27,11 +27,12 @@ Full evidence, with the commands that produced it:
 
 | document | what it settles |
 |---|---|
-| [`docs/00-brief.md`](docs/00-brief.md) | requirements, task taxonomy (do / don't), open questions |
+| [`docs/00-brief.md`](docs/00-brief.md) | requirements, task taxonomy (do / don't), the answered decisions |
 | [`docs/01-recon-findings.md`](docs/01-recon-findings.md) | what was measured on the device and what it changed |
 | [`docs/02-architecture.md`](docs/02-architecture.md) | layers, invariants, perception and control strategy |
 | [`docs/03-conventions.md`](docs/03-conventions.md) | engineering conventions the build must follow |
 | [`docs/04-delivery-plan.md`](docs/04-delivery-plan.md) | milestones, issue map, dependency order |
+| [`docs/05-app-knowledge.md`](docs/05-app-knowledge.md) | how the app actually works: entry points, pages, tasks, rewards |
 | [`docs/adr/`](docs/adr/) | decisions with their trade-offs (UI-first, OCR-first) |
 
 ## How the work is organised
@@ -40,11 +41,12 @@ Six milestones, from "decide what is possible" to "runs nightly in a container":
 
 | milestone | goal |
 |---|---|
-| **M0 Recon & decisions** | answer the questions that change the architecture (launcher entry points, API feasibility, task catalogue, popup corpus) |
+| **M0 Recon & decisions** | answer the questions that change the architecture (launcher entry points, API feasibility, task catalogue, popup corpus) — two of six answered |
 | **M1 Perception & control** | see the screen reliably, tap it safely, close what interrupts |
 | **M2 Task engine** | one executor per task family, plus the policy that refuses the bad ones |
-| **M3 Unattended operation** | schedule, state, reports, failure handling |
-| **M4 Delivery** | container, CI, image per merge, test harness |
+| **M3 Reliability & manual operation** | state, reports, retries, Apprise — a manual run has to be trustworthy before anything runs alone |
+| **M4 Delivery & release gate** | container, CI, test harness, runbook, and the criteria for going public |
+| **M5 Scheduled operation** | nightly runs, once the manual ones are boring |
 
 Issue labels: `area:*` (recon, perception, control, tasks, ops, delivery), `type:*` (spike,
 feature, test, infra, docs), `priority:p0|p1|p2`, `needs-device`, `blocked`. Dependencies are

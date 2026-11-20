@@ -52,24 +52,28 @@ this geometry; anything else is detected and refused rather than guessed (see FR
 - **FR-2** Dismiss every popup before acting. The app shows a promotional modal on cold launch
   and interposes one after most navigations. A popup that cannot be dismissed fails the run
   loudly — never by tapping blind at coordinates in the hope it closes.
-- **FR-3** Reach the coins page. Two routes are required:
-  - **UI** (primary, verified): Account tab → coins card.
-  - **Launcher entry point** (secondary, to be reversed): the shortcut and app widget the app
-    itself can install. Both are *also* tasks the app rewards, so the project has to be able
-    to add and remove them regardless.
+- **FR-3** Reach the coins page. The **shortcut deep link is the primary route** (verified): one
+  `am start` of `aliexpress://goto?url=<m.aliexpress.com/p/coin-index/index.html>` lands on the
+  native coin page with no home-feed detour. The Account-page promo card is a fallback only — it
+  rotates between a coins card and a coupon card, so it cannot be the plan. See
+  [`05-app-knowledge.md`](05-app-knowledge.md) §2.
 - **FR-4** Stop before the first in-app tap when `--dry-run` is set, and still produce a report.
 
 ### 3.2 Daily sign-in
 
-- **FR-5** Take the daily check-in once per local day, verified by the balance changing (or by
-  the UI moving to "already collected"). Never re-press a claimed card: that is what raises
-  "already collected" modals.
+- **FR-5** Take the daily check-in once per local day by tapping the `Collect` control in the
+  streak row of the coins page (not the Account page's "Daily rewards" card, which opens a
+  coupon page). Verify with the balance delta; the control disappears on success and there is no
+  confirmation dialog. Never re-press a claimed card: that is what raises "already collected"
+  modals.
 - **FR-6** Record the completion in persistent state so a restart does not repeat it.
 
 ### 3.3 Task discovery and selection
 
-- **FR-7** Enumerate the available tasks. The coins page shows a subset; "Earn more" opens the
-  full list. Open the full list, wait for it to settle, then enumerate.
+- **FR-7** Enumerate the available tasks from the **inline rows on the coins page**. "Earn more"
+  does *not* open the full list as the brief assumed — it opens a `Coins boost` page that was
+  empty on every observation. The rows are also **conditional**: some page loads render none at
+  all, so "no rows" is a state to handle (refresh once, then report), not an error.
 - **FR-8** Classify each task by title against the spec catalogue
   (`src/aliexpress_coins/specs/tasks.yaml`). Unknown titles are **skipped** (default-deny) —
   a new easy task is a missed coin, an unknown "free trial" is a charge.
@@ -186,24 +190,48 @@ Each task family gets its own executor, because each fails differently:
 - Multiple devices or accounts.
 - Earning beyond the coin programme (coupons, affiliate, referrals).
 
-## 9. Open questions
+## 9. Decisions (answered 2026-11-20)
 
-| # | question | why it matters |
+The operator answered the open questions; the answers are now requirements, not assumptions.
+
+| # | question | decision |
 |---|---|---|
-| Q1 | Should the repository be public or private? (created **private**; automation of a commercial app's reward loop is not something to publish without a deliberate decision) | determines whether docs can quote account screenshots |
-| Q2 | Does the phone's screen lock require a PIN/biometric overnight? | a locked device cannot be driven; needs `input text` of a PIN or lock disabled |
-| Q3 | Is the shortcut/widget reward granted on creation, or only on a launch *from* the launcher item? | decides whether the project can fake the entry point or must create and then invoke it |
-| Q4 | Should the quiz be answered randomly, or is there a reward for accuracy? | brief says random; worth one measurement |
-| Q5 | Notification channel for failures (ntfy topic? Home Assistant? email?) | FR-16 |
-| Q6 | Acceptable run window and frequency (03:30 nightly? retry once on failure?) | FR-14 |
-| Q7 | Is a small number of missed tasks acceptable in exchange for never taking a risky action? (the policy assumes yes) | shapes how aggressive task matching should be |
+| Q1 | Repository visibility | **Private now.** Open-source only once a developer can get it running in ≤5 minutes *and* it has been stable for a couple of weeks. |
+| Q2 | Device lock | **Assume no PIN/biometric lock.** Any user of this tool is expected to leave the device unlocked. |
+| Q3 | Shortcut/widget reward trigger | **Answered by observation**: the operator completed both tasks by *adding* the items. Treat "creation is enough" as the default, with the caveat that a widget/shortcut visit may credit a separate repeatable task (❓ one more observation). |
+| Q4 | Quiz accuracy | **Accuracy is rewarded** (+6 on a correct answer) but a wrong answer still pays. The result page prints `Correct answer: X`, so the project will **build a question bank**: record question → options → correct answer → answer from the bank next time. |
+| Q5 | Notifications | **Apprise** (`caronc/apprise`) is the notification layer; users configure their own targets. The project emits proper Python log levels and an Apprise message; it does not own the transport. |
+| Q6 | Run window / retries | **Manual runs first.** One retry per stage. Scheduling is deferred until the manual runs are reliable — a later milestone, not v1. |
+| Q7 | Missed task vs risky action | **Miss the task.** The policy stays default-deny; each refusal is logged so a too-strict rule is visible in the report rather than guessed at. |
+
+Two new requirements follow from the answers:
+
+- **FR-22 (question bank)** — every quiz attempt records `{question, options, chosen, correct}`;
+  the next encounter answers from the bank when the question is recognised, and guesses otherwise.
+  The bank is data (a JSON/CSV file), not code, and grows without a release.
+- **FR-23 (Apprise)** — run outcomes are logged with standard levels and delivered through
+  Apprise; a failed notification never fails a run.
 
 ## 10. Acceptance criteria for v1
 
 1. `just check` green from a clean clone (lint, format, mypy, tests with coverage ≥ ratchet).
 2. `docker run … doctor` reports the device, the app version and an OCR box count on the real phone.
-3. A nightly run on the reference device collects the daily sign-in and at least two tasks,
+3. A **manual** run on the reference device collects the daily sign-in and at least two tasks,
    with a `summary.md` showing a positive balance delta.
-4. Popups encountered during a run are all closed, and the count appears in the report.
+4. Popups and interstitials encountered during a run are closed, and the count appears in the report.
 5. No refused task type is ever tapped: the deny rules are covered by tests, and the run log
    shows each refusal with its reason.
+6. The quiz answers from the question bank when it recognises the question, and records the
+   answer it learned either way.
+
+## 11. Definition of "ready to open source"
+
+Not v1 — a later gate, deliberately stated so the roadmap has an end:
+
+| criterion | measure |
+|---|---|
+| onboarding | a developer with Docker and the app installed reaches a first successful run in **≤5 minutes** from `git clone` |
+| stability | **two consecutive weeks** of unattended runs with no unrecoverable failure |
+| failure behaviour | every known failure class has a documented, tested response, and none leaves the app in a broken state |
+| safety | the deny list is verified against a live task list, and a refused task is never tapped in a full week of logs |
+| portability | the device serial, screen geometry assumptions and store region are documented, with what breaks if they differ |
