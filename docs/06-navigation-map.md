@@ -14,7 +14,7 @@ Legend: ✅ observed on the device · ⬜ inferred from an observation · ❓ un
 | entry | intent / action | lands on | notes |
 |---|---|---|---|
 | app icon | `am start -n com.alibaba.aliexpresshd/com.aliexpress.app.FirstActivity` | home feed (`MainActivity`) | cold start; a "Welcome gifts" modal appears **sometimes** ✅ |
-| **shortcut** | `am start -a android.intent.action.VIEW -d 'aliexpress://goto?url=<encoded m.aliexpress.com/p/coin-index/index.html>'` | **coin page** (`AdcActivity`, `adc_manifest=coinindex`) | the app's own route; what the pinned `coinsPromotion` shortcut fires ✅ |
+| **shortcut** | `am start -a android.intent.action.VIEW -d 'aliexpress://goto?url=<encoded m.aliexpress.com/p/coin-index/index.html>'` | **coin page** (`AdcActivity`, `adc_manifest=coinindex`) | the app's own route; what the pinned `coinsPromotion` shortcut fires. **Verified to work with the shortcut uninstalled** — the intent does not depend on the launcher item ✅ |
 | **widget** | tap `AECoin2x2NormalWidget` → same page + `from=widget&user_growth_scene=widget&aewidget_*` | **coin page** | the parameter set is how the app knows a widget visit happened ✅ |
 | account tab | bottom nav `Account` → promo card | varies | the card rotates between a **coins** card and a **coupons** card ("Daily rewards are ready!") ✅ |
 | advertised link | `am start -d https://www.aliexpress.com/p/coin-index/…` | blank web view | wrong shape; needs the `aliexpress://goto?url=` wrapper ❌ |
