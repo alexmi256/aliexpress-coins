@@ -15,8 +15,9 @@ The 2026-11-20 session with the launcher items installed moved three things:
 - **`Earn more` is the task list, and it has a silent failure mode** (#38): it opens the `Coins
   boost` page, which on its first load after a cold start renders **empty** ("There's nothing here
   yet"). An empty list is a fault to reset, not an empty day — the page always lists the declined
-  tasks too. Second finding: `am start` of the shortcut URI does **not** navigate an app that is
-  already running, so a reset has to force-stop first.
+  tasks too. The trigger is now pinned: firing the shortcut intent as the app's **cold start**
+  produces the empty page (4/4); starting the app normally first, then sending the intent, is
+  5/5 good. The intent is a navigation command, not a launch command.
 - **The quiz leaks the answer** (new issue #39): the result page prints `Correct answer: X`, so a
   question bank is buildable for free.
 

@@ -19,13 +19,21 @@ Legend: ✅ observed on the device · ⬜ inferred from an observation · ❓ un
 | account tab | bottom nav `Account` → promo card | varies | the card rotates between a **coins** card and a **coupons** card ("Daily rewards are ready!") ✅ |
 | advertised link | `am start -d https://www.aliexpress.com/p/coin-index/…` | blank web view | wrong shape; needs the `aliexpress://goto?url=` wrapper ❌ |
 
-**Two operational rules fall out of the measurements:**
+**The ordering rule (measured, 2026-11-20):**
 
-1. **Fire the intent from a stopped app.** `am force-stop` then `am start` is deterministic. The
-   same intent fired while the app is already running and showing the home feed did **not**
-   navigate — the dispatcher ignored it and the feed stayed on top ✅.
-2. **Force-stopping resets the task cache too.** The first `Earn more` after a cold start renders
-   the task list **empty** (the stuck state, §5); the same tap on a warm page renders it fully.
+1. **Start the app normally, let it settle, then send the intent.** Two paths, opposite results:
+
+   | sequence | `Earn more` result | trials |
+   |---|---|---|
+   | `am force-stop` → fire the intent (the intent cold-starts the app) | **empty** boost page | 4/4 |
+   | `am start -n …FirstActivity` → settle ~10 s → fire the intent | **populated** | 2/2 |
+   | app already warm → fire the intent | **populated** | 3/3 |
+
+   So the intent is a *navigation* command, not a *launch* command. Using it as the cold start
+   leaves the hybrid container without the session state the boost page needs.
+2. A warm app **does** accept the intent — an earlier single observation that it did not was a
+   fluke, and is retracted here. What matters is that the app has already rendered a page in
+   that process.
 
 ## 2. The screen graph
 
@@ -106,8 +114,8 @@ flowchart TD
 
 | stuck state | how it is detected | recovery |
 |---|---|---|
-| **boost list empty** (`There's nothing here yet`) right after a cold start | header `Coins boost` + the empty sentence, and **zero task rows** | BACK to the coin page, re-fire the shortcut intent (or tap the widget), then `Earn more` again — the warm page populates ✅ |
-| home feed where a page was expected | no coin/boost marker after a navigation | force-stop → fire the shortcut intent; `am start` alone does not navigate a running app ✅ |
+| **boost list empty** (`There's nothing here yet`) | header `Coins boost` + the empty sentence, and **zero task rows** | caused by using the intent as the cold start; the fix is at the entry point — start the app normally, then fire the intent (§1). Re-entering a warm app also repopulates ✅ |
+| home feed where a page was expected | no coin/boost marker after a navigation | start the app normally, settle, then fire the intent (§1); do not force-stop first |
 | tap did nothing | before/after frame diff ≈ 0 (see §6) | re-capture and re-resolve the target; do not repeat the same coordinate |
 | a task row vanished between capture and tap | the label is missing at tap time | treat as `no longer available`, never tap the stale coordinate |
 

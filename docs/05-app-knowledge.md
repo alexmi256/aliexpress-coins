@@ -86,10 +86,11 @@ The boost page has one failure mode that matters, and it is silent: the honest-l
 
 * **Detection** — `Coins boost` header **and** `There's nothing here yet` **and** zero task rows.
   The list is never legitimately empty: it always contains the declined tasks.
-* **Cause** — the first load after a cold start. Reproduced twice: force-stop → shortcut → `Earn
-  more` → empty. Warm `Earn more` (same process, page already loaded once) → full list.
-* **Recovery** — BACK to the coin page, re-enter (shortcut/widget, or Account → coin page), tap
-  `Earn more` again.
+* **Cause** — firing the shortcut intent as the **cold start** of the app (force-stop → intent).
+  4/4 trials empty. Starting the app normally first and *then* sending the intent: 2/2 populated.
+  A warm app + intent: 3/3 populated.
+* **Recovery** — never use the intent to launch a stopped app. Start `FirstActivity`, let it settle
+  ~10 s, then fire the intent; `Earn more` then renders the full list.
 * **Rule for the runner** — "no tasks" is a fault to reset, never a reason to end the run.
 
 ## 5. Reward mechanics
@@ -103,6 +104,38 @@ The boost page has one failure mode that matters, and it is silent: the honest-l
 * **Launcher items** — the operator completed both tasks simply by **adding** the shortcut and the
   widget. Nothing suggests a launch from the item is required, and the widget/shortcut visits may
   be what credits a *different* (repeatable) task. ❓ one more observation would settle it.
+
+## 5b. Flows walked end to end
+
+### Browse surprise items ✅
+
+Row: `Browse surprise items` / "Tap 3 items on this page to earn coins" / progress `0/2` / `+1`.
+
+1. `GO` opens a page headed `Browse surprise items` with the same subtitle, a counter (`0/3`) and a
+   product grid.
+2. Tapping a tile opens a normal product page (`AIProductDetailActivity`).
+3. **BACK returns to the grid and increments the counter** — one tap does not complete the task.
+4. After three distinct items the grid is replaced by a **`Next round`** button (~597,1240).
+5. `Next round` resets the counter to `0/3` and shows a fresh grid. Two rounds match the `0/2`
+   progress badge.
+6. **Re-opening an already-opened item does not count.** In round 2, re-tapping the round-1 tiles
+   left the counter at `0/3`; new items moved it to `2/3`. Distinctness is tracked per product, not
+   per tile position.
+
+Balance moved 13 → 15 during the exercise (partial completion), so the reward is not all-or-nothing
+per round.
+
+### Turn on notifications 🟡
+
+Row: `Turn on notifications` / "Stay informed when rewards drop" / `+1`.
+
+Tapping its `GO` credited **+1** (balance 15 → 16) with **no system permission dialog**, and
+`adb shell cmd appops get com.alibaba.aliexpresshd POST_NOTIFICATION` still returned `ignore`
+afterwards.
+
+So the reward appears to be granted on the tap, not on the permission actually being held. That is
+either an app bug or the prompt is shown once and remembered. Worth one clean re-test (fresh state,
+notifications disabled) before the executor relies on it — tracked in #28.
 
 ## 6. Interstitials seen
 
