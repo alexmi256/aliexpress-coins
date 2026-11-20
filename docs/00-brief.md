@@ -70,10 +70,11 @@ this geometry; anything else is detected and refused rather than guessed (see FR
 
 ### 3.3 Task discovery and selection
 
-- **FR-7** Enumerate the available tasks from the **inline rows on the coins page**. "Earn more"
-  does *not* open the full list as the brief assumed — it opens a `Coins boost` page that was
-  empty on every observation. The rows are also **conditional**: some page loads render none at
-  all, so "no rows" is a state to handle (refresh once, then report), not an error.
+- **FR-7** Enumerate the tasks from the **`Coins boost` page** (opened by `Earn more` in the Daily
+  coins card), which lists all of them, falling back to the inline rows on the coin page. The boost
+  page loads **empty on its first load after a cold start** ("There's nothing here yet"); that is a
+  load failure, not an empty day — the list always contains the refused tasks. An empty list
+  triggers a reset (re-enter the coin page), never an end to the run.
 - **FR-8** Classify each task by title against the spec catalogue
   (`src/aliexpress_coins/specs/tasks.yaml`). Unknown titles are **skipped** (default-deny) —
   a new easy task is a missed coin, an unknown "free trial" is a charge.
@@ -88,10 +89,11 @@ this geometry; anything else is detected and refused rather than guessed (see FR
 Each task family gets its own executor, because each fails differently:
 
 - **FR-11a Browse-and-wait** (sponsored items, recently viewed, check-in to win): open, wait
-  out the countdown (15 s measured), collect if a collect control appears, return to the coins
-  page, verify the row's progress badge moved or the row disappeared.
-- **FR-11b Quiz**: answer randomly. Correctness is not rewarded. Must survive the "you got it
-  wrong" interstitial.
+  out the countdown (15 s per the operator's brief; not yet timed), collect if a collect control
+  appears, return to the coins page, verify the row's progress badge moved or the row disappeared.
+- **FR-11b Quiz**: answer from the question bank when the question is recognised (a correct answer
+  pays +6 coins); otherwise choose an option and learn the answer the result page prints
+  (`Correct answer: X`). Must survive the result page and the "YOU CAN NOW REDEEM!" interstitial.
 - **FR-11c Surprise items**: open the page, tap *n* distinct items (three, per the brief),
   returning between taps, absorbing any multi-round popups afterwards.
 - **FR-11d Shortcut**: add the coins shortcut, then remove it. Whether the reward triggers on
@@ -133,9 +135,9 @@ Each task family gets its own executor, because each fails differently:
 | task | do | executor | notes |
 |---|---|---|---|
 | Daily coins / check-in | ✅ | `daily` (runner) | once per day, verified by balance |
-| Take the coins quiz | ✅ | `quiz` | random answers |
-| Explore sponsored items | ✅ | `browse_wait` | 15 s countdown, repeatable |
-| Browse surprise items | ✅ | `surprise_items` | 3 distinct item taps, rounds |
+| Take the coins quiz | ✅ | `quiz` | asks one True/False question; result page reveals the answer, so the bank learns |
+| Explore sponsored items | ✅ | `browse_wait` | 15 s countdown (per brief), repeatable `1/6` |
+| Browse surprise items | ✅ | `surprise_items` | "Tap 3 items on this page", progress `0/2` |
 | Browse recently viewed items | ✅ | `browse_wait` | 15 s countdown |
 | Check in to win shopping credits | ✅ | `browse_wait` | wait, then collect |
 | Add a coins shortcut | ⚠️ | `shortcut` | remove after; reward trigger unknown |

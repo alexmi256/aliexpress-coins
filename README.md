@@ -33,6 +33,7 @@ Full evidence, with the commands that produced it:
 | [`docs/03-conventions.md`](docs/03-conventions.md) | engineering conventions the build must follow |
 | [`docs/04-delivery-plan.md`](docs/04-delivery-plan.md) | milestones, issue map, dependency order |
 | [`docs/05-app-knowledge.md`](docs/05-app-knowledge.md) | how the app actually works: entry points, pages, tasks, rewards |
+| [`docs/06-navigation-map.md`](docs/06-navigation-map.md) | the screen graph: entry points, markers per screen, stuck states and recovery |
 | [`docs/adr/`](docs/adr/) | decisions with their trade-offs (UI-first, OCR-first) |
 
 ## How the work is organised

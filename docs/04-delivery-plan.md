@@ -12,10 +12,18 @@ The 2026-11-20 session with the launcher items installed moved three things:
 - **The route question is settled** (#8 closed): a single `am start` of the app's own
   `aliexpress://goto?url=…` wrapper reaches the native coin page. The Account-page card is a
   fallback, not the plan — it rotates between a coins card and a coupon card.
-- **"Earn more" is not the task list** (#22 corrected): it opens an empty `Coins boost` page. Tasks
-  are the inline rows, and those rows are **conditional** — new issue #38 owns that.
+- **`Earn more` is the task list, and it has a silent failure mode** (#38): it opens the `Coins
+  boost` page, which on its first load after a cold start renders **empty** ("There's nothing here
+  yet"). An empty list is a fault to reset, not an empty day — the page always lists the declined
+  tasks too. Second finding: `am start` of the shortcut URI does **not** navigate an app that is
+  already running, so a reset has to force-stop first.
 - **The quiz leaks the answer** (new issue #39): the result page prints `Correct answer: X`, so a
   question bank is buildable for free.
+
+The screens and the transitions between them are drawn in
+[`06-navigation-map.md`](06-navigation-map.md) — entry points, the marker each screen is recognised
+by, and the stuck states with their recovery. The perception (#16) and task (#38) issues reference
+it directly.
 
 ## Milestones
 
@@ -23,7 +31,7 @@ The 2026-11-20 session with the launcher items installed moved three things:
 |---|---|---|
 | **M0 Recon & decisions** | 5 open (2 closed) | the remaining unknowns are captured, and the scaffold exists |
 | **M1 Perception & control** | 11 | the screen can be read, tapped safely, waited on, and popups are closed after every navigation |
-| **M2 Task engine** | 11 | every allowed task family has an executor; every refused task is refused by a test; the quiz learns |
+| **M2 Task engine** | 11 | every allowed task family has an executor; every refused task is refused by a test; the quiz learns; a stuck page resets itself |
 | **M3 Reliability & manual operation** | 5 | a manual run is trustworthy: state, report, retries, Apprise, documented failure classes |
 | **M4 Delivery** | 6 | container built by CI on every merge, harness, runbook, and the gate for going public |
 | **M5 Scheduled operation** | 1 | nightly runs, once the manual ones are boring |
@@ -77,7 +85,7 @@ failure handling in #32 has proven itself.
 | #26 | surprise items |
 | #27 | launcher items (shortcut + widget) |
 | #28 | notifications |
-| #38 | **task-surface handling**: page variants, missing rows, route choice |
+| #38 | **task surface & stuck-state handling**: page variants, the empty boost page, reset rule, route choice |
 | #39 | **quiz question bank**: record, learn, answer from the bank |
 
 ### #5 Epic: reliability & manual operation — M3
@@ -163,7 +171,7 @@ and the policy (#21) are in place, and the task surface is variable enough to be
 
 | unknown | issue | how to settle |
 |---|---|---|
-| why task rows are sometimes absent | #38 | observe across a day boundary |
+| whether the empty boost page is only a cold-cache effect, or also rate limiting | #38 | repeat a cold-start trial series |
 | surprise-items flow and its rounds | #26 | one session with the task available |
 | notification task's system dialog | #28 | one session with the task available |
 | how to exit `YOU CAN NOW REDEEM!` other than BACK | #11 | capture the interstitial's full extent |

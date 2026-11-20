@@ -48,23 +48,49 @@ Task rows are therefore **conditional**, not guaranteed. The executor must check
 
 ## 4. The task surface
 
-Rows are `label + reward + progress + GO` on one horizontal band. Observed:
+Tasks appear in two places: the **inline rows** on the coin page, and the **`Coins boost` page**
+opened by `Earn more` in the *Daily coins* card. The boost page is the fuller list and is what the
+brief meant by "click Earn more and wait for the popup".
 
-| task | reward | progress | executor family |
-|---|---|---|---|
-| Take the coins quiz | +3~6 coins, +0~US$0.01 | none | quiz |
-| Explore sponsored items | +1 | `1/6` (repeatable) | browse-and-wait |
-| Browse surprise items | +1 | `0/2` (repeatable) | surprise items |
-| Browse recently viewed items | +1 (per brief; not observed) | — | browse-and-wait |
-| Check in to win shopping credits | (per brief; not observed) | — | browse-and-wait |
-| Add a coins shortcut | (completed by the operator) | — | launcher item |
-| Add & start using our widget | (completed by the operator) | — | launcher item |
-| Turn on notifications | (per brief; not observed) | — | system dialog |
-| Merge Boss / Play & Earn / Prize Land | +30 / +900 | — | **refused** (games) |
+**Correction to an earlier reading:** the boost page was twice observed in an *empty* state right
+after a cold start — `Coins boost` over "There's nothing here yet, but come check back later!" — and
+that was mis-read as "Earn more is not the task list". It **is** the task list; the empty page is a
+load failure. With the app warm it renders the full list. Navigating to `Account` and back to the
+coin page (or re-firing the shortcut) makes it populate.
 
-**"Earn more" is not the full task list.** Both times it was tapped it opened a `Coins boost`
-page reading "There's nothing here yet, but come check back later!". The brief assumed it reveals
-all tasks; it does not. The coins page's inline rows are the task surface.
+Full list observed on one page (2026-11-20), in order:
+
+| task | subtitle | reward | progress | executor family |
+|---|---|---|---|---|
+| Learn to save money with Coins Credits | Stack with coins, coupons and other discounts | +1 | — | browse-and-wait |
+| Explore sponsored items | Browse, shop and save | +1 | `1/6` | browse-and-wait |
+| Browse surprise items | Tap 3 items on this page to earn coins | +1 | `0/2` | surprise items |
+| Place an order on this page | Each order grants you rewards | — | `0/3` | **refused** (order) |
+| Add 5 items to your cart | — | — | — | **refused** (cart) |
+| Check in to win Shopping credits | Don't forget to check in today! | — | — | browse-and-wait |
+| Water to win a US $0.10 prize | Water your tree in Prize Land | — | — | **refused** (currency/game) |
+| Share coins with friends | Win rewards together | — | `0/3` | **refused** (social) |
+| Turn on notifications | Stay informed when rewards drop | +1 | — | system dialog |
+| Add a coins shortcut | One tap away from your daily rewards | +1 | — | launcher item |
+| Add & start using our widget | Add our widget to your homescreen to use | +1 | — | launcher item |
+| *coin page only:* Take the coins quiz | — | +3~6 coins, +0~US$0.01 | — | quiz |
+| *coin page only:* Merge Boss / Play & Earn / Prize Land | — | +30 / +900 | — | **refused** (games) |
+
+Five of the twelve rows are refusals, all on the page the executor must open. That is the argument
+for enforcing the deny list at dispatch rather than per-executor: the order, cart, water and share
+tasks are *rendered next to* the ones we want, with identical `GO` buttons.
+
+## 4b. The stuck state
+
+The boost page has one failure mode that matters, and it is silent: the honest-looking empty page.
+
+* **Detection** — `Coins boost` header **and** `There's nothing here yet` **and** zero task rows.
+  The list is never legitimately empty: it always contains the declined tasks.
+* **Cause** — the first load after a cold start. Reproduced twice: force-stop → shortcut → `Earn
+  more` → empty. Warm `Earn more` (same process, page already loaded once) → full list.
+* **Recovery** — BACK to the coin page, re-enter (shortcut/widget, or Account → coin page), tap
+  `Earn more` again.
+* **Rule for the runner** — "no tasks" is a fault to reset, never a reason to end the run.
 
 ## 5. Reward mechanics
 
