@@ -78,6 +78,12 @@ flowchart TD
     coin -- 'Explore sponsored items' GO --> coll
     coll -- BACK --> coin
     boost -- 'Browse surprise items' GO --> coll
+    boost -- 'Learn to save money' GO --> explain[[Explainer page<br/>What are Coins Credits?]]
+    explain -- BACK --> boost
+    boost -- 'Search for what you love' GO --> landing[[Search landing<br/>category cards]]
+    landing -- card tap --> results[[Search results]]
+    results -- BACK --> landing
+    landing -- BACK --> exit[[home feed]]
 
     boost -- 'Place an order' / 'Add 5 items to cart' --> denied[[REFUSED<br/>never tapped]]
     boost -- 'Water to win' / 'Share coins' --> denied

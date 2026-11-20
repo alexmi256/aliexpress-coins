@@ -143,6 +143,28 @@ Row: `Browse surprise items` / "Tap 3 items on this page to earn coins" / progre
 Balance moved 13 → 15 during the exercise (partial completion), so the reward is not all-or-nothing
 per round.
 
+### Learn to save money with Coins Credits ✅
+
+`GO` opens an explainer page ("What are Coins Credits?", a worked checkout summary with
+`Subtotal` / `Items discount` / `Saved`). It is a **dwell task**: the same timer chip appears at the
+right edge and turns green when the requirement is met. Going back then paid **+1** (27 → 28) and
+the row **disappeared from the roster**.
+
+The task URL carries `taskId` / `taskInstanceId` query parameters, so per-task identity is
+server-side and exposed in the intent — useful for logging, not required for driving.
+
+### Search for what you love ⚠️
+
+`GO` opens a **search landing page** (a pre-filled query, `Search history`, "Discover more" and
+category cards such as `Man Shoes` with "81k+ items"). Tapping a card opens search results. There is
+**no timer chip** on either screen, and progress stayed `0/2` after one search, so the scoring rule
+is not "wait on a page" — most likely one progress unit per search performed, which needs one more
+session to confirm.
+
+**Navigation hazard:** from the results page the back stack is *results → landing → exit*. Two BACKs
+take you out of the app to the home feed. Returning to the boost list after this task needs an
+explicit re-entry (start the app, then the shortcut intent), not repeated BACK.
+
 ### Turn on notifications 🟡
 
 Row: `Turn on notifications` / "Stay informed when rewards drop" / `+1`.
