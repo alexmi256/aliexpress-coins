@@ -33,6 +33,11 @@ and `Priority` fields copied from the labels and a `Status` field for flow. It i
 second source of truth: labels, sub-issues and `blocked by` edges in the issues remain authoritative,
 and `tools/setup_project_board.py` re-syncs the board from them.
 
+The repository is the project's **default**, and **auto-add is enabled** (set by the operator), so a
+new issue lands on the board without a manual step. Auto-add copies the issue, not the field
+mapping: `Area` and `Priority` stay empty until the sync runs. The flow is therefore
+*create the issue with its labels → run `tools/setup_project_board.py`*.
+
 Use it for one question — *what can be started now*: filter `Status = Todo`, `Area = Perception` and
 look at the `blocked by` list on each item. The roadmap view is deliberately absent until the
 milestones carry real dates; a roadmap of guesses is worse than none.
