@@ -9,6 +9,7 @@ import threading
 from collections.abc import Sequence
 from types import FrameType
 
+from aliexpress_coins import __version__
 from aliexpress_coins.doctor import run_doctor
 
 
@@ -38,10 +39,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Parse the command line and dispatch one subcommand."""
     parser = argparse.ArgumentParser(prog='aliexpress-coins')
     subparsers = parser.add_subparsers(dest='command')
+    subparsers.add_parser('version', help='print the installed version')
     subparsers.add_parser('doctor', help='run read-only pre-flight checks')
     subparsers.add_parser('idle', help='block until SIGTERM (container smoke test)')
     args = parser.parse_args(argv)
 
+    if args.command == 'version':
+        print(__version__)
+        return 0
     if args.command == 'doctor':
         return run_doctor(os.environ)
     if args.command == 'idle':

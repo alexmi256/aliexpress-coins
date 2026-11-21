@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  IMAGE: ghcr.io/alexmi256/aliexpress-coins
+  IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
   build:
@@ -51,7 +51,9 @@ jobs:
       # AECOINS_DEVICE is deliberately unset: doctor reports the device check
       # as skipped, so this proves the image without hardware.
       - name: Smoke-test the image
-        run: docker run --rm "$IMAGE:${{ steps.tag.outputs.name }}" python -m aliexpress_coins doctor
+        run: |
+          docker run --rm "$IMAGE:${{ steps.tag.outputs.name }}" python -m aliexpress_coins version
+          docker run --rm "$IMAGE:${{ steps.tag.outputs.name }}" python -m aliexpress_coins doctor
 
   publish:
     name: Publish and smoke-test
@@ -101,4 +103,6 @@ jobs:
         run: docker pull "$IMAGE:${{ steps.tag.outputs.name }}"
 
       - name: Smoke-test the published image
-        run: docker run --rm "$IMAGE:${{ steps.tag.outputs.name }}" python -m aliexpress_coins doctor
+        run: |
+          docker run --rm "$IMAGE:${{ steps.tag.outputs.name }}" python -m aliexpress_coins version
+          docker run --rm "$IMAGE:${{ steps.tag.outputs.name }}" python -m aliexpress_coins doctor

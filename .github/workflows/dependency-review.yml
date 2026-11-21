@@ -16,21 +16,30 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # Dependency review needs GitHub Code Security on a private repository.
+      # Skip only when GitHub says the feature itself is unavailable; any other
+      # failure still fails the job.
+      - name: Check dependency review availability
+        id: availability
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          body="$RUNNER_TEMP/dependency-review.json"
+          status=$(curl -sS -o "$body" -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/dependency-graph/compare/${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")
+          if [ "$status" = '403' ] && ! grep -qi 'rate limit' "$body"; then
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+            echo '::warning title=Dependency review unavailable::GitHub Code Security is not enabled for this private repository. The check becomes blocking when the repository is public (#41).'
+          else
+            echo 'available=true' >> "$GITHUB_OUTPUT"
+          fi
+
       # `v5` is a branch in this action's repository, not a floating tag, so
       # the newest release tag is pinned directly until a v5 tag exists.
-      #
-      # Dependency review needs GitHub Code Security on a private repository.
-      # This repository is private on a personal account until the #41 release
-      # gate, so the step is installed but non-blocking while the dependency
-      # review API is unavailable. Once public, it becomes blocking.
       - name: Review dependency changes
-        id: review
+        if: steps.availability.outputs.available == 'true'
         uses: actions/dependency-review-action@v5.0.1
-        continue-on-error: ${{ github.event.repository.private }}
         with:
           fail-on-severity: high
-
-      - name: Explain the non-blocking review
-        if: steps.review.outcome == 'failure' && github.event.repository.private
-        run: |
-          echo "::warning title=Dependency review unavailable::GitHub Code Security is not enabled for this private personal repository. The check becomes blocking when the repository is public (#41)."
