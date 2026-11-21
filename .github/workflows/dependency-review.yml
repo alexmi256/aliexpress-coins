@@ -1,0 +1,29 @@
+name: Dependency review
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-review:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Dependency review needs GitHub Code Security on a private repository.
+    # This repository is private on a personal account until the #41 release
+    # gate, so the check is installed but non-blocking while the dependency
+    # review API is unavailable. Once public, the same job becomes blocking.
+    continue-on-error: ${{ github.event.repository.private }}
+    steps:
+      # `v5` is a branch in this action's repository, not a floating tag, so
+      # the newest release tag is pinned directly until a v5 tag exists.
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@v5.0.1
+        with:
+          fail-on-severity: high

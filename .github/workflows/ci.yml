@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Lint, types and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install just
+        uses: extractions/setup-just@v4
+
+      # CI runs the same recipe a developer runs. Do not inline lint/type/test
+      # steps here: a separate definition would drift from `just check`.
+      - name: Install the project
+        run: just setup
+
+      # Keep the gate untouched; this only adds the XML report to the same run
+      # so the coverage output can be uploaded as an artifact.
+      - name: Run the gate
+        env:
+          PYTEST_ADDOPTS: --cov-report=xml:coverage.xml
+        run: just check
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage
+          path: coverage.xml
+          if-no-files-found: warn
+          retention-days: 7
