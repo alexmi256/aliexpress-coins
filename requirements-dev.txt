@@ -9,8 +9,9 @@ wheel==0.48.0
 # Lint and format.
 ruff==0.17.6
 
-# Static type checking. pytest ships its own type information.
+# Static type checking. pytest ships its own type information; PyYAML does not.
 mypy==2.4.1
+types-PyYAML==6.0.12.20261113
 
 # Test runner and coverage ratchet.
 pytest==9.2.0

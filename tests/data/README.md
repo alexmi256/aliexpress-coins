@@ -20,3 +20,10 @@ and similar details are masked pixel-by-pixel rather than cropped away; see
 [`states/README.md`](states/README.md) for exactly what was redacted in each frame. The single
 `.gitignore` negation for `tests/data/states/*.png` is limited to that reviewed directory; it does
 not re-enable PNGs elsewhere.
+
+`popups/` holds the reviewed full-frame fixtures for the popup corpus (issue #11), one per family
+with the status bar retained. They are masked the same way and described file-by-file in
+[`popups/README.md`](popups/README.md). The single `.gitignore` negation for
+`tests/data/popups/*.png` is limited to that directory; the glyph crops under `assets/templates/`
+have their own negation because they are artwork only. A file in either directory is reviewed
+before it is committed, and a new image is not evidence that arbitrary screenshots may enter git.
