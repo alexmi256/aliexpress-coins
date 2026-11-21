@@ -1,0 +1,256 @@
+# Task catalogue and default-deny policy (issue #21).
+#
+# This file is the only place a task family's rules live. The loader
+# (src/aliexpress_coins/tasks/catalogue.py) validates the whole document with
+# Pydantic before a run can start, then refuses every label that matches no
+# allowed row.
+#
+# Matching: label_patterns are case-insensitive word sequences. Punctuation is
+# ignored, so `Play & Earn` matches `play earn` and `Don't forget` matches
+# `don t forget`. A pattern must match whole words: `cart` does not match
+# `cartoon`.
+#
+# Policy: deny is checked before allow, against the title and the subtitle. A
+# label that matches both an allow pattern and a deny rule is refused with the
+# deny rule's reason. A label that matches neither is refused with
+# `default_deny_reason` (`unrecognised`).
+#
+# Allowed rows are measured in docs/05-app-knowledge.md §4. A pattern may come
+# from the title or the subtitle: "Each order grants you rewards" and "Water
+# your tree in Prize Land" are clearer deny signals than the short titles.
+#
+# The eight allowed groups from the issue are: streak Collect, boost daily
+# check-in, quiz, sponsored items, surprise items, recently viewed, check-in to
+# win credits, and shortcut/widget/notification. Learn to save money is the
+# other allowed row from the measured roster. Search for what you love is not
+# listed: it has no timer chip and therefore no browse-wait contract; it needs
+# its own executor and verification before it may be added (see #24/#38).
+
+version: 1
+default_deny_reason: unrecognised
+
+allowed:
+  - key: daily_checkin
+    label_patterns:
+      - Daily coins
+      - Collect
+    category: sign_in
+    wait_seconds: 0
+    repeatable: false
+    max_per_run: 1
+    notes: >-
+      The streak-row `Collect` on the coin page. It is a control, not a boost
+      row, but the catalogue names it so the policy can accept it explicitly
+      rather than by exception. It disappears after a successful claim.
+
+  - key: boost_checkin
+    label_patterns:
+      - Daily check-in
+      - Finish today's check-in
+    category: sign_in
+    wait_seconds: 0
+    repeatable: false
+    max_per_run: 1
+    notes: >-
+      The boost-page `Daily check-in` row, independent of the streak Collect.
+      Both pay and neither proves the other is done (docs/05 §5).
+
+  - key: coins_quiz
+    label_patterns:
+      - Take the coins quiz
+      - Coins quiz
+    category: quiz
+    wait_seconds: 0
+    repeatable: false
+    max_per_run: 1
+    notes: >-
+      One True/False question per visit. The quiz is a page transition, not a
+      dwell task; the result page reveals the correct answer (#39).
+
+  - key: sponsored_items
+    label_patterns:
+      - Explore sponsored items
+      - Browse, shop and save
+    category: browse_wait
+    wait_seconds: 15
+    repeatable: true
+    max_per_run: 6
+    notes: >-
+      The boost row shows 1/6; the timer chip at the right edge is the
+      completion contract, so the page itself needs no specific knowledge.
+
+  - key: surprise_items
+    label_patterns:
+      - Browse surprise items
+      - Tap 3 items on this page
+    category: item_tap
+    wait_seconds: 0
+    repeatable: true
+    max_per_run: 2
+    notes: >-
+      The row shows 0/2 rounds. Each round needs three distinct items; BACK
+      from a product increments the counter (docs/05 §5b).
+
+  - key: recently_viewed
+    label_patterns:
+      - Browse recently viewed items
+      - Recently viewed
+    category: browse_wait
+    wait_seconds: 15
+    repeatable: true
+    max_per_run: 1
+    notes: >-
+      Named in the brief's task taxonomy. The row was not on the measured
+      roster on 2026-11-20, so its presence is opportunistic; absent is normal.
+
+  - key: shopping_credits_checkin
+    label_patterns:
+      - Check in to win Shopping credits
+      - Don't forget to check in today
+    category: browse_wait
+    wait_seconds: 15
+    repeatable: false
+    max_per_run: 1
+    notes: >-
+      A dwell task despite the check-in name: wait for the chip, then collect.
+      It is not the same row as boost_checkin and neither proves the other.
+
+  - key: learn_to_save
+    label_patterns:
+      - Learn to save money with Coins Credits
+      - Stack with coins, coupons and other discounts
+    category: browse_wait
+    wait_seconds: 15
+    repeatable: false
+    max_per_run: 1
+    notes: >-
+      Opens the Coins Credits explainer. The timer chip turns green, the row
+      disappears, and the visit paid +1 (docs/05 §5b).
+
+  - key: coins_shortcut
+    label_patterns:
+      - Add a coins shortcut
+      - One tap away from your daily rewards
+    category: shortcut
+    wait_seconds: 0
+    repeatable: false
+    max_per_run: 1
+    notes: >-
+      Adding the launcher shortcut appears sufficient; the reward trigger is
+      documented as creation-is-enough with one observation still outstanding
+      (#27).
+
+  - key: coins_widget
+    label_patterns:
+      - Add & start using our widget
+      - Add our widget to your homescreen
+    category: widget
+    wait_seconds: 0
+    repeatable: false
+    max_per_run: 1
+    notes: >-
+      Same shape as the shortcut: add the 2x2 widget, then remove it. A visit
+      may credit a separate repeatable task (#27).
+
+  - key: notifications
+    label_patterns:
+      - Turn on notifications
+      - Stay informed when rewards drop
+    category: notification
+    wait_seconds: 0
+    repeatable: false
+    max_per_run: 1
+    notes: >-
+      The reward was credited on the row's GO even though POST_NOTIFICATIONS
+      stayed `ignore` (docs/05 §5b). The system dialog needs its own handling
+      (#28).
+
+denied:
+  - key: game_play_and_earn
+    label_patterns:
+      - Play & Earn
+      - Play and Earn
+      - game
+      - games
+    deny_reason: "game: Play & Earn is a mini-game and is never played"
+
+  - key: game_merge_boss
+    label_patterns:
+      - Merge Boss
+    deny_reason: "game: Merge Boss is a mini-game and is never played"
+
+  - key: game_gogo_match
+    label_patterns:
+      - GoGo Match
+    deny_reason: "game: GoGo Match is a mini-game and is never played"
+
+  - key: game_shelf_shuffle
+    label_patterns:
+      - Shelf Shuffle
+    deny_reason: "game: Shelf Shuffle is a mini-game and is never played"
+
+  - key: currency_water
+    label_patterns:
+      - Convert water
+      - Water conversion
+      - Water to win
+      - Water your tree
+      - water
+    deny_reason: "currency: converting water or playing the water-to-win promo is refused"
+
+  - key: currency_diamonds
+    label_patterns:
+      - Convert diamonds
+      - Diamond conversion
+      - diamonds
+      - diamond
+    deny_reason: "currency: converting diamonds is refused"
+
+  - key: currency_energy
+    label_patterns:
+      - Convert energy
+      - Energy conversion
+      - energy
+    deny_reason: "currency: converting energy is refused"
+
+  - key: game_prize_land
+    label_patterns:
+      - Prize Land
+    deny_reason: "game: Prize Land is a mini-game and is never played"
+
+  - key: spending_order
+    label_patterns:
+      - Place an order on this page
+      - Each order grants you rewards
+      - Buy now
+      - Checkout
+      - Purchase
+      - order
+      - buy
+    deny_reason: "spending: placing an order or buying anything is refused"
+
+  - key: spending_cart
+    label_patterns:
+      - Add 5 items to your cart
+      - Add to cart
+      - To your cart
+      - cart
+    deny_reason: "spending: adding items to the cart is refused"
+
+  - key: review
+    label_patterns:
+      - Leave a review
+      - Write a review
+      - review
+      - reviews
+    deny_reason: "review: leaving a review is refused"
+
+  - key: social
+    label_patterns:
+      - Share coins with friends
+      - Share with friends
+      - Invite friends
+      - Win rewards together
+      - share
+      - invite
+    deny_reason: "social: sharing coins or inviting friends is refused"
