@@ -1,5 +1,5 @@
 # The single entry point for this repository.
-# `just check` must stay identical to the CI gate: lint, format check, mypy, tests.
+# `just check` must stay identical to the gate CI (#35) will run: lint, format check, mypy, tests.
 # `.venv` is the only interpreter used after `setup`; the bootstrap below is the
 # sole exception, because a virtualenv has to be created before it can be used.
 

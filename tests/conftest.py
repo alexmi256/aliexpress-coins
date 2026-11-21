@@ -1,33 +1,69 @@
 """Autouse guards that keep the suite honest (docs/03-conventions.md).
 
 "Tests never spawn a process or open a socket — a test that reaches the real
-phone 'passes' while testing nothing." These fixtures turn an accidental real
-connection or spawn into a loud failure instead of a false pass, for every
-test in the suite, without any test having to opt in.
+phone 'passes' while testing nothing." An audit hook turns an accidental real
+operation into a loud failure for every test, whichever API it uses: a `Popen`
+imported by name is caught as well as `subprocess.Popen`.
 """
 
-import socket
-import subprocess
+import sys
+from collections.abc import Iterator
 
 import pytest
 
+_SOCKET_EVENTS = frozenset(
+    {
+        'socket.bind',
+        'socket.connect',
+        'socket.listen',
+        'socket.sendmsg',
+        'socket.sendto',
+    }
+)
+_PROCESS_EVENTS = frozenset(
+    {
+        'os.exec',
+        'os.fork',
+        'os.forkpty',
+        'os.posix_spawn',
+        'os.spawn',
+        'os.system',
+        'subprocess.Popen',
+    }
+)
 
-@pytest.fixture(autouse=True)
-def _no_sockets(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Refuse any socket connection from a test."""
+_sockets_armed = False
+_processes_armed = False
 
-    def _refuse(*_args: object, **_kwargs: object) -> None:
+
+def _audit(event: str, _args: tuple[object, ...]) -> None:
+    """Fail the test that performs a blocked operation."""
+    if _sockets_armed and event in _SOCKET_EVENTS:
         raise AssertionError('tests must not open sockets (docs/03-conventions.md)')
-
-    monkeypatch.setattr(socket.socket, 'connect', _refuse)
-
-
-@pytest.fixture(autouse=True)
-def _no_processes(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Refuse any process spawn from a test (covers Popen, run, check_output, ...)."""
-
-    def _refuse(*_args: object, **_kwargs: object) -> subprocess.Popen[bytes]:
+    if _processes_armed and event in _PROCESS_EVENTS:
         raise AssertionError('tests must not spawn processes (docs/03-conventions.md)')
 
-    # The tripwire deliberately stands a function in for the Popen class.
-    monkeypatch.setattr(subprocess, 'Popen', _refuse)
+
+sys.addaudithook(_audit)
+
+
+@pytest.fixture(autouse=True)
+def _no_sockets() -> Iterator[None]:
+    """Refuse socket use from a test."""
+    global _sockets_armed
+    _sockets_armed = True
+    try:
+        yield
+    finally:
+        _sockets_armed = False
+
+
+@pytest.fixture(autouse=True)
+def _no_processes() -> Iterator[None]:
+    """Refuse process spawns from a test."""
+    global _processes_armed
+    _processes_armed = True
+    try:
+        yield
+    finally:
+        _processes_armed = False

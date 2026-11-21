@@ -6,7 +6,7 @@ breaks one of them is wrong even if its tests pass.
 ## The gate
 
 - **`just check` is the only gate.** It runs ruff lint, ruff format check, mypy strict and pytest
-  with the coverage ratchet. CI runs the same set; do not add a second definition of "passing".
+  with the coverage ratchet. CI (#35) will run the same set; do not add a second definition of "passing".
 - Run `just check` before you claim a task is done. A green test run without lint, format and types
   is not green.
 - `just setup` creates `.venv` with plain `python3 -m venv` and pip. Never introduce uv, poetry,
@@ -24,11 +24,14 @@ breaks one of them is wrong even if its tests pass.
 
 ## Changing the rules
 
-- Ruff is line length 120 with single quotes, and the formatter owns wrapping (`E501` is off).
+- Ruff is line length 120 with single quotes, and the formatter owns wrapping (`E501` is off). It
+  checks `src/` and `tests/`; `tools/` is the one documented exemption because it holds the
+  pre-scaffold issue-filing scripts with intentional prose punctuation, not package code.
 - Mypy is strict over **both** `src/` and `tests/`. A stale `# type: ignore` fails the build.
 - Coverage is a **ratchet**: the floor in `pyproject.toml` only goes up. Never lower it to make a
   change pass; add tests instead.
-- Do not weaken a gate, skip a test, or narrow the checked paths to get green.
+- Do not weaken a gate, skip a test, or narrow the checked `src/`/`tests/` paths to get green. Adding
+  another lint exemption is a gate change, not a convenience.
 
 ## Scope discipline
 

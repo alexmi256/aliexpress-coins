@@ -10,7 +10,9 @@ later issue is built on. No product behaviour exists yet; the issues are the wor
 
 ## Quick start
 
-The toolchain is Python 3.14 with plain `venv` + pip. There is no uv, poetry, hatch or pdm.
+The toolchain is Python 3.14 with plain `venv` + pip, plus [`just`](https://github.com/casey/just)
+for the recipes. There is no uv, poetry, hatch or pdm. Install `just` first; `just setup` does not
+install it.
 
 ```sh
 git clone git@github.com:alexmi256/aliexpress-coins.git
@@ -19,7 +21,8 @@ just setup   # creates .venv and installs the pinned requirements
 just check   # the gate: lint, format check, mypy, tests with coverage
 ```
 
-`just check` is exactly what CI runs, so a local green means a CI green. Other recipes:
+`just check` is the gate CI (#35) will run, so a local green is the green CI should report. Until
+that workflow lands, a local green is the only automated verdict. Other recipes:
 
 | recipe | what it does |
 |---|---|
@@ -36,7 +39,8 @@ just check   # the gate: lint, format check, mypy, tests with coverage
 
 Configuration lives in `pyproject.toml`, not in scattered `setup.cfg`/`pytest.ini`/`mypy.ini`
 files. Ruff uses a 120-character line length and single quotes; mypy is strict on both `src/`
-and `tests/`.
+and `tests/`. Ruff checks those two trees only: `tools/` is excluded because its pre-scaffold
+issue-filing scripts contain intentional prose punctuation and are not package code.
 
 Coverage is a **ratchet** with a floor of **99%**. The scaffold is currently fully covered, so
 the floor sits just below the measured number; when coverage climbs, raise the floor, and never
