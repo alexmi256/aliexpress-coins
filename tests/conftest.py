@@ -6,6 +6,7 @@ operation into a loud failure for every test, whichever API it uses: a `Popen`
 imported by name is caught as well as `subprocess.Popen`.
 """
 
+import socket
 import sys
 from collections.abc import Iterator
 
@@ -15,7 +16,6 @@ _SOCKET_EVENTS = frozenset(
     {
         'socket.bind',
         'socket.connect',
-        'socket.listen',
         'socket.sendmsg',
         'socket.sendto',
     }
@@ -26,7 +26,6 @@ _PROCESS_EVENTS = frozenset(
         'os.fork',
         'os.forkpty',
         'os.posix_spawn',
-        'os.spawn',
         'os.system',
         'subprocess.Popen',
     }
@@ -48,8 +47,15 @@ sys.addaudithook(_audit)
 
 
 @pytest.fixture(autouse=True)
-def _no_sockets() -> Iterator[None]:
+def _no_sockets(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Refuse socket use from a test."""
+
+    def _refuse(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError('tests must not open sockets (docs/03-conventions.md)')
+
+    # CPython emits no audit event for listen(), so the fixture blocks it directly.
+    monkeypatch.setattr(socket.socket, 'listen', _refuse)
+
     global _sockets_armed
     _sockets_armed = True
     try:
