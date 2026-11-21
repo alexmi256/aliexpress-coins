@@ -145,7 +145,12 @@ def clamp_point(point: Point, geometry: DeviceGeometry) -> Pixel:
 
 
 class Controller:
-    """Plan, log and (unless dry-run) issue taps on one input device."""
+    """Plan, log and (unless dry-run) issue taps on one input device.
+
+    Prefer :meth:`from_frame` when a captured frame is available: its geometry
+    is already reconciled with the portrait screencap, unlike a raw ``wm size``
+    probe on the reference device.
+    """
 
     def __init__(
         self,
@@ -162,6 +167,30 @@ class Controller:
         self._rng = rng if rng is not None else random.Random()
         self._logger = logger if logger is not None else logging.getLogger(LOGGER_NAME)
         self._tap_count = 0
+
+    @classmethod
+    def from_frame(
+        cls,
+        device: InputDevice,
+        frame: Frame,
+        *,
+        dry_run: bool = False,
+        rng: JitterSource | None = None,
+        logger: logging.Logger | None = None,
+    ) -> Controller:
+        """Build a controller clamped to an already-captured frame's geometry.
+
+        Use this instead of passing an unscaled ``probe_geometry()`` result:
+        ``wm size`` can report the physical panel in landscape (2000x1200)
+        while the portrait screencap is 1200x2000.
+        """
+        return cls(
+            device,
+            frame.geometry,
+            dry_run=dry_run,
+            rng=rng,
+            logger=logger,
+        )
 
     @property
     def geometry(self) -> DeviceGeometry:
@@ -183,18 +212,38 @@ class Controller:
         return self._tap(point, why=why, label=label, geometry=self._geometry)
 
     def tap_box(self, box: TextBox, *, why: str, label: str | None = None) -> TapRecord:
-        """Tap the centre of ``box``; the label defaults to the box's text."""
+        """Tap the centre of ``box``; the label defaults to the box's text.
+
+        ``box`` must be in full-frame coordinates. ``Snapshot.crop`` shifts
+        boxes into crop-local coordinates while keeping the original geometry,
+        so a box taken from a crop would tap too far up and left.
+        """
         return self.tap(box.center, why=why, label=label if label is not None else box.text)
 
     def tap_text(self, frame: Frame, label: str, *, why: str) -> TapRecord:
         """Find ``label`` in an already-captured frame and tap its centre.
 
         The frame's own geometry is used, so a snapshot captured at a different
-        screen size is still clamped to the screen it actually shows.
+        screen size is still clamped to the screen it actually shows. ``frame``
+        must be a full frame: a cropped ``Snapshot`` keeps the original geometry
+        but its boxes are crop-local, so it is not a valid source here.
         """
         reason = _required_reason(why)
         box = frame.find(label)
         if box is None:
+            self._logger.info(
+                '%s',
+                json.dumps(
+                    {
+                        'event': 'tap_miss',
+                        'label': label,
+                        'reason': reason,
+                        'frame': [frame.geometry.width, frame.geometry.height],
+                    },
+                    separators=(',', ':'),
+                    sort_keys=True,
+                ),
+            )
             raise TapTargetNotFound(
                 f'{label!r} is not in the {frame.geometry.width}x{frame.geometry.height} frame',
             )

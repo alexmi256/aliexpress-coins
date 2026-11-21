@@ -23,7 +23,7 @@ from aliexpress_coins.control.controller import (
 )
 from aliexpress_coins.control.device import InputDevice
 from aliexpress_coins.control.errors import InputError, TapTargetNotFound
-from aliexpress_coins.perception.geometry import DeviceGeometry
+from aliexpress_coins.perception.geometry import DeviceGeometry, parse_geometry
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 
 CAPTURED_AT = datetime(2026, 11, 21, 12, 0, tzinfo=UTC)
@@ -314,16 +314,50 @@ def test_tap_text_finds_the_label_and_uses_the_frames_geometry() -> None:
     assert device.calls == [(600, 1000)]
 
 
-def test_tap_text_reports_a_missing_label_without_tapping() -> None:
+def test_controller_from_frame_reconciles_the_landscape_probe_with_a_portrait_frame() -> None:
+    probe = parse_geometry('Physical size: 2000x1200\n', 'Physical density: 240\n', '35\n')
+    assert probe.orientation == 'landscape'
+    frame = _snapshot(_box('Close', 580, 1632, 620, 1672), size=(1200, 2000))
+    frame = Snapshot(
+        image=frame.image,
+        boxes=frame.boxes,
+        captured_at=frame.captured_at,
+        geometry=probe.with_frame_size(1200, 2000),
+    )
+    device = _FakeDevice()
+
+    controller = Controller.from_frame(device, frame, rng=_ZeroRng())
+    record = controller.tap_box(frame.boxes[0], why='close the popup')
+
+    assert controller.geometry == frame.geometry
+    assert record.point == (600, 1652)
+    assert device.calls == [(600, 1652)]
+
+
+def test_tap_text_reports_a_missing_label_without_tapping(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     device = _FakeDevice()
     controller = _controller(device)
     snapshot = _snapshot(_box('Other', 10, 10, 20, 20))
 
-    with pytest.raises(TapTargetNotFound, match=r"'Claim'.*1200x2000"):
+    with (
+        caplog.at_level(logging.INFO, logger=LOGGER_NAME),
+        pytest.raises(TapTargetNotFound, match=r"'Claim'.*1200x2000"),
+    ):
         controller.tap_text(snapshot, 'Claim', why='claim button')
 
     assert device.calls == []
     assert controller.tap_count == 0
+    messages = [json.loads(record.getMessage()) for record in caplog.records if record.name == LOGGER_NAME]
+    assert messages == [
+        {
+            'event': 'tap_miss',
+            'label': 'Claim',
+            'reason': 'claim button',
+            'frame': [1200, 2000],
+        },
+    ]
 
 
 def test_dry_run_suppresses_the_device_but_keeps_the_log_and_counter(
