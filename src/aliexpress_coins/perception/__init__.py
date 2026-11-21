@@ -17,6 +17,7 @@ from aliexpress_coins.perception.errors import (
     OcrError,
     PerceptionError,
     SnapshotError,
+    StateTimeout,
 )
 from aliexpress_coins.perception.geometry import (
     DeviceGeometry,
@@ -66,6 +67,16 @@ from aliexpress_coins.perception.snapshot import (
     TextBox,
     crop_snapshot,
 )
+from aliexpress_coins.perception.state import (
+    Classification,
+    Evidence,
+    Observation,
+    ScreenState,
+    WaitResult,
+    classify,
+    classify_state,
+    wait_for_state,
+)
 
 __all__ = [
     'DEFAULT_ACTION_LABELS',
@@ -84,8 +95,11 @@ __all__ = [
     'ArtifactPaths',
     'ArtifactStore',
     'BoxPoints',
+    'Classification',
     'DeviceGeometry',
+    'Evidence',
     'LabelSource',
+    'Observation',
     'OcrEngine',
     'OcrError',
     'Orientation',
@@ -95,14 +109,19 @@ __all__ = [
     'RapidOcrEngine',
     'Rect',
     'Row',
+    'ScreenState',
     'Section',
     'Snapshot',
     'SnapshotError',
     'Snapshotter',
+    'StateTimeout',
     'SubprocessAdbRunner',
     'TextBox',
     'TextIndex',
     'TextMatch',
+    'WaitResult',
+    'classify',
+    'classify_state',
     'crop_snapshot',
     'find_action_in_row',
     'find_all',
@@ -122,4 +141,5 @@ __all__ = [
     'row_tolerance',
     'similarity',
     'utc_now',
+    'wait_for_state',
 ]

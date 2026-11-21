@@ -179,6 +179,9 @@ recon/artifacts/
 # Only the committed fixtures; real screenshots must stay out of git.
 !tests/data/frame.png
 !tests/data/boost.png
+# The state-classifier fixtures are a dedicated, reviewed directory. Every file
+# there is a cropped device frame, checked for account data; see its README.
+!tests/data/states/*.png
 
 # Local device state
 state/
