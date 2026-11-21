@@ -51,13 +51,14 @@ are the task types the operator's brief enumerated. It is covered by
 """
 
 ALLOWED_FAMILIES: tuple[tuple[str, TaskCategory, float], ...] = (
-    ('Collect', TaskCategory.SIGN_IN, 0.0),
+    ('Daily coins', TaskCategory.SIGN_IN, 0.0),
     ('Daily check-in', TaskCategory.SIGN_IN, 0.0),
     ('Take the coins quiz', TaskCategory.QUIZ, 0.0),
     ('Explore sponsored items', TaskCategory.BROWSE_WAIT, 15.0),
     ('Browse surprise items', TaskCategory.ITEM_TAP, 0.0),
     ('Browse recently viewed items', TaskCategory.BROWSE_WAIT, 15.0),
     ('Check in to win Shopping credits', TaskCategory.BROWSE_WAIT, 15.0),
+    ('Learn to save money with Coins Credits', TaskCategory.BROWSE_WAIT, 15.0),
     ('Add a coins shortcut', TaskCategory.SHORTCUT, 0.0),
     ('Add & start using our widget', TaskCategory.WIDGET, 0.0),
     ('Turn on notifications', TaskCategory.NOTIFICATION, 0.0),
@@ -138,6 +139,7 @@ def test_the_committed_catalogue_loads_and_covers_both_policies() -> None:
         'currency_diamonds',
         'currency_energy',
         'game_prize_land',
+        'game_other',
         'spending_order',
         'spending_cart',
         'review',
@@ -218,6 +220,32 @@ def test_an_unknown_label_is_refused_as_unrecognised() -> None:
     assert decision.deny_reason == 'unrecognised'
     assert decision.matched_pattern is None
     assert decision.matched_field is None
+
+
+def test_the_bare_collect_control_is_not_an_allow_pattern_for_row_dispatch() -> None:
+    catalogue = load_task_catalogue(CATALOGUE_PATH)
+
+    assert catalogue.decide('Collect').reason == 'unrecognised'
+    assert catalogue.decide('Collect a prize').reason == 'unrecognised'
+    assert catalogue.decide('Watch a video', subtitle='Collect 5 coins').reason == 'unrecognised'
+
+
+def test_a_one_word_allow_pattern_is_not_trusted_in_a_subtitle(tmp_path: Path) -> None:
+    path = _write(tmp_path, _document(allowed_rows=[_allowed(label_patterns=['Demo'])]))
+    catalogue = load_task_catalogue(path)
+
+    assert catalogue.decide('Demo').allowed
+    assert catalogue.decide('Unrelated title', subtitle='Demo').reason == 'unrecognised'
+
+
+def test_a_generic_game_refusal_names_the_generic_rule_not_a_different_game() -> None:
+    catalogue = load_task_catalogue(CATALOGUE_PATH)
+
+    decision = catalogue.decide('Play games')
+
+    assert decision.rule == 'game_other'
+    assert decision.reason == 'game: mini-games are refused'
+    assert catalogue.decide('Prize Land game').rule == 'game_prize_land'
 
 
 def test_deny_beats_allow_and_records_the_deny_reason() -> None:

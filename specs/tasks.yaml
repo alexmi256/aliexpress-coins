@@ -8,7 +8,8 @@
 # Matching: label_patterns are case-insensitive word sequences. Punctuation is
 # ignored, so `Play & Earn` matches `play earn` and `Don't forget` matches
 # `don t forget`. A pattern must match whole words: `cart` does not match
-# `cartoon`.
+# `cartoon`. A one-word allow pattern is only trusted in the title; a generic
+# word in a subtitle must not pull an unrelated row into an executor.
 #
 # Policy: deny is checked before allow, against the title and the subtitle. A
 # label that matches both an allow pattern and a deny rule is refused with the
@@ -21,10 +22,13 @@
 #
 # The eight allowed groups from the issue are: streak Collect, boost daily
 # check-in, quiz, sponsored items, surprise items, recently viewed, check-in to
-# win credits, and shortcut/widget/notification. Learn to save money is the
-# other allowed row from the measured roster. Search for what you love is not
-# listed: it has no timer chip and therefore no browse-wait contract; it needs
-# its own executor and verification before it may be added (see #24/#38).
+# win credits, and shortcut/widget/notification. The streak `Collect` control is
+# deliberately not an allow pattern: it is not a boost row, and matching the bare
+# word would let an unknown row whose subtitle contains "collect" pass row
+# dispatch. #23 owns that control. Learn to save money is the other allowed row
+# from the measured roster. Search for what you love is not listed: it has no
+# timer chip and therefore no browse-wait contract; it needs its own executor
+# and verification before it may be added (see #24/#38).
 
 version: 1
 default_deny_reason: unrecognised
@@ -33,15 +37,16 @@ allowed:
   - key: daily_checkin
     label_patterns:
       - Daily coins
-      - Collect
     category: sign_in
     wait_seconds: 0
     repeatable: false
     max_per_run: 1
     notes: >-
-      The streak-row `Collect` on the coin page. It is a control, not a boost
-      row, but the catalogue names it so the policy can accept it explicitly
-      rather than by exception. It disappears after a successful claim.
+      The `Daily coins` streak section. The `Collect` control itself is not a
+      boost row and is deliberately not an allow pattern: matching the bare word
+      `Collect` would let any future row whose subtitle contains it pass row
+      dispatch as a sign-in. The daily-check-in executor (#23) owns the control
+      and decides whether to claim it.
 
   - key: boost_checkin
     label_patterns:
@@ -170,8 +175,6 @@ denied:
     label_patterns:
       - Play & Earn
       - Play and Earn
-      - game
-      - games
     deny_reason: "game: Play & Earn is a mini-game and is never played"
 
   - key: game_merge_boss
@@ -217,6 +220,12 @@ denied:
     label_patterns:
       - Prize Land
     deny_reason: "game: Prize Land is a mini-game and is never played"
+
+  - key: game_other
+    label_patterns:
+      - game
+      - games
+    deny_reason: "game: mini-games are refused"
 
   - key: spending_order
     label_patterns:

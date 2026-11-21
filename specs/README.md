@@ -21,7 +21,10 @@ validated with Pydantic at load: an unknown category, an empty pattern list, a
 negative wait, a duplicate key, or an allowed row that the deny list refuses
 stops the run at startup. Matching is case-insensitive whole-word matching;
 deny is checked before allow, and an unknown label is refused as
-`unrecognised`.
+`unrecognised`. A one-word allow pattern is only matched against the title, so
+a generic word in a subtitle cannot pull an unknown row into an executor. The
+streak `Collect` control is deliberately not an allow pattern: #23 owns it
+outside row dispatch.
 
 Run both spec checks with the normal gate:
 

@@ -16,7 +16,9 @@ Patterns are case-insensitive word sequences. Punctuation is ignored
 (``Play & Earn`` normalises to ``play earn``), but a pattern must match whole
 words: the pattern ``cart`` does not match the label ``cartoon``. That keeps a
 short deny rule from accidentally refusing an unrelated task and, more
-importantly, keeps a short allow rule from reaching a row it does not name.
+importantly, keeps a short allow rule from reaching a row it does not name. A
+one-word allow pattern is trusted only in the title; a generic word in a
+subtitle must not pull an unrelated row into an executor.
 
 The loader also runs the policy against its own data. If an allowed row's
 pattern would be refused by the deny list, or would resolve to a different
@@ -277,7 +279,7 @@ class TaskCatalogue:
             if text is None:
                 continue
             for spec in self.allowed:
-                pattern = _first_match(spec.label_patterns, text)
+                pattern = _first_match(_allowed_patterns(spec, field), text)
                 if pattern is not None:
                     return TaskDecision(
                         title=title,
@@ -384,6 +386,21 @@ def _check_catalogue_accepts_its_own_rows(catalogue: TaskCatalogue) -> None:
                     f'allowed task {spec.key!r} pattern {pattern!r} resolves to '
                     f'{decision.rule!r}; every allowed row must be unambiguous',
                 )
+
+
+def _allowed_patterns(spec: AllowedTaskSpec, field: str) -> tuple[str, ...]:
+    """Trust a one-word allow pattern only on the title.
+
+    A generic word in a subtitle is how an unrelated row would be mistaken for
+    an allowed family. The title is the row's own name, so a one-word control
+    such as ``Collect`` may still be named there; the subtitle must carry a
+    phrase. In practice the catalogue keeps the streak ``Collect`` out of row
+    dispatch entirely (it is a control, not a boost row), but the rule keeps a
+    future one-word pattern from becoming a default-deny leak.
+    """
+    if field == 'title':
+        return spec.label_patterns
+    return tuple(pattern for pattern in spec.label_patterns if ' ' in _normalise(pattern))
 
 
 def _first_match(patterns: tuple[str, ...], text: str) -> str | None:
