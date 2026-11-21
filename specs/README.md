@@ -10,13 +10,38 @@ comments in the file are the policy; the loader that enforces the schema is
 and its tests are
 [`tests/test_control_popups.py`](../tests/test_control_popups.py).
 
-Run the corpus check with the normal gate:
+`tasks.yaml` is the task catalogue and default-deny policy from issue #21:
+`allowed` rows name a family, its OCR patterns, category, wait and per-run
+limit; `denied` rows name a refusal and carry the human-readable reason that
+ends up in the run report. The loader is
+[`src/aliexpress_coins/tasks/catalogue.py`](../src/aliexpress_coins/tasks/catalogue.py)
+and its tests are
+[`tests/test_tasks_catalogue.py`](../tests/test_tasks_catalogue.py). The file is
+validated with Pydantic at load: an unknown category, an empty pattern list, a
+negative wait, a duplicate key, or an allowed row that the deny list refuses
+stops the run at startup. Matching is case-insensitive whole-word matching;
+deny is checked before allow, and an unknown label is refused as
+`unrecognised`. A one-word allow pattern is only matched against the title, so
+a generic word in a subtitle cannot pull an unknown row into an executor. The
+streak `Collect` control is deliberately not an allow pattern: #23 owns it
+outside row dispatch.
+
+Run both spec checks with the normal gate:
 
 ```sh
 just check
 ```
 
-To add a family:
+To add a task family:
+
+1. Add an `allowed` row with a unique snake_case key, one or more patterns taken
+   from the measured title or subtitle, a known category, and a wait from the
+   timer chip (0 when the task is not a dwell task). Add a deny row instead if
+   the family must never be touched, and give it a reason a report can print.
+2. Run `just check`. The loader proves the new row is not shadowed by another
+   allowed row and is not refused by the deny list.
+
+To add a popup family:
 
 1. Capture the frame and mask account data into `tests/data/popups/`; add a row
    to that directory's README.
