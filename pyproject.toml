@@ -1,0 +1,84 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aliexpress-coins"
+description = "Unattended collector for the AliExpress in-app coins programme."
+readme = "README.md"
+requires-python = ">=3.14"
+dynamic = ["version", "dependencies"]
+classifiers = [
+    "Private :: Do Not Upload",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+]
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+aliexpress_coins = ["py.typed"]
+
+[tool.setuptools.dynamic]
+version = { attr = "aliexpress_coins.__version__" }
+# requirements.txt stays the single source of truth for runtime pins.
+dependencies = { file = ["requirements.txt"] }
+
+# --- ruff -------------------------------------------------------------------
+# The formatter owns wrapping, so E501 is off; line length still guides it.
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+src = ["src", "tests"]
+# tools/ holds the issue-filing scripts written before the scaffold. They are
+# not part of the package and contain intentional prose punctuation (×, –, …).
+extend-exclude = ["tools"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "C4", "PT", "RUF"]
+ignore = ["E501"]
+
+[tool.ruff.format]
+quote-style = "single"
+
+# --- mypy -------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.14"
+files = ["src", "tests"]
+mypy_path = "src"
+strict = true
+disallow_untyped_defs = true
+warn_unused_ignores = true
+show_error_codes = true
+show_error_context = true
+pretty = true
+
+# --- pytest -----------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "9.0"
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = [
+    "--strict-config",
+    "--strict-markers",
+    "--cov=aliexpress_coins",
+    "--cov-report=term-missing",
+]
+
+# --- coverage ratchet -------------------------------------------------------
+# The floor is a ratchet: start at 85% on the stub, raise it as modules land,
+# and never lower it to make a change pass.
+# See "Quality gate" in README.md.
+[tool.coverage.run]
+branch = true
+source = ["aliexpress_coins"]
+
+[tool.coverage.report]
+fail_under = 85
+precision = 2
+show_missing = true
+skip_covered = true

@@ -1,0 +1,5 @@
+# Runtime dependencies.
+#
+# The scaffold has no third-party runtime imports. Later issues add their
+# pinned runtime dependencies here; setuptools reads this file for the
+# package metadata, so do not duplicate versions in pyproject.toml.
