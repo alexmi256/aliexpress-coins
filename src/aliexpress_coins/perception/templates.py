@@ -418,8 +418,9 @@ def _refine(
     if right - left < width or bottom - top < height:
         return None
 
-    local_scales = _neighbouring_scales(candidates, scale)
-    hit = _search(gray[top:bottom, left:right], template.image, local_scales)
+    # Re-run every scale in the small local window: a coarse winner one or two
+    # steps from the true scale must not decide the final scale.
+    hit = _search(gray[top:bottom, left:right], template.image, candidates)
     if hit is None:
         return None
     return _Hit(
@@ -429,12 +430,6 @@ def _refine(
         size=hit.size,
         tried=tuple(dict.fromkeys((*coarse.tried, *hit.tried))),
     )
-
-
-def _neighbouring_scales(candidates: tuple[float, ...], scale: float) -> tuple[float, ...]:
-    nearest = min(range(len(candidates)), key=lambda index: abs(candidates[index] - scale))
-    start = max(0, nearest - 1)
-    return candidates[start : nearest + 2]
 
 
 def _search(
@@ -510,7 +505,10 @@ def _resolve_template(
             return template
         return Template(image=template.image, source_width=source_width, family=template.family, path=template.path)
     if isinstance(template, (str, Path)):
-        return Template.from_path(template, source_width=source_width)
+        return Template.from_path(
+            template,
+            source_width=source_width if source_width is not None else frame_width,
+        )
     image = _to_gray_array(template)
     return Template(
         image=image,

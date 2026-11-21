@@ -302,6 +302,36 @@ def test_match_all_returns_every_acceptable_family_best_first(
     assert all(match.score >= DEFAULT_TEMPLATE_THRESHOLD for match in matches)
 
 
+@pytest.mark.parametrize('template', [LAUNCH_TEMPLATE, str(LAUNCH_TEMPLATE)])
+def test_a_path_template_uses_the_frame_width_when_source_width_is_omitted(
+    template: Path | str,
+    launch_frame: Image.Image,
+) -> None:
+    match = match_template(launch_frame, template)
+
+    assert match is not None
+    assert match.score > 0.99
+    assert match.location == (532, 1600)
+    assert match.scale == pytest.approx(1.0)
+
+
+def test_refinement_reconsiders_every_scale_not_just_the_coarse_neighbours(
+    corpus: PopupCorpus,
+    store: TemplateStore,
+) -> None:
+    family = corpus.by_family('push_permission_prompt')
+    assert family.fixture is not None
+    with Image.open(family.fixture) as opened:
+        frame = opened.convert('L')
+
+    match = match_template(frame, store.by_family('push_permission_prompt'))
+
+    assert match is not None
+    assert match.score > 0.99
+    assert match.scale == pytest.approx(1.0)
+    assert match.location == (1147, 220)
+
+
 def test_explicit_scales_are_the_only_scales_tried(
     store: TemplateStore,
     launch_frame: Image.Image,

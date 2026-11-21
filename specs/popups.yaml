@@ -77,10 +77,11 @@ families:
     notes: >-
       The close control is a drawn white ✕ in a circle; OCR returns no text for
       it. The crop includes the feed artwork visible through the ring, so a new
-      Welcome gifts campaign with different artwork may not match: until #15
-      masks the glyph interior, the fraction is the effective close for this
-      family. The recording is from the reviewed launch-modal frame; the modal
-      did not re-trigger during the corpus session (seven cold starts).
+      Welcome gifts campaign with different artwork may not match. The template
+      is matched at the frame's scale (#15); the fraction remains the configured
+      fallback when the glyph crop does not match. The recording is from the
+      reviewed launch-modal frame; the modal did not re-trigger during the
+      corpus session (seven cold starts).
 
   - family: promo_coupon_unlocked
     when: >-
