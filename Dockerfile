@@ -18,8 +18,6 @@ RUN apt-get update \
         libgl1 \
         libglib2.0-0t64 \
         libgomp1 \
-        libsm6 \
-        libxext6 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

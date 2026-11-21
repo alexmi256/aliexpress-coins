@@ -55,10 +55,19 @@ def test_check_adb_fails_on_non_zero_exit() -> None:
     assert 'cannot execute' in result.detail
 
 
-def test_check_adb_fails_when_it_cannot_spawn() -> None:
+def test_check_adb_fails_when_it_times_out() -> None:
     result = doctor.check_adb(which=lambda _name: '/usr/bin/adb', run=_raise_timeout)
     assert result.status == 'fail'
     assert 'timed out' in result.detail
+
+
+def test_check_adb_fails_when_it_cannot_spawn() -> None:
+    def unexecutable(_args: Sequence[str], _timeout: float) -> doctor.CommandResult:
+        raise PermissionError('permission denied')
+
+    result = doctor.check_adb(which=lambda _name: '/usr/bin/adb', run=unexecutable)
+    assert result.status == 'fail'
+    assert 'permission denied' in result.detail
 
 
 def test_check_device_is_skipped_when_unset() -> None:

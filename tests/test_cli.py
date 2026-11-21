@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import runpy
 import signal
 import sys
@@ -42,6 +43,11 @@ def test_module_entrypoint_runs_main(
         runpy.run_module('aliexpress_coins', run_name='__main__')
     assert raised.value.code == 2
     assert 'usage:' in capsys.readouterr().out
+
+
+def test_importing_the_entrypoint_does_not_run_the_cli() -> None:
+    module = importlib.import_module('aliexpress_coins.__main__')
+    assert module.__name__ == 'aliexpress_coins.__main__'
 
 
 def test_run_idle_stops_on_sigterm(
