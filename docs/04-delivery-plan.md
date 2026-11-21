@@ -60,6 +60,11 @@ it.
 | start one run | `systemd-run --user --unit=oc-loop-aecoins-<issue> bin/loop run aliexpress-coins <issue>` |
 | merge | `bin/loop merge aliexpress-coins <issue> --pr <n>`, after reading `summary.md` and the issue's criteria |
 
+**Before every intake, prove the device is there.** `adb devices` on the build box must list the serial
+the task prompt is about to name. If it does not, stop and tell the operator rather than starting a run that
+spends its first turn discovering an absent tablet — and remember the wireless-debugging port rotates when
+the tablet reconnects, so treat the address as data to verify on every resume, never as a constant.
+
 A run ends at `phase=ship` with a green gate, or at `failed` / `limit` / `disputed` / `stalled` /
 `timeout`. Only `ship` **and** a green gate is a merge candidate; every other state is a report, not a
 work item to grind past.
