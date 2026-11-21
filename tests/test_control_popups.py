@@ -223,6 +223,15 @@ def test_status_records_which_families_were_reproduced() -> None:
     assert corpus.by_family('redeem_interstitial').status is PopupStatus.OBSERVED_NOT_REPRODUCED
 
 
+def test_only_the_in_page_badge_is_marked_non_blocking() -> None:
+    corpus = load_popup_corpus(CORPUS_PATH)
+
+    assert corpus.by_family('promo_bundle_deals_badge').blocking is False
+    for family in corpus.families:
+        if family.family != 'promo_bundle_deals_badge':
+            assert family.blocking is True, family.family
+
+
 def test_family_lookup_and_chain_expansion() -> None:
     corpus = load_popup_corpus(CORPUS_PATH)
 
@@ -429,6 +438,7 @@ def test_an_unreadable_template_is_rejected(tmp_path: Path) -> None:
         ({'anchor': ''}, 'must not be empty'),
         ({'observed_at': {'width': 1200, 'height': 2000, 'density': 240}}, 'sdk must be an integer'),
         ({'observed_at': {'width': 1200, 'height': 2000, 'density': 0, 'sdk': 35}}, 'density must be positive'),
+        ({'blocking': 'no'}, 'blocking must be a boolean'),
         ({'chains_to': ['demo']}, 'cannot chain to itself'),
         ({'chains_to': ['demo', 'demo']}, 'must not repeat'),
         ({'chains_to': ['ghost']}, 'chains to unknown family'),

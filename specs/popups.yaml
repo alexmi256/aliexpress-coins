@@ -156,6 +156,7 @@ families:
       modal, but it is a sale overlay encountered on the way to the coins page.
     anchor: Bundle deals
     status: reproduced
+    blocking: false
     observed_at: {width: 1200, height: 2000, density: 240, sdk: 35}
     fixture: tests/data/popups/promo_bundle_deals_badge.png
     chains_to: []
@@ -166,5 +167,7 @@ families:
     notes: >-
       A grey circular ✕ at the card's right edge, with no OCR text. Tapping it
       removes the badge; the Bundle deals card remains and is not a popup.
+      `blocking: false` means a failed dismissal is logged and skipped, not a
+      reason to end the run.
 
 # Recon notes on things that are not popup families:

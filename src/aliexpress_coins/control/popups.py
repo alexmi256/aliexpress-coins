@@ -103,6 +103,7 @@ class PopupFamily:
     close: tuple[CloseAttempt, ...]
     status: PopupStatus
     observed_at: ObservedGeometry
+    blocking: bool = True
     chains_to: tuple[str, ...] = ()
     fixture: Path | None = None
     notes: str | None = None
@@ -223,7 +224,18 @@ def _family(value: object, root: Path, index: int) -> PopupFamily:
     mapping = _mapping(value, where)
     _reject_unknown(
         mapping,
-        {'family', 'when', 'anchor', 'close', 'status', 'observed_at', 'chains_to', 'fixture', 'notes'},
+        {
+            'family',
+            'when',
+            'anchor',
+            'close',
+            'status',
+            'observed_at',
+            'blocking',
+            'chains_to',
+            'fixture',
+            'notes',
+        },
         where,
     )
 
@@ -251,6 +263,7 @@ def _family(value: object, root: Path, index: int) -> PopupFamily:
         close=_close(mapping.get('close'), f'{where}.close', root),
         status=status,
         observed_at=_observed_at(mapping.get('observed_at'), f'{where}.observed_at'),
+        blocking=_boolean(mapping.get('blocking', True), f'{where}.blocking'),
         chains_to=chains_to,
         fixture=fixture,
         notes=_optional_text(mapping.get('notes'), f'{where}.notes'),
@@ -394,6 +407,12 @@ def _optional_text(value: object, where: str) -> str | None:
     if value is None:
         return None
     return _text(value, where)
+
+
+def _boolean(value: object, where: str) -> bool:
+    if not isinstance(value, bool):
+        raise PopupSpecError(f'{where} must be a boolean, got {value!r}')
+    return value
 
 
 def _positive_int(value: object, where: str) -> int:
