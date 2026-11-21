@@ -270,6 +270,55 @@ def test_a_deny_rule_can_match_the_subtitle_the_title_does_not_name() -> None:
     assert decision.matched_field == 'subtitle'
 
 
+def test_a_generic_deny_word_in_a_subtitle_does_not_refuse_allowed_work() -> None:
+    catalogue = load_task_catalogue(CATALOGUE_PATH)
+
+    decision = catalogue.decide(
+        'Browse recently viewed items',
+        subtitle='Coins deal on viewed, in-cart items',
+    )
+
+    assert decision.allowed
+    assert decision.spec is not None
+    assert decision.spec.key == 'recently_viewed'
+    assert decision.matched_field == 'title'
+
+
+def test_an_action_phrase_in_a_subtitle_still_denies() -> None:
+    catalogue = load_task_catalogue(CATALOGUE_PATH)
+
+    decision = catalogue.decide('A title the OCR read badly', subtitle='Add 5 items to your cart')
+
+    assert decision.denied
+    assert decision.rule == 'spending_cart'
+    assert decision.matched_pattern == 'Add 5 items to your cart'
+    assert decision.matched_field == 'subtitle'
+
+
+def test_a_precise_action_verb_in_a_subtitle_still_denies() -> None:
+    catalogue = load_task_catalogue(CATALOGUE_PATH)
+
+    checkout = catalogue.decide('A title the OCR read badly', subtitle='Proceed to checkout')
+    purchase = catalogue.decide('A title the OCR read badly', subtitle='Purchase with coins')
+
+    assert checkout.denied
+    assert checkout.rule == 'spending_order'
+    assert checkout.matched_pattern == 'Checkout'
+    assert checkout.matched_field == 'subtitle'
+    assert purchase.denied
+    assert purchase.rule == 'spending_order'
+    assert purchase.matched_pattern == 'Purchase'
+    assert purchase.matched_field == 'subtitle'
+
+
+def test_a_generic_deny_word_in_the_title_still_denies() -> None:
+    catalogue = load_task_catalogue(CATALOGUE_PATH)
+
+    assert catalogue.decide('Cart').rule == 'spending_cart'
+    assert catalogue.decide('Order').rule == 'spending_order'
+    assert catalogue.decide('Games').rule == 'game_other'
+
+
 def test_an_allowed_row_can_match_the_subtitle_when_the_title_is_unreadable() -> None:
     catalogue = load_task_catalogue(CATALOGUE_PATH)
 

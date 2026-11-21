@@ -18,7 +18,12 @@ words: the pattern ``cart`` does not match the label ``cartoon``. That keeps a
 short deny rule from accidentally refusing an unrelated task and, more
 importantly, keeps a short allow rule from reaching a row it does not name. A
 one-word allow pattern is trusted only in the title; a generic word in a
-subtitle must not pull an unrelated row into an executor.
+subtitle must not pull an unrelated row into an executor. The same rule applies
+to deny patterns: a small generic-word set (``cart``, ``order``, ``game``) is
+trusted only in the title, while action phrases and precise action verbs
+(``Add to cart``, ``Checkout``) may match either field. A subtitle describes a
+row as often as it names its action, so it must not turn an allowed task into a
+refusal.
 
 The loader also runs the policy against its own data. If an allowed row's
 pattern would be refused by the deny list, or would resolve to a different
@@ -45,6 +50,14 @@ DEFAULT_DENY_REASON = 'unrecognised'
 
 _KEY_PATTERN = re.compile(r'[a-z][a-z0-9_]*')
 """Keys are snake_case so they read the same in YAML, logs and report fields."""
+
+_GENERIC_DENY_WORDS = frozenset({'buy', 'cart', 'game', 'games', 'invite', 'order', 'review', 'reviews', 'share'})
+"""One-word deny patterns that are too generic to trust in a subtitle.
+
+``cart`` and ``order`` describe the action in a title, but the same word can
+appear in an allowed row's subtitle. The list is deliberately short: precise
+action verbs such as ``Checkout`` and ``Purchase`` still deny either field.
+"""
 
 
 class TaskCategory(StrEnum):
@@ -255,15 +268,20 @@ class TaskCatalogue:
         """Decide whether a task row may be dispatched.
 
         Deny rules are checked against both the title and the subtitle before
-        any allow rule, so deny always beats allow. The title is preferred over
-        the subtitle when an allowed row matches; the latter is the fallback
-        for a title that OCR mangled.
+        any allow rule, so deny always beats allow. A generic word such as
+        ``cart`` is trusted only in the title, while action phrases and precise
+        action verbs (``Add to cart``, ``Checkout``) are trusted in either
+        field: the title names what the row does, while a subtitle may merely
+        describe it (for example ``Browse recently viewed items`` with ``...
+        in-cart items``). The title is preferred over the subtitle when an
+        allowed row matches; the latter is the fallback for a title that OCR
+        mangled.
         """
         for field, text in (('title', title), ('subtitle', subtitle)):
             if text is None:
                 continue
             for rule in self.denied:
-                pattern = _first_match(rule.label_patterns, text)
+                pattern = _first_match(_denied_patterns(rule, field), text)
                 if pattern is not None:
                     return TaskDecision(
                         title=title,
@@ -386,6 +404,20 @@ def _check_catalogue_accepts_its_own_rows(catalogue: TaskCatalogue) -> None:
                     f'allowed task {spec.key!r} pattern {pattern!r} resolves to '
                     f'{decision.rule!r}; every allowed row must be unambiguous',
                 )
+
+
+def _denied_patterns(rule: DeniedTaskSpec, field: str) -> tuple[str, ...]:
+    """Trust a generic deny word only on the title.
+
+    A generic word (``cart``, ``order``, ``game``) says what the row does when
+    it is the title. In a subtitle it can describe an allowed row instead, as
+    ``in-cart items`` does for ``Browse recently viewed items``. Action phrases
+    (``Add to cart``, ``Place an order``) and precise one-word action verbs
+    (``Checkout``, ``Purchase``) are trusted in either field.
+    """
+    if field == 'title':
+        return rule.label_patterns
+    return tuple(pattern for pattern in rule.label_patterns if _normalise(pattern) not in _GENERIC_DENY_WORDS)
 
 
 def _allowed_patterns(spec: AllowedTaskSpec, field: str) -> tuple[str, ...]:
