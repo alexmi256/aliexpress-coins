@@ -20,9 +20,10 @@ from aliexpress_coins.control.controller import Controller
 from aliexpress_coins.control.popups import PopupCorpus, load_popup_corpus
 from aliexpress_coins.perception.errors import StateTimeout
 from aliexpress_coins.perception.geometry import DeviceGeometry
+from aliexpress_coins.perception.matching import find_text
 from aliexpress_coins.perception.ocr import RapidOcrEngine
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
-from aliexpress_coins.perception.state import ScreenState
+from aliexpress_coins.perception.state import ScreenState, classify
 from aliexpress_coins.tasks.catalogue import (
     DecisionKind,
     TaskCatalogue,
@@ -576,10 +577,14 @@ def test_open_boost_list_sweeps_an_initial_popup_before_reading_the_coin_page(
     frames: dict[str, Snapshot],
     corpus: PopupCorpus,
 ) -> None:
+    overlay = _rebox(frames['launch'], (*frames['coins'].boxes, *frames['launch'].boxes))
+    assert classify(overlay).state is ScreenState.POPUP
+    assert find_text(overlay, EARN_MORE_LABEL) is not None
+
     device = _RecordingDevice()
-    controller = _controller(device, frames['launch'])
+    controller = _controller(device, overlay)
     clock = _SteppingClock()
-    capture = _Capture((frames['launch'], frames['launch'], frames['coins'], frames['coins'], frames['state_boost']))
+    capture = _Capture((overlay, overlay, frames['coins'], frames['coins'], frames['state_boost']))
 
     opened = open_boost_list(
         controller,
@@ -596,6 +601,37 @@ def test_open_boost_list_sweeps_an_initial_popup_before_reading_the_coin_page(
     assert opened.dismiss.closed == ('launch_welcome_gifts',)
     assert opened.tap is not None
     assert len(device.taps) == 2
+
+
+def test_open_boost_list_accepts_a_popup_classified_destination_without_another_family(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    catalogue: TaskCatalogue,
+) -> None:
+    destination = _rebox(frames['launch'], frames['state_boost'].boxes)
+    assert classify(destination).state is ScreenState.POPUP
+
+    device = _RecordingDevice()
+    controller = _controller(device, frames['coins'])
+    clock = _SteppingClock()
+    capture = _Capture((frames['coins'], destination))
+
+    opened = open_boost_list(
+        controller,
+        capture,
+        corpus,
+        timeout=10,
+        interval=1,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert opened.route is DiscoveryRoute.BOOST
+    assert opened.dismiss is None
+    assert opened.classification is not None
+    assert opened.classification.state is ScreenState.POPUP
+    assert len(device.taps) == 1
+    assert enumerate_roster(opened.snapshot, catalogue).count == 4
 
 
 def test_open_boost_list_sweeps_a_popup_seen_on_the_way(

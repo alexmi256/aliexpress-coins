@@ -295,6 +295,22 @@ def test_an_action_phrase_in_a_subtitle_still_denies() -> None:
     assert decision.matched_field == 'subtitle'
 
 
+def test_a_precise_action_verb_in_a_subtitle_still_denies() -> None:
+    catalogue = load_task_catalogue(CATALOGUE_PATH)
+
+    checkout = catalogue.decide('A title the OCR read badly', subtitle='Proceed to checkout')
+    purchase = catalogue.decide('A title the OCR read badly', subtitle='Purchase with coins')
+
+    assert checkout.denied
+    assert checkout.rule == 'spending_order'
+    assert checkout.matched_pattern == 'Checkout'
+    assert checkout.matched_field == 'subtitle'
+    assert purchase.denied
+    assert purchase.rule == 'spending_order'
+    assert purchase.matched_pattern == 'Purchase'
+    assert purchase.matched_field == 'subtitle'
+
+
 def test_a_generic_deny_word_in_the_title_still_denies() -> None:
     catalogue = load_task_catalogue(CATALOGUE_PATH)
 

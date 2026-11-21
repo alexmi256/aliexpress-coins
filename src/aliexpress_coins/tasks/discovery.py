@@ -29,7 +29,7 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 
 from aliexpress_coins.control.controller import Controller, TapRecord
-from aliexpress_coins.control.popups import DismissReport, PopupCorpus, dismiss_after
+from aliexpress_coins.control.popups import DismissReport, PopupCorpus, _matching_family, dismiss_after
 from aliexpress_coins.perception.errors import StateTimeout
 from aliexpress_coins.perception.layout import (
     DEFAULT_ACTION_LABELS,
@@ -379,7 +379,9 @@ def open_boost_list(
     ``Coins boost`` header, so sweeping it would close the list it was meant to
     open (including immediately after a different popup is dismissed). A
     genuine popup still classifies as ``POPUP`` and is swept normally, even
-    when the header and some rows are still OCR-visible behind it.
+    when the header and some rows are still OCR-visible behind it. A
+    destination-shaped ``POPUP`` frame with no other family is treated as the
+    list rather than as an unclosable modal.
     """
     if timeout <= 0:
         raise ValueError('timeout must be positive')
@@ -397,10 +399,10 @@ def open_boost_list(
     earn_more = find_text(initial, EARN_MORE_LABEL)
 
     # A loading coin page is not proof that the label is absent, and tapping
-    # through a popup would land on the scrim. Resolve those two states before
-    # deciding the inline route; a settled page with no label is a real page
-    # variant and degrades immediately.
-    while earn_more is None and initial_classification.state in (ScreenState.LOADING, ScreenState.POPUP):
+    # through a popup would land on the scrim even when OCR can still see the
+    # label underneath it. Resolve those states first; a settled page with no
+    # label is a real page variant and degrades immediately.
+    while initial_classification.state in (ScreenState.LOADING, ScreenState.POPUP):
         now = clock()
         if now >= deadline:
             break
@@ -420,6 +422,12 @@ def open_boost_list(
         initial = _capture(capture)
         initial_classification = classify(initial)
         earn_more = find_text(initial, EARN_MORE_LABEL)
+
+    if initial_classification.state is ScreenState.POPUP:
+        raise StateTimeout(
+            f'an initial popup still covers the coin page after {timeout:g}s; '
+            f'no tap was issued for {EARN_MORE_LABEL!r}',
+        )
 
     if earn_more is None:
         return BoostList(
@@ -450,8 +458,11 @@ def open_boost_list(
 
         # A modal over an already-rendered list still hides the rows beneath it.
         # Sweep it first; the destination family is already excluded so a real
-        # popup cannot be mistaken for the list itself.
-        if classification.state is ScreenState.POPUP:
+        # popup cannot be mistaken for the list itself. A destination-shaped
+        # POPUP frame with no other family is the list, not an unclosable modal.
+        if classification.state is ScreenState.POPUP and not (
+            _boost_arrived(snapshot) and _matching_family(snapshot, sweep_corpus) is None
+        ):
             if now >= deadline:
                 seen = ' -> '.join(item.classification.state.value for item in observations)
                 raise StateTimeout(

@@ -14,12 +14,12 @@
 # Policy: deny is checked before allow, against the title and the subtitle. A
 # label that matches both an allow pattern and a deny rule is refused with the
 # deny rule's reason. A label that matches neither is refused with
-# `default_deny_reason` (`unrecognised`). A one-word deny pattern (`cart`,
-# `order`, `game`) is trusted only in the title: the title names the row's
-# action, while a subtitle can describe allowed work (for example
-# `Browse recently viewed items` / "Coins deal on viewed, in-cart items").
-# An action-phrase deny pattern (`Add to cart`, `Place an order`) may match
-# either field.
+# `default_deny_reason` (`unrecognised`). A generic deny word (`cart`, `order`,
+# `game`) is trusted only in the title: the title names the row's action, while
+# a subtitle can describe allowed work (for example `Browse recently viewed
+# items` / "Coins deal on viewed, in-cart items"). An action phrase
+# (`Add to cart`, `Place an order`) or a precise action verb (`Checkout`,
+# `Purchase`) may match either field.
 #
 # Allowed rows are measured in docs/05-app-knowledge.md §4. A pattern may come
 # from the title or the subtitle: "Each order grants you rewards" and "Water
