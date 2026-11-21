@@ -33,7 +33,7 @@ Nothing here describes code that exists yet — this repo is the plan.
 | dependencies | `requirements.txt` (runtime) + `requirements-dev.txt` (`-r requirements.txt` on top) | every line pinned, with a comment saying what it is for |
 | lint/format | ruff, line length 120, single quotes | the formatter owns wrapping, so `E501` is off |
 | types | mypy, `disallow_untyped_defs`, `warn_unused_ignores` | green on `src/` **and** `tests/`; a stale `# type: ignore` fails the build |
-| tests | pytest + pytest-cov | coverage is a ratchet set just below the current number, raised as it climbs |
+| tests | pytest + pytest-cov | coverage is a ratchet: 85% starting floor on the stub, raised to just below the measured number as modules land, never lowered to pass |
 | task runner | `just` | `just check` must equal what CI runs |
 | container | `python:3.14-slim-trixie` + distribution packages (`adb`, `tzdata`, opencv's `libgl*`) | nothing compiled from source |
 | CI | GitHub Actions, latest majors | lint → format check → mypy → tests; image built and pushed to GHCR on every merge to `main` |

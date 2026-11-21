@@ -12,7 +12,8 @@ later issue is built on. No product behaviour exists yet; the issues are the wor
 
 The toolchain is Python 3.14 with plain `venv` + pip, plus [`just`](https://github.com/casey/just)
 for the recipes. There is no uv, poetry, hatch or pdm. Install `just` first; `just setup` does not
-install it.
+install it. Keep the checkout path free of braces: setuptools reads `{...}` as a format field during
+install. The worktree supervisor already creates brace-free paths.
 
 ```sh
 git clone git@github.com:alexmi256/aliexpress-coins.git
