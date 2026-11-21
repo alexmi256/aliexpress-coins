@@ -46,6 +46,26 @@ Use it for one question — *what can be started now*: filter `Status = Todo`, `
 look at the `blocked by` list on each item. The roadmap view is deliberately absent until the
 milestones carry real dates; a roadmap of guesses is worse than none.
 
+## Operating the build loop
+
+Issues are implemented by the `agent-loop` supervisor on `alex-um780` (`192.168.8.216`), driving OpenCode
+`2.3.2`; Hermes is the orchestrator, not the implementer. Nothing runs inside a chat session.
+
+| piece | where |
+|---|---|
+| project config | `~/agent-loop/projects/aliexpress-coins.toml` (model `deepseek-v4.1-flash#high`, gate `just check`, prep = venv + pip, worktrees `~/worktrees/aliexpress-coins-<issue>`) |
+| per-run state | `~/agent-loop-runs/aliexpress-coins/<issue>/{state.json,report.md,summary.md,run.log}` |
+| chain runner | `~/agent-loop-orchestrator/aecoins-overnight.sh` + `queue.tsv`, under unit `aecoins-overnight` |
+| single run | `systemd-run --user --unit=oc-loop-aecoins-<issue> bin/loop run aliexpress-coins <issue>` |
+
+A run ends at `phase=ship` with a green gate, or at `failed` / `limit` / `disputed` / `stalled` /
+`timeout`. **Only `ship` + green gate is mergeable**; the chain stops on anything else and leaves the run
+for a human, because those states are prompt or design problems, not work to grind past.
+
+The device is at `192.168.8.220:38045` (wireless-debugging port — it changes when the tablet reconnects,
+and every task prompt carries it literally). CI cannot reach the device, so device tests skip when
+`AECOINS_DEVICE` is unset.
+
 ## Milestones
 
 | milestone | issues | done when |
