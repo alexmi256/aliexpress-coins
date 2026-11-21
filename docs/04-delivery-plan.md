@@ -50,15 +50,26 @@ milestones carry real dates; a roadmap of guesses is worse than none.
 
 | milestone | issues | done when |
 |---|---|---|
-| **M0 Recon & decisions** | 5 open (2 closed) | the remaining unknowns are captured, and the scaffold exists |
+| **M0 Recon & decisions** | 5 (2 closed) | the remaining unknowns are captured |
+| **M0.5 Foundations** | 3 | `just check` green from a clean clone, CI enforcing it on every PR, image published on every merge |
 | **M1 Perception & control** | 11 | the screen can be read, tapped safely, waited on, and popups are closed after every navigation |
 | **M2 Task engine** | 11 | every allowed task family has an executor; every refused task is refused by a test; the quiz learns; a stuck page resets itself |
 | **M3 Reliability & manual operation** | 5 | a manual run is trustworthy: state, report, retries, Apprise, documented failure classes |
 | **M4 Delivery** | 6 | container built by CI on every merge, harness, runbook, and the gate for going public |
 | **M5 Scheduled operation** | 1 | nightly runs, once the manual ones are boring |
 
-The scaffold (#33) sits in M0 rather than M4: it is a prerequisite for everything else, and
-leaving it in "delivery" made every other issue look blocked by a late milestone.
+**M0.5 Foundations** exists because the toolchain, the image and CI are not "delivery" — they are what
+every later milestone stands on, and they come first:
+
+| issue | why it is here |
+|---|---|
+| #33 scaffold | `just check` is the gate every later PR is judged by; it cannot be late |
+| #34 Docker image | the collector's runtime lives in the image, not on a host |
+| #35 CI + publish | #33 promises a gate equal to CI — so CI must exist before the first feature PR |
+
+The edges are `#33 → #34 → #35`. Previously all three carried the M4 label, which made every feature
+issue look blocked by a milestone that would not start for weeks; the labels were the bug, not the
+issues.
 
 Scheduling (#29) sits in M5 by decision (Q6): runs are manual with one retry per stage until the
 failure handling in #32 has proven itself.
