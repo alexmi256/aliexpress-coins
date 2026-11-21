@@ -20,6 +20,7 @@ few milliseconds next to a ~1.3 s OCR pass.
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -72,6 +73,24 @@ _PANEL_MIN_WIDTH_FRACTION = 0.5
 _PANEL_MIN_HEIGHT_FRACTION = 0.2
 _PANEL_MIN_FILL = 0.5
 """The panel's bounding box must be mostly filled by the bright region."""
+
+_SYSTEM_UI_TOP_FRACTION = 0.03
+_SYSTEM_UI_BOTTOM_FRACTION = 0.10
+"""Status-bar and taskbar bands, as frame fractions.
+
+Every real ``screencap`` carries a clock and taskbar glyphs. They are never
+page content, so both the text signal and the luminance analysis ignore these
+bands. A frame captured at another geometry scales the bands with it.
+"""
+
+_SCRIM_DIM_FRACTION = 0.8
+_SCRIM_VARIANCE_FRACTION = 0.8
+"""A dimmed scrim is a dark border whose texture is flatter than the frame."""
+
+_COLLECTION_HEADER_TOP_FRACTION = 0.35
+"""A product-collection header sits near the top; a feed section lower down does not."""
+
+_PRICE = re.compile(r'(?:C\$|US\s*\$|CS|\$)\s*\d', re.IGNORECASE)
 
 _TASK_TITLES: tuple[str, ...] = (
     'Daily check-in',
@@ -207,11 +226,21 @@ class _Panel:
 
 
 @dataclass(frozen=True, slots=True)
+class _Scrim:
+    border_mean: float
+    border_std: float
+    global_mean: float
+    global_std: float
+    center_mean: float
+
+
+@dataclass(frozen=True, slots=True)
 class _FrameAnalysis:
     dynamic_range: float
     edge_fraction: float
     dominant_fraction: float
     panel: _Panel | None
+    scrim: _Scrim | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,6 +288,21 @@ def classify(snapshot: Snapshot) -> Classification:
                 'bright panel inset from every edge '
                 f'(area={panel.area_fraction:.2f}, x={panel.left:.2f}..{panel.right:.2f}, '
                 f'y={panel.top:.2f}..{panel.bottom:.2f}, border/panel mean={panel.border_mean:.0f}/{panel.mean:.0f})',
+            ),
+        )
+
+    if analysis.scrim is not None:
+        scrim = analysis.scrim
+        return _result(
+            ScreenState.POPUP,
+            _scrim_score(scrim),
+            Evidence(
+                'dimmed_scrim',
+                _scrim_score(scrim),
+                'dark low-variance border behind content '
+                f'(border mean/std={scrim.border_mean:.0f}/{scrim.border_std:.0f}, '
+                f'frame mean/std={scrim.global_mean:.0f}/{scrim.global_std:.0f}, '
+                f'centre mean={scrim.center_mean:.0f})',
             ),
         )
 
@@ -380,18 +424,29 @@ def _capture(source: CaptureSource) -> Snapshot:
     return source.capture()
 
 
+def _content_bounds(width: int, height: int) -> tuple[int, int, int, int]:
+    top = round(height * _SYSTEM_UI_TOP_FRACTION)
+    bottom = height - round(height * _SYSTEM_UI_BOTTOM_FRACTION)
+    if bottom <= top:
+        return 0, 0, width, height
+    return 0, top, width, bottom
+
+
 def _text_signal(snapshot: Snapshot) -> _TextSignal:
-    frame_area = float(snapshot.width * snapshot.height)
+    _, content_top, _, content_bottom = _content_bounds(snapshot.width, snapshot.height)
+    frame_area = float(snapshot.width * max(0, content_bottom - content_top))
     covered = 0.0
     count = 0
     for box in snapshot.boxes:
         if box.score < DEFAULT_MIN_OCR_SCORE or not normalize(box.text):
             continue
         left, top, right, bottom = box.bbox
+        if bottom <= content_top or top >= content_bottom:
+            continue
         left = max(0.0, left)
-        top = max(0.0, top)
+        top = max(float(content_top), top)
         right = min(float(snapshot.width), right)
-        bottom = min(float(snapshot.height), bottom)
+        bottom = min(float(content_bottom), bottom)
         covered += max(0.0, right - left) * max(0.0, bottom - top)
         count += 1
     coverage = covered / frame_area if frame_area > 0 else 0.0
@@ -413,6 +468,11 @@ def _blank_score(analysis: _FrameAnalysis) -> float:
 
 def _panel_score(panel: _Panel) -> float:
     return min(1.0, 0.5 + panel.area_fraction)
+
+
+def _scrim_score(scrim: _Scrim) -> float:
+    dimming = 1.0 - scrim.border_mean / scrim.global_mean
+    return min(1.0, 0.6 + max(0.0, dimming))
 
 
 def _loading_evidence(
@@ -475,6 +535,21 @@ def _page_marker(snapshot: Snapshot) -> Evidence | None:
     if surprise is not None:
         return Evidence('page_marker', surprise.score, f'surprise-items page: {surprise.text!r}')
 
+    # A feed can contain a "Bundle deals" section too, so the header must be
+    # near the top before it identifies a product-collection page. The home
+    # feed itself is deliberately unmodelled: it has no stable whole-screen
+    # marker, and returning UNKNOWN is safer than calling it a coins screen.
+    collection = _match(snapshot, 'Bundle Deals')
+    if collection is not None and collection.top < snapshot.height * _COLLECTION_HEADER_TOP_FRACTION:
+        price = _first_price(snapshot)
+        if price is not None:
+            score = min(collection.score, price.score)
+            return Evidence(
+                'page_marker',
+                score,
+                f'product collection: Bundle Deals + {price.text!r}',
+            )
+
     orders = _match(snapshot, 'My orders')
     if orders is not None:
         account = _first_match(snapshot, ('Wishlist', 'History', 'Coupons'))
@@ -493,6 +568,7 @@ def _page_marker(snapshot: Snapshot) -> Evidence | None:
 class _Match:
     text: str
     score: float
+    top: float = 0.0
 
 
 def _match(snapshot: Snapshot, label: str) -> _Match | None:
@@ -504,7 +580,7 @@ def _match(snapshot: Snapshot, label: str) -> _Match | None:
     )
     if found is None:
         return None
-    return _Match(text=found.text, score=found.score)
+    return _Match(text=found.text, score=found.score, top=found.box.bbox[1])
 
 
 def _first_match(snapshot: Snapshot, labels: Iterable[str]) -> _Match | None:
@@ -536,7 +612,15 @@ def _prefix_match(snapshot: Snapshot, prefix: str) -> _Match | None:
             continue
         label = normalize(box.text)
         if label.startswith(needle):
-            return _Match(text=box.text, score=1.0)
+            return _Match(text=box.text, score=1.0, top=box.bbox[1])
+    return None
+
+
+def _first_price(snapshot: Snapshot) -> _Match | None:
+    for box in snapshot.boxes:
+        if box.score < DEFAULT_MIN_OCR_SCORE or not _PRICE.search(box.text):
+            continue
+        return _Match(text=box.text, score=1.0, top=box.bbox[1])
     return None
 
 
@@ -554,22 +638,26 @@ def _marker_evidence(screen: str, match: _Match) -> Evidence:
 
 
 def _analyse(snapshot: Snapshot) -> _FrameAnalysis:
-    values = _gray(snapshot.image)
+    bounds = _content_bounds(snapshot.width, snapshot.height)
+    values = _gray(snapshot.image, bounds)
     low, high = np.percentile(values, (1.0, 99.0))
     dynamic_range = float(high - low)
     edge_fraction = _edge_fraction(values, dynamic_range)
     dominant_fraction = _dominant_fraction(values)
-    panel = _find_panel(values)
+    grid = _analysis_grid(values)
+    panel = _find_panel(grid)
+    scrim = _find_scrim(grid)
     return _FrameAnalysis(
         dynamic_range=dynamic_range,
         edge_fraction=edge_fraction,
         dominant_fraction=dominant_fraction,
         panel=panel,
+        scrim=scrim,
     )
 
 
-def _gray(image: Image.Image) -> NDArray[np.float32]:
-    return np.asarray(image.convert('L'), dtype=np.float32)
+def _gray(image: Image.Image, bounds: tuple[int, int, int, int]) -> NDArray[np.float32]:
+    return np.asarray(image.convert('L').crop(bounds), dtype=np.float32)
 
 
 def _edge_fraction(values: NDArray[np.float32], dynamic_range: float) -> float:
@@ -588,7 +676,7 @@ def _dominant_fraction(values: NDArray[np.float32]) -> float:
     return float(histogram.max()) / float(histogram.sum())
 
 
-def _find_panel(values: NDArray[np.float32]) -> _Panel | None:
+def _analysis_grid(values: NDArray[np.float32]) -> NDArray[np.float32]:
     height, width = values.shape
     if height >= width:
         grid_height = _GRID_LONG_SIDE
@@ -596,14 +684,17 @@ def _find_panel(values: NDArray[np.float32]) -> _Panel | None:
     else:
         grid_width = _GRID_LONG_SIDE
         grid_height = max(1, round(_GRID_LONG_SIDE * height / width))
-
-    grid = np.asarray(
+    return np.asarray(
         Image.fromarray(values.astype(np.uint8)).resize(
             (grid_width, grid_height),
             Image.Resampling.BOX,
         ),
         dtype=np.float32,
     )
+
+
+def _find_panel(grid: NDArray[np.float32]) -> _Panel | None:
+    grid_height, grid_width = grid.shape
     threshold = _otsu(grid)
     bright = grid >= threshold
     area, bbox = _largest_component(bright)
@@ -626,14 +717,7 @@ def _find_panel(values: NDArray[np.float32]) -> _Panel | None:
     ):
         return None
 
-    border = np.concatenate(
-        (
-            grid[: max(1, grid_height // 12)].ravel(),
-            grid[-max(1, grid_height // 12) :].ravel(),
-            grid[max(1, grid_height // 12) : -max(1, grid_height // 12), : max(1, grid_width // 12)].ravel(),
-            grid[max(1, grid_height // 12) : -max(1, grid_height // 12), -max(1, grid_width // 12) :].ravel(),
-        ),
-    )
+    border = _border_cells(grid)
     panel_mean = float(grid[bright].mean())
     border_mean = float(border.mean())
     border_std = float(border.std())
@@ -652,6 +736,60 @@ def _find_panel(values: NDArray[np.float32]) -> _Panel | None:
         border_mean=border_mean,
         border_std=border_std,
         global_std=global_std,
+    )
+
+
+def _border_cells(grid: NDArray[np.float32]) -> NDArray[np.float32]:
+    grid_height, grid_width = grid.shape
+    band_y = max(1, grid_height // 12)
+    band_x = max(1, grid_width // 12)
+    return np.concatenate(
+        (
+            grid[:band_y].ravel(),
+            grid[-band_y:].ravel(),
+            grid[band_y:-band_y, :band_x].ravel(),
+            grid[band_y:-band_y, -band_x:].ravel(),
+        ),
+    )
+
+
+def _side_cells(grid: NDArray[np.float32]) -> NDArray[np.float32]:
+    grid_height, grid_width = grid.shape
+    band_y = max(1, grid_height // 12)
+    band_x = max(1, grid_width // 12)
+    return np.concatenate(
+        (
+            grid[band_y:-band_y, :band_x].ravel(),
+            grid[band_y:-band_y, -band_x:].ravel(),
+        ),
+    )
+
+
+def _find_scrim(grid: NDArray[np.float32]) -> _Scrim | None:
+    global_mean = float(grid.mean())
+    global_std = float(grid.std())
+    if global_mean <= 0 or global_std <= 0:
+        return None
+
+    border = _side_cells(grid)
+    border_mean = float(border.mean())
+    border_std = float(border.std())
+    if border_mean >= global_mean * _SCRIM_DIM_FRACTION:
+        return None
+    if border_std >= global_std * _SCRIM_VARIANCE_FRACTION:
+        return None
+
+    grid_height, grid_width = grid.shape
+    centre = grid[grid_height // 4 : 3 * grid_height // 4, grid_width // 4 : 3 * grid_width // 4]
+    centre_mean = float(centre.mean())
+    if centre_mean <= border_mean:
+        return None
+    return _Scrim(
+        border_mean=border_mean,
+        border_std=border_std,
+        global_mean=global_mean,
+        global_std=global_std,
+        center_mean=centre_mean,
     )
 
 

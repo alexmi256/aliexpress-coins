@@ -42,7 +42,6 @@ _EXPECTED: dict[str, ScreenState] = {
     'surprise_grid.png': ScreenState.PAGE,
     'popup_over_page.png': ScreenState.POPUP,
     'ambiguous_feed.png': ScreenState.UNKNOWN,
-    'error_404.png': ScreenState.ERROR,
 }
 
 
@@ -81,8 +80,7 @@ def frames() -> dict[str, Snapshot]:
     engine = RapidOcrEngine()
     loaded: dict[str, Snapshot] = {}
     for name in _EXPECTED:
-        path = DATA / name if name == 'boost.png' else STATES / name
-        loaded[name] = _load_snapshot(path, engine)
+        loaded[name] = _load_snapshot(STATES / name, engine)
     return loaded
 
 
@@ -129,6 +127,28 @@ def test_loading_and_blank_evidence_carry_frame_statistics(frames: dict[str, Sna
     assert blank.state is ScreenState.ERROR
     assert blank.evidence[0].signal == 'blank_frame'
     assert 'luminance range=' in blank.evidence[0].detail
+
+
+def test_full_captures_keep_the_clock_and_taskbar_but_ignore_them(frames: dict[str, Snapshot]) -> None:
+    for name, expected in (
+        ('skeleton.png', ScreenState.LOADING),
+        ('blank_webview.png', ScreenState.ERROR),
+    ):
+        snapshot = frames[name]
+        assert (snapshot.width, snapshot.height) == (1200, 2000)
+        assert any(box.center[1] < snapshot.height * 0.03 for box in snapshot.boxes)
+        assert any(box.center[1] > snapshot.height * 0.90 for box in snapshot.boxes)
+        assert classify(snapshot).state is expected
+
+
+def test_launch_modal_without_its_cta_still_has_a_scrim_signal(frames: dict[str, Snapshot]) -> None:
+    snapshot = frames['launch_modal.png']
+    boxes = tuple(box for box in snapshot.boxes if 'tap to claim' not in box.text.lower())
+
+    classification = classify(_snapshot(snapshot.image, boxes))
+
+    assert classification.state is ScreenState.POPUP
+    assert classification.evidence[0].signal == 'dimmed_scrim'
 
 
 def test_an_unmodelled_page_is_unknown_not_a_guess(frames: dict[str, Snapshot]) -> None:
@@ -337,7 +357,7 @@ def test_the_boost_fixture_uses_the_real_page_markers(frames: dict[str, Snapshot
     snapshot = frames['boost.png']
 
     assert find_text(snapshot, 'Coins boost') is not None
-    assert find_text(snapshot, 'Daily check-in') is not None
+    assert find_text(snapshot, 'Explore sponsored items') is not None
     assert classify(snapshot).state is ScreenState.PAGE
 
 
@@ -352,6 +372,42 @@ def test_the_states_are_the_five_contract_values() -> None:
 
 def _page_snapshot(*boxes: TextBox) -> Snapshot:
     return _snapshot(Image.new('RGB', (400, 800), (128, 128, 128)), boxes)
+
+
+def test_a_product_collection_header_and_price_is_a_page() -> None:
+    classification = classify(
+        _page_snapshot(
+            _box('Bundle Deals', 20, 40, 300, 100),
+            _box('C$34.18', 20, 200, 300, 260),
+        ),
+    )
+
+    assert classification.state is ScreenState.PAGE
+    assert 'product collection' in classification.evidence[0].detail
+
+
+def test_a_collection_header_without_a_price_is_unknown() -> None:
+    classification = classify(_page_snapshot(_box('Bundle Deals', 20, 40, 300, 100)))
+
+    assert classification.state is ScreenState.UNKNOWN
+
+
+def test_a_feed_section_called_bundle_deals_is_not_a_collection_header() -> None:
+    classification = classify(
+        _page_snapshot(
+            _box('Bundle Deals', 20, 600, 300, 660),
+            _box('C$34.18', 20, 500, 300, 560),
+        ),
+    )
+
+    assert classification.state is ScreenState.UNKNOWN
+
+
+def test_an_error_marker_is_error() -> None:
+    classification = classify(_page_snapshot(_box('404 Page', 20, 20, 380, 120)))
+
+    assert classification.state is ScreenState.ERROR
+    assert classification.evidence[0].signal == 'error_marker'
 
 
 def test_a_quiz_result_marker_is_a_page() -> None:
@@ -395,7 +451,7 @@ def test_a_one_pixel_frame_is_safe_and_blank() -> None:
 
 
 def test_a_small_bright_region_is_not_a_popup_panel() -> None:
-    image = Image.new('RGB', (400, 800), 'black')
+    image = Image.new('RGB', (400, 800), (128, 128, 128))
     draw = ImageDraw.Draw(image)
     draw.rectangle((150, 350, 250, 450), fill='white')
 

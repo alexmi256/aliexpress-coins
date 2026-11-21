@@ -14,7 +14,9 @@ until it is cropped, reviewed the same way and given an explicit `.gitignore` ex
 
 `states/` holds the reviewed fixtures for the screen-state classifier (issue #16), e.g. a coin
 page, the account page, the launch modal, loading/blank frames, a quiz, the surprise-items grid and
-a popup over a page. Each one was cropped and reviewed for account data; see
-[`states/README.md`](states/README.md) for what each frame is. The single `.gitignore` negation for
-`tests/data/states/*.png` is limited to that reviewed directory; it does not re-enable PNGs
-elsewhere.
+a popup over a page. They are full 1200×2000 frames with the status bar and taskbar retained, so
+the classifier is tested on the same shape `capture()` returns. Account data, operator search text
+and similar details are masked pixel-by-pixel rather than cropped away; see
+[`states/README.md`](states/README.md) for exactly what was redacted in each frame. The single
+`.gitignore` negation for `tests/data/states/*.png` is limited to that reviewed directory; it does
+not re-enable PNGs elsewhere.
