@@ -9,7 +9,7 @@ control as a bare glyph. So matching is layered:
   returns ``''`` for a non-empty label, because an empty needle matches
   everything.
 * ``similarity`` is a normalised Levenshtein ratio. Digit runs must agree;
-  otherwise the score is capped, because `C$0.04` and `C$0.44` are different
+  otherwise the score is zero, because `C$0.04` and `C$0.44` are different
   values even though they differ by one character.
 * ``TextIndex`` groups a frame's boxes by normalised label once, so repeated
   lookups do not re-scan every box.
@@ -53,14 +53,6 @@ STRICT_MIN_SCORE = 1.0
 
 Normalisation still applies (case, edges), but a near-spelling is not accepted
 unless the caller asks for it explicitly.
-"""
-
-_MISMATCHED_DIGITS_CEILING = 0.5
-"""Cap applied when the two labels disagree about their digits.
-
-`worth C$0.04` and `worth C$0.44` are one character apart, which the raw ratio
-scores 0.92 — far above any useful threshold. Digits are the part of a label
-where a single error changes meaning, so a disagreement is never a match.
 """
 
 _GLYPH_TOKENS = {
@@ -153,7 +145,8 @@ def similarity(a: str, b: str) -> float:
 
     This is a normalised Levenshtein ratio: ``1 - distance / max(len)``. Equal
     normalised labels score 1.0, and either side empty scores 0.0. Digit runs
-    that disagree are capped below the default threshold.
+    that disagree score 0.0, so they cannot clear any positive threshold: a
+    different amount is a different label.
     """
     left, right = normalize(a), normalize(b)
     if not left or not right:
@@ -283,10 +276,9 @@ def _ratio(left: str, right: str) -> float:
     """Similarity for two already-normalised labels."""
     if left == right:
         return 1.0
-    ratio = 1.0 - _levenshtein(left, right) / max(len(left), len(right))
     if _digits(left) != _digits(right):
-        return min(ratio, _MISMATCHED_DIGITS_CEILING)
-    return ratio
+        return 0.0
+    return 1.0 - _levenshtein(left, right) / max(len(left), len(right))
 
 
 def _levenshtein(left: str, right: str) -> int:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -19,6 +20,7 @@ from aliexpress_coins.perception.matching import (
     normalize,
     similarity,
 )
+from aliexpress_coins.perception.ocr import RapidOcrEngine
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 
 CAPTURED_AT = datetime(2026, 11, 21, 12, 0, tzinfo=UTC)
@@ -103,10 +105,18 @@ def test_adjacent_roster_rows_do_not_cross_match() -> None:
 
 
 def test_digits_must_agree_because_a_different_amount_is_a_different_label() -> None:
-    assert similarity('C$0.04', 'C$0.44') < DEFAULT_MIN_SCORE
-    assert similarity('worth C$0.04', 'worth C$0.44') < DEFAULT_MIN_SCORE
-    assert similarity('0/6', '0/2') < DEFAULT_MIN_SCORE
+    assert similarity('C$0.04', 'C$0.44') == 0.0
+    assert similarity('worth C$0.04', 'worth C$0.44') == 0.0
+    assert similarity('0/6', '0/2') == 0.0
     assert similarity('C$0.04', 'C$0.04') == 1.0
+
+
+def test_a_digit_disagreement_does_not_match_even_at_a_loosened_threshold() -> None:
+    wrong_amount = _box('worth C$0.44', 10, 10, 200, 30)
+    snapshot = _snapshot(wrong_amount)
+
+    assert find_text(snapshot, 'worth C$0.04', min_score=0.5) is None
+    assert find_text(snapshot, 'worth C$0.04', min_score=0.4) is None
 
 
 def test_similarity_of_nothing_is_zero() -> None:
@@ -278,17 +288,35 @@ def test_the_measured_coins_page_labels_resolve() -> None:
     assert find_text(snapshot, 'Take the coins quiz') is None  # not in this roster
 
 
-def test_the_measured_quiz_row_resolves_from_the_recon_frame() -> None:
-    # docs/01-recon-findings.md §3 recorded this row at (180, 1269) and its GO at
-    # (982, 1273). The row is server-driven and was absent from the 2026-11-21
-    # roster, so the literal is checked against that measured row.
-    snapshot = _snapshot(
-        _measured_box('Take the coins quiz', 180.0, 1269.0, 0.99),
-        _measured_box('GO', 982.0, 1273.0, 0.99),
+def test_the_committed_fixture_resolves_the_acceptance_labels_through_the_real_engine() -> None:
+    # The fixture is synthetic (tests/data/README.md), but the boxes below are
+    # what RapidOCR actually returns for it, so this exercises the real adapter
+    # and a real OCR score rather than hand-written boxes.
+    fixture = Path(__file__).parent / 'data' / 'frame.png'
+    with Image.open(fixture) as opened:
+        image = opened.convert('RGB')
+    boxes = RapidOcrEngine().read(image)
+    snapshot = Snapshot(
+        image=image,
+        boxes=boxes,
+        captured_at=CAPTURED_AT,
+        geometry=DeviceGeometry.from_frame(image.width, image.height, density=240, sdk=35),
     )
 
+    earn_more = find_text(snapshot, 'Earn more >')
     quiz = find_text(snapshot, 'Take the coins quiz')
+    buttons = find_all(snapshot, 'GO')
+
+    assert earn_more is not None
+    assert earn_more.text == 'Earn more'
+    assert earn_more.score == 1.0
+    assert earn_more.ocr_score >= DEFAULT_MIN_OCR_SCORE
+
     assert quiz is not None
+    assert quiz.text == 'Take the coins quiz'
     assert quiz.score == 1.0
-    assert quiz.center == (180.0, 1269.0)
-    assert find_text(snapshot, 'GO') is not None
+    assert quiz.ocr_score >= DEFAULT_MIN_OCR_SCORE
+
+    assert len(buttons) == 3
+    assert all(button.text == 'GO' and button.score == 1.0 for button in buttons)
+    assert all(button.ocr_score >= DEFAULT_MIN_OCR_SCORE for button in buttons)
