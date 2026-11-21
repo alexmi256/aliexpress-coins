@@ -11,9 +11,15 @@ from types import FrameType
 
 import pytest
 
+import aliexpress_coins
 from aliexpress_coins import cli
 
 Handler = Callable[[int, FrameType | None], None]
+
+
+def test_main_dispatches_version(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli.main(['version']) == 0
+    assert capsys.readouterr().out.strip() == aliexpress_coins.__version__
 
 
 def test_main_dispatches_doctor(monkeypatch: pytest.MonkeyPatch) -> None:

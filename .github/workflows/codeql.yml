@@ -1,0 +1,60 @@
+name: CodeQL
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: '23 4 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze Python
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      # Code scanning needs GitHub Code Security on a private repository. Skip
+      # only when GitHub says the feature itself is unavailable; any other
+      # failure still fails the job.
+      - name: Check code scanning availability
+        id: availability
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          body="$RUNNER_TEMP/code-scanning.json"
+          status=$(curl -sS -o "$body" -w '%{http_code}' \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/code-scanning/default-setup")
+          if [ "$status" = '403' ] && ! grep -qi 'rate limit' "$body"; then
+            echo 'available=false' >> "$GITHUB_OUTPUT"
+            echo '::warning title=CodeQL unavailable::GitHub Code Security is not enabled for this private repository. The analysis becomes blocking when the repository is public (#41).'
+          else
+            echo 'available=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Initialize CodeQL
+        if: steps.availability.outputs.available == 'true'
+        uses: github/codeql-action/init@v4
+        with:
+          languages: python
+          build-mode: none
+
+      - name: Analyze
+        if: steps.availability.outputs.available == 'true'
+        uses: github/codeql-action/analyze@v4
