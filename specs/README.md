@@ -20,8 +20,9 @@ To add a family:
 
 1. Capture the frame and mask account data into `tests/data/popups/`; add a row
    to that directory's README.
-2. If the close control is glyph-only, crop it tight from the reviewed frame
-   into `assets/templates/` and record its source frame width.
+2. If the close control is glyph-only, cut it from the reviewed frame with
+   [`tools/cut_template.py`](../tools/cut_template.py) into `assets/templates/`;
+   the tool records the source frame width. See that directory's README.
 3. Add the YAML row. A row with no executable close strategy is rejected; an
    unclosable popup uses an explicit `fail` reason so the runner stops loudly.
 4. Add a fixture-backed assertion only for facts the loader cannot know (for
