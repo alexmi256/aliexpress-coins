@@ -161,10 +161,8 @@ class AdbSnapshotter:
         image = _decode_png(png)
         captured_at = self._clock()
 
-        if self._geometry is None:
-            geometry = self._base_geometry().with_frame_size(image.width, image.height)
-        else:
-            geometry = self._geometry
+        base = self._geometry if self._geometry is not None else self._base_geometry()
+        geometry = base.with_frame_size(image.width, image.height)
 
         boxes = self._ocr.read(image) if self._ocr is not None else ()
         return Snapshot(image=image, boxes=boxes, captured_at=captured_at, geometry=geometry)

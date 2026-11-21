@@ -54,19 +54,44 @@ def _validate_component(value: str, kind: str) -> str:
     return value
 
 
-def _atomic_write(path: Path, data: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=f'.{path.name}.', dir=path.parent)
+def _stage(path: Path, data: bytes) -> Path:
+    """Write the complete payload to a sibling temp file, not the target yet."""
+    temporary: str | None = None
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=f'.{path.name}.', dir=path.parent)
         with os.fdopen(fd, 'wb') as stream:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        return Path(temporary)
     except OSError as exc:
-        with contextlib.suppress(OSError):
-            os.unlink(temporary)
+        if temporary is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(temporary)
         raise ArtifactError(f'could not write {path}: {exc}') from exc
+
+
+def _discard(*paths: Path) -> None:
+    for path in paths:
+        with contextlib.suppress(OSError):
+            path.unlink()
+
+
+def _write_pair(first: Path, first_data: bytes, second: Path, second_data: bytes) -> None:
+    """Stage both files fully, then replace the targets together."""
+    staged: list[Path] = []
+    try:
+        staged.append(_stage(first, first_data))
+        staged.append(_stage(second, second_data))
+        os.replace(staged[0], first)
+        os.replace(staged[1], second)
+    except ArtifactError:
+        _discard(*staged)
+        raise
+    except OSError as exc:
+        _discard(*staged)
+        raise ArtifactError(f'could not write {first} and {second}: {exc}') from exc
 
 
 def _geometry_payload(geometry: DeviceGeometry) -> dict[str, Any]:
@@ -215,9 +240,10 @@ class ArtifactStore:
         )
 
     def write(self, snapshot: Snapshot, name: str) -> ArtifactPaths:
-        """Write the PNG and its JSON sidecar, both atomically."""
+        """Write the PNG and its JSON sidecar after staging both payloads."""
         paths = self.paths(name)
         payload = _sidecar_payload(snapshot, name)
+        sidecar_bytes = (json.dumps(payload, ensure_ascii=False, indent=2) + '\n').encode('utf-8')
 
         buffer = BytesIO()
         try:
@@ -225,8 +251,7 @@ class ArtifactStore:
         except OSError as exc:
             raise ArtifactError(f'could not encode snapshot {name!r}: {exc}') from exc
 
-        _atomic_write(paths.image, buffer.getvalue())
-        _atomic_write(paths.sidecar, (json.dumps(payload, ensure_ascii=False, indent=2) + '\n').encode('utf-8'))
+        _write_pair(paths.image, buffer.getvalue(), paths.sidecar, sidecar_bytes)
         return paths
 
     def load(self, name: str) -> Snapshot:

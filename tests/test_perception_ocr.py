@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import types
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -108,3 +109,13 @@ def test_rapidocr_is_imported_lazily_and_once(monkeypatch: pytest.MonkeyPatch) -
     assert engine.read(_frame())[0].text == 'hi'
     assert engine.read(_frame())[0].text == 'hi'
     assert created == [{'Global.log_level': 'error'}]
+
+
+def test_the_real_adapter_reads_the_committed_fixture() -> None:
+    fixture = Path(__file__).parent / 'data' / 'frame.png'
+    with Image.open(fixture) as image:
+        boxes = RapidOcrEngine().read(image)
+
+    texts = {box.text.strip() for box in boxes}
+    assert 'Coins' in texts
+    assert 'Daily coins' in texts

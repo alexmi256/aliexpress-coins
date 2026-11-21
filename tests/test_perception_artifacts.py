@@ -236,3 +236,36 @@ def test_an_atomic_write_failure_is_a_typed_error(tmp_path: Path, monkeypatch: p
     with pytest.raises(ArtifactError, match='disk full'):
         store.write(_snapshot(), 'broken')
     assert list(store.shots_dir.iterdir()) == []
+
+
+def test_a_sidecar_replace_failure_is_a_typed_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    real_replace = os.replace
+    calls = 0
+
+    def flaky_replace(source: str, target: str) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError('sidecar disk full')
+        real_replace(source, target)
+
+    monkeypatch.setattr(os, 'replace', flaky_replace)
+    store = ArtifactStore(tmp_path, 'run-1')
+    with pytest.raises(ArtifactError, match='sidecar disk full'):
+        store.write(_snapshot(), 'broken')
+    assert calls == 2
+    assert not store.paths('broken').sidecar.exists()
+
+
+def test_a_staging_failure_is_typed_and_removes_the_temp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken_fsync(_fd: int) -> None:
+        raise OSError('fsync failed')
+
+    monkeypatch.setattr(os, 'fsync', broken_fsync)
+    store = ArtifactStore(tmp_path, 'run-1')
+    with pytest.raises(ArtifactError, match='fsync failed'):
+        store.write(_snapshot(), 'broken')
+    assert list(store.shots_dir.iterdir()) == []

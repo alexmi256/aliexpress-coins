@@ -20,7 +20,7 @@ from aliexpress_coins.perception.capture import (
     _decode_png,
 )
 from aliexpress_coins.perception.errors import OcrError, SnapshotError
-from aliexpress_coins.perception.geometry import DeviceGeometry
+from aliexpress_coins.perception.geometry import DeviceGeometry, parse_geometry
 from aliexpress_coins.perception.ocr import OcrEngine
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 
@@ -237,6 +237,24 @@ def test_probe_geometry_raises_when_a_shell_command_fails() -> None:
     )
     with pytest.raises(SnapshotError, match='no device'):
         snapshotter.probe_geometry()
+
+
+def test_explicit_probed_geometry_is_reconciled_with_the_frame() -> None:
+    probed = parse_geometry(
+        'Physical size: 2000x1200\n',
+        'Physical density: 240\n',
+        '35\n',
+    )
+    assert (probed.width, probed.height, probed.orientation) == (2000, 1200, 'landscape')
+
+    snapshot = AdbSnapshotter(
+        'serial',
+        geometry=probed,
+        runner=_runner([AdbResult(0, FRAME_PNG, b'')]),
+    ).capture()
+
+    assert snapshot.geometry == DeviceGeometry.from_frame(1200, 2000, density=240, sdk=35)
+    assert snapshot.geometry.orientation == 'portrait'
 
 
 def test_probe_geometry_raises_on_unparseable_output() -> None:

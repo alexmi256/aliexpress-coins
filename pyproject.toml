@@ -72,7 +72,7 @@ addopts = [
 # --- coverage ratchet -------------------------------------------------------
 # The floor is a ratchet: start at 85% on the stub, raise it as modules land,
 # and never lower it to make a change pass. Raised to 98 when the perception
-# capture module landed (measured 98.54%).
+# capture module landed (measured 98.45%).
 # See "Quality gate" in README.md.
 [tool.coverage.run]
 branch = true
