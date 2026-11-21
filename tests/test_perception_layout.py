@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from aliexpress_coins.perception import layout as layout_module
 from aliexpress_coins.perception.geometry import DeviceGeometry
 from aliexpress_coins.perception.layout import (
     DEFAULT_ACTION_LABELS,
@@ -209,18 +210,44 @@ def test_group_rows_splits_stacked_text_lines_without_an_action() -> None:
     assert ROW_MAX_TEXT_SPAN_HEIGHT_RATIO == 1.6
 
 
-def test_group_rows_does_not_use_an_unsure_action_as_a_split_point() -> None:
+def test_group_rows_does_not_use_an_unsure_action_as_a_split_point(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[TextBox, ...]] = []
+    real_split = layout_module._split_at_actions
+
+    def spy(cluster: tuple[TextBox, ...], actions: tuple[TextBox, ...]) -> tuple[tuple[TextBox, ...], ...]:
+        calls.append(actions)
+        return real_split(cluster, actions)
+
+    monkeypatch.setattr(layout_module, '_split_at_actions', spy)
     boxes = (
         _centered_box('Task one', 100, 100, height=48),
         _centered_box('GO', 300, 131, height=48, score=0.1),
-        _centered_box('Task two', 100, 239, height=48),
-        _centered_box('GO', 300, 270, height=48, score=0.1),
+        _centered_box('Task two', 100, 150, height=48),
+        _centered_box('GO', 300, 181, height=48, score=0.1),
+    )
+
+    group_rows(boxes, _geometry(400, 2000))
+
+    assert calls == []
+
+
+def test_group_rows_deduplicates_duplicate_action_boxes_before_splitting() -> None:
+    boxes = (
+        _centered_box('Task one', 100, 1000, height=48),
+        _centered_box('GO', 300, 1075, height=48),
+        _centered_box('GO', 305, 1075, height=48),
+        _centered_box('subtitle', 100, 1100, height=48),
+        _centered_box('Task two', 100, 1180, height=48),
+        _centered_box('GO', 300, 1235, height=48),
     )
 
     rows = group_rows(boxes, _geometry(400, 2000))
 
     assert len(rows) == 2
-    assert [row.text for row in rows] == ['Task one GO', 'Task two GO']
+    assert [box.text for box in rows[0].boxes] == ['Task one', 'GO', 'GO', 'subtitle']
+    assert [box.text for box in rows[1].boxes] == ['Task two', 'GO']
 
 
 def test_row_rejects_an_empty_box_list_and_sorts_in_reading_order() -> None:

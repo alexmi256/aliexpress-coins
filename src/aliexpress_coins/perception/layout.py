@@ -221,6 +221,15 @@ def _is_action_box(box: TextBox) -> bool:
     return any(similarity(label, box.text) >= DEFAULT_MIN_SCORE for label in DEFAULT_ACTION_LABELS)
 
 
+def _distinct_actions(actions: tuple[TextBox, ...], band: float) -> tuple[TextBox, ...]:
+    """Keep one action per vertical band, discarding duplicate OCR detections."""
+    distinct: list[TextBox] = []
+    for action in actions:
+        if not distinct or action.center[1] - distinct[-1].center[1] > band:
+            distinct.append(action)
+    return tuple(distinct)
+
+
 def _split_at_actions(cluster: tuple[TextBox, ...], actions: tuple[TextBox, ...]) -> tuple[tuple[TextBox, ...], ...]:
     """Split a chained cluster at the midpoints between its action labels."""
     boundaries = [(earlier.center[1] + later.center[1]) / 2.0 for earlier, later in pairwise(actions)]
@@ -252,7 +261,7 @@ def _split_at_largest_gap(cluster: tuple[TextBox, ...], limit: float) -> tuple[t
 
 
 def _split_cluster(cluster: tuple[TextBox, ...], median_height: float) -> tuple[tuple[TextBox, ...], ...]:
-    actions = tuple(box for box in cluster if _is_action_box(box))
+    actions = _distinct_actions(tuple(box for box in cluster if _is_action_box(box)), median_height)
     if len(actions) >= 2:
         return _split_at_actions(cluster, actions)
     if not actions and median_height > 0:
@@ -273,8 +282,10 @@ def group_rows(boxes: Iterable[TextBox], geometry: DeviceGeometry) -> tuple[Row,
     A cluster that still contains more than one action label is split at the
     midpoints between those actions, because nearest-neighbour clustering can
     otherwise chain through a bridging box and make two tasks share a button.
-    A cluster without an action is split at its widest text gap when it spans
-    more than one stacked line.
+    This split uses :data:`DEFAULT_ACTION_LABELS`; a surface with different row
+    controls must extend that set to get the same guarantee. A cluster without
+    an action is split at its widest text gap when it spans more than one
+    stacked line.
     """
     ordered = sorted(boxes, key=lambda box: (box.center[1], box.bbox[0], box.bbox[1]))
     if not ordered:
