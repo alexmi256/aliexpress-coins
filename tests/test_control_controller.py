@@ -290,15 +290,52 @@ def test_tap_box_uses_the_box_centre_and_its_text_as_the_default_label() -> None
     assert labelled.label == 'daily reward'
 
 
-def test_tap_box_clamps_a_box_whose_centre_is_at_the_screen_edge() -> None:
+def test_tap_box_keeps_an_edge_box_tap_inside_the_box() -> None:
     device = _FakeDevice()
     controller = _controller(device)
     box = _box('Edge', 1190, 1990, 1200, 2000)
 
     record = controller.tap_box(box, why='edge box')
 
+    assert record.point == (1195, 1995)
+    assert device.calls == [(1195, 1995)]
+
+
+def test_tap_box_uses_the_safe_inset_for_a_zero_area_box() -> None:
+    device = _FakeDevice()
+    controller = _controller(device)
+
+    for box in (_box('Zero', 0, 0, 0, 0), _box('Zero', 10, 10, 10, 10)):
+        record = controller.tap_box(box, why='zero box')
+
+        assert record.point == (48, 48)
+
+    assert device.calls == [(48, 48), (48, 48)]
+
+
+def test_tap_box_uses_the_safe_inset_for_an_unusable_box() -> None:
+    device = _FakeDevice()
+    controller = _controller(device)
+    box = _box('Off', 1300, 2100, 1400, 2200)
+
+    record = controller.tap_box(box, why='off-screen box')
+
     assert record.point == (1152, 1952)
     assert device.calls == [(1152, 1952)]
+
+
+def test_tap_box_jitter_cannot_leave_the_box() -> None:
+    device = _FakeDevice()
+    controller = _controller(device, rng=_SequenceRng([6, 6]))
+    box = _box('Close', 1163, 226, 1173, 246)
+
+    record = controller.tap_box(box, why='edge close')
+
+    assert record.clamped == (1168, 236)
+    assert record.point == (1173, 242)
+    assert 1163 <= record.point[0] <= 1173
+    assert 226 <= record.point[1] <= 246
+    assert device.calls == [(1173, 242)]
 
 
 def test_tap_text_finds_the_label_and_uses_the_frames_geometry() -> None:

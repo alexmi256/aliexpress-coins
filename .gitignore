@@ -183,6 +183,14 @@ recon/artifacts/
 # there is a cropped device frame, checked for account data; see its README.
 !tests/data/states/*.png
 
+# The popup-corpus fixtures are a dedicated, reviewed directory. Every file
+# there is a full 1200x2000 device frame with account data masked; see its README.
+!tests/data/popups/*.png
+
+# Glyph-only popup close controls, cropped from reviewed frames. They contain
+# artwork only, never account data; see specs/popups.yaml for the family map.
+!assets/templates/*.png
+
 # Local device state
 state/
 *.db

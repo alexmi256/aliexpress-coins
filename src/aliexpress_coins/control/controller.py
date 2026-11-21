@@ -5,8 +5,10 @@ synthesised. The controller is the safety boundary:
 
 * a tap needs a non-empty reason, because a coordinator that cannot say why a
   coordinate is safe has no business tapping it;
-* the requested point is clamped inside an inset derived from the frame, so the
-  last row of pixels cannot land on the navigation bar;
+* a raw point is clamped inside an inset derived from the frame, so the last
+  row of pixels cannot land on the navigation bar;
+* a box tap is clamped inside the box, not the inset: the box is the measured
+  hit area, so an edge control is not moved off itself;
 * a bounded jitter breaks the identical-pixel signature of a bot, drawn from
   an injected RNG so a seeded replay is reproducible;
 * ``dry_run`` suppresses only the device call. The record, log line and counter
@@ -144,6 +146,26 @@ def clamp_point(point: Point, geometry: DeviceGeometry) -> Pixel:
     )
 
 
+def _clamp_to_box(point: Pixel, box: TextBox, geometry: DeviceGeometry) -> Pixel:
+    """Clamp a pixel to the inside of ``box``, itself clamped to the screen.
+
+    A matched box is the hit area: moving the point into the generic inset can
+    put it outside a control drawn near the edge. A zero-area, degenerate or
+    fully off-screen box has no usable hit area, so the point falls back to the
+    safe inset rather than the screen edge.
+    """
+    if box.width <= 0 or box.height <= 0:
+        return clamp_point(point, geometry)
+    left, top, right, bottom = box.bbox
+    min_x, max_x = max(0, math.ceil(left)), min(geometry.width - 1, math.floor(right))
+    min_y, max_y = max(0, math.ceil(top)), min(geometry.height - 1, math.floor(bottom))
+    if min_x > max_x or min_y > max_y:
+        return clamp_point(point, geometry)
+    x = min(max(point[0], 0), geometry.width - 1)
+    y = min(max(point[1], 0), geometry.height - 1)
+    return (min(max(x, min_x), max_x), min(max(y, min_y), max_y))
+
+
 class Controller:
     """Plan, log and (unless dry-run) issue taps on one input device.
 
@@ -217,8 +239,18 @@ class Controller:
         ``box`` must be in full-frame coordinates. ``Snapshot.crop`` shifts
         boxes into crop-local coordinates while keeping the original geometry,
         so a box taken from a crop would tap too far up and left.
+
+        A box tap is clamped inside the box rather than the generic safe inset.
+        The box is the hit area the perception step established, so a control
+        at the screen edge is not moved off itself by a 48 px border.
         """
-        return self.tap(box.center, why=why, label=label if label is not None else box.text)
+        return self._tap(
+            box.center,
+            why=why,
+            label=label if label is not None else box.text,
+            geometry=self._geometry,
+            box=box,
+        )
 
     def tap_text(self, frame: Frame, label: str, *, why: str) -> TapRecord:
         """Find ``label`` in an already-captured frame and tap its centre.
@@ -247,7 +279,7 @@ class Controller:
             raise TapTargetNotFound(
                 f'{label!r} is not in the {frame.geometry.width}x{frame.geometry.height} frame',
             )
-        return self._tap(box.center, why=reason, label=label, geometry=frame.geometry)
+        return self._tap(box.center, why=reason, label=label, geometry=frame.geometry, box=box)
 
     def _tap(
         self,
@@ -256,17 +288,19 @@ class Controller:
         why: str,
         label: str | None,
         geometry: DeviceGeometry,
+        box: TextBox | None = None,
     ) -> TapRecord:
         reason = _required_reason(why)
         requested = _pixel(point)
-        clamped = clamp_point(requested, geometry)
+        clamped = _clamp_to_box(requested, box, geometry) if box is not None else clamp_point(requested, geometry)
         radius = jitter_radius(geometry)
         if radius:
             dx = self._rng.randint(-radius, radius)
             dy = self._rng.randint(-radius, radius)
         else:
             dx = dy = 0
-        final = clamp_point((clamped[0] + dx, clamped[1] + dy), geometry)
+        jittered = (clamped[0] + dx, clamped[1] + dy)
+        final = _clamp_to_box(jittered, box, geometry) if box is not None else clamp_point(jittered, geometry)
         jitter = (final[0] - clamped[0], final[1] - clamped[1])
 
         self._tap_count += 1

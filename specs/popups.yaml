@@ -1,0 +1,199 @@
+# Popup corpus and per-family dismissal rules (issue #11).
+#
+# Every family discovered on the coins surface has one row here. `close`
+# attempts are tried in policy order: a template crop, then an OCR label, then
+# a frame-fraction coordinate. A row with none of those, or with an explicit
+# `fail`, is an unclosable popup: the runner must stop with the named error
+# rather than tap a guessed coordinate.
+#
+# Fractions are fractions of the frame (x / width, y / height), never pixels.
+# Templates are glyph-only controls cropped tight to the control at the
+# reference device's scale. `source_width` is the width of the frame the crop
+# came from; #15 makes matching scale-aware.
+
+version: 1
+
+reference:
+  device: T3_US
+  width: 1200
+  height: 2000
+  density: 240
+  sdk: 35
+  source: "adb exec-out screencap -p (portrait, status bar retained)"
+
+policy:
+  escalation: [label, template, fraction]
+  on_exhausted: fail
+  error: popup_unclosable
+  note: >-
+    An OCR label is preferred, then a template match, then the configured
+    frame fraction. Label-first matches docs/01-recon-findings.md §4 and #18:
+    text is scale-independent, while a template crop is tied to one rendering.
+    The template-first wording in the #11 body is superseded. Every row has an
+    anchor, and a fraction is only used after that anchor matched, so it is
+    never a blind tap on an unidentified screen. A matched template or text box
+    is its own hit area: the controller clamps a box tap inside the box rather
+    than moving it into the generic safe inset. If every attempt fails, or the
+    row has no executable attempt, raise popup_unclosable and end the run.
+    Never tap a guessed coordinate: a blind tap on a sale overlay is how a
+    collector buys something.
+
+families:
+# Rows are ordered topmost-first: the system dialog is a separate window
+# above the app prompt, then app modals, then the blocking redirect, then
+# the page-level sheet and the in-page badge. A dismissal loop should still
+# prefer the topmost anchored family when the frame matches more than one.
+
+  - family: system_notification_permission
+    when: >-
+      Tapping `Enable all notifications` in the `Receive timely notifications`
+      prompt; the Android runtime POST_NOTIFICATIONS dialog.
+    anchor: Allow AliExpress to send you notifications?
+    status: reproduced
+    observed_at: {width: 1200, height: 2000, density: 240, sdk: 35}
+    fixture: tests/data/popups/system_notification_permission.png
+    chains_to: []
+    close:
+      label: "Don't allow"
+    notes: >-
+      Never tap `Allow`. The dismissal label is `Don't allow`; denying closes
+      both the system dialog and the app's prompt. No fraction fallback is
+      configured because a guessed tap could grant the permission.
+
+  - family: launch_welcome_gifts
+    when: >-
+      Cold start of the app process from the launcher icon or FirstActivity.
+      The modal is server-driven and does not appear on every launch.
+    anchor: Welcome gifts
+    status: observed_not_reproduced
+    observed_at: {width: 1200, height: 2000, density: 240, sdk: 35}
+    fixture: tests/data/popups/launch_welcome_gifts.png
+    chains_to: [promo_bundle_deals_badge]
+    close:
+      template: assets/templates/launch_welcome_gifts.png
+      source_width: 1200
+      fraction: [0.499, 0.833]
+    notes: >-
+      The close control is a drawn white ✕ in a circle; OCR returns no text for
+      it. The crop includes the feed artwork visible through the ring, so a new
+      Welcome gifts campaign with different artwork may not match: until #15
+      masks the glyph interior, the fraction is the effective close for this
+      family. The recording is from the reviewed launch-modal frame; the modal
+      did not re-trigger during the corpus session (seven cold starts).
+
+  - family: promo_coupon_unlocked
+    when: >-
+      Home feed when a Black Friday / coupon campaign unlocks an extra coupon.
+      Usually a one-shot per campaign, so it may not re-trigger.
+    anchor: Extra Coupon unlocked
+    status: observed_not_reproduced
+    observed_at: {width: 1200, height: 2000, density: 240, sdk: 35}
+    fixture: tests/data/popups/promo_coupon_unlocked.png
+    chains_to: [promo_bundle_deals_badge]
+    close:
+      template: assets/templates/promo_coupon_unlocked.png
+      source_width: 1200
+      fraction: [0.499, 0.793]
+    notes: >-
+      The close control is a pale ✕ with no OCR text. The recording is from the
+      reviewed promo frame; the campaign did not re-trigger during the corpus
+      session, and collecting the coupon to provoke it would have redeemed
+      something of value.
+
+  - family: push_permission_prompt
+    when: >-
+      The app's notification pre-prompt, reached from the app's push/onboarding
+      settings (`PushPermissionDialogActivity`); the coins page's `Turn on
+      notifications` task is the task surface that asks for notifications. Two
+      layouts were observed: a bottom sheet with a `No thanks` button, and a
+      full-height page whose only visible control is a drawn ✕.
+    anchor: Receive timely notifications
+    status: reproduced
+    observed_at: {width: 1200, height: 2000, density: 240, sdk: 35}
+    fixture: tests/data/popups/push_permission_prompt.png
+    chains_to: []
+    close:
+      template: assets/templates/push_permission_prompt.png
+      source_width: 1200
+      label: "No thanks"
+    notes: >-
+      The template is the white ✕ on the full-height variant; the bottom-sheet
+      variant is captured as push_permission_prompt_sheet.png and its close is
+      the `No thanks` label. The full-height ✕ sits near the right edge, but a
+      matched-box tap stays inside the box, so the generic safe inset cannot
+      move it off the control. Tapping `Enable all notifications` is not a
+      dismissal: it opens the system permission dialog.
+
+  - family: redeem_interstitial
+    when: >-
+      Returning to the coin page after a task pays coin credit (quiz result →
+      `Go back`). One-shot per earning event; the quiz was already claimed
+      during the corpus session, so this row is observed but not reproduced.
+    anchor: YOU CAN NOW REDEEM!
+    status: observed_not_reproduced
+    observed_at: {width: 1200, height: 2000, density: 240, sdk: 35}
+    chains_to: []
+    close:
+      fail: >-
+        No OCR-visible close control exists. BACK is the only known exit, the
+        control layer has no back primitive yet, and a second BACK leaves the
+        app. Fail loudly rather than tap a guessed coordinate.
+    notes: >-
+      #18 can make this row closable by adding an explicit back-key strategy;
+      until then it must raise popup_unclosable. The known behaviour is recorded
+      in docs/05-app-knowledge.md §6 and docs/06-navigation-map.md §2.
+
+  - family: coins_boost_sheet
+    when: Tapping `Earn more >` on the coin page opens the Coins boost sheet over the page.
+    anchor: Coins boost
+    status: reproduced
+    observed_at: {width: 1200, height: 2000, density: 240, sdk: 35}
+    fixture: tests/data/popups/coins_boost_sheet.png
+    chains_to: []
+    close:
+      template: assets/templates/coins_boost_sheet.png
+      source_width: 1200
+      fraction: [0.941, 0.090]
+    notes: >-
+      The sheet is a page-level overlay with a drawn ✕ at the top right; the
+      header back arrow also leaves it, but the ✕ is the glyph-only control
+      the corpus records. Closing it returns to the coin page.
+
+  - family: promo_bundle_deals_badge
+    when: >-
+      Home feed after the launch modal closes; the Bundle deals card carries a
+      dismissible ad badge. This is a non-blocking banner, not a full-screen
+      modal, but it is a sale overlay encountered on the way to the coins page.
+    anchor: Bundle deals
+    status: reproduced
+    blocking: false
+    observed_at: {width: 1200, height: 2000, density: 240, sdk: 35}
+    fixture: tests/data/popups/promo_bundle_deals_badge.png
+    chains_to: []
+    close:
+      template: assets/templates/promo_bundle_deals_badge.png
+      source_width: 1200
+    notes: >-
+      A grey circular ✕ at the card's right edge, with no OCR text. Tapping it
+      removes the badge; the Bundle deals card remains and is not a popup. The
+      badge is only 24 px wide and sits outside the 48 px safe inset, so a raw
+      fraction would be clamped off the control; this family has no working
+      fraction fallback. The template is its only close, and `blocking: false`
+      means a failed dismissal is logged and skipped, not a reason to end the
+      run.
+
+# Recon notes on things that are not popup families:
+#
+# * `already_collected` is an inline state, not an overlay and not a family
+#   needing a dismissal rule. After the streak Collect, the Today card reads
+#   "Tomorrow" and the boost row still offers GO; tapping the card or the row
+#   produced no dismissable notice. The run should read the state, not hunt for
+#   a close control. The #11 issue names this family; it is answered here
+#   because it has no close control.
+# * The check-in GO opened a full-screen "World Tour Go" event page saying
+#   "Sorry, this event is currently invite-only. Keep an eye out for invites!".
+#   It has no close control and auto-dismissed after its ~11 s countdown back to
+#   the feed. It is a task page, not a popup; no dismissal rule is added here.
+# * The reward interstitial is the one unclosable row above. Its BACK exit is
+#   deliberately not encoded as a fraction: a guessed tap on that screen can
+#   land on a coupon action.
