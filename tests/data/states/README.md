@@ -17,14 +17,14 @@ reviewed the same way.
 |---|---|---|
 | `coins.png` | full widget-route coin page | balance digits and every currency amount masked; `Daily coins` and `Coins credits to redeem` remain |
 | `account.png` | full Account page | nickname and notification count masked; `My orders`, `History`, `Wishlist`, `Coupons` remain |
-| `launch_modal.png` | full cold-launch `Welcome gifts` modal over the home feed | search bar and notification count masked; system UI retained |
+| `launch_modal.png` | full cold-launch `Welcome gifts` modal over the home feed | search bar and notification badge/bell masked; system UI retained |
 | `skeleton.png` | full loading frame with the container's repeated low-contrast blocks | no account data; clock and taskbar retained for the regression test |
 | `blank_webview.png` | full blank frame captured before the container rendered | no account data; clock and taskbar retained for the regression test |
 | `boost.png` | full `Coins boost` list after the check-in row was completed | header balance and currency amounts masked; task rows remain |
 | `quiz.png` | full `Coins quiz` question and answer options | no account data |
 | `surprise_grid.png` | full `Browse surprise items` page | product images and prices only; no account data |
-| `popup_over_page.png` | full promo modal (`Extra Coupon unlocked`) over the home feed | search bar and notification count masked |
-| `ambiguous_feed.png` | full home feed with no modelled coins/collection marker | search bar and notification count masked; the lower `Bundle deals` feed section is not a top product-collection header |
+| `popup_over_page.png` | full promo modal (`Extra Coupon unlocked`) over the home feed | search bar and notification badge/bell masked |
+| `ambiguous_feed.png` | full home feed with no modelled coins/collection marker | search bar and notification badge/bell masked; the lower `Bundle deals` feed section is not a top product-collection header |
 
 `error_404.png` was dropped as an extra fixture: the bare advertised coin URL is recorded in
 `docs/01-recon-findings.md` as landing on a blank WebView, while the capture session saw a 404
