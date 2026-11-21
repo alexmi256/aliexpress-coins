@@ -364,20 +364,22 @@ def open_boost_list(
 ) -> BoostList:
     """Open ``Earn more`` and wait for the ``Coins boost`` destination.
 
-    The initial frame is the coin page. If ``Earn more`` is not there, the same
-    frame is returned with :attr:`DiscoveryRoute.INLINE`; no tap is issued and
-    no exception is raised. Otherwise the label is tapped through
+    The initial frame is the coin page. If ``Earn more`` is not there after the
+    page has stopped loading and any popup has been swept, the same frame is
+    returned with :attr:`DiscoveryRoute.INLINE`; no tap is issued and no
+    exception is raised. Otherwise the label is tapped through
     :class:`Controller`, any popup seen on the way is closed with
     :func:`~aliexpress_coins.control.popups.dismiss_after`, and capture is
-    polled until the boost marker and a task row (or the empty sentence) are
-    visible.
+    polled until the boost marker and the same non-empty task set are visible
+    on two consecutive frames (or the empty sentence is visible).
 
     A frame that already contains the boost destination is *not* swept as a
     popup, and the sweep after a real popup runs with the ``coins_boost_sheet``
     family removed. That family's anchor is the destination's own
     ``Coins boost`` header, so sweeping it would close the list it was meant to
     open (including immediately after a different popup is dismissed). A
-    genuine popup still classifies as ``POPUP`` and is swept normally.
+    genuine popup still classifies as ``POPUP`` and is swept normally, even
+    when the header and some rows are still OCR-visible behind it.
     """
     if timeout <= 0:
         raise ValueError('timeout must be positive')
@@ -386,14 +388,46 @@ def open_boost_list(
     if settle < 0:
         raise ValueError('settle must not be negative')
 
+    started = clock()
+    deadline = started + timeout
+    dismiss: DismissReport | None = None
+
     initial = _capture(capture)
+    initial_classification = classify(initial)
     earn_more = find_text(initial, EARN_MORE_LABEL)
+
+    # A loading coin page is not proof that the label is absent, and tapping
+    # through a popup would land on the scrim. Resolve those two states before
+    # deciding the inline route; a settled page with no label is a real page
+    # variant and degrades immediately.
+    while earn_more is None and initial_classification.state in (ScreenState.LOADING, ScreenState.POPUP):
+        now = clock()
+        if now >= deadline:
+            break
+        if initial_classification.state is ScreenState.POPUP:
+            dismiss = dismiss_after(
+                controller,
+                capture,
+                corpus,
+                templates=templates,
+                settle=settle,
+                clock=clock,
+                sleep=sleep,
+                logger=logger,
+            )
+        else:
+            sleep(min(interval, max(0.0, deadline - now)))
+        initial = _capture(capture)
+        initial_classification = classify(initial)
+        earn_more = find_text(initial, EARN_MORE_LABEL)
+
     if earn_more is None:
         return BoostList(
             snapshot=initial,
             route=DiscoveryRoute.INLINE,
             detail=f'{EARN_MORE_LABEL!r} is absent; using the inline task rows on the coin page',
-            classification=classify(initial),
+            classification=initial_classification,
+            dismiss=dismiss,
         )
 
     sweep_corpus = _without_destination_family(corpus)
@@ -403,10 +437,8 @@ def open_boost_list(
         label=EARN_MORE_LABEL,
     )
 
-    started = clock()
-    deadline = started + timeout
     observations: list[Observation] = []
-    dismiss: DismissReport | None = None
+    previous_signature: tuple[tuple[str, str, tuple[int, int] | None], ...] | None = None
 
     while True:
         snapshot = _capture(capture)
@@ -416,26 +448,16 @@ def open_boost_list(
             Observation(elapsed=max(0.0, now - started), classification=classification),
         )
 
-        if _boost_arrived(snapshot):
-            return BoostList(
-                snapshot=snapshot,
-                route=DiscoveryRoute.BOOST,
-                detail=_arrival_detail(snapshot),
-                classification=classification,
-                tap=tap,
-                dismiss=dismiss,
-                elapsed=max(0.0, now - started),
-                history=tuple(item.classification.state for item in observations),
-            )
-
-        if now >= deadline:
-            seen = ' -> '.join(item.classification.state.value for item in observations)
-            raise StateTimeout(
-                f'{BOOST_MARKER!r} was not observed within {timeout:g}s after tapping '
-                f'{EARN_MORE_LABEL!r} (last={classification.describe()}; history={seen})',
-            )
-
+        # A modal over an already-rendered list still hides the rows beneath it.
+        # Sweep it first; the destination family is already excluded so a real
+        # popup cannot be mistaken for the list itself.
         if classification.state is ScreenState.POPUP:
+            if now >= deadline:
+                seen = ' -> '.join(item.classification.state.value for item in observations)
+                raise StateTimeout(
+                    f'{BOOST_MARKER!r} was not observed within {timeout:g}s after tapping '
+                    f'{EARN_MORE_LABEL!r} (last={classification.describe()}; history={seen})',
+                )
             dismiss = dismiss_after(
                 controller,
                 capture,
@@ -446,9 +468,42 @@ def open_boost_list(
                 sleep=sleep,
                 logger=logger,
             )
-            # The sweep captured the post-popup frame itself; do not spend a
-            # second capture before checking whether that reveal is the list.
+            previous_signature = None
             continue
+
+        if _boost_arrived(snapshot):
+            if is_empty_boost(snapshot):
+                return BoostList(
+                    snapshot=snapshot,
+                    route=DiscoveryRoute.BOOST,
+                    detail=_arrival_detail(snapshot),
+                    classification=classification,
+                    tap=tap,
+                    dismiss=dismiss,
+                    elapsed=max(0.0, now - started),
+                    history=tuple(item.classification.state for item in observations),
+                )
+
+            signature = _task_signature(snapshot)
+            if not signature or signature == previous_signature:
+                return BoostList(
+                    snapshot=snapshot,
+                    route=DiscoveryRoute.BOOST,
+                    detail=_arrival_detail(snapshot),
+                    classification=classification,
+                    tap=tap,
+                    dismiss=dismiss,
+                    elapsed=max(0.0, now - started),
+                    history=tuple(item.classification.state for item in observations),
+                )
+            previous_signature = signature
+
+        if now >= deadline:
+            seen = ' -> '.join(item.classification.state.value for item in observations)
+            raise StateTimeout(
+                f'{BOOST_MARKER!r} was not observed within {timeout:g}s after tapping '
+                f'{EARN_MORE_LABEL!r} (last={classification.describe()}; history={seen})',
+            )
 
         sleep(min(interval, max(0.0, deadline - now)))
 
@@ -570,6 +625,22 @@ def _boost_arrived(snapshot: Snapshot) -> bool:
 
 def _has_task_rows(snapshot: Snapshot) -> bool:
     return any(find_action_in_row(row) is not None for row in group_rows(snapshot.boxes, snapshot.geometry))
+
+
+def _task_signature(snapshot: Snapshot) -> tuple[tuple[str, str, tuple[int, int] | None], ...]:
+    """The title/action/progress set used to prove the list stopped changing."""
+    signature: list[tuple[str, str, tuple[int, int] | None]] = []
+    for row in group_rows(snapshot.boxes, snapshot.geometry):
+        action = find_action_in_row(row)
+        if action is None:
+            continue
+        title, _ = _title_and_subtitle(row, action, DEFAULT_ACTION_LABELS)
+        if title is None:
+            continue
+        badge = find_progress_badge(row)
+        progress = (badge.completed, badge.total) if badge is not None else None
+        signature.append((normalize(title), normalize(action.text), progress))
+    return tuple(signature)
 
 
 def _arrival_detail(snapshot: Snapshot) -> str:

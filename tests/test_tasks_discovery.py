@@ -165,6 +165,8 @@ def frames(engine: RapidOcrEngine) -> dict[str, Snapshot]:
         'state_boost': _load(STATES / 'boost.png', engine),
         'coins': _load(STATES / 'coins.png', engine),
         'launch': _load(DATA / 'popups' / 'launch_welcome_gifts.png', engine),
+        'sheet': _load(DATA / 'popups' / 'coins_boost_sheet.png', engine),
+        'skeleton': _load(STATES / 'skeleton.png', engine),
     }
 
 
@@ -175,6 +177,15 @@ def _empty_boost(snapshot: Snapshot) -> Snapshot:
             _box('Coins boost', 100, 450, 500, 540),
             _box(EMPTY_BOOST_MARKER, 100, 600, 1100, 650),
         ),
+        captured_at=snapshot.captured_at,
+        geometry=snapshot.geometry,
+    )
+
+
+def _rebox(snapshot: Snapshot, boxes: Sequence[TextBox]) -> Snapshot:
+    return Snapshot(
+        image=snapshot.image,
+        boxes=tuple(boxes),
         captured_at=snapshot.captured_at,
         geometry=snapshot.geometry,
     )
@@ -192,6 +203,12 @@ _EXPECTED_BOOST: dict[str, tuple[tuple[str, str, TaskCategory | None, str | None
         ('Explore sponsored items', 'sponsored_items', TaskCategory.BROWSE_WAIT, None),
         ('Browse surprise items', 'surprise_items', TaskCategory.ITEM_TAP, None),
         ('Place an order on this page', 'spending_order', None, 'spending'),
+    ),
+    'sheet': (
+        ('Explore sponsored items', 'sponsored_items', TaskCategory.BROWSE_WAIT, None),
+        ('Browse surprise items', 'surprise_items', TaskCategory.ITEM_TAP, None),
+        ('Place an order on this page', 'spending_order', None, 'spending'),
+        ('Browse recently viewed items', 'recently_viewed', TaskCategory.BROWSE_WAIT, None),
     ),
 }
 
@@ -455,7 +472,7 @@ def test_open_boost_list_taps_earn_more_once_and_waits_for_the_list(
     assert opened.tap is not None
     assert opened.tap.label == EARN_MORE_LABEL
     assert opened.dismiss is None
-    assert opened.history == (ScreenState.PAGE,)
+    assert opened.history == (ScreenState.PAGE, ScreenState.PAGE)
     assert opened.classification is not None
     assert opened.classification.state is ScreenState.PAGE
     assert len(device.taps) == 1
@@ -464,6 +481,121 @@ def test_open_boost_list_taps_earn_more_once_and_waits_for_the_list(
     roster = enumerate_roster(opened.snapshot, catalogue, route=opened.route)
     assert roster.count == 4
     assert roster.route is DiscoveryRoute.BOOST
+
+
+def test_open_boost_list_waits_for_the_task_set_to_stop_changing(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    catalogue: TaskCatalogue,
+) -> None:
+    partial = _rebox(
+        frames['state_boost'],
+        tuple(box for box in frames['state_boost'].boxes if box.center[1] < 950),
+    )
+    device = _RecordingDevice()
+    controller = _controller(device, frames['coins'])
+    clock = _SteppingClock()
+    capture = _Capture((frames['coins'], partial, frames['state_boost'], frames['state_boost']))
+
+    opened = open_boost_list(
+        controller,
+        capture,
+        corpus,
+        timeout=10,
+        interval=1,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    roster = enumerate_roster(opened.snapshot, catalogue, route=opened.route)
+    assert roster.titles == (
+        'Take the coins quiz',
+        'Explore sponsored items',
+        'Browse surprise items',
+        'Place an order on this page',
+    )
+    assert opened.history == (ScreenState.PAGE, ScreenState.PAGE, ScreenState.PAGE)
+
+
+def test_open_boost_list_sweeps_a_popup_over_an_already_populated_list(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    catalogue: TaskCatalogue,
+) -> None:
+    overlay = _rebox(frames['launch'], (*frames['state_boost'].boxes, *frames['launch'].boxes))
+    device = _RecordingDevice()
+    controller = _controller(device, frames['coins'])
+    clock = _SteppingClock()
+    capture = _Capture((frames['coins'], overlay, overlay, frames['state_boost']))
+
+    opened = open_boost_list(
+        controller,
+        capture,
+        corpus,
+        timeout=10,
+        interval=1,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert opened.classification is not None
+    assert opened.classification.state is ScreenState.PAGE
+    assert opened.dismiss is not None
+    assert opened.dismiss.closed == ('launch_welcome_gifts',)
+    assert ScreenState.POPUP in opened.history
+    assert len(device.taps) == 2
+    assert enumerate_roster(opened.snapshot, catalogue).count == 4
+
+
+def test_open_boost_list_retries_a_loading_coin_page_before_choosing_inline(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+) -> None:
+    device = _RecordingDevice()
+    controller = _controller(device, frames['skeleton'])
+    clock = _SteppingClock()
+    capture = _Capture((frames['skeleton'], frames['coins'], frames['state_boost']))
+
+    opened = open_boost_list(
+        controller,
+        capture,
+        corpus,
+        timeout=10,
+        interval=1,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert opened.route is DiscoveryRoute.BOOST
+    assert opened.tap is not None
+    assert opened.tap.label == EARN_MORE_LABEL
+    assert len(device.taps) == 1
+
+
+def test_open_boost_list_sweeps_an_initial_popup_before_reading_the_coin_page(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+) -> None:
+    device = _RecordingDevice()
+    controller = _controller(device, frames['launch'])
+    clock = _SteppingClock()
+    capture = _Capture((frames['launch'], frames['launch'], frames['coins'], frames['coins'], frames['state_boost']))
+
+    opened = open_boost_list(
+        controller,
+        capture,
+        corpus,
+        timeout=10,
+        interval=1,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert opened.route is DiscoveryRoute.BOOST
+    assert opened.dismiss is not None
+    assert opened.dismiss.closed == ('launch_welcome_gifts',)
+    assert opened.tap is not None
+    assert len(device.taps) == 2
 
 
 def test_open_boost_list_sweeps_a_popup_seen_on_the_way(
