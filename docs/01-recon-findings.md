@@ -219,6 +219,26 @@ check-in and the quiz end to end, and disproved one assumption in the original b
 The app model those findings produce — entry points, page variants, task surface, reward
 mechanics — is written up in [`05-app-knowledge.md`](05-app-knowledge.md).
 
+## 7b. Boost-page row geometry — 2026-11-21
+
+Captured from a 1200×2000 `screencap` of the populated `Coins boost` list. The committed
+fixture `tests/data/boost.png` is cropped to the header and task rows (1200×1520) and contains no
+balance or account data. These are the numbers the layout tolerance is derived from ✅.
+
+| measurement | value |
+|---|---|
+| median OCR box height (fixture) | 48 px |
+| task action (`GO`) centres, y | 357, 688.5, 1046, 1404 |
+| task row pitch | ~340 px (331.5–358 px between action centres) |
+| largest within-row box-centre gap | 86.5 px |
+| smallest gap between adjacent task rows | ~190 px |
+| inline coins title → `GO` offset | ~31 px (see §3) |
+
+The within-row spacing is less than half the gap to the next task, so a row tolerance derived
+from the median box height keeps a row together without merging its neighbour. A cluster that
+still contains more than one action label is split at the action boundary; a cluster without an
+action is split when it spans more than one text line.
+
 ## 8. Open items
 
 | item | state | next step |
