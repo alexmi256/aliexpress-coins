@@ -1,0 +1,18 @@
+# Development dependencies for `just check`. Install with `just setup`.
+# Every direct dependency is pinned; the runtime pins are included first.
+-r requirements.txt
+
+# Build backend for `pip install --editable . --no-build-isolation`.
+setuptools==84.2.1
+wheel==0.48.0
+
+# Lint and format.
+ruff==0.17.6
+
+# Static type checking. pytest ships its own type information.
+mypy==2.4.1
+
+# Test runner and coverage ratchet.
+pytest==9.2.0
+pytest-cov==7.1.0
+coverage==7.17.4

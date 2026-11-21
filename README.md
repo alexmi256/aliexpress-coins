@@ -4,9 +4,47 @@ Planning repository for an unattended collector of the AliExpress in-app **coins
 daily sign-in, the easy browse-and-wait tasks, the quiz, the surprise-items task — and a
 refusal of everything that costs money, costs minutes, or leaves a review.
 
-**Status: design only.** This repository holds the brief, the device recon that constrains the
-design, and the issue plan the build is broken into. No implementation exists yet; the issues
-are the work items.
+**Status: design only, scaffold in place.** This repository holds the brief, the device recon
+that constrains the design, the issue plan the build is broken into, and the toolchain every
+later issue is built on. No product behaviour exists yet; the issues are the work items.
+
+## Quick start
+
+The toolchain is Python 3.14 with plain `venv` + pip. There is no uv, poetry, hatch or pdm.
+
+```sh
+git clone git@github.com:alexmi256/aliexpress-coins.git
+cd aliexpress-coins
+just setup   # creates .venv and installs the pinned requirements
+just check   # the gate: lint, format check, mypy, tests with coverage
+```
+
+`just check` is exactly what CI runs, so a local green means a CI green. Other recipes:
+
+| recipe | what it does |
+|---|---|
+| `just setup` | create `.venv` and install `requirements-dev.txt` plus the package |
+| `just lint` | ruff lint |
+| `just fmt` | format in place with ruff |
+| `just fmt-check` | fail if formatting would change anything |
+| `just typecheck` | mypy strict over `src/` and `tests/` |
+| `just test` | pytest, with the coverage ratchet enforced |
+| `just cov` | pytest plus HTML and XML coverage reports |
+| `just clean` | remove `.venv`, caches, coverage output and build artefacts |
+
+### Quality gate
+
+Configuration lives in `pyproject.toml`, not in scattered `setup.cfg`/`pytest.ini`/`mypy.ini`
+files. Ruff uses a 120-character line length and single quotes; mypy is strict on both `src/`
+and `tests/`.
+
+Coverage is a **ratchet** with a floor of **99%**. The scaffold is currently fully covered, so
+the floor sits just below the measured number; when coverage climbs, raise the floor, and never
+lower it to make a change pass. The gate fails the build when coverage drops below the floor.
+
+The plan and the conventions the build must follow are in [`docs/`](docs/) — start with
+[`docs/03-conventions.md`](docs/03-conventions.md) and
+[`docs/04-delivery-plan.md`](docs/04-delivery-plan.md).
 
 ## What was learned before writing any requirements
 
