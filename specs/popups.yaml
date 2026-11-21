@@ -1,7 +1,7 @@
 # Popup corpus and per-family dismissal rules (issue #11).
 #
 # Every family discovered on the coins surface has one row here. `close`
-# attempts are tried in policy order: a template crop, then an OCR label, then
+# attempts are tried in policy order: an OCR label, then a template crop, then
 # a frame-fraction coordinate. A row with none of those, or with an explicit
 # `fail`, is an unclosable popup: the runner must stop with the named error
 # rather than tap a guessed coordinate.
@@ -9,7 +9,8 @@
 # Fractions are fractions of the frame (x / width, y / height), never pixels.
 # Templates are glyph-only controls cropped tight to the control at the
 # reference device's scale. `source_width` is the width of the frame the crop
-# came from; #15 makes matching scale-aware.
+# came from; the matcher derives its search scale from the current frame width
+# and that source width.
 
 version: 1
 
@@ -76,10 +77,11 @@ families:
     notes: >-
       The close control is a drawn white ✕ in a circle; OCR returns no text for
       it. The crop includes the feed artwork visible through the ring, so a new
-      Welcome gifts campaign with different artwork may not match: until #15
-      masks the glyph interior, the fraction is the effective close for this
-      family. The recording is from the reviewed launch-modal frame; the modal
-      did not re-trigger during the corpus session (seven cold starts).
+      Welcome gifts campaign with different artwork may not match. The template
+      is matched at the frame's scale (#15); the fraction remains the configured
+      fallback when the glyph crop does not match. The recording is from the
+      reviewed launch-modal frame; the modal did not re-trigger during the
+      corpus session (seven cold starts).
 
   - family: promo_coupon_unlocked
     when: >-

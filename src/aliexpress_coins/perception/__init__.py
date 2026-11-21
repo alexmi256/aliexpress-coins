@@ -18,6 +18,7 @@ from aliexpress_coins.perception.errors import (
     PerceptionError,
     SnapshotError,
     StateTimeout,
+    TemplateError,
 )
 from aliexpress_coins.perception.geometry import (
     DeviceGeometry,
@@ -77,15 +78,28 @@ from aliexpress_coins.perception.state import (
     classify_state,
     wait_for_state,
 )
+from aliexpress_coins.perception.templates import (
+    DEFAULT_TEMPLATE_THRESHOLD,
+    SCALE_SEARCH_RADIUS,
+    SCALE_SEARCH_STEPS,
+    Template,
+    TemplateMatch,
+    TemplateStore,
+    load_templates,
+    match_template,
+)
 
 __all__ = [
     'DEFAULT_ACTION_LABELS',
     'DEFAULT_MIN_OCR_SCORE',
     'DEFAULT_MIN_SCORE',
+    'DEFAULT_TEMPLATE_THRESHOLD',
     'MAX_ROW_TOLERANCE_FRAME_FRACTION',
     'PNG_MAGIC',
     'ROW_CENTER_TOLERANCE_HEIGHT_RATIO',
     'ROW_MAX_TEXT_SPAN_HEIGHT_RATIO',
+    'SCALE_SEARCH_RADIUS',
+    'SCALE_SEARCH_STEPS',
     'SECTION_HEADER_HEIGHT_RATIO',
     'STRICT_MIN_SCORE',
     'AdbResult',
@@ -116,6 +130,10 @@ __all__ = [
     'Snapshotter',
     'StateTimeout',
     'SubprocessAdbRunner',
+    'Template',
+    'TemplateError',
+    'TemplateMatch',
+    'TemplateStore',
     'TextBox',
     'TextIndex',
     'TextMatch',
@@ -130,6 +148,8 @@ __all__ = [
     'group_rows',
     'group_sections',
     'is_section_header',
+    'load_templates',
+    'match_template',
     'normalize',
     'orientation_for',
     'parse_geometry',
