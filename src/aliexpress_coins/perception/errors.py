@@ -22,3 +22,7 @@ class OcrError(PerceptionError):
 
 class ArtifactError(PerceptionError):
     """A snapshot or its sidecar could not be written or reloaded."""
+
+
+class StateTimeout(PerceptionError):
+    """A requested screen state was not observed before the deadline."""
