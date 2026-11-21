@@ -36,6 +36,24 @@ that workflow lands, a local green is the only automated verdict. Other recipes:
 | `just cov` | pytest plus HTML and XML coverage reports |
 | `just clean` | remove `.venv`, caches, coverage output and build artefacts |
 
+### Container
+
+The collector image carries `adb`, `tini` and the RapidOCR runtime, so the host needs
+neither Android tooling nor Python. Copy `.env.example` to `.env`, set
+`AECOINS_DEVICE=<host>:<port>`, then:
+
+```sh
+docker compose build
+docker compose run --rm collector python -m aliexpress_coins doctor
+```
+
+A container runs its own adb server, so its connection to a wireless device does not
+inherit the host's; `doctor` connects a `host:port` serial itself. `doctor` is
+read-only: it checks adb, the device named by `AECOINS_DEVICE` (skipped when unset)
+and the OCR models, and never taps or launches anything. `docker compose up -d`
+starts an idle instance that stops promptly on SIGTERM; the scheduler that replaces
+it lands in #29.
+
 ### Quality gate
 
 Configuration lives in `pyproject.toml`, not in scattered `setup.cfg`/`pytest.ini`/`mypy.ini`

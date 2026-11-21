@@ -1,5 +1,32 @@
 # Runtime dependencies.
 #
-# The scaffold has no third-party runtime imports. Later issues add their
-# pinned runtime dependencies here; setuptools reads this file for the
-# package metadata, so do not duplicate versions in pyproject.toml.
+# Every version is pinned; setuptools reads this file for the package metadata,
+# so do not duplicate pins in pyproject.toml.
+
+# OCR. The RapidOCR wheel bundles the PP-OCRv6 small detection/recognition
+# models and the text-line orientation model, so neither the image build nor a
+# run downloads a model.
+rapidocr==3.10.0
+onnxruntime==1.32.0
+
+# RapidOCR's resolved dependencies, pinned so the image is reproducible.
+opencv-python-headless==5.1.0.95
+numpy==2.5.5
+Pillow==13.0.0
+pyclipper==1.4.0
+Shapely==2.2.0
+PyYAML==6.0.4
+six==1.17.0
+tqdm==4.70.1
+omegaconf==2.4.0
+requests==2.34.2
+colorlog==6.12.0
+
+# Transitive pins reported by pip for the two packages above.
+certifi==2026.11.20
+charset-normalizer==3.5.2
+flatbuffers==25.12.19
+idna==3.20
+packaging==26.3
+protobuf==7.36.2
+urllib3==2.8.0
