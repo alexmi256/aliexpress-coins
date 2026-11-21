@@ -27,6 +27,18 @@ from aliexpress_coins.perception.geometry import (
     parse_wm_density,
     parse_wm_size,
 )
+from aliexpress_coins.perception.matching import (
+    DEFAULT_MIN_OCR_SCORE,
+    DEFAULT_MIN_SCORE,
+    STRICT_MIN_SCORE,
+    LabelSource,
+    TextIndex,
+    TextMatch,
+    find_all,
+    find_text,
+    normalize,
+    similarity,
+)
 from aliexpress_coins.perception.ocr import OcrEngine, RapidOcrEngine
 from aliexpress_coins.perception.snapshot import (
     BoxPoints,
@@ -38,7 +50,10 @@ from aliexpress_coins.perception.snapshot import (
 )
 
 __all__ = [
+    'DEFAULT_MIN_OCR_SCORE',
+    'DEFAULT_MIN_SCORE',
     'PNG_MAGIC',
+    'STRICT_MIN_SCORE',
     'AdbResult',
     'AdbRunner',
     'AdbSnapshotter',
@@ -47,6 +62,7 @@ __all__ = [
     'ArtifactStore',
     'BoxPoints',
     'DeviceGeometry',
+    'LabelSource',
     'OcrEngine',
     'OcrError',
     'Orientation',
@@ -59,11 +75,17 @@ __all__ = [
     'Snapshotter',
     'SubprocessAdbRunner',
     'TextBox',
+    'TextIndex',
+    'TextMatch',
     'crop_snapshot',
+    'find_all',
+    'find_text',
+    'normalize',
     'orientation_for',
     'parse_geometry',
     'parse_sdk',
     'parse_wm_density',
     'parse_wm_size',
+    'similarity',
     'utc_now',
 ]
