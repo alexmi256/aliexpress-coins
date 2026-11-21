@@ -71,14 +71,15 @@ addopts = [
 
 # --- coverage ratchet -------------------------------------------------------
 # The floor is a ratchet: start at 85% on the stub, raise it as modules land,
-# and never lower it to make a change pass.
+# and never lower it to make a change pass. Raised to 93 when doctor/cli landed
+# (measured 93.87%).
 # See "Quality gate" in README.md.
 [tool.coverage.run]
 branch = true
 source = ["aliexpress_coins"]
 
 [tool.coverage.report]
-fail_under = 85
+fail_under = 93
 precision = 2
 show_missing = true
 skip_covered = true
