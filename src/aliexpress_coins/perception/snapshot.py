@@ -7,13 +7,19 @@ adb handle, so it can be stored, replayed and asserted against without a device.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from PIL import Image
 
 from aliexpress_coins.perception.errors import SnapshotError
 from aliexpress_coins.perception.geometry import DeviceGeometry
+from aliexpress_coins.perception.matching import (
+    DEFAULT_MIN_OCR_SCORE,
+    STRICT_MIN_SCORE,
+    TextIndex,
+    find_text,
+)
 
 Point = tuple[float, float]
 BoxPoints = tuple[Point, Point, Point, Point]
@@ -83,6 +89,7 @@ class Snapshot:
     boxes: tuple[TextBox, ...]
     captured_at: datetime
     geometry: DeviceGeometry
+    _text_index: TextIndex | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, 'boxes', tuple(self.boxes))
@@ -102,21 +109,41 @@ class Snapshot:
         """The replay key of the device geometry."""
         return self.geometry.profile_id
 
-    def find(self, label: str) -> TextBox | None:
-        """Return the first box whose text equals `label`, ignoring case and edges.
+    @property
+    def text_index(self) -> TextIndex:
+        """The normalised label index for this frame, built on first use."""
+        index = self._text_index
+        if index is None:
+            index = TextIndex(self.boxes)
+            object.__setattr__(self, '_text_index', index)
+        return index
 
-        Fuzzy matching belongs to #13; this is the exact lookup a caller uses when
-        it already knows the rendered label.
+    def find(
+        self,
+        label: str,
+        *,
+        min_score: float = STRICT_MIN_SCORE,
+        min_ocr_score: float = DEFAULT_MIN_OCR_SCORE,
+    ) -> TextBox | None:
+        """Return the best box for `label`, exact after normalisation by default.
+
+        The strict default keeps callers that already know the rendered label on
+        the old behaviour: case, whitespace and edge punctuation are ignored, but
+        a near-spelling is not. Pass a lower `min_score` for fuzzy lookup, or use
+        :func:`~aliexpress_coins.perception.matching.find_text` to keep the score.
         """
-        needle = label.strip().casefold()
-        for box in self.boxes:
-            if box.text.strip().casefold() == needle:
-                return box
-        return None
+        match = find_text(self, label, min_score=min_score, min_ocr_score=min_ocr_score)
+        return match.box if match is not None else None
 
-    def has(self, label: str) -> bool:
+    def has(
+        self,
+        label: str,
+        *,
+        min_score: float = STRICT_MIN_SCORE,
+        min_ocr_score: float = DEFAULT_MIN_OCR_SCORE,
+    ) -> bool:
         """Whether `find(label)` would return a box."""
-        return self.find(label) is not None
+        return self.find(label, min_score=min_score, min_ocr_score=min_ocr_score) is not None
 
     def describe(self) -> str:
         """Render the frame and its labels for a log line or a test failure."""
