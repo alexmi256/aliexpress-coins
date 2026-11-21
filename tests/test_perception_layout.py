@@ -15,6 +15,7 @@ from aliexpress_coins.perception.layout import (
     DEFAULT_ACTION_LABELS,
     MAX_ROW_TOLERANCE_FRAME_FRACTION,
     ROW_CENTER_TOLERANCE_HEIGHT_RATIO,
+    ROW_MAX_TEXT_SPAN_HEIGHT_RATIO,
     ProgressBadge,
     Row,
     find_action_in_row,
@@ -175,6 +176,53 @@ def test_group_rows_never_merges_a_tight_pitch_pair() -> None:
     assert all(find_action_in_row(row) is not None for row in rows)
 
 
+def test_group_rows_splits_a_chained_cluster_at_each_action_boundary() -> None:
+    boxes: list[TextBox] = []
+    for index, base in enumerate((100.0, 239.0, 378.0)):
+        boxes.extend(
+            (
+                _centered_box(f'Task {index}', 100, base, width=150, height=48),
+                _centered_box('GO', 300, base + 31, height=48),
+                _centered_box('+1', 150, base + 75, height=48),
+            ),
+        )
+
+    rows = group_rows(boxes, _geometry())
+
+    assert len(rows) == 3
+    for index, row in enumerate(rows):
+        action = find_action_in_row(row)
+        assert action is not None
+        assert action.center[1] == pytest.approx(131.0 + index * 139.0)
+        assert any(box.text == f'Task {index}' for box in row.boxes)
+
+
+def test_group_rows_splits_stacked_text_lines_without_an_action() -> None:
+    boxes = (
+        _centered_box('Coins', 100, 100, width=80, height=50),
+        _centered_box('Daily coins', 100, 181.5, width=120, height=50),
+    )
+
+    rows = group_rows(boxes, _geometry(400, 2000))
+
+    assert [row.text for row in rows] == ['Coins', 'Daily coins']
+    assert ROW_MAX_TEXT_SPAN_HEIGHT_RATIO == 1.6
+
+
+def test_group_rows_does_not_use_an_unsure_action_as_a_split_point() -> None:
+    boxes = (
+        _centered_box('Task one', 100, 100, height=48),
+        _centered_box('GO', 300, 131, height=48, score=0.1),
+        _centered_box('Task two', 100, 239, height=48),
+        _centered_box('GO', 300, 270, height=48, score=0.1),
+    )
+
+    rows = group_rows(boxes, _geometry(400, 2000))
+
+    assert len(rows) == 2
+    assert [row.text for row in rows] == ['Task one GO', 'Task two GO']
+
+
 def test_row_rejects_an_empty_box_list_and_sorts_in_reading_order() -> None:
     with pytest.raises(ValueError, match='at least one box'):
         Row(())
@@ -243,7 +291,7 @@ def test_parse_progress_badge_accepts_spacing_and_width(text: str, expected: tup
 
 @pytest.mark.parametrize(
     'text',
-    ['', 'C$0.03', '+1', '0/0', '1/6 coins', '1/2/3', 'GO'],
+    ['', 'C$0.03', '+1', '0/0', '5/2', '1/6 coins', '1/2/3', 'GO'],
 )
 def test_parse_progress_badge_rejects_non_badges(text: str) -> None:
     assert parse_progress_badge(text) is None
@@ -262,6 +310,8 @@ def test_progress_badge_reports_its_fraction_and_flags_invalid_totals() -> None:
         ProgressBadge(completed=-1, total=2, box=box)
     with pytest.raises(ValueError, match='positive'):
         ProgressBadge(completed=0, total=0, box=box)
+    with pytest.raises(ValueError, match='exceed'):
+        ProgressBadge(completed=3, total=2, box=box)
 
 
 def test_find_progress_badge_attaches_the_rightmost_badge_to_its_row() -> None:

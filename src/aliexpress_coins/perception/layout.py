@@ -6,12 +6,15 @@ the rows from the current frame instead.
 
 A row is a vertical cluster of boxes. The cluster tolerance is **derived from
 the frame**: twice the median box height (capped at a fraction of the frame
-height), never a stored pixel offset. That ratio is justified by the measured
-pages: on the 1200x2000 boost frame the median text-box height is ~48.5 px,
-boxes inside one task row are at most ~92 px apart centre-to-centre, and
-adjacent task rows are ~190 px or more apart (pitch ~340 px). On the inline
-coins rows the title-to-``GO`` offset is ~31 px. Twice the median height groups
-the former without merging the latter.
+height), never a stored pixel offset. The measured numbers that justify the
+ratio are recorded in `docs/01-recon-findings.md` §7b, not here. In short, the
+ratio keeps a task row's title, subtitle, progress, action and reward together
+while leaving adjacent task rows apart; it also groups the inline coins rows,
+where the title-to-``GO`` offset is a fraction of a text-box height.
+
+Nearest-neighbour clustering can chain across a bridging box, so a cluster with
+several action labels is split at the midpoints between those actions. That is
+what guarantees two task titles can never resolve to the same button.
 
 Rows are returned in reading order (top to bottom, boxes top-left first). A
 row's action is the **rightmost** action label in its band, which is how a task
@@ -26,6 +29,7 @@ import statistics
 import unicodedata
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 
 from aliexpress_coins.perception.geometry import DeviceGeometry
 from aliexpress_coins.perception.matching import (
@@ -41,14 +45,22 @@ ROW_CENTER_TOLERANCE_HEIGHT_RATIO = 2.0
 """How far apart two box centres may be and still share a row.
 
 Expressed as a multiple of the frame's median text-box height. The measured
-boost row has centre gaps up to ~1.9 median heights (the reward sits below the
-button) and adjacent rows are at least ~3.9 median heights apart.
+reward sits below the action at under twice the median height, while adjacent
+task rows are more than three median heights apart.
 """
 
 MAX_ROW_TOLERANCE_FRAME_FRACTION = 0.1
 """A frame-relative cap on the derived tolerance.
 
 One bad OCR box should not be able to turn the whole frame into one row.
+"""
+
+ROW_MAX_TEXT_SPAN_HEIGHT_RATIO = 1.6
+"""How far a cluster without an action may span before it is split.
+
+A header line is one text row; two stacked labels are further apart than this
+fraction of the median height. Task rows are exempt because their action label
+anchors the row instead.
 """
 
 SECTION_HEADER_HEIGHT_RATIO = 1.25
@@ -153,6 +165,8 @@ class ProgressBadge:
             raise ValueError('a progress badge cannot have a negative completed count')
         if self.total <= 0:
             raise ValueError('a progress badge total must be positive')
+        if self.completed > self.total:
+            raise ValueError('a progress badge completed count cannot exceed its total')
 
     @property
     def text(self) -> str:
@@ -201,6 +215,53 @@ def row_tolerance(boxes: Iterable[TextBox], geometry: DeviceGeometry) -> float:
     return min(derived, geometry.height * MAX_ROW_TOLERANCE_FRAME_FRACTION)
 
 
+def _is_action_box(box: TextBox) -> bool:
+    if box.score < DEFAULT_MIN_OCR_SCORE:
+        return False
+    return any(similarity(label, box.text) >= DEFAULT_MIN_SCORE for label in DEFAULT_ACTION_LABELS)
+
+
+def _split_at_actions(cluster: tuple[TextBox, ...], actions: tuple[TextBox, ...]) -> tuple[tuple[TextBox, ...], ...]:
+    """Split a chained cluster at the midpoints between its action labels."""
+    boundaries = [(earlier.center[1] + later.center[1]) / 2.0 for earlier, later in pairwise(actions)]
+    groups: list[tuple[TextBox, ...]] = []
+    current: list[TextBox] = []
+    boundary = 0
+    for box in cluster:
+        while boundary < len(boundaries) and box.center[1] > boundaries[boundary]:
+            groups.append(tuple(current))
+            current = []
+            boundary += 1
+        current.append(box)
+    groups.append(tuple(current))
+    return tuple(groups)
+
+
+def _split_at_largest_gap(cluster: tuple[TextBox, ...], limit: float) -> tuple[tuple[TextBox, ...], ...]:
+    """Recursively split a long text cluster at its widest internal gap."""
+    if len(cluster) < 2 or cluster[-1].center[1] - cluster[0].center[1] <= limit:
+        return (cluster,)
+
+    widest = max(
+        range(len(cluster) - 1),
+        key=lambda index: cluster[index + 1].center[1] - cluster[index].center[1],
+    )
+    left = _split_at_largest_gap(cluster[: widest + 1], limit)
+    right = _split_at_largest_gap(cluster[widest + 1 :], limit)
+    return left + right
+
+
+def _split_cluster(cluster: tuple[TextBox, ...], median_height: float) -> tuple[tuple[TextBox, ...], ...]:
+    actions = tuple(box for box in cluster if _is_action_box(box))
+    if len(actions) >= 2:
+        return _split_at_actions(cluster, actions)
+    if not actions and median_height > 0:
+        limit = median_height * ROW_MAX_TEXT_SPAN_HEIGHT_RATIO
+        if cluster[-1].center[1] - cluster[0].center[1] > limit:
+            return _split_at_largest_gap(cluster, limit)
+    return (cluster,)
+
+
 def group_rows(boxes: Iterable[TextBox], geometry: DeviceGeometry) -> tuple[Row, ...]:
     """Cluster boxes into rows by vertical band, in reading order.
 
@@ -208,21 +269,33 @@ def group_rows(boxes: Iterable[TextBox], geometry: DeviceGeometry) -> tuple[Row,
     while its centre is within :func:`row_tolerance` of the previous box; the
     first larger gap starts a new row. The tolerance comes from the frame, so a
     row moves without changing the pairing inside it.
+
+    A cluster that still contains more than one action label is split at the
+    midpoints between those actions, because nearest-neighbour clustering can
+    otherwise chain through a bridging box and make two tasks share a button.
+    A cluster without an action is split at its widest text gap when it spans
+    more than one stacked line.
     """
     ordered = sorted(boxes, key=lambda box: (box.center[1], box.bbox[0], box.bbox[1]))
     if not ordered:
         return ()
 
+    heights = tuple(box.height for box in ordered if box.height > 0)
+    median_height = float(statistics.median(heights)) if heights else 0.0
     tolerance = row_tolerance(ordered, geometry)
-    rows: list[Row] = []
+    clusters: list[tuple[TextBox, ...]] = []
     current: list[TextBox] = [ordered[0]]
     for box in ordered[1:]:
         if box.center[1] - current[-1].center[1] <= tolerance:
             current.append(box)
         else:
-            rows.append(Row(tuple(current)))
+            clusters.append(tuple(current))
             current = [box]
-    rows.append(Row(tuple(current)))
+    clusters.append(tuple(current))
+
+    rows: list[Row] = []
+    for cluster in clusters:
+        rows.extend(Row(part) for part in _split_cluster(cluster, median_height))
     return tuple(rows)
 
 
@@ -279,7 +352,7 @@ def parse_progress_badge(text: str) -> tuple[int, int] | None:
         return None
     completed = int(match.group('completed'))
     total = int(match.group('total'))
-    if total <= 0:
+    if total <= 0 or completed > total:
         return None
     return completed, total
 
