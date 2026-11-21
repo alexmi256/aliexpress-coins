@@ -176,6 +176,8 @@ recon/artifacts/
 *.png
 *.jpg
 !docs/img/**
+# Only the synthetic capture fixture; real screenshots must stay out of git.
+!tests/data/frame.png
 
 # Local device state
 state/
