@@ -71,7 +71,7 @@ families:
     notes: >-
       The close control is a drawn white ✕ in a circle; OCR returns no text for
       it. The recording is from the reviewed launch-modal frame; the modal did
-      not re-trigger during the corpus session (six cold starts).
+      not re-trigger during the corpus session (seven cold starts).
 
   - family: promo_coupon_unlocked
     when: >-
