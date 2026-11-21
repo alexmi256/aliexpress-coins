@@ -38,6 +38,10 @@ new issue lands on the board without a manual step. Auto-add copies the issue, n
 mapping: `Area` and `Priority` stay empty until the sync runs. The flow is therefore
 *create the issue with its labels → run `tools/setup_project_board.py`*.
 
+Deliberately **no CI workflow does this sync**: it needs a token with the `project` scope, and a
+long-lived one in a repository secret is a worse trade than running one command when issues are
+filed. Whoever files issues runs the sync; if that ever becomes a bottleneck, revisit — not before.
+
 Use it for one question — *what can be started now*: filter `Status = Todo`, `Area = Perception` and
 look at the `blocked by` list on each item. The roadmap view is deliberately absent until the
 milestones carry real dates; a roadmap of guesses is worse than none.
