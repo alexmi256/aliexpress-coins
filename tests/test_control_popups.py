@@ -406,6 +406,10 @@ def test_non_string_keys_are_rejected(tmp_path: Path) -> None:
             'policy.escalation must be a permutation',
         ),
         (
+            {'policy': {'escalation': ['fraction', 'template', 'label'], 'on_exhausted': 'fail', 'error': 'e'}},
+            'must put fraction last',
+        ),
+        (
             {'policy': {'escalation': ['template', 'label', 'fraction'], 'on_exhausted': 'retry', 'error': 'e'}},
             "on_exhausted must be 'fail'",
         ),

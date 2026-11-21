@@ -301,15 +301,15 @@ def test_tap_box_keeps_an_edge_box_tap_inside_the_box() -> None:
     assert device.calls == [(1195, 1995)]
 
 
-def test_tap_box_falls_back_to_the_screen_for_an_off_screen_box() -> None:
+def test_tap_box_uses_the_safe_inset_for_an_unusable_box() -> None:
     device = _FakeDevice()
     controller = _controller(device)
     box = _box('Off', 1300, 2100, 1400, 2200)
 
     record = controller.tap_box(box, why='off-screen box')
 
-    assert record.point == (1199, 1999)
-    assert device.calls == [(1199, 1999)]
+    assert record.point == (1152, 1952)
+    assert device.calls == [(1152, 1952)]
 
 
 def test_tap_box_jitter_cannot_leave_the_box() -> None:

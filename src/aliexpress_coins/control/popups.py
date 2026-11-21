@@ -216,6 +216,8 @@ def _policy(value: object) -> tuple[str, tuple[CloseKind, ...], str | None]:
         raise PopupSpecError(
             f'policy.escalation must be a permutation of {allowed!r}, got {[kind.value for kind in order]!r}',
         )
+    if order[-1] is not CloseKind.FRACTION:
+        raise PopupSpecError('policy.escalation must put fraction last, after label and template')
 
     exhausted = _text(mapping.get('on_exhausted'), 'policy.on_exhausted')
     if exhausted != 'fail':
