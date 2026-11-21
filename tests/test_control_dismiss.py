@@ -418,6 +418,28 @@ def test_the_repeated_target_guard_stops_a_reopened_family(
     assert report.attempts[-1].outcome is DismissOutcome.REPEATED
 
 
+def test_the_repeated_target_guard_tolerates_a_render_shift(
+    corpus: PopupCorpus,
+    popup_frames: dict[str, Snapshot],
+) -> None:
+    launch = popup_frames['launch_welcome_gifts.png']
+    first = _with_boxes(launch, _box('Close', 550, 1500, 650, 1540))
+    shifted = _with_boxes(launch, _box('Close', 551, 1501, 651, 1541))
+    family = replace(
+        corpus.by_family('launch_welcome_gifts'),
+        close=(CloseAttempt(kind=CloseKind.LABEL, label='Close'),),
+    )
+    custom = replace(corpus, families=(family,))
+    device = _RecordingDevice()
+    controller = _controller(device, first)
+
+    report = dismiss(controller, _Capture((first, shifted)), custom, max_rounds=4)
+
+    assert len(device.taps) == 1
+    assert report.stop is DismissStop.UNCLOSABLE
+    assert report.attempts[-1].outcome is DismissOutcome.REPEATED
+
+
 def test_a_popup_that_does_not_close_ends_with_a_warning(
     corpus: PopupCorpus,
     popup_frames: dict[str, Snapshot],

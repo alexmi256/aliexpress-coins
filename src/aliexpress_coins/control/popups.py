@@ -73,6 +73,16 @@ take over a second. The budget stops a sweep that is making no useful progress
 even when it has only spent a few rounds.
 """
 
+REPEAT_TARGET_QUANTUM = 0.02
+"""The repeated-target guard buckets a point to this fraction of the frame.
+
+An animated or carousel promo can move its close control by a few pixels
+between captures. Keying the guard on exact pixels would treat each rendering
+as a new target and tap the same control repeatedly; a 2% bucket absorbs that
+re-render drift while remaining far smaller than the distance between separate
+controls.
+"""
+
 MAX_DISMISS_LABEL_WIDTH_FRACTION = 0.25
 MAX_DISMISS_LABEL_HEIGHT_FRACTION = 0.10
 """A dismiss *label* must sit in a small box (docs/01-recon-findings.md §4).
@@ -387,6 +397,14 @@ class _Target:
         return round(self.point[0]), round(self.point[1])
 
 
+def _guard_key(point: tuple[float, float], snapshot: Snapshot) -> tuple[int, int]:
+    """Bucket a point so a small re-render shift is still the same target."""
+    return (
+        round(point[0] / snapshot.width / REPEAT_TARGET_QUANTUM),
+        round(point[1] / snapshot.height / REPEAT_TARGET_QUANTUM),
+    )
+
+
 def dismiss_after(
     controller: Controller,
     capture: CaptureSource,
@@ -406,6 +424,11 @@ def dismiss_after(
     and after every task — never a task itself. It is a thin name over
     :func:`dismiss` so the run loop, the manual run and any future runner all
     invoke the same loop rather than growing a second one.
+
+    ``capture`` is the seam used for every frame, including the first: pass the
+    run's snapshotter or a callable, not one already-captured frame. The sweep
+    deliberately takes the post-navigation frame itself so the caller cannot
+    accidentally hand it a stale snapshot.
     """
     return dismiss(
         controller,
@@ -470,7 +493,7 @@ def dismiss(
     attempts: list[DismissAttempt] = []
     closed: list[str] = []
     active_family: str | None = None
-    active_targets: set[Pixel] = set()
+    active_targets: set[tuple[int, int]] = set()
     executed_families: set[str] = set()
     pending: str | None = None
     current_family: str | None = None
@@ -557,7 +580,7 @@ def dismiss(
                 detail=target.detail,
             ),
         )
-        active_targets.add(target.key)
+        active_targets.add(_guard_key(target.point, snapshot))
 
         if controller.dry_run:
             stop = DismissStop.DRY_RUN
@@ -634,7 +657,7 @@ def _select_target(
     store: TemplateStore | None,
     *,
     round_index: int,
-    active_targets: set[Pixel],
+    active_targets: set[tuple[int, int]],
 ) -> tuple[_Target | None, tuple[DismissAttempt, ...]]:
     """Resolve the first executable attempt in the declared policy order."""
     considered: list[DismissAttempt] = []
@@ -686,7 +709,7 @@ def _select_target(
         else:  # pragma: no cover - CloseKind is closed and validated at load time
             continue
 
-        if target.key in active_targets:
+        if _guard_key(target.point, snapshot) in active_targets:
             considered.append(
                 DismissAttempt(
                     round=round_index,
