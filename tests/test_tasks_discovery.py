@@ -603,6 +603,34 @@ def test_open_boost_list_sweeps_an_initial_popup_before_reading_the_coin_page(
     assert len(device.taps) == 2
 
 
+def test_open_boost_list_does_not_tap_through_a_stuck_initial_popup(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+) -> None:
+    overlay = _rebox(frames['launch'], (*frames['coins'].boxes, *frames['launch'].boxes))
+    earn_more = find_text(overlay, EARN_MORE_LABEL)
+    assert earn_more is not None
+
+    device = _RecordingDevice()
+    controller = _controller(device, overlay)
+    clock = _SteppingClock()
+
+    with pytest.raises(StateTimeout, match='initial popup'):
+        open_boost_list(
+            controller,
+            _Capture((overlay,)),
+            corpus,
+            timeout=2,
+            interval=1,
+            clock=clock,
+            sleep=clock.sleep,
+        )
+
+    assert device.taps
+    assert controller.tap_count == len(device.taps)
+    assert all(abs(x - earn_more.center[0]) > 100 or abs(y - earn_more.center[1]) > 100 for x, y in device.taps)
+
+
 def test_open_boost_list_accepts_a_popup_classified_destination_without_another_family(
     frames: dict[str, Snapshot],
     corpus: PopupCorpus,
