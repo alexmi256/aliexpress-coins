@@ -9,8 +9,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import cv2
+import numpy as np
 import pytest
 import yaml
+from numpy.typing import NDArray
 from PIL import Image
 
 from aliexpress_coins.control.errors import PopupSpecError
@@ -24,6 +27,8 @@ ROOT = Path(__file__).resolve().parents[1]
 CORPUS_PATH = ROOT / 'specs' / 'popups.yaml'
 TEMPLATES = ROOT / 'assets' / 'templates'
 FIXTURES = ROOT / 'tests' / 'data' / 'popups'
+TEMPLATE_MATCH_THRESHOLD = 0.88
+"""The measured threshold from docs/01 §4; a weaker match is a tap on artwork."""
 
 
 def _reference() -> dict[str, object]:
@@ -39,7 +44,7 @@ def _reference() -> dict[str, object]:
 
 def _policy() -> dict[str, object]:
     return {
-        'escalation': ['template', 'label', 'fraction'],
+        'escalation': ['label', 'template', 'fraction'],
         'on_exhausted': 'fail',
         'error': 'popup_unclosable',
     }
@@ -101,12 +106,17 @@ def _fixture(tmp_path: Path, name: str = 'demo.png') -> Path:
     return _png(tmp_path / 'tests' / 'data' / 'popups' / name, size=(1200, 2000))
 
 
+def _gray(path: Path) -> NDArray[np.uint8]:
+    with Image.open(path) as image:
+        return np.asarray(image.convert('L'), dtype=np.uint8)
+
+
 def test_the_committed_corpus_loads_and_names_every_discovered_family() -> None:
     corpus = load_popup_corpus(CORPUS_PATH)
 
     assert corpus.version == 1
     assert corpus.error == 'popup_unclosable'
-    assert corpus.escalation == (CloseKind.TEMPLATE, CloseKind.LABEL, CloseKind.FRACTION)
+    assert corpus.escalation == (CloseKind.LABEL, CloseKind.TEMPLATE, CloseKind.FRACTION)
     assert [family.family for family in corpus.families] == [
         'system_notification_permission',
         'launch_welcome_gifts',
@@ -133,7 +143,8 @@ def test_every_family_has_an_executable_attempt_in_policy_order() -> None:
         assert family.when
         assert family.anchor
         kinds = [attempt.kind for attempt in family.close]
-        assert kinds == sorted(kinds, key=list(_order()).index), family.family
+        order = (*corpus.escalation, CloseKind.FAIL)
+        assert kinds == sorted(kinds, key=order.index), family.family
         for attempt in family.close:
             if attempt.kind is CloseKind.TEMPLATE:
                 assert attempt.template is not None
@@ -155,10 +166,6 @@ def test_every_family_has_an_executable_attempt_in_policy_order() -> None:
                 assert family.is_unclosable
 
 
-def _order() -> tuple[CloseKind, ...]:
-    return (CloseKind.TEMPLATE, CloseKind.LABEL, CloseKind.FRACTION, CloseKind.FAIL)
-
-
 def test_templates_are_all_referenced_and_fit_the_reference_frame() -> None:
     corpus = load_popup_corpus(CORPUS_PATH)
     referenced = {
@@ -173,6 +180,24 @@ def test_templates_are_all_referenced_and_fit_the_reference_frame() -> None:
         with Image.open(path) as image:
             assert image.width <= corpus.reference.width
             assert image.height <= corpus.reference.height
+
+
+def test_every_referenced_template_still_matches_its_family_fixture() -> None:
+    corpus = load_popup_corpus(CORPUS_PATH)
+    pairs = [
+        (family.family, attempt.template, family.fixture)
+        for family in corpus.families
+        if family.fixture is not None
+        for attempt in family.close
+        if attempt.kind is CloseKind.TEMPLATE and attempt.template is not None
+    ]
+
+    assert len(pairs) == 5
+    for family, template_path, fixture_path in pairs:
+        assert template_path is not None
+        assert fixture_path is not None
+        result = cv2.matchTemplate(_gray(fixture_path), _gray(template_path), cv2.TM_CCOEFF_NORMED)
+        assert float(result.max()) >= TEMPLATE_MATCH_THRESHOLD, family
 
 
 def test_popup_fixtures_are_full_frames_at_the_reference_geometry() -> None:
@@ -211,8 +236,33 @@ def test_glyph_only_families_use_a_template_and_text_families_use_a_label() -> N
     assert system.close[0].label == "Don't allow"
 
     push = corpus.by_family('push_permission_prompt')
-    assert [attempt.kind for attempt in push.close] == [CloseKind.TEMPLATE, CloseKind.LABEL]
-    assert push.close[1].label == 'No thanks'
+    assert [attempt.kind for attempt in push.close] == [CloseKind.LABEL, CloseKind.TEMPLATE]
+    assert push.close[0].label == 'No thanks'
+
+
+def test_the_policy_order_is_data_driven(tmp_path: Path) -> None:
+    _template(tmp_path)
+    document = _document(
+        policy={'escalation': ['template', 'label', 'fraction'], 'on_exhausted': 'fail', 'error': 'e'},
+        families=[
+            _row(
+                close={
+                    'template': 'assets/templates/demo.png',
+                    'source_width': 1200,
+                    'label': 'Close',
+                },
+            ),
+        ],
+    )
+    path = _write_object(tmp_path, document)
+
+    corpus = load_popup_corpus(path)
+
+    assert corpus.escalation == (CloseKind.TEMPLATE, CloseKind.LABEL, CloseKind.FRACTION)
+    assert [attempt.kind for attempt in corpus.by_family('demo').close] == [
+        CloseKind.TEMPLATE,
+        CloseKind.LABEL,
+    ]
 
 
 def test_status_records_which_families_were_reproduced() -> None:
@@ -348,8 +398,12 @@ def test_non_string_keys_are_rejected(tmp_path: Path) -> None:
             'unknown close kind',
         ),
         (
-            {'policy': {'escalation': ['label', 'template', 'fraction'], 'on_exhausted': 'fail', 'error': 'e'}},
-            'policy.escalation must be',
+            {'policy': {'escalation': ['label', 'template'], 'on_exhausted': 'fail', 'error': 'e'}},
+            'policy.escalation must be a permutation',
+        ),
+        (
+            {'policy': {'escalation': ['label', 'label', 'fraction'], 'on_exhausted': 'fail', 'error': 'e'}},
+            'policy.escalation must be a permutation',
         ),
         (
             {'policy': {'escalation': ['template', 'label', 'fraction'], 'on_exhausted': 'retry', 'error': 'e'}},
@@ -429,6 +483,15 @@ def test_an_unreadable_template_is_rejected(tmp_path: Path) -> None:
         load_popup_corpus(path)
 
 
+def test_a_template_cannot_escape_the_reviewed_directory(tmp_path: Path) -> None:
+    _png(tmp_path / 'assets' / 'secret.png')
+    close = {'template': 'assets/templates/../secret.png', 'source_width': 1200}
+    path = _write_object(tmp_path, _document(families=[_row(close=close)]))
+
+    with pytest.raises(PopupSpecError, match='must resolve under assets/templates/'):
+        load_popup_corpus(path)
+
+
 @pytest.mark.parametrize(
     ('overrides', 'message'),
     [
@@ -462,6 +525,17 @@ def test_an_unreadable_fixture_is_rejected(tmp_path: Path) -> None:
     path = _write_object(tmp_path, _document(families=[_row(fixture='tests/data/popups/demo.png')]))
 
     with pytest.raises(PopupSpecError, match='not a readable PNG'):
+        load_popup_corpus(path)
+
+
+def test_a_fixture_cannot_escape_the_reviewed_directory(tmp_path: Path) -> None:
+    _png(tmp_path / 'tests' / 'data' / 'secret.png')
+    path = _write_object(
+        tmp_path,
+        _document(families=[_row(fixture='tests/data/popups/../secret.png')]),
+    )
+
+    with pytest.raises(PopupSpecError, match='must resolve under tests/data/popups/'):
         load_popup_corpus(path)
 
 

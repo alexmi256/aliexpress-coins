@@ -22,16 +22,21 @@ reference:
   source: "adb exec-out screencap -p (portrait, status bar retained)"
 
 policy:
-  escalation: [template, label, fraction]
+  escalation: [label, template, fraction]
   on_exhausted: fail
   error: popup_unclosable
   note: >-
-    A template match is preferred, then an OCR label, then the configured
-    frame fraction. Every row has an anchor, and a fraction is only used after
-    that anchor matched, so it is never a blind tap on an unidentified screen.
-    If every attempt fails, or the row has no executable attempt, raise
-    popup_unclosable and end the run. Never tap a guessed coordinate: a blind
-    tap on a sale overlay is how a collector buys something.
+    An OCR label is preferred, then a template match, then the configured
+    frame fraction. Label-first matches docs/01-recon-findings.md §4 and #18:
+    text is scale-independent, while a template crop is tied to one rendering.
+    The template-first wording in the #11 body is superseded. Every row has an
+    anchor, and a fraction is only used after that anchor matched, so it is
+    never a blind tap on an unidentified screen. A matched template or text box
+    is its own hit area: the controller clamps a box tap inside the box rather
+    than moving it into the generic safe inset. If every attempt fails, or the
+    row has no executable attempt, raise popup_unclosable and end the run.
+    Never tap a guessed coordinate: a blind tap on a sale overlay is how a
+    collector buys something.
 
 families:
 # Rows are ordered topmost-first: the system dialog is a separate window
@@ -70,8 +75,11 @@ families:
       fraction: [0.499, 0.833]
     notes: >-
       The close control is a drawn white ✕ in a circle; OCR returns no text for
-      it. The recording is from the reviewed launch-modal frame; the modal did
-      not re-trigger during the corpus session (seven cold starts).
+      it. The crop includes the feed artwork visible through the ring, so a new
+      Welcome gifts campaign with different artwork may not match: until #15
+      masks the glyph interior, the fraction is the effective close for this
+      family. The recording is from the reviewed launch-modal frame; the modal
+      did not re-trigger during the corpus session (seven cold starts).
 
   - family: promo_coupon_unlocked
     when: >-
@@ -111,7 +119,9 @@ families:
     notes: >-
       The template is the white ✕ on the full-height variant; the bottom-sheet
       variant is captured as push_permission_prompt_sheet.png and its close is
-      the `No thanks` label. Tapping `Enable all notifications` is not a
+      the `No thanks` label. The full-height ✕ sits near the right edge, but a
+      matched-box tap stays inside the box, so the generic safe inset cannot
+      move it off the control. Tapping `Enable all notifications` is not a
       dismissal: it opens the system permission dialog.
 
   - family: redeem_interstitial
@@ -163,11 +173,27 @@ families:
     close:
       template: assets/templates/promo_bundle_deals_badge.png
       source_width: 1200
-      fraction: [0.984, 0.673]
     notes: >-
       A grey circular ✕ at the card's right edge, with no OCR text. Tapping it
-      removes the badge; the Bundle deals card remains and is not a popup.
-      `blocking: false` means a failed dismissal is logged and skipped, not a
-      reason to end the run.
+      removes the badge; the Bundle deals card remains and is not a popup. The
+      badge is only 24 px wide and sits outside the 48 px safe inset, so a raw
+      fraction would be clamped off the control; this family has no working
+      fraction fallback. The template is its only close, and `blocking: false`
+      means a failed dismissal is logged and skipped, not a reason to end the
+      run.
 
 # Recon notes on things that are not popup families:
+#
+# * `already_collected` is an inline state, not an overlay and not a family
+#   needing a dismissal rule. After the streak Collect, the Today card reads
+#   "Tomorrow" and the boost row still offers GO; tapping the card or the row
+#   produced no dismissable notice. The run should read the state, not hunt for
+#   a close control. The #11 issue names this family; it is answered here
+#   because it has no close control.
+# * The check-in GO opened a full-screen "World Tour Go" event page saying
+#   "Sorry, this event is currently invite-only. Keep an eye out for invites!".
+#   It has no close control and auto-dismissed after its ~11 s countdown back to
+#   the feed. It is a task page, not a popup; no dismissal rule is added here.
+# * The reward interstitial is the one unclosable row above. Its BACK exit is
+#   deliberately not encoded as a fraction: a guessed tap on that screen can
+#   land on a coupon action.

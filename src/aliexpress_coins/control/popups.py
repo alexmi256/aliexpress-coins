@@ -6,10 +6,11 @@ shape of that file. It validates every row before a run can use it, because a
 popup with an unexecutable close is exactly the case the issue says must fail
 loudly instead of being tapped at a guessed coordinate.
 
-Close attempts follow the policy order — ``template`` then ``label`` then
-``fraction`` — and a row either has at least one of those or an explicit
-``fail``. The loader resolves template and fixture paths against the repository
-root and refuses a path that would escape the reviewed directories.
+Close attempts follow the policy order declared in the YAML — the committed
+corpus is ``label``, ``template``, ``fraction`` — and a row either has at least
+one of those or an explicit ``fail``. The loader resolves template and fixture
+paths against the repository root and refuses a resolved path that escapes the
+reviewed directories.
 
 No device access, OCR or matching happens here. Loading is deterministic and
 can be exercised wholly offline.
@@ -35,16 +36,19 @@ FIXTURE_PREFIX = 'tests/data/popups/'
 """Full-frame fixtures are reviewed captures and live in exactly one directory."""
 
 _FAMILY_PATTERN = re.compile(r'[a-z][a-z0-9_]*')
-_ESCALATION = ('template', 'label', 'fraction')
 
 
 class CloseKind(StrEnum):
-    """How a popup family can be dismissed, in policy order."""
+    """How a popup family can be dismissed."""
 
     TEMPLATE = 'template'
     LABEL = 'label'
     FRACTION = 'fraction'
     FAIL = 'fail'
+
+
+_REQUIRED_STRATEGIES = frozenset({CloseKind.LABEL, CloseKind.TEMPLATE, CloseKind.FRACTION})
+"""Every corpus must declare all three non-fail strategies, in any order."""
 
 
 class PopupStatus(StrEnum):
@@ -170,7 +174,7 @@ def load_popup_corpus(path: str | Path, *, root: str | Path | None = None) -> Po
     if not rows:
         raise PopupSpecError('families must contain at least one row')
 
-    families = tuple(_family(row, corpus_root, index) for index, row in enumerate(rows))
+    families = tuple(_family(row, corpus_root, index, escalation) for index, row in enumerate(rows))
     _validate_chains(families)
 
     return PopupCorpus(
@@ -207,9 +211,11 @@ def _policy(value: object) -> tuple[str, tuple[CloseKind, ...], str | None]:
 
     raw_order = _sequence(mapping.get('escalation'), 'policy.escalation')
     order = tuple(_close_kind(item, 'policy.escalation') for item in raw_order)
-    expected = tuple(CloseKind(name) for name in _ESCALATION)
-    if order != expected:
-        raise PopupSpecError(f'policy.escalation must be {list(_ESCALATION)!r}, got {[str(kind) for kind in order]!r}')
+    if len(order) != len(_REQUIRED_STRATEGIES) or set(order) != _REQUIRED_STRATEGIES:
+        allowed = sorted(kind.value for kind in _REQUIRED_STRATEGIES)
+        raise PopupSpecError(
+            f'policy.escalation must be a permutation of {allowed!r}, got {[kind.value for kind in order]!r}',
+        )
 
     exhausted = _text(mapping.get('on_exhausted'), 'policy.on_exhausted')
     if exhausted != 'fail':
@@ -219,7 +225,7 @@ def _policy(value: object) -> tuple[str, tuple[CloseKind, ...], str | None]:
     return error, order, note
 
 
-def _family(value: object, root: Path, index: int) -> PopupFamily:
+def _family(value: object, root: Path, index: int, order: tuple[CloseKind, ...]) -> PopupFamily:
     where = f'families[{index}]'
     mapping = _mapping(value, where)
     _reject_unknown(
@@ -260,7 +266,7 @@ def _family(value: object, root: Path, index: int) -> PopupFamily:
         family=family,
         when=_text(mapping.get('when'), f'{where}.when'),
         anchor=_text(mapping.get('anchor'), f'{where}.anchor'),
-        close=_close(mapping.get('close'), f'{where}.close', root),
+        close=_close(mapping.get('close'), f'{where}.close', root, order),
         status=status,
         observed_at=_observed_at(mapping.get('observed_at'), f'{where}.observed_at'),
         blocking=_boolean(mapping.get('blocking', True), f'{where}.blocking'),
@@ -270,7 +276,7 @@ def _family(value: object, root: Path, index: int) -> PopupFamily:
     )
 
 
-def _close(value: object, where: str, root: Path) -> tuple[CloseAttempt, ...]:
+def _close(value: object, where: str, root: Path, order: tuple[CloseKind, ...]) -> tuple[CloseAttempt, ...]:
     mapping = _mapping(value, where)
     _reject_unknown(mapping, {'template', 'source_width', 'label', 'fraction', 'fail'}, where)
     if not mapping:
@@ -281,7 +287,7 @@ def _close(value: object, where: str, root: Path) -> tuple[CloseAttempt, ...]:
             raise PopupSpecError(f'{where}.fail must be the only key in close')
         return (CloseAttempt(kind=CloseKind.FAIL, reason=_text(mapping['fail'], f'{where}.fail')),)
 
-    attempts: list[CloseAttempt] = []
+    prepared: dict[CloseKind, CloseAttempt] = {}
     if 'template' in mapping:
         relative = _text(mapping['template'], f'{where}.template')
         if not relative.startswith(TEMPLATE_PREFIX):
@@ -289,21 +295,31 @@ def _close(value: object, where: str, root: Path) -> tuple[CloseAttempt, ...]:
         if not relative.endswith('.png'):
             raise PopupSpecError(f'{where}.template must be a .png')
         source_width = _positive_int(mapping.get('source_width'), f'{where}.source_width')
-        path = (root / relative).resolve()
+        path = _contained(root / relative, root, TEMPLATE_PREFIX, f'{where}.template')
         if not path.is_file():
             raise PopupSpecError(f'{where}.template does not exist: {path}')
         _check_png(path, f'{where}.template')
-        attempts.append(CloseAttempt(kind=CloseKind.TEMPLATE, template=path, source_width=source_width))
+        prepared[CloseKind.TEMPLATE] = CloseAttempt(
+            kind=CloseKind.TEMPLATE,
+            template=path,
+            source_width=source_width,
+        )
     elif 'source_width' in mapping:
         raise PopupSpecError(f'{where}.source_width requires a template')
 
     if 'label' in mapping:
-        attempts.append(CloseAttempt(kind=CloseKind.LABEL, label=_text(mapping['label'], f'{where}.label')))
+        prepared[CloseKind.LABEL] = CloseAttempt(
+            kind=CloseKind.LABEL,
+            label=_text(mapping['label'], f'{where}.label'),
+        )
 
     if 'fraction' in mapping:
-        attempts.append(CloseAttempt(kind=CloseKind.FRACTION, fraction=_fraction(mapping['fraction'], where)))
+        prepared[CloseKind.FRACTION] = CloseAttempt(
+            kind=CloseKind.FRACTION,
+            fraction=_fraction(mapping['fraction'], where),
+        )
 
-    return tuple(attempts)
+    return tuple(prepared[kind] for kind in order if kind in prepared)
 
 
 def _fraction(value: object, where: str) -> tuple[float, float]:
@@ -340,11 +356,22 @@ def _optional_fixture(value: object, where: str, root: Path) -> Path | None:
     relative = _text(value, where)
     if not relative.startswith(FIXTURE_PREFIX) or not relative.endswith('.png'):
         raise PopupSpecError(f'{where} must be a .png under {FIXTURE_PREFIX}')
-    path = (root / relative).resolve()
+    path = _contained(root / relative, root, FIXTURE_PREFIX, where)
     if not path.is_file():
         raise PopupSpecError(f'{where} does not exist: {path}')
     _check_png(path, where)
     return path
+
+
+def _contained(path: Path, root: Path, prefix: str, where: str) -> Path:
+    """Resolve a reviewed directory path and refuse an escape via ``..``."""
+    base = (root / prefix).resolve()
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(base)
+    except ValueError as exc:
+        raise PopupSpecError(f'{where} must resolve under {prefix}') from exc
+    return resolved
 
 
 def _check_png(path: Path, where: str) -> None:

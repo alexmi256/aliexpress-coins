@@ -2,8 +2,10 @@
 
 `popups.yaml` is the popup corpus from issue #11: one row per family, the OCR
 anchor that identifies it, the ordered close attempts, and the geometry the
-crop was measured at. The comments in the file are the policy; the loader that
-enforces the schema is
+crop was measured at. The policy order is declared in the file and read by the
+loader; the committed corpus is **label → template → fraction**, because a text
+label is scale-independent while a template crop is tied to one rendering. The
+comments in the file are the policy; the loader that enforces the schema is
 [`src/aliexpress_coins/control/popups.py`](../src/aliexpress_coins/control/popups.py)
 and its tests are
 [`tests/test_control_popups.py`](../tests/test_control_popups.py).
