@@ -34,6 +34,27 @@ policy:
     tap on a sale overlay is how a collector buys something.
 
 families:
+# Rows are ordered topmost-first: the system dialog is a separate window
+# above the app prompt, then app modals, then the blocking redirect, then
+# the page-level sheet and the in-page badge. A dismissal loop should still
+# prefer the topmost anchored family when the frame matches more than one.
+
+  - family: system_notification_permission
+    when: >-
+      Tapping `Enable all notifications` in the `Receive timely notifications`
+      prompt; the Android runtime POST_NOTIFICATIONS dialog.
+    anchor: Allow AliExpress to send you notifications?
+    status: reproduced
+    observed_at: {width: 1200, height: 2000, density: 240, sdk: 35}
+    fixture: tests/data/popups/system_notification_permission.png
+    chains_to: []
+    close:
+      label: "Don't allow"
+    notes: >-
+      Never tap `Allow`. The dismissal label is `Don't allow`; denying closes
+      both the system dialog and the app's prompt. No fraction fallback is
+      configured because a guessed tap could grant the permission.
+
   - family: launch_welcome_gifts
     when: >-
       Cold start of the app process from the launcher icon or FirstActivity.
@@ -71,40 +92,6 @@ families:
       session, and collecting the coupon to provoke it would have redeemed
       something of value.
 
-  - family: promo_bundle_deals_badge
-    when: >-
-      Home feed after the launch modal closes; the Bundle deals card carries a
-      dismissible ad badge. This is a non-blocking banner, not a full-screen
-      modal, but it is a sale overlay encountered on the way to the coins page.
-    anchor: Bundle deals
-    status: reproduced
-    observed_at: {width: 1200, height: 2000, density: 240, sdk: 35}
-    fixture: tests/data/popups/promo_bundle_deals_badge.png
-    chains_to: []
-    close:
-      template: assets/templates/promo_bundle_deals_badge.png
-      source_width: 1200
-      fraction: [0.984, 0.673]
-    notes: >-
-      A grey circular ✕ at the card's right edge, with no OCR text. Tapping it
-      removes the badge; the Bundle deals card remains and is not a popup.
-
-  - family: coins_boost_sheet
-    when: Tapping `Earn more >` on the coin page opens the Coins boost sheet over the page.
-    anchor: Coins boost
-    status: reproduced
-    observed_at: {width: 1200, height: 2000, density: 240, sdk: 35}
-    fixture: tests/data/popups/coins_boost_sheet.png
-    chains_to: []
-    close:
-      template: assets/templates/coins_boost_sheet.png
-      source_width: 1200
-      fraction: [0.941, 0.090]
-    notes: >-
-      The sheet is a page-level overlay with a drawn ✕ at the top right; the
-      header back arrow also leaves it, but the ✕ is the glyph-only control
-      the corpus records. Closing it returns to the coin page.
-
   - family: push_permission_prompt
     when: >-
       The app's notification pre-prompt, reached from the app's push/onboarding
@@ -127,22 +114,6 @@ families:
       the `No thanks` label. Tapping `Enable all notifications` is not a
       dismissal: it opens the system permission dialog.
 
-  - family: system_notification_permission
-    when: >-
-      Tapping `Enable all notifications` in the `Receive timely notifications`
-      prompt; the Android runtime POST_NOTIFICATIONS dialog.
-    anchor: Allow AliExpress to send you notifications?
-    status: reproduced
-    observed_at: {width: 1200, height: 2000, density: 240, sdk: 35}
-    fixture: tests/data/popups/system_notification_permission.png
-    chains_to: []
-    close:
-      label: "Don't allow"
-    notes: >-
-      Never tap `Allow`. The dismissal label is `Don't allow`; denying closes
-      both the system dialog and the app's prompt. No fraction fallback is
-      configured because a guessed tap could grant the permission.
-
   - family: redeem_interstitial
     when: >-
       Returning to the coin page after a task pays coin credit (quiz result →
@@ -162,16 +133,38 @@ families:
       until then it must raise popup_unclosable. The known behaviour is recorded
       in docs/05-app-knowledge.md §6 and docs/06-navigation-map.md §2.
 
+  - family: coins_boost_sheet
+    when: Tapping `Earn more >` on the coin page opens the Coins boost sheet over the page.
+    anchor: Coins boost
+    status: reproduced
+    observed_at: {width: 1200, height: 2000, density: 240, sdk: 35}
+    fixture: tests/data/popups/coins_boost_sheet.png
+    chains_to: []
+    close:
+      template: assets/templates/coins_boost_sheet.png
+      source_width: 1200
+      fraction: [0.941, 0.090]
+    notes: >-
+      The sheet is a page-level overlay with a drawn ✕ at the top right; the
+      header back arrow also leaves it, but the ✕ is the glyph-only control
+      the corpus records. Closing it returns to the coin page.
+
+  - family: promo_bundle_deals_badge
+    when: >-
+      Home feed after the launch modal closes; the Bundle deals card carries a
+      dismissible ad badge. This is a non-blocking banner, not a full-screen
+      modal, but it is a sale overlay encountered on the way to the coins page.
+    anchor: Bundle deals
+    status: reproduced
+    observed_at: {width: 1200, height: 2000, density: 240, sdk: 35}
+    fixture: tests/data/popups/promo_bundle_deals_badge.png
+    chains_to: []
+    close:
+      template: assets/templates/promo_bundle_deals_badge.png
+      source_width: 1200
+      fraction: [0.984, 0.673]
+    notes: >-
+      A grey circular ✕ at the card's right edge, with no OCR text. Tapping it
+      removes the badge; the Bundle deals card remains and is not a popup.
+
 # Recon notes on things that are not popup families:
-#
-# * "Already collected" is an inline state, not an overlay. After the streak
-#   Collect, the Today card reads "Tomorrow" and the boost row still offers GO;
-#   tapping the card or the row produced no dismissable notice. The run should
-#   read the state, not hunt for a close control.
-# * The check-in GO opened a full-screen "World Tour Go" event page saying
-#   "Sorry, this event is currently invite-only. Keep an eye out for invites!".
-#   It has no close control and auto-dismissed after its ~11 s countdown back to
-#   the feed. It is a task page, not a popup; no dismissal rule is added here.
-# * The reward interstitial is the one unclosable row above. Its BACK exit is
-#   deliberately not encoded as a fraction: a guessed tap on that screen can
-#   land on a coupon action.

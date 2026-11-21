@@ -108,13 +108,13 @@ def test_the_committed_corpus_loads_and_names_every_discovered_family() -> None:
     assert corpus.error == 'popup_unclosable'
     assert corpus.escalation == (CloseKind.TEMPLATE, CloseKind.LABEL, CloseKind.FRACTION)
     assert [family.family for family in corpus.families] == [
+        'system_notification_permission',
         'launch_welcome_gifts',
         'promo_coupon_unlocked',
-        'promo_bundle_deals_badge',
-        'coins_boost_sheet',
         'push_permission_prompt',
-        'system_notification_permission',
         'redeem_interstitial',
+        'coins_boost_sheet',
+        'promo_bundle_deals_badge',
     ]
     assert corpus.reference.device == 'T3_US'
     assert corpus.reference.width == 1200
