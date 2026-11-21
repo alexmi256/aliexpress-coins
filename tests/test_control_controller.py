@@ -301,6 +301,18 @@ def test_tap_box_keeps_an_edge_box_tap_inside_the_box() -> None:
     assert device.calls == [(1195, 1995)]
 
 
+def test_tap_box_uses_the_safe_inset_for_a_zero_area_box() -> None:
+    device = _FakeDevice()
+    controller = _controller(device)
+
+    for box in (_box('Zero', 0, 0, 0, 0), _box('Zero', 10, 10, 10, 10)):
+        record = controller.tap_box(box, why='zero box')
+
+        assert record.point == (48, 48)
+
+    assert device.calls == [(48, 48), (48, 48)]
+
+
 def test_tap_box_uses_the_safe_inset_for_an_unusable_box() -> None:
     device = _FakeDevice()
     controller = _controller(device)

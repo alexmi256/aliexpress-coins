@@ -150,10 +150,12 @@ def _clamp_to_box(point: Pixel, box: TextBox, geometry: DeviceGeometry) -> Pixel
     """Clamp a pixel to the inside of ``box``, itself clamped to the screen.
 
     A matched box is the hit area: moving the point into the generic inset can
-    put it outside a control drawn near the edge. A degenerate or fully
-    off-screen box has no usable hit area, so the point falls back to the safe
-    inset rather than the screen edge.
+    put it outside a control drawn near the edge. A zero-area, degenerate or
+    fully off-screen box has no usable hit area, so the point falls back to the
+    safe inset rather than the screen edge.
     """
+    if box.width <= 0 or box.height <= 0:
+        return clamp_point(point, geometry)
     left, top, right, bottom = box.bbox
     min_x, max_x = max(0, math.ceil(left)), min(geometry.width - 1, math.floor(right))
     min_y, max_y = max(0, math.ceil(top)), min(geometry.height - 1, math.floor(bottom))
