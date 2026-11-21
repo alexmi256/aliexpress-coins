@@ -28,8 +28,8 @@ breaks one of them is wrong even if its tests pass.
   checks `src/` and `tests/`; `tools/` is the one documented exemption because it holds the
   pre-scaffold issue-filing scripts with intentional prose punctuation, not package code.
 - Mypy is strict over **both** `src/` and `tests/`. A stale `# type: ignore` fails the build.
-- Coverage is a **ratchet**: the floor in `pyproject.toml` only goes up. Never lower it to make a
-  change pass; add tests instead.
+- Coverage is a **ratchet**: the floor starts at 85% for the scaffold and is raised as real modules
+  land. Never lower it to make a change pass; add tests instead.
 - Do not weaken a gate, skip a test, or narrow the checked `src/`/`tests/` paths to get green. Adding
   another lint exemption is a gate change, not a convenience.
 
