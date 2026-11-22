@@ -192,8 +192,43 @@ def _print_report(report: RunReport) -> None:
     print(f'run {report.run_id}: {report.status.value}', flush=True)
     if report.detail:
         print(f'detail: {report.detail}', flush=True)
+    if report.plan is not None:
+        _print_plan(report.plan)
+    if report.plan_note:
+        print(f'plan note: {report.plan_note}', flush=True)
+    if report.abort is not None:
+        _print_abort(report.abort)
     print(f'summary: {report.summary_path}', flush=True)
     print(f'run.json: {report.json_path}', flush=True)
+
+
+def _print_plan(plan: dict[str, Any]) -> None:
+    print(f'plan: {plan.get("detail", "dry run")}', flush=True)
+    for step in plan.get('steps') or []:
+        print(
+            f'  {step.get("order")}. {step.get("label")} [{step.get("key")}] '
+            f'category={step.get("category")} rule={step.get("rule")}',
+            flush=True,
+        )
+    for refusal in plan.get('refusals') or []:
+        print(
+            f'  refused: {refusal.get("label")} code={refusal.get("code")} '
+            f'rule={refusal.get("rule")} reason={refusal.get("reason")}',
+            flush=True,
+        )
+    print(f'  taps issued: {plan.get("taps_issued", 0)}', flush=True)
+
+
+def _print_abort(abort: dict[str, Any]) -> None:
+    screen = abort.get('screen') or {}
+    print(
+        f'abort: {abort.get("code", "unknown")} — {abort.get("reason", "no reason recorded")}',
+        flush=True,
+    )
+    print(
+        f'  screen: {screen.get("state", "?")}/{screen.get("surface", "?")} labels={screen.get("labels", [])}',
+        flush=True,
+    )
 
 
 def _error(message: str) -> None:

@@ -47,7 +47,9 @@ from aliexpress_coins.runner.errors import (
 from aliexpress_coins.runner.failures import FailureCode, failure
 from aliexpress_coins.runner.notify import AppriseSink, Notification, NotificationSink, WebhookSink
 from aliexpress_coins.runner.report import RunEventLog, RunReport, RunStatus
+from aliexpress_coins.runner.safety import AbortCode, RunAborted, ScreenReport
 from aliexpress_coins.runner.state import DailyStateStore
+from aliexpress_coins.tasks import notifications as notifications_module
 from aliexpress_coins.tasks.browse import ReturnResult
 from aliexpress_coins.tasks.catalogue import TaskCatalogue, TaskCategory, load_task_catalogue
 from aliexpress_coins.tasks.discovery import (
@@ -57,6 +59,7 @@ from aliexpress_coins.tasks.discovery import (
     RosterEntry,
     enumerate_roster,
 )
+from aliexpress_coins.tasks.dispatch import DispatchGate
 from aliexpress_coins.tasks.signin import ClaimResult, SigninOutcome, SigninReport, read_coin_balance
 from aliexpress_coins.tasks.surface import SHORTCUT_DEEP_LINK, Surface, SurfaceRoute
 
@@ -287,6 +290,19 @@ def _coin_frame(balance: str = '1,240') -> Snapshot:
     )
 
 
+def _coin_task_frame() -> Snapshot:
+    return _snapshot(
+        _box('Coins', 100, 220, 300, 280),
+        _box('Coins credits to redeem', 100, 330, 700, 380),
+        _box('Daily coins', 100, 560, 500, 610),
+        _box('1,240', 100, 400, 260, 460),
+        _box('Take the coins quiz', 180, 1269, 700, 1305),
+        _box('GO', 982, 1273, 1040, 1310),
+        _box('Play & Earn', 180, 1440, 700, 1476),
+        _box('GO', 981, 1440, 1040, 1477),
+    )
+
+
 def _home_frame() -> Snapshot:
     return _snapshot(_box('For you', 100, 200, 400, 260), _box('Search', 100, 300, 300, 360))
 
@@ -306,6 +322,16 @@ def _dismiss(*families: str) -> DismissReport:
         remaining=False,
         stop=DismissStop.CLEAR,
     )
+
+
+def _safety_abort(code: AbortCode = AbortCode.DANGEROUS_CONTROL) -> RunAborted:
+    screen = ScreenReport(
+        state='unknown',
+        surface='unknown',
+        labels=('Mystery checkout', 'Buy now'),
+        fingerprint='unknown/unknown/test',
+    )
+    return RunAborted(code=code, reason="a 'Buy now' control appeared", screen=screen)
 
 
 @pytest.fixture(scope='module')
@@ -335,7 +361,7 @@ def full_roster(boost_frame: Snapshot, catalogue: TaskCatalogue) -> Roster:
 def _entry(roster: Roster, key: str) -> RosterEntry:
     for entry in roster.entries:
         if entry.key == key:
-            return entry
+            return DispatchGate(load_task_catalogue(ROOT / 'specs' / 'tasks.yaml')).authorize(entry)
     raise AssertionError(f'{key!r} is not in the roster')
 
 
@@ -713,8 +739,270 @@ def test_a_dry_run_does_not_mark_the_night_complete(
 
     report = engine.run_once(context)
 
-    assert report.status is RunStatus.COMPLETED
+    assert report.status is RunStatus.PLANNED
+    assert report.ok is True
+    assert report.plan is not None
+    assert report.plan['taps_issued'] == 0
     assert context.state.snapshot().completed_night is False
+
+
+def test_a_dry_run_prints_the_ordered_plan_and_every_refusal_without_tapping(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+    frame = _coin_task_frame()
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, frame),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+    device = _RecordingDevice()
+    context.controller = Controller.from_frame(device, frame, rng=random.Random(0))
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.PLANNED
+    assert report.plan is not None
+    steps = report.plan['steps']
+    refusals = report.plan['refusals']
+    assert [step['key'] for step in steps] == ['coins_quiz']
+    assert [step['order'] for step in steps] == [1]
+    assert [refusal['code'] for refusal in refusals] == ['game_play_and_earn']
+    assert report.plan['taps_issued'] == 0
+    assert context.controller.tap_count == 0
+    assert device.taps == []
+    assert report.balance_before == report.balance_after == 1240.0
+    assert report.balance_delta == 0.0
+    assert report.returned_to_coins_page is None
+    assert 'policy_refusal' in caplog.text
+    assert 'dry_run_plan' in caplog.text
+    payload = _report_payload(tmp_path)
+    assert payload['plan']['steps'][0]['key'] == 'coins_quiz'
+    assert payload['plan']['refusals'][0]['code'] == 'game_play_and_earn'
+
+
+def test_the_dry_run_plan_reports_every_reason_a_row_is_not_a_step(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _boost_frame()
+    quiz = _entry(full_roster, 'coins_quiz')
+    no_action = replace(quiz, action=None)
+    shortcut = _entry(full_roster, 'coins_shortcut')
+    sponsored = _entry(full_roster, 'sponsored_items')
+    surprise = _entry(full_roster, 'surprise_items')
+    roster = replace(full_roster, entries=(no_action, shortcut, sponsored, quiz, surprise))
+    monkeypatch.setattr(engine, 'enumerate_roster', lambda *args, **kwargs: roster)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame),
+        catalogue=catalogue,
+        corpus=corpus,
+        max_tasks=12,
+    )
+    context.config = replace(context.config, dry_run=True)
+    for _ in range(sponsored.spec.max_per_run if sponsored.spec is not None else 1):
+        context.state.record('sponsored_items')
+
+    report = engine.run_once(context, max_tasks=1, budget_seconds=5.0)
+
+    assert report.status is RunStatus.PLANNED
+    assert report.plan is not None
+    assert report.plan['max_tasks'] == 1
+    assert report.plan['budget_seconds'] == 5.0
+    assert [step['key'] for step in report.plan['steps']] == ['coins_quiz']
+    reasons = {skip.reason for skip in report.skipped}
+    assert {'no action', 'no executor', 'daily limit', 'run budget'} <= reasons
+
+
+def test_a_dry_run_may_fire_the_shortcut_route_but_still_taps_nothing(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    context = _context(
+        tmp_path,
+        capture=_Capture(_home_frame(), _coin_task_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+    device = _RecordingDevice()
+    context.controller = Controller.from_frame(device, _home_frame(), rng=random.Random(0))
+    assert isinstance(context.navigate, _Navigate)
+
+    report = engine.run_once(context)
+
+    assert context.navigate.routes == [SurfaceRoute.SHORTCUT]
+    assert report.status is RunStatus.PLANNED
+    assert report.plan is not None
+    assert [step['key'] for step in report.plan['steps']] == ['coins_quiz']
+    assert context.controller.tap_count == 0
+    assert device.taps == []
+
+
+def test_a_dry_run_that_cannot_read_the_coins_page_records_the_note(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    context = _context(
+        tmp_path,
+        capture=_Capture(_home_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+
+    def fail(_route: SurfaceRoute) -> None:
+        raise DeviceUnavailable('shortcut route unavailable')
+
+    context.navigate = cast(Any, fail)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.PLANNED
+    assert report.plan_note == 'could not read the coins page: DeviceUnavailable: shortcut route unavailable'
+    assert report.plan is not None
+    assert report.plan['steps'] == []
+
+
+def test_a_dry_run_without_a_readable_balance_says_so(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _snapshot(
+        _box('Coins credits to redeem', 100, 330, 700, 380),
+        _box('Daily coins', 100, 560, 500, 610),
+    )
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+
+    report = engine.run_once(context)
+
+    assert report.balance_before is None
+    assert report.balance_note == 'the coins page did not render a readable balance for the dry-run baseline'
+
+
+def test_a_row_refused_by_the_gate_is_reported_as_a_policy_skip(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _boost_frame()
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    assert context.controller is not None
+    refused = replace(_entry(full_roster, 'coins_quiz'), title='Play & Earn')
+    monkeypatch.setattr(
+        engine,
+        '_dispatch_entry',
+        lambda *args, **kwargs: pytest.fail('a refused row reached an executor'),
+    )
+
+    result = engine._dispatch_with_retry(context, context.controller, refused)
+
+    assert result.outcome == 'skipped'
+    assert result.verification == 'policy'
+    assert result.completed is False
+    assert result.payload['code'] == 'game_play_and_earn'
+
+
+def test_a_balance_decrease_during_a_task_aborts_and_still_returns_home(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),), surface_variant=Surface.ROWS_PRESENT)
+    _surface(monkeypatch, roster, _boost_frame('coins_quiz'))
+    context = _context(
+        tmp_path,
+        capture=_Capture(_coin_frame('40'), _coin_frame('39'), _coin_frame('39')),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+
+    def spend(*_args: Any, **_kwargs: Any) -> Any:
+        engine._capture(context.capture)
+        return _FakeResult(completed=True)
+
+    monkeypatch.setattr(engine, 'run_quiz_task', spend)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.ABORTED
+    assert report.failure_code == FailureCode.BALANCE_DECREASED.value
+    assert report.abort is not None
+    assert 'decreased from 40 to 39' in report.abort['reason']
+    assert report.returned_to_coins_page is True
+
+
+def test_an_aborted_run_reports_the_screen_and_returns_to_the_coins_page(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _coin_frame()
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),), surface_variant=Surface.ROWS_PRESENT)
+    _surface(monkeypatch, roster, _boost_frame('coins_quiz'))
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, frame, frame, frame),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    screen = ScreenReport(
+        state='unknown',
+        surface='unknown',
+        labels=('Mystery checkout', 'Buy now'),
+        fingerprint='unknown/unknown/mystery checkout|buy now',
+    )
+    abort = RunAborted(code=AbortCode.DANGEROUS_CONTROL, reason="a 'Buy now' control appeared", screen=screen)
+
+    def abort_dispatch(*_args: Any, **_kwargs: Any) -> EngineResult:
+        raise abort
+
+    monkeypatch.setattr(engine, '_dispatch_entry', abort_dispatch)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.ABORTED
+    assert report.ok is False
+    assert report.failure_code == FailureCode.DANGEROUS_CONTROL.value
+    assert report.abort is not None
+    assert report.abort['screen']['labels'] == ['Mystery checkout', 'Buy now']
+    assert report.abort['reason'] == "a 'Buy now' control appeared"
+    assert report.returned_to_coins_page is True
+    summary = report.summary_path.read_text(encoding='utf-8')
+    assert '**Abort:** dangerous_control' in summary
+    assert 'Mystery checkout' in summary
+    payload = _report_payload(tmp_path)
+    assert payload['status'] == 'aborted'
+    assert payload['abort']['screen']['surface'] == 'unknown'
 
 
 def test_a_phone_geometry_runs_and_records_its_profile(
@@ -853,7 +1141,7 @@ def test_signin_normalises_both_claims_into_one_outcome(
         'logger': context.logger,
     }
 
-    result = engine._run_signin(context, context.controller, engine._spec(entry), common)
+    result = engine._run_signin(context, context.controller, entry, engine._spec(entry), common)
 
     assert result.outcome == expected
     assert result.completed is (outcome is SigninOutcome.COMPLETED)
@@ -887,7 +1175,7 @@ def test_signin_does_nothing_when_both_state_keys_are_done(
         'logger': context.logger,
     }
 
-    result = engine._run_signin(context, context.controller, engine._spec(entry), common)
+    result = engine._run_signin(context, context.controller, entry, engine._spec(entry), common)
 
     assert result.outcome == 'skipped'
     assert result.completed is False
@@ -1102,6 +1390,100 @@ def test_a_stop_during_hygiene_is_reported_without_a_controller(
     assert report.detail is not None
     assert 'stopped before capture' in report.detail
     assert report.returned_to_coins_page is None
+
+
+def test_roster_observation_re_raises_a_safety_abort(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    context = _context(
+        tmp_path,
+        capture=_Capture(_boost_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    assert context.controller is not None
+    observer = engine._observer(
+        context,
+        RunReport(tmp_path, 'observe-abort', budget_seconds=60.0, started_at=CAPTURED_AT),
+        full_roster,
+    )
+    monkeypatch.setattr(
+        engine,
+        'open_boost_list',
+        lambda *args, **kwargs: (_ for _ in ()).throw(_safety_abort()),
+    )
+
+    with pytest.raises(RunAborted):
+        engine._observe(context, context.controller, observer, route=None)
+
+
+def test_balance_proof_re_raises_a_safety_abort(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _coin_frame()
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    assert context.controller is not None
+    report = RunReport(tmp_path / 'runs', 'run-1', budget_seconds=60.0, started_at=CAPTURED_AT)
+    monkeypatch.setattr(
+        engine,
+        'return_to_coins_page',
+        lambda *args, **kwargs: (_ for _ in ()).throw(_safety_abort(AbortCode.BALANCE_DECREASED)),
+    )
+
+    with pytest.raises(RunAborted):
+        engine._record_balance_before(
+            context,
+            context.controller,
+            report,
+            ArtifactStore(report.runs_dir, report.run_id),
+            frame,
+            _logger(),
+        )
+
+
+def test_a_notification_task_abort_reaches_the_engine_and_returns_home(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    roster = replace(
+        full_roster,
+        entries=(_entry(full_roster, 'notifications'),),
+        surface_variant=Surface.BOOST_PAGE,
+    )
+    _surface(monkeypatch, roster, _boost_frame('notifications'))
+    context = _context(
+        tmp_path,
+        capture=_Capture(_coin_frame(), _boost_frame('notifications'), _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    monkeypatch.setattr(
+        notifications_module,
+        '_wait_after_action',
+        lambda *args, **kwargs: (_ for _ in ()).throw(_safety_abort()),
+    )
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.ABORTED
+    assert report.failure_code == FailureCode.DANGEROUS_CONTROL.value
+    assert report.abort is not None
+    assert report.returned_to_coins_page is True
 
 
 def test_roster_observation_falls_back_to_the_current_frame(
@@ -1332,6 +1714,91 @@ def test_a_cleanup_error_is_reported_without_escaping(
     assert report.return_error is not None
 
 
+def test_a_safety_abort_during_cleanup_is_recorded_as_aborted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _coin_frame()
+    _surface(monkeypatch, replace(full_roster, entries=()), frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    calls = {'count': 0}
+
+    def capture() -> Snapshot:
+        if calls['count'] == 0:
+            calls['count'] += 1
+            return frame
+        raise _safety_abort(AbortCode.BALANCE_DECREASED)
+
+    context.capture = capture
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.ABORTED
+    assert report.failure_code == FailureCode.BALANCE_DECREASED.value
+    assert report.abort is not None
+    assert report.abort['code'] == 'balance_decreased'
+
+
+def test_a_safety_abort_while_recording_a_failure_frame_is_recorded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    context = _context(
+        tmp_path,
+        capture=_Capture(_coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    monkeypatch.setattr(
+        context.hygiene,
+        'prepare',
+        lambda: (_ for _ in ()).throw(DeviceUnavailable('device gone')),
+    )
+    context.controller = None
+    context.capture = lambda: (_ for _ in ()).throw(_safety_abort())
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.ABORTED
+    assert report.failure_code == FailureCode.DANGEROUS_CONTROL.value
+    assert report.abort is not None
+
+
+def test_a_stop_while_planning_a_dry_run_is_not_swallowed(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    context = _context(
+        tmp_path,
+        capture=_Capture(_home_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+
+    def stop(_route: SurfaceRoute) -> None:
+        raise RunInterrupted('stop during dry run')
+
+    context.navigate = cast(Any, stop)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.STOPPED
+    assert report.detail is not None
+    assert 'stop during dry run' in report.detail
+
+
 def test_a_context_without_a_controller_factory_is_a_configuration_error(
     tmp_path: Path,
     catalogue: TaskCatalogue,
@@ -1434,7 +1901,7 @@ def test_signin_with_no_claims_is_reported_failed(
         'logger': context.logger,
     }
 
-    result = engine._run_signin(context, context.controller, engine._spec(entry), common)
+    result = engine._run_signin(context, context.controller, entry, engine._spec(entry), common)
 
     assert result.outcome == 'failed'
     assert result.verification == 'state'
@@ -1758,6 +2225,47 @@ def test_a_balance_capture_route_error_is_named_without_failing_the_run(
     assert '**Balance note:** coins page not proven before the first task: RuntimeError: route died' in (
         report.summary_path.read_text(encoding='utf-8')
     )
+
+
+def test_the_balance_before_is_recorded_without_a_safety_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _coin_frame()
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    assert context.controller is not None
+    report = RunReport(tmp_path / 'runs', 'run-1', budget_seconds=60.0, started_at=CAPTURED_AT)
+    monkeypatch.setattr(
+        engine,
+        'return_to_coins_page',
+        lambda *args, **kwargs: ReturnResult(
+            returned=True,
+            reentered=False,
+            attempts=0,
+            route=SurfaceRoute.SHORTCUT,
+            elapsed=0.0,
+            snapshot=frame,
+        ),
+    )
+
+    engine._record_balance_before(
+        context,
+        context.controller,
+        report,
+        ArtifactStore(report.runs_dir, report.run_id),
+        frame,
+        _logger(),
+    )
+
+    assert report.balance_before == 1240.0
+    assert report.balance_note is None
 
 
 def test_a_stop_during_the_balance_proof_is_re_raised(

@@ -55,10 +55,13 @@ from aliexpress_coins.perception.matching import (
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.state import CaptureSource, ScreenState, classify
 from aliexpress_coins.perception.templates import TemplateStore
+from aliexpress_coins.runner.errors import RunInterrupted
+from aliexpress_coins.runner.safety import RunAborted
 from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks.browse import DONE_LABELS, ReturnResult, find_task_row, return_to_coins_page
 from aliexpress_coins.tasks.catalogue import AllowedTaskSpec, TaskCategory
 from aliexpress_coins.tasks.discovery import BoostList, DiscoveryRoute, RosterEntry, open_boost_list
+from aliexpress_coins.tasks.dispatch import authorization_of
 from aliexpress_coins.tasks.errors import TaskError
 from aliexpress_coins.tasks.surface import (
     COIN_PAGE_MARKERS,
@@ -972,6 +975,8 @@ def run_quiz_task(
             return_state=return_state,
             logger=log,
         )
+    except RunAborted, RunInterrupted:
+        raise
     except Exception:
         # A popup the corpus cannot close, or a navigation that raised, must not
         # leave the app on a quiz page. The original exception still wins.
@@ -1006,6 +1011,7 @@ def _allowed_spec(entry: RosterEntry) -> AllowedTaskSpec:
         raise TaskError(f'{entry.title!r} is not dispatchable: {reason}')
     if spec.category is not TaskCategory.QUIZ:
         raise TaskError(f'{entry.title!r} is {spec.category.value!r}, not a quiz task')
+    authorization_of(entry)
     return spec
 
 
@@ -1584,6 +1590,8 @@ def _return_quietly(
             sleep=sleep,
             logger=logger,
         )
+    except RunAborted, RunInterrupted:
+        raise
     except Exception as exc:
         _warn(logger, 'return_failed', detail=f'{type(exc).__name__}: {exc}')
         return None

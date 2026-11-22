@@ -143,6 +143,51 @@ def test_run_once_prints_the_report_and_returns_its_status(
     assert f'summary: {report.summary_path}' in output
 
 
+def test_a_dry_run_plan_and_an_abort_are_printed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    report = _report(tmp_path, RunStatus.PLANNED)
+    report.plan = {
+        'surface': 'rows_present',
+        'steps': [
+            {'order': 1, 'label': 'Take the coins quiz', 'key': 'coins_quiz', 'category': 'quiz', 'rule': 'coins_quiz'},
+        ],
+        'refusals': [
+            {
+                'label': 'Play & Earn',
+                'code': 'game_play_and_earn',
+                'rule': 'game_play_and_earn',
+                'reason': 'game: Play & Earn is a mini-game and is never played',
+            },
+        ],
+        'taps_issued': 0,
+        'detail': 'dry run: 1 task(s) planned, 1 refusal(s); no tap was issued',
+    }
+    report.plan_note = 'read from the visible surface'
+    report.abort = {
+        'code': 'dangerous_control',
+        'reason': "a 'Buy now' control appeared",
+        'screen': {'state': 'unknown', 'surface': 'unknown', 'labels': ['Buy now']},
+    }
+    monkeypatch.setattr(cli, 'make_live_context', lambda config, stop: object())
+    monkeypatch.setattr(cli, 'run_once', lambda context: report)
+    monkeypatch.setattr(cli, '_install_stop_handlers', lambda stop: None)
+    monkeypatch.setattr(cli, '_restore_stop_handlers', lambda: None)
+
+    cli.run_once_command({'AECOINS_DEVICE': 'tablet', 'TZ': 'UTC'}, dry_run=True, root=str(tmp_path))
+
+    output = capsys.readouterr().out
+    assert 'plan: dry run: 1 task(s) planned' in output
+    assert '1. Take the coins quiz [coins_quiz]' in output
+    assert 'refused: Play & Earn code=game_play_and_earn' in output
+    assert 'taps issued: 0' in output
+    assert 'plan note: read from the visible surface' in output
+    assert 'abort: dangerous_control' in output
+    assert "screen: unknown/unknown labels=['Buy now']" in output
+
+
 def test_a_failed_night_returns_non_zero(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

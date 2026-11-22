@@ -56,7 +56,9 @@ from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.state import TASK_TITLES, CaptureSource, ScreenState, classify
 from aliexpress_coins.perception.templates import TemplateStore
 from aliexpress_coins.runner.state import DailyStateStore
+from aliexpress_coins.tasks.catalogue import DispatchAuthorization, TaskCategory
 from aliexpress_coins.tasks.discovery import DiscoveryRoute, open_boost_list
+from aliexpress_coins.tasks.errors import TaskError
 from aliexpress_coins.tasks.surface import (
     BOOST_MARKER,
     COIN_PAGE_MARKERS,
@@ -342,12 +344,23 @@ def read_coin_balance(snapshot: Snapshot) -> float | None:
     return None
 
 
+def _require_signin_authorization(authorization: DispatchAuthorization) -> None:
+    """Refuse a sign-in claim that did not come through the dispatch gate."""
+    if not isinstance(authorization, DispatchAuthorization):
+        raise TaskError(
+            'the daily sign-in is not dispatchable: no dispatch authorization (the policy gate was bypassed)'
+        )
+    if authorization.category is not TaskCategory.SIGN_IN or authorization.key not in {STREAK_KEY, BOOST_KEY}:
+        raise TaskError(f'{authorization.title!r} is not a dispatchable daily sign-in')
+
+
 def claim_streak(
     controller: Controller,
     capture: CaptureSource,
     corpus: PopupCorpus,
     state: DailyStateStore,
     *,
+    authorization: DispatchAuthorization,
     snapshot: Snapshot | None = None,
     templates: TemplateStore | None = None,
     timeout: float = DEFAULT_VERIFY_TIMEOUT,
@@ -367,6 +380,7 @@ def claim_streak(
     is accepted as secondary evidence. Anything else is ``unverified`` and is
     not recorded, so the next run retries.
     """
+    _require_signin_authorization(authorization)
     log = logger if logger is not None else logging.getLogger(LOGGER_NAME)
     if state.done_today(STREAK_KEY):
         return _already_done(STREAK_KEY, STREAK_MARKER)
@@ -499,6 +513,7 @@ def claim_boost_checkin(
     corpus: PopupCorpus,
     state: DailyStateStore,
     *,
+    authorization: DispatchAuthorization,
     snapshot: Snapshot | None = None,
     templates: TemplateStore | None = None,
     timeout: float = DEFAULT_VERIFY_TIMEOUT,
@@ -516,6 +531,7 @@ def claim_boost_checkin(
     applies. The sweep runs without the ``coins_boost_sheet`` family, whose
     anchor is the destination's own ``Coins boost`` header.
     """
+    _require_signin_authorization(authorization)
     log = logger if logger is not None else logging.getLogger(LOGGER_NAME)
     if state.done_today(BOOST_KEY):
         return _already_done(BOOST_KEY, BOOST_ROW_LABELS[0])
@@ -646,6 +662,7 @@ def claim_daily_signins(
     corpus: PopupCorpus,
     state: DailyStateStore,
     *,
+    authorization: DispatchAuthorization,
     snapshot: Snapshot | None = None,
     templates: TemplateStore | None = None,
     timeout: float = DEFAULT_VERIFY_TIMEOUT,
@@ -663,13 +680,19 @@ def claim_daily_signins(
     :func:`~aliexpress_coins.tasks.discovery.open_boost_list`, then claims the
     row from that frame. A redeem interstitial after either claim ends the
     executor cleanly: there is nothing safe to do behind an unclosable overlay.
+
+    ``authorization`` is the dispatch gate's sealed token. Without it this
+    function refuses before the first capture, so the control cannot be claimed
+    by a caller that bypassed the policy decision.
     """
+    _require_signin_authorization(authorization)
     log = logger if logger is not None else logging.getLogger(LOGGER_NAME)
     streak = claim_streak(
         controller,
         capture,
         corpus,
         state,
+        authorization=authorization,
         snapshot=snapshot,
         templates=templates,
         timeout=timeout,
@@ -723,6 +746,7 @@ def claim_daily_signins(
             capture,
             corpus,
             state,
+            authorization=authorization,
             snapshot=opened.snapshot,
             templates=templates,
             timeout=timeout,

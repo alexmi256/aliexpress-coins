@@ -56,7 +56,9 @@ RUN_STATUS_LOG_LEVELS: dict[str, int] = {
     RunStatus.RUNNING.value: logging.INFO,
     RunStatus.COMPLETED.value: logging.INFO,
     RunStatus.BUDGET.value: logging.INFO,
+    RunStatus.PLANNED.value: logging.INFO,
     RunStatus.STOPPED.value: logging.WARNING,
+    RunStatus.ABORTED.value: logging.ERROR,
     RunStatus.FAILED.value: logging.ERROR,
 }
 """Terminal run status -> level. A budget stop is a clean end, not a fault."""

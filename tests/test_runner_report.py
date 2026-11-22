@@ -89,7 +89,7 @@ def test_a_full_report_round_trips_through_json_and_markdown(tmp_path: Path) -> 
     payload = json.loads(report.json_path.read_text(encoding='utf-8'))
     summary = report.summary_path.read_text(encoding='utf-8')
 
-    assert payload['schema'] == 3
+    assert payload['schema'] == 4
     assert payload['run_id'] == '20261122T033000Z'
     assert payload['status'] == 'budget'
     assert payload['budget'] == {'seconds': 2700.0, 'used_seconds': 60.0}
@@ -110,6 +110,36 @@ def test_a_full_report_round_trips_through_json_and_markdown(tmp_path: Path) -> 
     assert '**Popups closed:** bundle_badge: 1, launch_modal: 2' in summary
     assert '**Notification:** failed via webhook: HTTPError: 500' in summary
     assert report.ok is True
+
+
+def test_a_dry_run_plan_and_an_abort_are_visible_in_the_summary(tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    report.plan = {
+        'dry_run': True,
+        'surface': 'rows_present',
+        'steps': [{'order': 1, 'label': 'Take the coins quiz', 'key': 'coins_quiz'}],
+        'refusals': [{'label': 'Play & Earn', 'code': 'game_play_and_earn'}],
+        'taps_issued': 0,
+        'detail': 'dry run: 1 task(s) planned, 1 refusal(s); no tap was issued',
+    }
+    report.plan_note = 'read from the visible surface'
+    report.abort = {
+        'code': 'dangerous_control',
+        'reason': "a 'Buy now' control appeared",
+        'screen': {'state': 'unknown', 'surface': 'unknown', 'labels': ['Buy now', 'Checkout']},
+    }
+    report.finish(RunStatus.ABORTED, detail='aborted', budget_used_seconds=1.0, finished_at=FINISHED)
+    report.write()
+
+    summary = report.summary_path.read_text(encoding='utf-8')
+    payload = json.loads(report.json_path.read_text(encoding='utf-8'))
+    assert payload['plan']['taps_issued'] == 0
+    assert payload['plan_note'] == 'read from the visible surface'
+    assert payload['abort']['code'] == 'dangerous_control'
+    assert '**Plan (dry run):** dry run: 1 task(s) planned' in summary
+    assert '**Plan note:** read from the visible surface' in summary
+    assert "**Abort:** dangerous_control — a 'Buy now' control appeared" in summary
+    assert report.ok is False
 
 
 def test_a_completed_run_with_no_rows_still_writes_a_report(tmp_path: Path) -> None:

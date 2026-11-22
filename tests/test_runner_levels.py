@@ -39,6 +39,8 @@ def test_every_run_status_row_selects_its_level(status: str, expected: int) -> N
 def test_a_failed_run_is_the_only_error_and_nothing_is_critical() -> None:
     assert RUN_STATUS_LOG_LEVELS[RunStatus.FAILED.value] == logging.ERROR
     assert RUN_STATUS_LOG_LEVELS[RunStatus.STOPPED.value] == logging.WARNING
+    assert RUN_STATUS_LOG_LEVELS[RunStatus.PLANNED.value] == logging.INFO
+    assert RUN_STATUS_LOG_LEVELS[RunStatus.ABORTED.value] == logging.ERROR
     assert all(level < logging.CRITICAL for level in RUN_STATUS_LOG_LEVELS.values())
     assert all(level < logging.CRITICAL for level in TASK_OUTCOME_LOG_LEVELS.values())
     assert SKIPPED_ROW_LOG_LEVEL == logging.WARNING
