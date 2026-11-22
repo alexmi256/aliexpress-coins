@@ -82,7 +82,7 @@ class _ScrollingDevice(_RecordingDevice):
 
 
 class _FailingSwipeDevice(_ScrollingDevice):
-    """A device whose next search swipe fails after one successful move."""
+    """A device whose search swipe fails after one successful move."""
 
     def __init__(self, world: _World) -> None:
         super().__init__(world)
@@ -91,6 +91,20 @@ class _FailingSwipeDevice(_ScrollingDevice):
     def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int) -> None:
         self.calls += 1
         if self.calls == 2:
+            raise InputError('adb input failed')
+        super().swipe(x1, y1, x2, y2, duration_ms)
+
+
+class _PersistentSwipeFailure(_ScrollingDevice):
+    """A device that moves once and then fails every later gesture."""
+
+    def __init__(self, world: _World) -> None:
+        super().__init__(world)
+        self.calls = 0
+
+    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int) -> None:
+        self.calls += 1
+        if self.calls > 1:
             raise InputError('adb input failed')
         super().swipe(x1, y1, x2, y2, duration_ms)
 
@@ -1370,7 +1384,7 @@ def test_a_failed_search_restores_only_the_moves_that_changed_the_frame(
     assert restore[2] == first_move[2]
 
 
-def test_a_swipe_error_mid_search_restores_the_successful_moves(
+def test_a_swipe_error_mid_search_restores_every_counted_move(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
     tmp_path: Path,
@@ -1395,10 +1409,40 @@ def test_a_swipe_error_mid_search_restores_the_successful_moves(
     )
 
     assert result.verification == 'row_vanished'
-    assert len(device.swipes) == 2
-    forward, restore = device.swipes
+    assert len(device.swipes) == 3
+    forward, first_restore, second_restore = device.swipes
     assert forward[1] > forward[3]
-    assert restore[1] < restore[3]
+    assert first_restore[1] < first_restore[3]
+    assert second_restore[1] < second_restore[3]
+
+
+def test_a_restore_swipe_error_does_not_escape_the_executor(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    first = _boost_frame(with_row=False)
+    moved = replace(first, image=Image.new('RGB', first.image.size, (80, 80, 80)))
+    world = _World(series={'boost': (first, moved)}, transitions={})
+    device = _PersistentSwipeFailure(world)
+    controller = Controller.from_frame(device, world.frame, rng=random.Random(0))
+
+    result = run_browse_task(
+        controller,
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        load_timeout=1.0,
+        settle=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.verification == 'row_vanished'
+    assert len(device.swipes) == 1
+    assert device.swipes[0][1] > device.swipes[0][3]
 
 
 def test_run_browse_task_skips_a_row_with_no_action(

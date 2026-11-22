@@ -985,15 +985,20 @@ def run_browse_task(
 
         def _restore_scroll(restore: Snapshot, moves: int) -> None:
             for _ in range(moves):
-                controller.swipe(
-                    (
-                        restore.width / 2.0,
-                        restore.height * (SCROLL_START_FRACTION - SCROLL_VIEWPORT_FRACTION),
-                    ),
-                    (restore.width / 2.0, restore.height * SCROLL_START_FRACTION),
-                    why=f'browse {spec.key}: restore the task list after the row search',
-                    label='scroll restore',
-                )
+                try:
+                    controller.swipe(
+                        (
+                            restore.width / 2.0,
+                            restore.height * (SCROLL_START_FRACTION - SCROLL_VIEWPORT_FRACTION),
+                        ),
+                        (restore.width / 2.0, restore.height * SCROLL_START_FRACTION),
+                        why=f'browse {spec.key}: restore the task list after the row search',
+                        label='scroll restore',
+                    )
+                except InputError:
+                    # Cleanup is best-effort: a restore failure must not replace
+                    # the row-vanished result with an executor exception.
+                    return
                 if settle:
                     sleep(settle)
 
@@ -1008,10 +1013,11 @@ def run_browse_task(
                 why=f'browse {spec.key}: scroll to the task row',
             )
         except InputError:
-            # The controller counts the failed gesture before the device call,
-            # so every counted swipe except the last one moved the surface.
+            # The failed device call may have delivered the gesture before it
+            # raised, so its effect is unknown. Restore every counted swipe;
+            # one extra inverse swipe is safer than leaving the roster hidden.
             attempted = controller.swipe_count - before_swipes
-            _restore_scroll(frame, max(0, attempted - 1))
+            _restore_scroll(frame, max(0, attempted))
             search = None
         if search is not None and search.found and search.target is not None:
             row, action, fresh_badge = search.target
