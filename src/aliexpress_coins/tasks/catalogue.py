@@ -36,6 +36,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from enum import StrEnum
 from pathlib import Path
 from typing import Self
@@ -47,6 +48,15 @@ from aliexpress_coins.tasks.errors import TaskCatalogueError
 
 DEFAULT_DENY_REASON = 'unrecognised'
 """The reason recorded for a label that matches no row in the catalogue."""
+
+_AUTHORIZATION_SEAL = object()
+"""The private marker that proves a token came from the dispatch gate.
+
+A token carries this object only when :class:`DispatchAuthorization._mint`
+builds it. The check cannot stop a caller from importing a private name, but it
+does stop the ordinary bypass: constructing a token by hand raises before an
+executor can see it.
+"""
 
 _KEY_PATTERN = re.compile(r'[a-z][a-z0-9_]*')
 """Keys are snake_case so they read the same in YAML, logs and report fields."""
@@ -228,6 +238,62 @@ class TaskDecision:
             'matched_pattern': self.matched_pattern,
             'matched_field': self.matched_field,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class DispatchAuthorization:
+    """A sealed proof that one row passed the dispatch gate.
+
+    Executors require this token on the roster entry they are handed. The token
+    is minted only by :class:`~aliexpress_coins.tasks.dispatch.DispatchGate`, so
+    a caller cannot reach an executor with a raw roster row: the row must have
+    been resolved against the catalogue and recorded first.
+    """
+
+    key: str
+    title: str
+    category: TaskCategory
+    catalogue_version: int
+    rule: str
+    surface: str | None = None
+    sequence: int = 0
+    _seal: object = dataclass_field(default=None, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if self._seal is not _AUTHORIZATION_SEAL:
+            raise ValueError('a dispatch authorization must be minted by the policy gate')
+        if not self.key or not self.title:
+            raise ValueError('a dispatch authorization needs a key and a title')
+        if self.sequence < 1:
+            raise ValueError('a dispatch authorization needs a positive sequence')
+
+    @classmethod
+    def _mint(
+        cls,
+        *,
+        key: str,
+        title: str,
+        category: TaskCategory,
+        catalogue_version: int,
+        rule: str,
+        surface: str | None,
+        sequence: int,
+    ) -> DispatchAuthorization:
+        """Create a token; private-by-convention to the dispatch gate."""
+        return cls(
+            key=key,
+            title=title,
+            category=category,
+            catalogue_version=catalogue_version,
+            rule=rule,
+            surface=surface,
+            sequence=sequence,
+            _seal=_AUTHORIZATION_SEAL,
+        )
+
+    def covers(self, *, key: str | None, title: str, category: TaskCategory | None) -> bool:
+        """Whether this token authorises exactly the row it is attached to."""
+        return self.key == key and self.title == title and self.category is category
 
 
 @dataclass(frozen=True, slots=True)

@@ -49,6 +49,7 @@ from aliexpress_coins.tasks.browse import (
 )
 from aliexpress_coins.tasks.catalogue import TaskCatalogue, load_task_catalogue
 from aliexpress_coins.tasks.discovery import RosterEntry, enumerate_roster
+from aliexpress_coins.tasks.dispatch import DispatchGate
 from aliexpress_coins.tasks.errors import TaskError
 from aliexpress_coins.tasks.surface import RouteFirer, SurfaceRoute
 
@@ -407,7 +408,7 @@ def _entry(catalogue: TaskCatalogue, key: str = 'sponsored_items') -> RosterEntr
     roster = enumerate_roster(_boost_frame(), catalogue)
     for entry in roster.entries:
         if entry.key == key:
-            return entry
+            return DispatchGate(catalogue).authorize(entry)
     raise AssertionError(f'{key!r} is not in the synthetic roster')
 
 
@@ -1129,7 +1130,9 @@ def test_run_browse_task_completes_when_the_badge_is_complete_and_before_was_unr
     tmp_path: Path,
 ) -> None:
     before_frame = _boost_frame(badge=None)
-    entry = next(entry for entry in enumerate_roster(before_frame, catalogue).entries if entry.key == 'sponsored_items')
+    entry = DispatchGate(catalogue).authorize(
+        next(entry for entry in enumerate_roster(before_frame, catalogue).entries if entry.key == 'sponsored_items')
+    )
     world = _World(
         series={
             'boost': (before_frame,),

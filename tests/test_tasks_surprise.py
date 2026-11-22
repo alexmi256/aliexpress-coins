@@ -33,6 +33,7 @@ from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks.catalogue import TaskCatalogue, load_task_catalogue
 from aliexpress_coins.tasks.discovery import RosterEntry, enumerate_roster
+from aliexpress_coins.tasks.dispatch import DispatchGate
 from aliexpress_coins.tasks.errors import TaskError
 from aliexpress_coins.tasks.surface import RouteFirer, SurfaceRoute
 from aliexpress_coins.tasks.surprise import (
@@ -300,7 +301,7 @@ def _entry(catalogue: TaskCatalogue, *, progress: str = '0/2') -> RosterEntry:
     roster = enumerate_roster(_boost_frame(progress=progress), catalogue)
     for entry in roster.entries:
         if entry.key == 'surprise_items':
-            return entry
+            return DispatchGate(catalogue).authorize(entry)
     raise AssertionError('surprise_items is not in the synthetic roster')
 
 

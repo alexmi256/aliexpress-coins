@@ -29,6 +29,7 @@ from aliexpress_coins.perception.state import Classification, ScreenState, class
 from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks.catalogue import TaskCatalogue, load_task_catalogue
 from aliexpress_coins.tasks.discovery import RosterEntry, enumerate_roster
+from aliexpress_coins.tasks.dispatch import DispatchGate
 from aliexpress_coins.tasks.errors import TaskError
 from aliexpress_coins.tasks.notifications import (
     NOTIFICATIONS_TITLE,
@@ -280,7 +281,7 @@ def _entry(catalogue: TaskCatalogue, *, done: bool = False) -> RosterEntry:
     roster = enumerate_roster(_boost_frame(done=done), catalogue)
     for entry in roster.entries:
         if entry.key == 'notifications':
-            return entry
+            return DispatchGate(catalogue).authorize(entry)
     raise AssertionError('notifications is not in the synthetic roster')
 
 

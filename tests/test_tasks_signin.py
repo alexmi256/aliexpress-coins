@@ -23,7 +23,9 @@ from aliexpress_coins.perception.geometry import DeviceGeometry
 from aliexpress_coins.perception.ocr import RapidOcrEngine
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.runner.state import DailyStateStore
-from aliexpress_coins.tasks.discovery import DiscoveryRoute
+from aliexpress_coins.tasks.catalogue import DispatchAuthorization, load_task_catalogue
+from aliexpress_coins.tasks.discovery import DiscoveryRoute, enumerate_roster
+from aliexpress_coins.tasks.dispatch import DispatchGate
 from aliexpress_coins.tasks.signin import (
     BOOST_KEY,
     REDEEM_INTERSTITIAL,
@@ -122,6 +124,19 @@ def _snapshot(*boxes: TextBox, size: tuple[int, int] = (1200, 2000)) -> Snapshot
         captured_at=CAPTURED_AT,
         geometry=DeviceGeometry.from_frame(*size, density=240, sdk=35),
     )
+
+
+def _signin_authorization() -> DispatchAuthorization:
+    """Mint a real sign-in token through the gate, never by hand."""
+    catalogue = load_task_catalogue(ROOT / 'specs' / 'tasks.yaml')
+    frame = _snapshot(
+        _box('Daily coins', 100, 260, 700, 300),
+        _box('GO', 980, 280, 1040, 320),
+    )
+    entry = next(item for item in enumerate_roster(frame, catalogue).entries if item.key == 'daily_checkin')
+    authorization = DispatchGate(catalogue).authorize(entry).authorization
+    assert authorization is not None
+    return authorization
 
 
 def _load(path: Path, engine: RapidOcrEngine) -> Snapshot:
@@ -1109,6 +1124,7 @@ def test_claim_daily_signins_fresh_day_claims_both_and_reports_the_delta(
         capture,
         corpus,
         state,
+        authorization=_signin_authorization(),
         timeout=10.0,
         interval=1.0,
         clock=_SteppingClock(),
@@ -1148,6 +1164,7 @@ def test_a_second_run_same_day_issues_zero_taps_and_skips_both(
         _Capture([before, after, after, after, boost, boost, boost_after, boost_after]),
         corpus,
         state,
+        authorization=_signin_authorization(),
         timeout=10.0,
         interval=1.0,
         clock=_SteppingClock(),
@@ -1162,6 +1179,7 @@ def test_a_second_run_same_day_issues_zero_taps_and_skips_both(
         forbidden,
         corpus,
         state,
+        authorization=_signin_authorization(),
         timeout=1.0,
         interval=1.0,
         clock=_SteppingClock(),
@@ -1192,6 +1210,7 @@ def test_claim_daily_signins_stops_cleanly_on_redeem_after_the_streak(
         _Capture([before, redeem, redeem]),
         corpus,
         state,
+        authorization=_signin_authorization(),
         timeout=1.0,
         interval=1.0,
         clock=_SteppingClock(),
@@ -1226,6 +1245,7 @@ def test_claim_daily_signins_stops_when_redeem_blocks_opening_the_boost_list(
         _Capture([before, clear, clear, redeem]),
         corpus,
         state,
+        authorization=_signin_authorization(),
         timeout=5.0,
         interval=1.0,
         clock=_SteppingClock(),
@@ -1257,6 +1277,7 @@ def test_claim_daily_signins_re_raises_a_non_redeem_popup_while_opening_the_boos
             _Capture([before, clear, clear, popup]),
             corpus,
             state,
+            authorization=_signin_authorization(),
             timeout=5.0,
             interval=1.0,
             clock=_SteppingClock(),
@@ -1282,6 +1303,7 @@ def test_claim_daily_signins_skips_a_done_boost_without_opening_the_list(
         _Capture([before, after]),
         corpus,
         state,
+        authorization=_signin_authorization(),
         timeout=1.0,
         interval=1.0,
         clock=_SteppingClock(),
@@ -1312,6 +1334,7 @@ def test_claim_daily_signins_claims_only_the_open_boost_when_the_streak_is_done(
         _Capture([coin_page, boost, boost, boost_after, boost_after]),
         corpus,
         state,
+        authorization=_signin_authorization(),
         timeout=10.0,
         interval=1.0,
         clock=_SteppingClock(),
@@ -1342,6 +1365,7 @@ def test_claim_daily_signins_falls_back_to_the_before_balance(
         _Capture([before, after, after, after, boost, boost, boost, boost]),
         corpus,
         _state(tmp_path),
+        authorization=_signin_authorization(),
         timeout=10.0,
         interval=1.0,
         clock=_SteppingClock(),

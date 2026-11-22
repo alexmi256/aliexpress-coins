@@ -66,6 +66,7 @@ from aliexpress_coins.tasks.catalogue import (
     DEFAULT_DENY_REASON,
     AllowedTaskSpec,
     DecisionKind,
+    DispatchAuthorization,
     TaskCatalogue,
     TaskCategory,
     TaskDecision,
@@ -175,6 +176,7 @@ class RosterEntry:
     progress: ProgressBadge | None
     decision: TaskDecision
     row: Row
+    authorization: DispatchAuthorization | None = None
 
     @property
     def allowed(self) -> bool:
@@ -232,6 +234,17 @@ class RosterEntry:
         return self.action if self.allowed else None
 
     @property
+    def authorized(self) -> bool:
+        """Whether the dispatch gate minted a token for exactly this row.
+
+        A roster row is a *candidate*. Only a row that carries a sealed
+        :class:`~aliexpress_coins.tasks.catalogue.DispatchAuthorization` may be
+        handed to an executor; that is how a bypass fails before a tap.
+        """
+        token = self.authorization
+        return token is not None and token.covers(key=self.key, title=self.title, category=self.category)
+
+    @property
     def dispatchable(self) -> bool:
         """Whether this row is both allowed and has an action to tap."""
         return self.allowed and self.action is not None
@@ -266,6 +279,19 @@ class RosterEntry:
                     else None
                 ),
                 'dispatchable': self.dispatchable,
+                'authorized': self.authorized,
+                'authorization': (
+                    {
+                        'key': self.authorization.key,
+                        'category': self.authorization.category.value,
+                        'catalogue_version': self.authorization.catalogue_version,
+                        'rule': self.authorization.rule,
+                        'surface': self.authorization.surface,
+                        'sequence': self.authorization.sequence,
+                    }
+                    if self.authorization is not None
+                    else None
+                ),
                 'dispatch_target': list(self.dispatch_target.center) if self.dispatch_target is not None else None,
             },
         )

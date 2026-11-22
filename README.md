@@ -95,8 +95,9 @@ capture module landed (measured 98.45%), to **98.8%** when the daily state store
 notifications executor landed (measured 99.20%), to **99.2%** when the roster observation log
 landed (measured 99.25%), to **99.25%** when the nightly runner landed (measured 99.31%), to
 **99.3%** when the failure taxonomy, retries and device hygiene landed (measured 99.31%), to
-**99.31%** when Apprise notifications and log levels landed (measured 99.32%), and to **99.32%**
-when geometry independence landed (measured 99.33%).
+**99.31%** when Apprise notifications and log levels landed (measured 99.32%), to **99.32%**
+when geometry independence landed (measured 99.33%), and to **99.33%** when the dispatch gate and
+abort conditions landed (measured 99.33%).
 The scaffold is fully covered, but a one-statement package makes that 100% an artefact of the
 stub, so the floor starts below the maximum. As real modules land, raise the floor toward the
 measured number; never lower it to make a change pass. The gate fails the build when coverage

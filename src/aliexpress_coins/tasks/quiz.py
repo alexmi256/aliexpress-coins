@@ -59,6 +59,7 @@ from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks.browse import DONE_LABELS, ReturnResult, find_task_row, return_to_coins_page
 from aliexpress_coins.tasks.catalogue import AllowedTaskSpec, TaskCategory
 from aliexpress_coins.tasks.discovery import BoostList, DiscoveryRoute, RosterEntry, open_boost_list
+from aliexpress_coins.tasks.dispatch import authorization_of
 from aliexpress_coins.tasks.errors import TaskError
 from aliexpress_coins.tasks.surface import (
     COIN_PAGE_MARKERS,
@@ -1006,6 +1007,7 @@ def _allowed_spec(entry: RosterEntry) -> AllowedTaskSpec:
         raise TaskError(f'{entry.title!r} is not dispatchable: {reason}')
     if spec.category is not TaskCategory.QUIZ:
         raise TaskError(f'{entry.title!r} is {spec.category.value!r}, not a quiz task')
+    authorization_of(entry)
     return spec
 
 

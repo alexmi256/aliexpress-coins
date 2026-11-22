@@ -56,7 +56,9 @@ from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.state import TASK_TITLES, CaptureSource, ScreenState, classify
 from aliexpress_coins.perception.templates import TemplateStore
 from aliexpress_coins.runner.state import DailyStateStore
+from aliexpress_coins.tasks.catalogue import DispatchAuthorization, TaskCategory
 from aliexpress_coins.tasks.discovery import DiscoveryRoute, open_boost_list
+from aliexpress_coins.tasks.errors import TaskError
 from aliexpress_coins.tasks.surface import (
     BOOST_MARKER,
     COIN_PAGE_MARKERS,
@@ -646,6 +648,7 @@ def claim_daily_signins(
     corpus: PopupCorpus,
     state: DailyStateStore,
     *,
+    authorization: DispatchAuthorization,
     snapshot: Snapshot | None = None,
     templates: TemplateStore | None = None,
     timeout: float = DEFAULT_VERIFY_TIMEOUT,
@@ -663,7 +666,17 @@ def claim_daily_signins(
     :func:`~aliexpress_coins.tasks.discovery.open_boost_list`, then claims the
     row from that frame. A redeem interstitial after either claim ends the
     executor cleanly: there is nothing safe to do behind an unclosable overlay.
+
+    ``authorization`` is the dispatch gate's sealed token. Without it this
+    function refuses before the first capture, so the control cannot be claimed
+    by a caller that bypassed the policy decision.
     """
+    if not isinstance(authorization, DispatchAuthorization):
+        raise TaskError(
+            'the daily sign-in is not dispatchable: no dispatch authorization (the policy gate was bypassed)'
+        )
+    if authorization.category is not TaskCategory.SIGN_IN or authorization.key not in {STREAK_KEY, BOOST_KEY}:
+        raise TaskError(f'{authorization.title!r} is not a dispatchable daily sign-in')
     log = logger if logger is not None else logging.getLogger(LOGGER_NAME)
     streak = claim_streak(
         controller,

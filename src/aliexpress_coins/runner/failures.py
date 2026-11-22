@@ -23,6 +23,9 @@ app_logged_out        account     none        abort the run immediately, at firs
 navigation_failed     route       none        the route's own warm re-entry; fall back and report
 popup_unclosable      control     none        abort the run immediately (never tap a guess)
 task_unverified       task        task x1     retry only when no action was taken; else report
+unexpected_screen     safety      none        abort after the same unknown screen is seen three times
+dangerous_control     safety      none        abort on buy/order/cart/redeem while a task is running
+balance_decreased     safety      none        abort: something spent coins without policy approval
 budget_exhausted      run         none        stop the walk cleanly and report it
 internal_error        run         none        abort the run and report the class
 ====================  ==========  ==========  ==============================================
@@ -84,6 +87,7 @@ class FailureStage(StrEnum):
     ROUTE = 'route'
     CONTROL = 'control'
     TASK = 'task'
+    SAFETY = 'safety'
     RUN = 'run'
 
 
@@ -109,6 +113,9 @@ class FailureCode(StrEnum):
     NAVIGATION_FAILED = 'navigation_failed'
     POPUP_UNCLOSABLE = 'popup_unclosable'
     TASK_UNVERIFIED = 'task_unverified'
+    UNEXPECTED_SCREEN = 'unexpected_screen'
+    DANGEROUS_CONTROL = 'dangerous_control'
+    BALANCE_DECREASED = 'balance_decreased'
     BUDGET_EXHAUSTED = 'budget_exhausted'
     INTERNAL_ERROR = 'internal_error'
 
@@ -213,6 +220,30 @@ FAILURE_TABLE: dict[FailureCode, FailureSpec] = {
         1,
         False,
         'The task did not prove its completion on screen; it is not recorded as done.',
+    ),
+    FailureCode.UNEXPECTED_SCREEN: FailureSpec(
+        FailureCode.UNEXPECTED_SCREEN,
+        FailureStage.SAFETY,
+        RetryScope.NONE,
+        0,
+        True,
+        'The same screen was not understood three times in a row; the run stopped rather than guessing.',
+    ),
+    FailureCode.DANGEROUS_CONTROL: FailureSpec(
+        FailureCode.DANGEROUS_CONTROL,
+        FailureStage.SAFETY,
+        RetryScope.NONE,
+        0,
+        True,
+        'A buy, order, cart or redeem control appeared while a task was running; the run stopped before it could be tapped.',
+    ),
+    FailureCode.BALANCE_DECREASED: FailureSpec(
+        FailureCode.BALANCE_DECREASED,
+        FailureStage.SAFETY,
+        RetryScope.NONE,
+        0,
+        True,
+        'The coin balance decreased, so something acted without the policy authorising it.',
     ),
     FailureCode.BUDGET_EXHAUSTED: FailureSpec(
         FailureCode.BUDGET_EXHAUSTED,

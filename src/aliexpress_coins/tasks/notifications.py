@@ -58,6 +58,7 @@ from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks.browse import ReturnResult, find_task_row, return_to_coins_page
 from aliexpress_coins.tasks.catalogue import AllowedTaskSpec, TaskCategory
 from aliexpress_coins.tasks.discovery import BoostList, RosterEntry, open_boost_list
+from aliexpress_coins.tasks.dispatch import authorization_of
 from aliexpress_coins.tasks.errors import TaskError
 from aliexpress_coins.tasks.surface import (
     COIN_PAGE_MARKERS,
@@ -1643,6 +1644,7 @@ def _allowed_spec(entry: RosterEntry) -> AllowedTaskSpec:
         raise TaskError(f'{entry.title!r} is not dispatchable: {reason}')
     if spec.category is not TaskCategory.NOTIFICATION:
         raise TaskError(f'{entry.title!r} is {spec.category.value!r}, not a notification task')
+    authorization_of(entry)
     return spec
 
 

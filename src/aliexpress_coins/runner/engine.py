@@ -54,6 +54,7 @@ from aliexpress_coins.runner.failures import (
 from aliexpress_coins.runner.levels import SKIPPED_ROW_LOG_LEVEL, run_log_level, task_log_level
 from aliexpress_coins.runner.notify import Notification, NotificationSink, build_notifier
 from aliexpress_coins.runner.report import RunEventLog, RunReport, RunStatus, prune_runs
+from aliexpress_coins.runner.safety import RunAborted, SafetyGuard
 from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks.browse import return_to_coins_page, run_browse_task
 from aliexpress_coins.tasks.catalogue import AllowedTaskSpec, TaskCatalogue, TaskCategory, load_task_catalogue
@@ -69,6 +70,11 @@ from aliexpress_coins.tasks.discovery import (
     discover_roster,
     enumerate_roster,
     open_boost_list,
+)
+from aliexpress_coins.tasks.dispatch import (
+    DispatchGate,
+    PolicyRefused,
+    authorization_of,
 )
 from aliexpress_coins.tasks.notifications import run_notifications_task
 from aliexpress_coins.tasks.quiz import run_quiz_task
@@ -196,6 +202,8 @@ class RunContext:
     stop: StopSignal = field(default_factory=_NeverStop)
     logger: logging.Logger | None = None
     notifier: NotificationSink | None = None
+    gate: DispatchGate | None = None
+    safety: SafetyGuard | None = None
 
 
 _EXECUTORS: frozenset[TaskCategory] = frozenset(
@@ -346,121 +354,144 @@ def run_once(
     except Exception as exc:
         log.warning('%s', _event('run_log_failed', detail=f'{type(exc).__name__}: {exc}'))
 
+    safety = context.safety if context.safety is not None else SafetyGuard(logger=log)
+    if context.safety is None:
+        context.safety = safety
+        context.capture = safety.wrap(context.capture)
+    gate = context.gate if context.gate is not None else DispatchGate(context.catalogue, logger=log)
+    context.gate = gate
+
     try:
         report.write()
         hygiene = _retry_stage(context, 'hygiene', context.hygiene.prepare)
         report.hygiene = hygiene.as_dict()
         frame = _capture(context.capture)
         _guard_signed_in(context, frame)
-        report.geometry = _geometry(frame)
-        log.info('%s', _event('run_hygiene', **hygiene.as_dict()))
+        if context.config.dry_run:
+            _plan_dry_run(context, report, frame, gate, log)
+            status = report.status
+            detail = report.detail or 'dry run planned no tasks'
+        else:
+            report.geometry = _geometry(frame)
+            log.info('%s', _event('run_hygiene', **hygiene.as_dict()))
 
-        controller = controller if controller is not None else _controller(context, frame)
-        _record_balance_before(
-            context,
-            controller,
-            report,
-            artifacts,
-            frame,
-            log,
-            record_dismissal,
-        )
-        roster, route_error = _discover_or_fallback(context, controller, on_dismiss=record_dismissal)
-        report.route_error = route_error
-        if roster.empty and roster.surface_variant is Surface.UNKNOWN:
-            # An empty roster is a load fault when the signed-out screen is
-            # underneath it. Detect the account once and stop the whole night:
-            # no task can be collected until a human signs in.
-            _guard_signed_in(context, _capture(context.capture))
-        report.roster = roster.as_dict()
-        report.surface = roster.surface_variant.value if roster.surface_variant is not None else None
-        report.write()
-        context.state.begin_run(at=context.wall_clock())
-        observer = (
-            observer if observer is not None else _observer(context, report, roster, max_observations=task_limit + 2)
-        )
-        _observe(context, controller, observer, route=roster.route, on_dismiss=record_dismissal)
-        _record_policy_skips(report, roster, logger=log)
-        report.observations = observer.sequence
-        report.write()
-
-        while True:
-            if context.stop.is_set():
-                status = RunStatus.STOPPED
-                detail = 'stop requested between tasks'
-                break
-            elapsed = max(0.0, context.clock() - started)
-            if elapsed >= budget:
-                status = RunStatus.BUDGET
-                detail = f'wall-clock budget of {budget:g}s exhausted'
-                report.record_failure(failure(FailureCode.BUDGET_EXHAUSTED, detail=detail))
-                break
-            if len(report.tasks) >= task_limit:
-                status = RunStatus.BUDGET
-                detail = f'task budget of {task_limit} dispatch(es) exhausted'
-                report.record_failure(failure(FailureCode.BUDGET_EXHAUSTED, detail=detail))
-                break
-
-            current = observer.roster if observer.roster is not None else roster
-            if current is None:  # pragma: no cover - set immediately above
-                break
-            entry = _next_entry(current, context.state, blocked)
-            if entry is None:
-                detail = 'no dispatchable row remains'
-                break
-
-            spec = entry.spec
-            if spec is None:  # pragma: no cover - _next_entry only returns allowed rows
-                continue
-            identity = _identity(entry)
-            task_started = context.clock()
-            result = _dispatch_with_retry(context, controller, entry)
-            duration = max(0.0, context.clock() - task_started)
-            attempted.add(identity)
-            _record_dismissals(report, result.as_dict())
-            report.record_task(
-                title=entry.title,
-                key=spec.key,
-                category=spec.category.value,
-                outcome=result.outcome,
-                verification=result.verification,
-                detail=result.detail,
-                duration_seconds=duration,
-                completed=result.completed,
-                result=result.as_dict(),
-                failure=result.failure,
+            controller = controller if controller is not None else _controller(context, frame)
+            _record_balance_before(
+                context,
+                controller,
+                report,
+                artifacts,
+                frame,
+                log,
+                record_dismissal,
             )
-            log.log(
-                task_log_level(result.outcome),
-                '%s',
-                _event(
-                    'task_outcome',
-                    key=spec.key,
-                    title=entry.title,
-                    outcome=result.outcome,
-                    verification=result.verification,
-                    completed=result.completed,
-                    code=None if result.failure is None else result.failure.code.value,
-                    seconds=round(duration, 3),
-                ),
+            roster, route_error = _discover_or_fallback(context, controller, on_dismiss=record_dismissal)
+            report.route_error = route_error
+            if roster.empty and roster.surface_variant is Surface.UNKNOWN:
+                # An empty roster is a load fault when the signed-out screen is
+                # underneath it. Detect the account once and stop the whole night:
+                # no task can be collected until a human signs in.
+                _guard_signed_in(context, _capture(context.capture))
+            report.roster = roster.as_dict()
+            report.surface = roster.surface_variant.value if roster.surface_variant is not None else None
+            gate.surface = report.surface
+            report.write()
+            context.state.begin_run(at=context.wall_clock())
+            observer = (
+                observer
+                if observer is not None
+                else _observer(context, report, roster, max_observations=task_limit + 2)
             )
-            if result.completed:
-                _observe(context, controller, observer, route=None, on_dismiss=record_dismissal)
-                _record_policy_skips(report, observer.roster or roster, logger=log)
-                report.observations = observer.sequence
-            else:
-                blocked.add(identity)
+            _observe(context, controller, observer, route=roster.route, on_dismiss=record_dismissal)
+            _record_policy_skips(report, roster, logger=log, gate=gate)
+            report.observations = observer.sequence
             report.write()
 
-        final_roster = observer.roster if observer is not None and observer.roster is not None else roster
-        _record_unrun(report, final_roster, context.state, attempted, status=status, detail=detail, logger=log)
-        if observer is not None:
-            report.observations = observer.sequence
-        if final_roster is not None:
-            report.roster = final_roster.as_dict()
-            report.surface = (
-                final_roster.surface_variant.value if final_roster.surface_variant is not None else report.surface
-            )
+            while True:
+                if context.stop.is_set():
+                    status = RunStatus.STOPPED
+                    detail = 'stop requested between tasks'
+                    break
+                elapsed = max(0.0, context.clock() - started)
+                if elapsed >= budget:
+                    status = RunStatus.BUDGET
+                    detail = f'wall-clock budget of {budget:g}s exhausted'
+                    report.record_failure(failure(FailureCode.BUDGET_EXHAUSTED, detail=detail))
+                    break
+                if len(report.tasks) >= task_limit:
+                    status = RunStatus.BUDGET
+                    detail = f'task budget of {task_limit} dispatch(es) exhausted'
+                    report.record_failure(failure(FailureCode.BUDGET_EXHAUSTED, detail=detail))
+                    break
+
+                current = observer.roster if observer.roster is not None else roster
+                if current is None:  # pragma: no cover - set immediately above
+                    break
+                entry = _next_entry(current, context.state, blocked)
+                if entry is None:
+                    detail = 'no dispatchable row remains'
+                    break
+
+                spec = entry.spec
+                if spec is None:  # pragma: no cover - _next_entry only returns allowed rows
+                    continue
+                identity = _identity(entry)
+                task_started = context.clock()
+                result = _dispatch_with_retry(context, controller, entry)
+                duration = max(0.0, context.clock() - task_started)
+                attempted.add(identity)
+                _record_dismissals(report, result.as_dict())
+                report.record_task(
+                    title=entry.title,
+                    key=spec.key,
+                    category=spec.category.value,
+                    outcome=result.outcome,
+                    verification=result.verification,
+                    detail=result.detail,
+                    duration_seconds=duration,
+                    completed=result.completed,
+                    result=result.as_dict(),
+                    failure=result.failure,
+                )
+                log.log(
+                    task_log_level(result.outcome),
+                    '%s',
+                    _event(
+                        'task_outcome',
+                        key=spec.key,
+                        title=entry.title,
+                        outcome=result.outcome,
+                        verification=result.verification,
+                        completed=result.completed,
+                        code=None if result.failure is None else result.failure.code.value,
+                        seconds=round(duration, 3),
+                    ),
+                )
+                if result.completed:
+                    _observe(context, controller, observer, route=None, on_dismiss=record_dismissal)
+                    _record_policy_skips(report, observer.roster or roster, logger=log, gate=gate)
+                    report.observations = observer.sequence
+                else:
+                    blocked.add(identity)
+                report.write()
+
+            final_roster = observer.roster if observer is not None and observer.roster is not None else roster
+            _record_unrun(report, final_roster, context.state, attempted, status=status, detail=detail, logger=log)
+            if observer is not None:
+                report.observations = observer.sequence
+            if final_roster is not None:
+                report.roster = final_roster.as_dict()
+                report.surface = (
+                    final_roster.surface_variant.value if final_roster.surface_variant is not None else report.surface
+                )
+    except RunAborted as exc:
+        status = RunStatus.ABORTED
+        if context.safety is not None:
+            context.safety.disarm()
+        report.abort = exc.as_dict()
+        report.record_failure(exc.failure)
+        detail = exc.failure.describe()
+        log.error('%s', _event('run_aborted', code=exc.code.value, detail=detail))
     except RunInterrupted as exc:
         status = RunStatus.STOPPED
         detail = f'stop requested: {exc}'
@@ -475,7 +506,11 @@ def run_once(
         report.error = f'{type(exc).__name__}: {exc}'
         log.exception('%s', _event('run_failed', detail=detail))
     finally:
-        if controller is not None and report.failure_code != FailureCode.APP_LOGGED_OUT.value:
+        if (
+            controller is not None
+            and not context.config.dry_run
+            and report.failure_code != FailureCode.APP_LOGGED_OUT.value
+        ):
             _finish_on_coins_page(
                 context,
                 controller,
@@ -527,6 +562,151 @@ def run_once(
                     log.removeHandler(event_log)
                     event_log.close()
     return report
+
+
+def _plan_dry_run(
+    context: RunContext,
+    report: RunReport,
+    frame: Snapshot,
+    gate: DispatchGate,
+    log: logging.Logger,
+) -> None:
+    """Plan the night from the visible surface without tapping or dispatching.
+
+    The route may be fired once to reach the coins page (an ``am start``, not an
+    in-app tap), then the roster is enumerated and every row goes through the
+    same :class:`DispatchGate` used by a live run. Allowed rows that have an
+    executor, an action and daily budget left become ordered steps; refusals
+    carry the gate's code, rule and reason. No executor runs and the controller
+    is never asked for a tap.
+    """
+    surface = classify_surface(frame)
+    navigated = False
+    if surface is Surface.UNKNOWN and not _on_coin_page(frame):
+        try:
+            context.navigate(SurfaceRoute.SHORTCUT)
+        except Exception as exc:
+            report.plan_note = f'could not read the coins page: {type(exc).__name__}: {exc}'
+        else:
+            navigated = True
+            frame = _capture(context.capture)
+            surface = classify_surface(frame)
+
+    roster = replace(
+        enumerate_roster(frame, context.catalogue, route=DiscoveryRoute.INLINE),
+        surface_variant=surface,
+        routes_taken=(SurfaceRoute.SHORTCUT,) if navigated else (),
+    )
+    report.geometry = _geometry(frame)
+    report.roster = roster.as_dict()
+    report.surface = surface.value
+    gate.surface = surface.value
+    if _on_coin_page(frame):
+        balance = read_coin_balance(frame)
+        report.balance_before = balance
+        report.balance_after = balance
+        if balance is None:
+            report.balance_note = 'the coins page did not render a readable balance for the dry-run baseline'
+
+    steps: list[dict[str, object]] = []
+    refusals: list[dict[str, object]] = []
+    for entry in roster.entries:
+        try:
+            authorized = gate.authorize(entry)
+        except PolicyRefused as exc:
+            refusal = exc.refusal
+            refusals.append(refusal.as_dict())
+            _skip(
+                report,
+                log,
+                title=entry.title,
+                key=None,
+                category=None,
+                reason='policy',
+                detail=f'{refusal.code}: {refusal.reason}',
+            )
+            continue
+
+        spec = authorized.spec
+        if spec is None:  # pragma: no cover - authorize only returns allowed rows
+            continue
+        if spec.category not in _EXECUTORS:
+            _skip(
+                report,
+                log,
+                title=authorized.title,
+                key=spec.key,
+                category=spec.category.value,
+                reason='no executor',
+                detail=f'{spec.category.value!r} has no executor in this issue',
+            )
+            continue
+        if authorized.dispatch_target is None:
+            _skip(
+                report,
+                log,
+                title=authorized.title,
+                key=spec.key,
+                category=spec.category.value,
+                reason='no action',
+                detail='the row has no dispatchable action in this frame',
+            )
+            continue
+        if context.state.count(spec.key) >= spec.max_per_run:
+            _skip(
+                report,
+                log,
+                title=authorized.title,
+                key=spec.key,
+                category=spec.category.value,
+                reason='daily limit',
+                detail=f'{spec.key!r} already reached its {spec.max_per_run} completion(s) today',
+            )
+            continue
+        if len(steps) >= context.config.max_tasks:
+            _skip(
+                report,
+                log,
+                title=authorized.title,
+                key=spec.key,
+                category=spec.category.value,
+                reason='run budget',
+                detail=f'the task budget of {context.config.max_tasks} would stop the walk here',
+            )
+            continue
+        steps.append(
+            {
+                'order': len(steps) + 1,
+                'label': authorized.title,
+                'key': spec.key,
+                'category': spec.category.value,
+                'rule': spec.key,
+                'surface': surface.value,
+            },
+        )
+
+    detail = f'dry run: {len(steps)} task(s) planned, {len(refusals)} refusal(s); no tap was issued'
+    report.plan = {
+        'dry_run': True,
+        'surface': surface.value,
+        'steps': steps,
+        'refusals': refusals,
+        'taps_issued': 0,
+        'detail': detail,
+    }
+    report.status = RunStatus.PLANNED
+    report.detail = detail
+    log.info(
+        '%s',
+        _event(
+            'dry_run_plan',
+            surface=surface.value,
+            steps=[step['label'] for step in steps],
+            refusals=[refusal['label'] for refusal in refusals],
+            taps_issued=0,
+        ),
+    )
+    report.write()
 
 
 def _discover_or_fallback(
@@ -591,6 +771,9 @@ def _discover_or_fallback(
 def _dispatch_entry(context: RunContext, controller: Controller, entry: RosterEntry) -> EngineResult:
     spec = _spec(entry)
     category = spec.category
+    if category not in _EXECUTORS:
+        raise ValueError(f'{category.value!r} has no executor')
+    authorization_of(entry)
     common: dict[str, Any] = {
         'navigate': context.navigate,
         'templates': context.templates,
@@ -602,7 +785,7 @@ def _dispatch_entry(context: RunContext, controller: Controller, entry: RosterEn
     }
 
     if category is TaskCategory.SIGN_IN:
-        return _run_signin(context, controller, spec, common)
+        return _run_signin(context, controller, entry, spec, common)
     if category is TaskCategory.QUIZ:
         return _from_executor(
             run_quiz_task(controller, context.capture, context.corpus, context.state, entry, **common)
@@ -619,7 +802,7 @@ def _dispatch_entry(context: RunContext, controller: Controller, entry: RosterEn
         return _from_executor(
             run_notifications_task(controller, context.capture, context.corpus, context.state, entry, **common),
         )
-    raise ValueError(f'{category.value!r} has no executor')
+    raise ValueError(f'{category.value!r} has no executor')  # pragma: no cover - guarded above
 
 
 def _dispatch_with_retry(
@@ -637,7 +820,18 @@ def _dispatch_with_retry(
     catch names it and stops the night.
     """
     log = context.logger if context.logger is not None else LOG
-    result = _attempt_dispatch(context, controller, entry)
+    try:
+        authorized = _authorize(context, entry)
+    except PolicyRefused as exc:
+        refusal = exc.refusal
+        return EngineResult(
+            outcome='skipped',
+            verification='policy',
+            detail=f'{refusal.code}: {refusal.reason}',
+            completed=False,
+            payload=refusal.as_dict(),
+        )
+    result = _attempt_dispatch(context, controller, authorized)
     if not result.completed:
         # A failed task is the first place a session that expired mid-walk is
         # visible. Detect it before spending the retry, so a signed-out app
@@ -660,7 +854,16 @@ def _dispatch_with_retry(
         ),
     )
     context.sleep(delay)
-    return _attempt_dispatch(context, controller, entry)
+    return _attempt_dispatch(context, controller, authorized)
+
+
+def _authorize(context: RunContext, entry: RosterEntry) -> RosterEntry:
+    """Resolve, record and authorise one row at the single dispatch point."""
+    gate = context.gate
+    if gate is None:
+        gate = DispatchGate(context.catalogue, logger=context.logger)
+        context.gate = gate
+    return gate.authorize(entry)
 
 
 def _attempt_dispatch(
@@ -669,8 +872,14 @@ def _attempt_dispatch(
     entry: RosterEntry,
 ) -> EngineResult:
     try:
-        return _dispatch_entry(context, controller, entry)
+        guard = context.safety
+        if guard is None:  # pragma: no cover - run_once always installs one
+            return _dispatch_entry(context, controller, entry)
+        with guard.task(entry.title):
+            return _dispatch_entry(context, controller, entry)
     except RunInterrupted:
+        raise
+    except RunAborted:
         raise
     except Exception as exc:
         named = _task_exception(exc)
@@ -787,6 +996,7 @@ def _retrying_capture(
 def _run_signin(
     context: RunContext,
     controller: Controller,
+    entry: RosterEntry,
     spec: AllowedTaskSpec,
     common: dict[str, Any],
 ) -> EngineResult:
@@ -796,6 +1006,7 @@ def _run_signin(
     sign-in executor is given the measured shortcut route first. It then claims
     the streak and the boost row itself, using its own state checks for each.
     """
+    authorization = authorization_of(entry)
     if context.state.done_today('daily_checkin') and context.state.done_today('boost_checkin'):
         return EngineResult(
             outcome='skipped',
@@ -810,6 +1021,7 @@ def _run_signin(
         context.capture,
         context.corpus,
         context.state,
+        authorization=authorization,
         snapshot=None,
         templates=common['templates'],
         settle=common['settle'],
@@ -988,11 +1200,18 @@ def _record_policy_skips(
     roster: Roster | None,
     *,
     logger: logging.Logger | None = None,
+    gate: DispatchGate | None = None,
 ) -> None:
     if roster is None:
         return
     for entry in roster.entries:
         if entry.denied:
+            refusal = gate.refusal_for(entry) if gate is not None else None
+            detail = (
+                f'{refusal.code}: {refusal.reason}'
+                if refusal is not None
+                else (entry.reason or 'refused by the default-deny policy')
+            )
             _skip(
                 report,
                 logger,
@@ -1000,7 +1219,7 @@ def _record_policy_skips(
                 key=None,
                 category=None,
                 reason='policy',
-                detail=entry.reason or 'refused by the default-deny policy',
+                detail=detail,
             )
         elif entry.spec is not None and entry.spec.category not in _EXECUTORS:
             _skip(
@@ -1141,6 +1360,8 @@ def _record_balance_before(
         return
     recorded = _record_frame(report, artifacts, result.snapshot, 'balance-before', log)
     report.balance_before = read_coin_balance(recorded)
+    if context.safety is not None:
+        context.safety.expect_balance(report.balance_before)
     if report.balance_before is None:
         report.balance_note = 'the coins page did not render a readable balance before the first task'
 

@@ -39,8 +39,8 @@ __all__ = [
     'prune_runs',
 ]
 
-RUN_REPORT_SCHEMA = 3
-"""The on-disk schema this module reads or writes; 3 adds the failure taxonomy."""
+RUN_REPORT_SCHEMA = 4
+"""The on-disk schema this module reads or writes; 4 adds plan and abort records."""
 
 _RUN_ID_PATTERN = re.compile(r'^\d{8}T\d{6}Z$')
 """The only directory names retention may delete."""
@@ -53,6 +53,8 @@ class RunStatus(StrEnum):
     COMPLETED = 'completed'
     BUDGET = 'budget'
     STOPPED = 'stopped'
+    PLANNED = 'planned'
+    ABORTED = 'aborted'
     FAILED = 'failed'
 
 
@@ -161,6 +163,9 @@ class RunReport:
         self.popups_closed: dict[str, int] = {}
         self.shots: dict[str, str] = {}
         self.notification: dict[str, Any] | None = None
+        self.plan: dict[str, Any] | None = None
+        self.plan_note: str | None = None
+        self.abort: dict[str, Any] | None = None
         self.artifact_errors: list[str] = []
         self.tasks: list[TaskRecord] = []
         self.skipped: list[SkippedRecord] = []
@@ -223,7 +228,7 @@ class RunReport:
     @property
     def ok(self) -> bool:
         """Whether the run itself succeeded, even if a task did not."""
-        return self.status in (RunStatus.COMPLETED, RunStatus.BUDGET)
+        return self.status in (RunStatus.COMPLETED, RunStatus.BUDGET, RunStatus.PLANNED)
 
     def record_shot(self, name: str, image: Path) -> None:
         """Remember one frame the artifact store wrote, relative to the run."""
@@ -346,6 +351,9 @@ class RunReport:
             'popups_closed': dict(self.popups_closed),
             'shots': dict(self.shots),
             'notification': self.notification,
+            'plan': self.plan,
+            'plan_note': self.plan_note,
+            'abort': self.abort,
             'artifact_errors': list(self.artifact_errors),
             'returned_to_coins_page': self.returned_to_coins_page,
             'return_error': self.return_error,
@@ -395,6 +403,12 @@ class RunReport:
             lines.append(f'- **Detail:** {self.detail}')
         if self.route_error:
             lines.append(f'- **Route fallback:** {self.route_error}')
+        if self.plan is not None:
+            lines.append(f'- **Plan (dry run):** {_plan_summary(self.plan)}')
+        if self.plan_note:
+            lines.append(f'- **Plan note:** {self.plan_note}')
+        if self.abort is not None:
+            lines.append(f'- **Abort:** {_abort_summary(self.abort)}')
         if self.failure is not None:
             lines.append(f'- **Failure:** {_failure_summary(self.failure)}')
         if self.error:
@@ -576,6 +590,22 @@ def _notification_summary(notification: dict[str, Any]) -> str:
     if not notification.get('attempted', False):
         return f'not attempted ({notification.get("reason", "not requested")})'
     return f'failed via {notification.get("sink", "unknown")}: {notification.get("error", "unknown error")}'
+
+
+def _plan_summary(plan: dict[str, Any]) -> str:
+    steps = plan.get('steps') or []
+    refusals = plan.get('refusals') or []
+    detail = plan.get('detail') or 'no plan was produced'
+    return f'{detail} (surface: {plan.get("surface", "unknown")}, {len(steps)} step(s), {len(refusals)} refusal(s))'
+
+
+def _abort_summary(abort: dict[str, Any]) -> str:
+    code = abort.get('code', 'unknown')
+    reason = abort.get('reason', 'no reason recorded')
+    screen = abort.get('screen') or {}
+    labels = screen.get('labels') or []
+    shown = ', '.join(str(label) for label in labels[:3]) or 'no readable labels'
+    return f'{code} — {reason} (screen: {screen.get("state", "?")}/{screen.get("surface", "?")}: {shown})'
 
 
 def _device_summary(hygiene: dict[str, Any] | None) -> str:

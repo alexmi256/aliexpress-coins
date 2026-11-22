@@ -86,6 +86,9 @@ def test_the_retry_table_spells_out_the_three_behaviours() -> None:
         FailureCode.FRAME_UNDECODABLE,
         FailureCode.APP_LOGGED_OUT,
         FailureCode.POPUP_UNCLOSABLE,
+        FailureCode.UNEXPECTED_SCREEN,
+        FailureCode.DANGEROUS_CONTROL,
+        FailureCode.BALANCE_DECREASED,
         FailureCode.INTERNAL_ERROR,
     }
     assert FAILURE_TABLE[FailureCode.NAVIGATION_FAILED].retry is RetryScope.NONE
