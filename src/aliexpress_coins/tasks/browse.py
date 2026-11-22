@@ -1177,6 +1177,13 @@ def run_browse_task(
         if verify_sweep is not None:
             dismissals.append(verify_sweep)
         if verify_return is not None:
+            verify_return = replace(
+                verify_return,
+                attempts=return_state.attempts + verify_return.attempts,
+                navigations=return_state.navigations + verify_return.navigations,
+                history=return_state.history + verify_return.history,
+                elapsed=return_state.elapsed + verify_return.elapsed,
+            )
             return_state = verify_return
             if not verify_return.returned:
                 return _result(
@@ -1721,16 +1728,18 @@ def _verdict(
             evidence=evidence,
         )
     if row is None:
-        if trusted and has_task_rows(snapshot):
+        # Absence is only proof on the full boost list. The inline coin-page
+        # rows are a conditional subset, so a missing row there proves nothing.
+        if trusted and is_boost_page(snapshot) and has_task_rows(snapshot):
             return _Verdict(
                 status='row_gone',
                 decisive=True,
-                detail=f'{title!r} is gone from a populated task surface',
+                detail=f'{title!r} is gone from the populated boost list',
                 badge=badge,
                 evidence=evidence,
             )
         return _Verdict(
-            status='no_observation' if not trusted else 'no_change',
+            status='no_observation',
             decisive=False,
             detail=f'{title!r} was not found and the surface cannot prove it is gone',
             badge=badge,

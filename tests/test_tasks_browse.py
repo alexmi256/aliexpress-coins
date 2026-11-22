@@ -808,6 +808,9 @@ def test_run_browse_task_completes_and_quotes_the_badge_change(
     assert result.badge_change == '0/6 -> 1/6'
     assert result.recorded is True
     assert result.returned is True
+    assert result.return_state is not None
+    assert result.return_state.attempts == 2
+    assert result.return_state.navigations == (SurfaceRoute.SHORTCUT, SurfaceRoute.SHORTCUT)
     assert result.completed is True
     assert result.failed is False
     assert result.skipped is False
@@ -2036,6 +2039,51 @@ def test_run_browse_task_fails_on_the_inline_route_when_the_row_is_unchanged(
     assert result.outcome is BrowseOutcome.FAILED
     assert result.verification == 'no_change'
     assert result.returned is True
+
+
+def test_run_browse_task_does_not_trust_row_absence_on_the_inline_coin_page(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    other_inline = _snapshot(
+        _box('Coins', 101, 194, 254, 242),
+        _box('Coins credits to redeem', 59, 567, 552, 617),
+        _box('Daily coins', 66, 919, 320, 978),
+        _box('Take the coins quiz', 60, 1200, 700, 1250),
+        _box('GO', 1000, 1260, 1080, 1310),
+    )
+    world = _World(
+        series={
+            'boost': (_boost_frame(),),
+            'destination': (_destination(chip=None), _destination(chip=None)),
+            'coins': (other_inline,),
+        },
+        transitions={('boost', 'go'): 'destination'},
+    )
+    state = _state(tmp_path)
+
+    result = run_browse_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        state,
+        _entry(catalogue),
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        load_timeout=1.0,
+        chip_interval=0.5,
+        return_timeout=1.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is BrowseOutcome.FAILED
+    assert result.verification == 'no_observation'
+    assert result.recorded is False
+    assert result.returned is True
+    assert state.count('sponsored_items') == 0
 
 
 def test_run_browse_task_reports_no_observation_on_an_empty_boost_list(
