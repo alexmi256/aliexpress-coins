@@ -494,13 +494,16 @@ flows:
           - "Allow AliExpress to send you notifications?"
         control:
           kind: label
-          label: "Don't allow"
-        forbidden_control: Allow
+          label: Allow
+          alternatives: ["Don't allow (denial path)"]
         fixture: tests/data/popups/system_notification_permission.png
         notes: >-
-          Android runtime POST_NOTIFICATIONS dialog above the app prompt.
-          `Don't allow` is the only safe control; never tap `Allow` (the reward
-          does not require the permission — see entry).
+          Android runtime POST_NOTIFICATIONS dialog above the app prompt. The
+          #28 notifications executor handles this dialog itself and grants via
+          `Allow`; a dialog with only a denial path records `permission_denied`.
+          The generic popup corpus still closes the dialog with `Don't allow`
+          because it must never grant on behalf of another task. The row's
+          reward does not require the permission (see entry).
 
       - key: os_settings
         status: reproduced
