@@ -1,10 +1,11 @@
-"""The run loop's local memory: per-day state, reports and recovery (#30).
+"""The run loop: per-day state, the engine, its report and the nightly schedule.
 
-The first piece is :class:`~aliexpress_coins.runner.state.DailyStateStore`.
-Executors (#23, #24) call :meth:`~aliexpress_coins.runner.state.DailyStateStore.record`
-after the screen has confirmed a completion, and the dispatch point asks
-:meth:`~aliexpress_coins.runner.state.DailyStateStore.done_today` before
-re-claiming a one-shot task.
+:class:`~aliexpress_coins.runner.state.DailyStateStore` is the day's memory.
+:func:`~aliexpress_coins.runner.engine.run_once` walks the roster and dispatches
+each allowed row to its executor, bounded by the task and wall-clock budgets.
+:class:`~aliexpress_coins.runner.report.RunReport` is written atomically on every
+path, and :func:`~aliexpress_coins.runner.schedule.run_schedule` asks APScheduler
+for the next jittered local fire time until SIGTERM.
 """
 
 from aliexpress_coins.runner.errors import RunnerError, StateError, StateReadError, StateWriteError

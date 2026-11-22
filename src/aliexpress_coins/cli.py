@@ -1,24 +1,37 @@
-"""Command-line entry point for the collector (issue #34)."""
+"""Command-line entry point for the collector (issues #29 and #34)."""
 
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import signal
+import sys
 import threading
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import replace
+from datetime import UTC, datetime
 from types import FrameType
+from typing import Any
 
 from aliexpress_coins import __version__
 from aliexpress_coins.doctor import run_doctor
+from aliexpress_coins.runner.config import RunConfig
+from aliexpress_coins.runner.engine import make_live_context, run_once
+from aliexpress_coins.runner.errors import ConfigError
+from aliexpress_coins.runner.report import RunReport
+from aliexpress_coins.runner.schedule import run_schedule
+from aliexpress_coins.runner.state import DailyStateStore
+
+LOGGER_NAME = 'aliexpress_coins.cli'
 
 
 def run_idle() -> int:
     """Block until SIGTERM or SIGINT.
 
-    This is the container smoke-test command: the scheduler that replaces it
-    lands in #29, but the signal handling is already the real behaviour a
-    `docker stop` relies on.
+    This remains the container smoke-test command; the nightly entry point is
+    ``run --schedule``. The signal handling is the same real behaviour a
+    ``docker stop`` relies on.
     """
     stop = threading.Event()
 
@@ -37,11 +50,17 @@ def run_idle() -> int:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Parse the command line and dispatch one subcommand."""
+    _configure_logging()
     parser = argparse.ArgumentParser(prog='aliexpress-coins')
     subparsers = parser.add_subparsers(dest='command')
     subparsers.add_parser('version', help='print the installed version')
     subparsers.add_parser('doctor', help='run read-only pre-flight checks')
     subparsers.add_parser('idle', help='block until SIGTERM (container smoke test)')
+    run_parser = subparsers.add_parser('run', help='run one night, or run the nightly daemon')
+    group = run_parser.add_mutually_exclusive_group(required=True)
+    group.add_argument('--once', action='store_true', help='perform exactly one night and exit')
+    group.add_argument('--schedule', action='store_true', help='wait for the configured nightly time')
+    run_parser.add_argument('--dry-run', action='store_true', help='plan taps without sending them to the device')
     args = parser.parse_args(argv)
 
     if args.command == 'version':
@@ -51,6 +70,140 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_doctor(os.environ)
     if args.command == 'idle':
         return run_idle()
+    if args.command == 'run':
+        if args.once:
+            return run_once_command(os.environ, dry_run=args.dry_run)
+        return run_schedule_command(os.environ, dry_run=args.dry_run)
 
     parser.print_help()
     return 2
+
+
+def run_once_command(
+    environment: Mapping[str, str] | None = None,
+    *,
+    dry_run: bool = False,
+    root: str | None = None,
+) -> int:
+    """Perform one night and return the process exit code."""
+    try:
+        config = _config(environment, dry_run=dry_run, root=root)
+        stop = threading.Event()
+        _install_stop_handlers(stop)
+        try:
+            context = make_live_context(config, stop=stop)
+            report = run_once(context)
+        finally:
+            _restore_stop_handlers()
+    except ConfigError as exc:
+        _error(f'configuration: {exc}')
+        return 2
+    except Exception as exc:
+        _error(f'{type(exc).__name__}: {exc}')
+        return 1
+    _print_report(report)
+    return 0 if report.ok else 1
+
+
+def run_schedule_command(
+    environment: Mapping[str, str] | None = None,
+    *,
+    dry_run: bool = False,
+    root: str | None = None,
+) -> int:
+    """Run the nightly daemon until SIGTERM/SIGINT, then return its exit code."""
+    try:
+        config = _config(environment, dry_run=dry_run, root=root)
+        if config.device is None:
+            raise ConfigError('AECOINS_DEVICE is not set; the scheduler needs a device serial')
+        stop = threading.Event()
+        _install_stop_handlers(stop)
+
+        def wall_clock() -> datetime:
+            return datetime.now(UTC)
+
+        state = DailyStateStore(
+            config.state_dir,
+            clock=lambda: wall_clock().astimezone(config.timezone),
+        )
+
+        def night() -> RunReport:
+            context = make_live_context(config, stop=stop, wall_clock=wall_clock)
+            return run_once(context)
+
+        try:
+            return run_schedule(
+                config,
+                run_night=night,
+                state=state,
+                clock=wall_clock,
+                stop=stop,
+            )
+        finally:
+            _restore_stop_handlers()
+    except ConfigError as exc:
+        _error(f'configuration: {exc}')
+        return 2
+    except Exception as exc:
+        _error(f'{type(exc).__name__}: {exc}')
+        return 1
+
+
+def _configure_logging() -> None:
+    """Send the runner's structured events to the container's log stream."""
+    level = os.environ.get('AECOINS_LOG_LEVEL', 'INFO').strip().upper() or 'INFO'
+    logging.basicConfig(
+        level=level,
+        format='%(asctime)s %(levelname)s %(message)s',
+    )
+
+
+def _config(
+    environment: Mapping[str, str] | None,
+    *,
+    dry_run: bool,
+    root: str | None,
+) -> RunConfig:
+    config = RunConfig.from_environment(environment, root=root)
+    if dry_run:
+        config = replace(config, dry_run=True)
+    return config
+
+
+_HANDLERS: dict[int, Any] = {}
+
+
+def _install_stop_handlers(stop: threading.Event) -> None:
+    def _request_stop(signum: int, _frame: FrameType | None) -> None:
+        stop.set()
+
+    for name in (signal.SIGTERM, signal.SIGINT):
+        _HANDLERS[name] = signal.getsignal(name)
+        signal.signal(name, _request_stop)
+
+
+def _restore_stop_handlers() -> None:
+    for name, previous in _HANDLERS.items():
+        signal.signal(name, previous)
+    _HANDLERS.clear()
+
+
+def _print_report(report: RunReport) -> None:
+    print(f'run {report.run_id}: {report.status.value}', flush=True)
+    if report.detail:
+        print(f'detail: {report.detail}', flush=True)
+    print(f'summary: {report.summary_path}', flush=True)
+    print(f'run.json: {report.json_path}', flush=True)
+
+
+def _error(message: str) -> None:
+    logging.getLogger(LOGGER_NAME).error('%s', message)
+    print(f'error: {message}', file=sys.stderr, flush=True)
+
+
+__all__ = [
+    'main',
+    'run_idle',
+    'run_once_command',
+    'run_schedule_command',
+]

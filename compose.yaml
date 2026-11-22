@@ -8,16 +8,20 @@ services:
     environment:
       AECOINS_DEVICE: ${AECOINS_DEVICE:-}
       AECOINS_MAX_TASKS_PER_RUN: ${AECOINS_MAX_TASKS_PER_RUN:-12}
+      AECOINS_RUN_BUDGET_SECONDS: ${AECOINS_RUN_BUDGET_SECONDS:-2700}
+      AECOINS_SCHEDULE_TIME: ${AECOINS_SCHEDULE_TIME:-03:30}
+      AECOINS_SCHEDULE_JITTER_SECONDS: ${AECOINS_SCHEDULE_JITTER_SECONDS:-180}
       AECOINS_RUNS_DIR: /app/runs
       AECOINS_STATE_DIR: /app/state
       TZ: ${TZ:-UTC}
+      AECOINS_TIMEZONE: ${AECOINS_TIMEZONE:-UTC}
     volumes:
       - runs:/app/runs
       - state:/app/state
     # Named volumes inherit the image's ownership, so the non-root collector
     # can write without a host-side chown. Inspect with `docker compose cp`.
     stop_grace_period: 5s
-    command: ["python", "-m", "aliexpress_coins", "idle"]
+    command: ["python", "-m", "aliexpress_coins", "run", "--schedule"]
 
 volumes:
   runs:

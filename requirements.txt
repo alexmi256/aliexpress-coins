@@ -27,7 +27,13 @@ colorlog==6.12.0
 # deny rule fails the gate rather than the nightly run.
 pydantic==2.14.4
 
+# Nightly schedule (issue #29). APScheduler supplies the CronTrigger, the local
+# timezone arithmetic and the jitter; the runner only asks it for the next fire
+# time, so there is no scheduler thread to stop on SIGTERM.
+apscheduler==3.11.3
+
 # Transitive pins reported by pip for the runtime packages above.
+tzlocal==5.4.5
 annotated-types==0.8.0
 certifi==2026.11.20
 charset-normalizer==3.5.2
