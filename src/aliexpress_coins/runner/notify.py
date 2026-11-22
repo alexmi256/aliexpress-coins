@@ -20,7 +20,7 @@ import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from aliexpress_coins.runner.config import RunConfig
@@ -110,15 +110,17 @@ def _apprise_endpoint(url: str, key: str | None) -> str:
 
     ``AECOINS_APPRISE_URL`` is normally the server base. Accepting a full
     ``/notify`` (or ``/notify/<key>``) URL as well means an operator who copied
-    an endpoint from the Apprise UI is not silently given a doubled path.
+    an endpoint from the Apprise UI is not silently given a doubled path. An
+    explicit ``/notify/<key>`` path wins over the separate key, and any query
+    string or fragment is preserved rather than being folded into the path.
     """
-    base = url.rstrip('/')
-    path = urlsplit(base).path.rstrip('/')
+    parts = urlsplit(url)
+    path = parts.path.rstrip('/')
     if path.endswith('/notify'):
-        return base if key is None else f'{base}/{quote(key, safe="")}'
-    if '/notify/' in path:
-        return base
-    return f'{base}/notify' if key is None else f'{base}/notify/{quote(key, safe="")}'
+        path = path if key is None else f'{path}/{quote(key, safe="")}'
+    elif '/notify/' not in path:
+        path = f'{path}/notify' if key is None else f'{path}/notify/{quote(key, safe="")}'
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
 
 
 @dataclass(frozen=True, slots=True)

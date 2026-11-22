@@ -1258,7 +1258,9 @@ def _dismissal_payloads(value: Any) -> list[dict[str, Any]]:
     return found
 
 
-def _should_notify(report: RunReport, *, notify_on_empty: bool) -> bool:
+def _should_notify(report: RunReport, *, notify_on_empty: bool, notify_every_run: bool = False) -> bool:
+    if notify_every_run:
+        return True
     if not report.ok:
         return True
     return bool(notify_on_empty and not any(task.completed for task in report.tasks))
@@ -1342,7 +1344,11 @@ def _delivery_error(exc: Exception) -> str:
 def _notify(context: RunContext, report: RunReport, log: logging.Logger) -> None:
     """Deliver one notification after the run's own outcome is already written."""
     notifier = context.notifier
-    if notifier is None or not _should_notify(report, notify_on_empty=context.config.notify_on_empty):
+    if notifier is None or not _should_notify(
+        report,
+        notify_on_empty=context.config.notify_on_empty,
+        notify_every_run=context.config.apprise_url is not None,
+    ):
         return
     name = getattr(notifier, 'name', type(notifier).__name__)
     record: dict[str, Any] = {'attempted': True, 'ok': False, 'sink': name, 'error': None}

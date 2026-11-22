@@ -2198,6 +2198,46 @@ def test_a_night_that_claims_nothing_notifies_only_when_configured(
     assert noisy_report.notification == {'attempted': True, 'ok': True, 'sink': 'webhook', 'error': None}
 
 
+def test_a_completed_run_with_a_task_sends_one_apprise_message(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boost_frame: Snapshot,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    wanted = ('coins_quiz',)
+    roster = replace(full_roster, entries=tuple(entry for entry in full_roster.entries if entry.key in wanted))
+    frame = _boost_frame(*wanted)
+    _surface(monkeypatch, roster, frame)
+    notifier = _Notifier()
+    notifier.name = 'apprise'
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+        notifier=notifier,
+    )
+    context.config = replace(context.config, apprise_url='https://apprise.example')
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        if entry.key is not None:
+            _context.state.record(entry.key)
+        return EngineResult('completed', 'fake', 'done', True, {'key': entry.key})
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.COMPLETED
+    assert report.ok is True
+    assert len(notifier.messages) == 1
+    assert notifier.messages[0].status == 'completed'
+    assert 'tasks: completed=1, skipped=0, failed=0' in notifier.messages[0].body
+    assert report.notification == {'attempted': True, 'ok': True, 'sink': 'apprise', 'error': None}
+
+
 def test_retention_prunes_old_runs_after_the_current_report_is_written(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

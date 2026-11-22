@@ -90,9 +90,24 @@ def test_apprise_without_a_key_posts_to_the_stateless_notify_endpoint() -> None:
     assert json.loads(opener.requests[0].data)['type'] == 'success'
 
 
-def test_apprise_accepts_an_already_complete_notify_url() -> None:
-    assert AppriseSink('https://apprise.example/notify').endpoint == 'https://apprise.example/notify'
-    assert AppriseSink('https://apprise.example/notify/coins').endpoint == 'https://apprise.example/notify/coins'
+@pytest.mark.parametrize(
+    ('url', 'key', 'expected'),
+    [
+        ('https://apprise.example/notify', None, 'https://apprise.example/notify'),
+        ('https://apprise.example/notify', 'coins', 'https://apprise.example/notify/coins'),
+        ('https://apprise.example/notify/coins', None, 'https://apprise.example/notify/coins'),
+        ('https://apprise.example/notify/coins', 'stale', 'https://apprise.example/notify/coins'),
+        ('https://apprise.example/notify?x=1', 'coins', 'https://apprise.example/notify/coins?x=1'),
+        ('https://apprise.example?x=1', 'coins', 'https://apprise.example/notify/coins?x=1'),
+        (
+            'https://apprise.example/base/?token=1#status',
+            'coins',
+            'https://apprise.example/base/notify/coins?token=1#status',
+        ),
+    ],
+)
+def test_apprise_endpoint_keeps_an_explicit_path_and_query_intact(url: str, key: str | None, expected: str) -> None:
+    assert AppriseSink(url, key=key).endpoint == expected
 
 
 @pytest.mark.parametrize(

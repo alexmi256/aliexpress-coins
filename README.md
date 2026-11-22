@@ -76,9 +76,10 @@ report path; it never contains the account name, an absolute balance or order
 details. Set `AECOINS_NOTIFY_BALANCE_DELTA=true` to add the balance delta. A
 broken Apprise endpoint is logged with its exception class and HTTP status only,
 and never changes the run's exit status. The older `AECOINS_WEBHOOK_URL` and
-`AECOINS_NTFY_TOPIC` settings still work, but use only one transport so a run
-sends one message. A stop signal ends the daemon within the compose grace period
-and still leaves the report written atomically.
+`AECOINS_NTFY_TOPIC` settings still work with the failure-only selection and
+`AECOINS_NOTIFY_ON_EMPTY`; use only one transport so a run sends one message. A
+stop signal ends the daemon within the compose grace period and still leaves the
+report written atomically.
 
 ### Quality gate
 
