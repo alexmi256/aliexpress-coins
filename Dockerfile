@@ -51,4 +51,4 @@ ENV AECOINS_RUNS_DIR=/app/runs \
 
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["python", "-m", "aliexpress_coins", "idle"]
+CMD ["python", "-m", "aliexpress_coins", "run", "--schedule"]

@@ -67,8 +67,8 @@ def nightly_trigger(config: RunConfig) -> CronTrigger:
 
 
 def should_skip_night(state: NightlyState) -> bool:
-    """Whether today already has a run recorded by the daily store."""
-    return state.snapshot().run_count > 0
+    """Whether today already has a completed night recorded by the daily store."""
+    return state.snapshot().completed_night
 
 
 def run_schedule(
@@ -103,23 +103,42 @@ def run_schedule(
         )
         if stop.wait(delay):
             break
-        if should_skip_night(state):
+        try:
+            skip = should_skip_night(state)
+        except Exception as exc:
+            # An unreadable daily store must not take the daemon down. Run the
+            # night; a duplicate is recoverable, a dead scheduler is not.
+            skip = False
+            log.error(
+                '%s',
+                _event('schedule_error', phase='state_check', detail=f'{type(exc).__name__}: {exc}'),
+            )
+        if skip:
             log.info(
                 '%s',
-                _event('schedule_skipped', reason='already ran today', fire_time=next_fire.isoformat()),
+                _event('schedule_skipped', reason='already completed today', fire_time=next_fire.isoformat()),
             )
         else:
             log.info('%s', _event('schedule_start', fire_time=next_fire.isoformat()))
-            report = run_night()
-            log.info(
-                '%s',
-                _event(
-                    'schedule_finished',
-                    run_id=report.run_id,
-                    status=report.status.value,
-                    budget_used_seconds=report.budget_used_seconds,
-                ),
-            )
+            try:
+                report = run_night()
+            except Exception as exc:
+                # The night failed; the schedule did not. Keep the daemon alive
+                # and wait for tomorrow's fire instead of exiting the container.
+                log.error(
+                    '%s',
+                    _event('schedule_error', phase='run', detail=f'{type(exc).__name__}: {exc}'),
+                )
+            else:
+                log.info(
+                    '%s',
+                    _event(
+                        'schedule_finished',
+                        run_id=report.run_id,
+                        status=report.status.value,
+                        budget_used_seconds=report.budget_used_seconds,
+                    ),
+                )
         next_fire = trigger.get_next_fire_time(next_fire, clock())
         if next_fire is None:  # pragma: no cover
             break

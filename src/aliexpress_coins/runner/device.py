@@ -14,13 +14,14 @@ clock settle, and only then does :meth:`AdbDevice.navigate` fire the route.
 
 from __future__ import annotations
 
-import re
 import subprocess
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
+from aliexpress_coins.perception.errors import SnapshotError
+from aliexpress_coins.perception.geometry import parse_wm_size
 from aliexpress_coins.runner.errors import DeviceError
 from aliexpress_coins.tasks.surface import SHORTCUT_DEEP_LINK, SurfaceRoute
 
@@ -75,6 +76,10 @@ class HygieneDevice(Protocol):
         """Fire one navigation route (the app is already warm)."""
         ...
 
+    def restore(self) -> None:
+        """Restore any device setting this hygiene pass changed."""
+        ...
+
 
 @dataclass(frozen=True, slots=True)
 class HygieneReport:
@@ -120,6 +125,7 @@ class AdbDevice:
         self._timeout = timeout
         self._app_settle_seconds = app_settle_seconds
         self._settle = settle
+        self._restore_rotation: tuple[str, str] | None = None
 
     def prepare(self) -> HygieneReport:
         """Connect if needed, wake the screen and warm the app.
@@ -150,6 +156,10 @@ class AdbDevice:
         size = self._shell('wm', 'size', why='read the panel orientation before capture')
         rotation = _portrait_rotation(size)
         if rotation is not None:
+            previous_auto = _setting_value(self._shell_ok('settings', 'get', 'system', 'accelerometer_rotation'))
+            previous_rotation = _setting_value(self._shell_ok('settings', 'get', 'system', 'user_rotation'))
+            if previous_auto is not None and previous_rotation is not None:
+                self._restore_rotation = (previous_auto, previous_rotation)
             self._shell_ok('settings', 'put', 'system', 'accelerometer_rotation', '0')
             self._shell_ok('settings', 'put', 'system', 'user_rotation', str(rotation))
 
@@ -177,6 +187,15 @@ class AdbDevice:
             SHORTCUT_DEEP_LINK,
             why='take the measured shortcut route to the coin page',
         )
+
+    def restore(self) -> None:
+        """Put the rotation settings back exactly as they were before ``prepare``."""
+        if self._restore_rotation is None:
+            return
+        auto, rotation = self._restore_rotation
+        self._shell_ok('settings', 'put', 'system', 'accelerometer_rotation', auto)
+        self._shell_ok('settings', 'put', 'system', 'user_rotation', rotation)
+        self._restore_rotation = None
 
     def _state(self) -> tuple[str | None, str]:
         result = self._run(('adb', '-s', self.serial, 'get-state'))
@@ -206,24 +225,25 @@ class AdbDevice:
             raise DeviceError(f'could not run adb: {exc}') from exc
 
 
-_SIZE = re.compile(r'(?P<width>\d+)\s*x\s*(?P<height>\d+)')
-
-
 def _portrait_rotation(size_output: str) -> int | None:
     """Choose the rotation that makes the screencap taller than it is wide.
 
     ``wm size`` reports the panel's physical (or overridden) dimensions, not the
     current rotation. A landscape panel needs ``user_rotation=1`` to produce the
     measured portrait 1200x2000 frame; an already-portrait panel needs 0. An
-    unparseable output is left alone rather than guessed at.
+    unparseable output is left alone rather than guessed at. ``parse_wm_size``
+    already prefers an override line over the physical one.
     """
-    matches = list(_SIZE.finditer(size_output))
-    if not matches:
+    try:
+        width, height = parse_wm_size(size_output)
+    except SnapshotError:
         return None
-    last = matches[-1]
-    width = int(last.group('width'))
-    height = int(last.group('height'))
     return 1 if width > height else 0
+
+
+def _setting_value(output: str) -> str | None:
+    value = output.strip()
+    return value if value.isdigit() else None
 
 
 def _is_network_serial(serial: str) -> bool:

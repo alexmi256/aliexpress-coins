@@ -46,6 +46,8 @@ def test_prepare_checks_the_device_wakes_it_and_warms_the_app() -> None:
         _ok(),
         _ok(),
         _ok('Physical size: 2000x1200'),
+        _ok('1'),
+        _ok('0'),
         _ok(),
         _ok(),
         _ok('Starting: Intent'),
@@ -69,10 +71,40 @@ def test_prepare_checks_the_device_wakes_it_and_warms_the_app() -> None:
         ('adb', '-s', 'usb-serial', 'shell', 'input', 'keyevent', 'KEYCODE_WAKEUP'),
         ('adb', '-s', 'usb-serial', 'shell', 'wm', 'dismiss-keyguard'),
         ('adb', '-s', 'usb-serial', 'shell', 'wm', 'size'),
+        ('adb', '-s', 'usb-serial', 'shell', 'settings', 'get', 'system', 'accelerometer_rotation'),
+        ('adb', '-s', 'usb-serial', 'shell', 'settings', 'get', 'system', 'user_rotation'),
         ('adb', '-s', 'usb-serial', 'shell', 'settings', 'put', 'system', 'accelerometer_rotation', '0'),
         ('adb', '-s', 'usb-serial', 'shell', 'settings', 'put', 'system', 'user_rotation', '1'),
         ('adb', '-s', 'usb-serial', 'shell', 'am', 'start', '-n', APP_ACTIVITY),
     ]
+
+
+def test_restore_puts_the_previous_rotation_settings_back() -> None:
+    runner = _Runner(
+        _ok('device'),
+        _ok(),
+        _ok(),
+        _ok('Physical size: 2000x1200'),
+        _ok('1'),
+        _ok('0'),
+        _ok(),
+        _ok(),
+        _ok('Starting: Intent'),
+        _ok(),
+        _ok(),
+    )
+    device = AdbDevice('usb-serial', runner=runner, app_settle_seconds=0)
+    device.prepare()
+
+    device.restore()
+
+    assert runner.calls[-2:] == [
+        ('adb', '-s', 'usb-serial', 'shell', 'settings', 'put', 'system', 'accelerometer_rotation', '1'),
+        ('adb', '-s', 'usb-serial', 'shell', 'settings', 'put', 'system', 'user_rotation', '0'),
+    ]
+    calls = len(runner.calls)
+    device.restore()
+    assert len(runner.calls) == calls
 
 
 def test_a_network_serial_is_connected_when_get_state_fails_first() -> None:
@@ -83,6 +115,8 @@ def test_a_network_serial_is_connected_when_get_state_fails_first() -> None:
         _ok(),
         _ok(),
         _ok('Physical size: 1200x2000'),
+        _ok('1'),
+        _ok('0'),
         _ok(),
         _ok(),
         _ok(),
@@ -218,3 +252,34 @@ def test_the_real_subprocess_runner_returns_the_completed_process(monkeypatch: p
     assert result.stdout == b'out'
     assert result.stderr == b'err'
     assert seen == [(['adb', 'version'], 5.0)]
+
+
+def test_an_unparseable_panel_size_skips_the_rotation_lock() -> None:
+    runner = _Runner(_ok('device'), _ok(), _ok(), _ok('no dimensions here'), _ok('Starting: Intent'))
+    device = AdbDevice('usb-serial', runner=runner, app_settle_seconds=0)
+
+    device.prepare()
+
+    assert not any('settings' in call for call in runner.calls)
+
+
+def test_a_missing_previous_setting_still_locks_but_does_not_restore() -> None:
+    runner = _Runner(
+        _ok('device'),
+        _ok(),
+        _ok(),
+        _ok('Physical size: 2000x1200'),
+        _ok('null'),
+        _ok('0'),
+        _ok(),
+        _ok(),
+        _ok('Starting: Intent'),
+    )
+    device = AdbDevice('usb-serial', runner=runner, app_settle_seconds=0)
+    device.prepare()
+    calls = len(runner.calls)
+
+    device.restore()
+
+    assert len(runner.calls) == calls
+    assert ('adb', '-s', 'usb-serial', 'shell', 'settings', 'put', 'system', 'user_rotation', '1') in runner.calls

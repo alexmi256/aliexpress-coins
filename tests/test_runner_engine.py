@@ -87,6 +87,7 @@ class _Hygiene:
     def __init__(self, error: Exception | None = None) -> None:
         self.error = error
         self.prepared = 0
+        self.restored = 0
 
     def prepare(self) -> HygieneReport:
         self.prepared += 1
@@ -102,6 +103,9 @@ class _Hygiene:
 
     def navigate(self, route: SurfaceRoute) -> None:
         raise AssertionError(f'unexpected hygiene navigation {route}')
+
+    def restore(self) -> None:
+        self.restored += 1
 
 
 class _Navigate:
@@ -339,6 +343,7 @@ def test_a_full_walk_dispatches_in_reading_order_and_reports_the_task_budget(
     assert all(task.completed for task in report.tasks)
     assert report.returned_to_coins_page is True
     assert report.observations >= 3
+    assert context.state.snapshot().completed_night is False
     assert any(skip.key == 'notifications' and skip.reason == 'run budget' for skip in report.skipped)
     assert report.summary_path.is_file()
     assert report.json_path.is_file()
@@ -391,6 +396,7 @@ def test_a_wall_clock_budget_stops_before_the_first_task_and_lists_why(
     assert report.detail is not None
     assert 'wall-clock budget of 5s' in report.detail
     assert report.tasks == []
+    assert context.state.snapshot().completed_night is False
     assert any(skip.key == 'coins_quiz' and skip.reason == 'run budget' for skip in report.skipped)
 
 
@@ -428,6 +434,7 @@ def test_a_stop_request_ends_between_tasks_and_the_rest_is_reported(
     assert report.status is RunStatus.STOPPED
     assert [task.key for task in report.tasks] == ['coins_quiz']
     assert any(skip.key == 'notifications' and skip.reason == 'stopped' for skip in report.skipped)
+    assert context.state.snapshot().completed_night is False
     assert report.ok is False
 
 
@@ -468,17 +475,20 @@ def test_a_run_level_failure_still_writes_a_parseable_report(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
 ) -> None:
+    hygiene = _Hygiene(DeviceError('tablet absent'))
     context = _context(
         tmp_path,
         capture=_Capture(_boost_frame()),
         catalogue=catalogue,
         corpus=corpus,
-        hygiene=_Hygiene(DeviceError('tablet absent')),
+        hygiene=hygiene,
     )
     context.controller = None
 
     report = engine.run_once(context)
 
+    assert hygiene.restored == 1
+    assert context.state.snapshot().completed_night is False
     assert report.status is RunStatus.FAILED
     assert report.error is not None
     assert 'tablet absent' in report.error
@@ -552,6 +562,44 @@ def test_a_controller_factory_is_used_after_the_first_frame(
 
     assert report.status is RunStatus.COMPLETED
     assert created == [frame]
+    assert context.state.snapshot().completed_night is True
+    assert isinstance(context.hygiene, _Hygiene)
+    assert context.hygiene.restored == 1
+
+
+def test_an_unexpected_frame_geometry_is_refused_and_reported(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _snapshot(
+        _box('Coins credits to redeem', 100, 330, 700, 380),
+        _box('Daily coins', 100, 560, 500, 610),
+        size=(1080, 1920),
+    )
+    hygiene = _Hygiene()
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame),
+        catalogue=catalogue,
+        corpus=corpus,
+        hygiene=hygiene,
+    )
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.FAILED
+    assert report.error is not None
+    assert 'unsupported screen geometry' in report.error
+    assert '1080x1920' in report.error
+    assert report.geometry is not None
+    assert report.geometry['width'] == 1080
+    assert report.geometry['height'] == 1920
+    assert context.state.snapshot().completed_night is False
+    assert hygiene.restored == 1
+    payload = _report_payload(tmp_path)
+    assert payload['status'] == 'failed'
+    assert 'unsupported screen geometry' in payload['error']
 
 
 def test_dispatch_routes_each_category_to_its_executor(
@@ -726,6 +774,9 @@ def test_make_live_context_wraps_the_real_seams(
         def navigate(self, route: SurfaceRoute) -> None:
             navigated.append(route)
 
+        def restore(self) -> None:
+            navigated.append(SurfaceRoute.WIDGET)
+
     class FakeInput:
         def __init__(self, serial: str) -> None:
             assert serial == '192.168.8.65:5555'
@@ -765,6 +816,11 @@ def test_make_live_context_wraps_the_real_seams(
     assert controller.geometry == frame.geometry
     assert context.hygiene.prepare().serial == config.device
     assert SHORTCUT_DEEP_LINK.startswith('aliexpress://')
+    stop.set()
+    with pytest.raises(RunInterrupted):
+        context.sleep(1)
+    context.hygiene.restore()
+    assert navigated == [SurfaceRoute.SHORTCUT, SurfaceRoute.WIDGET]
 
 
 def test_make_live_context_requires_a_device(tmp_path: Path) -> None:
@@ -1253,3 +1309,59 @@ def test_next_entry_returns_none_for_only_an_unsupported_row(
     context = _context(tmp_path, capture=_Capture(_boost_frame()), catalogue=catalogue, corpus=corpus)
     shortcut = _entry(full_roster, 'coins_shortcut')
     assert engine._next_entry(replace(full_roster, entries=(shortcut,)), context.state, set()) is None
+
+
+def test_state_completion_failure_does_not_fail_a_finished_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _boost_header_frame()
+    _surface(monkeypatch, replace(full_roster, entries=()), frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+
+    def broken_complete() -> None:
+        raise OSError('state volume read-only')
+
+    monkeypatch.setattr(context.state, 'complete_night', broken_complete)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.COMPLETED
+    assert report.ok is True
+
+
+def test_hygiene_restore_failure_does_not_fail_a_finished_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _boost_header_frame()
+    _surface(monkeypatch, replace(full_roster, entries=()), frame)
+    hygiene = _Hygiene()
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+        hygiene=hygiene,
+    )
+
+    def broken_restore() -> None:
+        raise DeviceError('settings restore failed')
+
+    monkeypatch.setattr(hygiene, 'restore', broken_restore)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.COMPLETED
+    assert report.ok is True

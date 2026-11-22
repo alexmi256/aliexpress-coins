@@ -40,7 +40,7 @@ from aliexpress_coins.perception.state import CaptureSource
 from aliexpress_coins.perception.templates import TemplateStore, load_templates
 from aliexpress_coins.runner.config import RunConfig
 from aliexpress_coins.runner.device import AdbDevice, HygieneDevice
-from aliexpress_coins.runner.errors import ConfigError, RunInterrupted
+from aliexpress_coins.runner.errors import ConfigError, DeviceError, RunInterrupted
 from aliexpress_coins.runner.report import RunReport, RunStatus
 from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks.browse import return_to_coins_page, run_browse_task
@@ -261,6 +261,8 @@ def make_live_context(
         state=state,
         controller_factory=controller_for,
         templates=templates,
+        clock=time.monotonic,
+        sleep=sleep,
         wall_clock=wall_clock,
         stop=stop,
         logger=log,
@@ -313,6 +315,7 @@ def run_once(
         report.hygiene = hygiene.as_dict()
         frame = _capture(context.capture)
         report.geometry = _geometry(frame)
+        _require_supported_geometry(frame)
         report.balance_before = read_coin_balance(frame)
         log.info('%s', _event('run_hygiene', **hygiene.as_dict()))
 
@@ -323,7 +326,9 @@ def run_once(
         report.surface = roster.surface_variant.value if roster.surface_variant is not None else None
         report.write()
         context.state.begin_run(at=context.wall_clock())
-        observer = observer if observer is not None else _observer(context, report, roster)
+        observer = (
+            observer if observer is not None else _observer(context, report, roster, max_observations=task_limit + 2)
+        )
         _observe(context, controller, observer, route=roster.route)
         _record_policy_skips(report, roster)
         report.observations = observer.sequence
@@ -423,6 +428,15 @@ def run_once(
     finally:
         if controller is not None:
             _finish_on_coins_page(context, controller, report)
+        if status is RunStatus.COMPLETED:
+            try:
+                context.state.complete_night()
+            except Exception as exc:
+                log.warning('%s', _event('state_complete_failed', detail=f'{type(exc).__name__}: {exc}'))
+        try:
+            context.hygiene.restore()
+        except Exception as exc:
+            log.warning('%s', _event('hygiene_restore_failed', detail=f'{type(exc).__name__}: {exc}'))
         used = max(0.0, context.clock() - started)
         report.finish(status, detail=detail, budget_used_seconds=used, finished_at=context.wall_clock())
         report.write()
@@ -585,12 +599,19 @@ def _from_executor(result: ExecutorResult) -> EngineResult:
     )
 
 
-def _observer(context: RunContext, report: RunReport, roster: Roster) -> RosterObserver:
+def _observer(
+    context: RunContext,
+    report: RunReport,
+    roster: Roster,
+    *,
+    max_observations: int | None = None,
+) -> RosterObserver:
+    cap = context.config.max_tasks + 2 if max_observations is None else max_observations
     return RosterObserver(
         context.catalogue,
         previous=roster,
         log=RosterLog.for_run(context.config.runs_dir, report.run_id),
-        max_observations=max(2, context.config.max_tasks + 2),
+        max_observations=max(2, cap),
         clock=context.wall_clock,
         logger=context.logger,
     )
@@ -762,6 +783,22 @@ def _finish_on_coins_page(context: RunContext, controller: Controller, report: R
         report.returned_to_coins_page = False
         report.return_error = f'{type(exc).__name__}: {exc}'
         log.warning('%s', _event('return_failed', detail=report.return_error))
+
+
+def _require_supported_geometry(frame: Snapshot) -> None:
+    """Refuse a frame the measured coordinate and template tables do not fit.
+
+    The brief's FR-14 names an unexpected screen geometry as a refusal, not a
+    guess. #42 and #20 extend this with real device profiles; until then the
+    measured tablet profile is the only one this run may touch.
+    """
+    geometry = frame.geometry
+    if (geometry.width, geometry.height, geometry.density) != (1200, 2000, 240):
+        raise DeviceError(
+            f'unsupported screen geometry: observed {geometry.width}x{geometry.height} '
+            f'@ {geometry.density} dpi (profile {geometry.profile_id}); '
+            'this build supports 1200x2000 @ 240 dpi',
+        )
 
 
 def _controller(context: RunContext, frame: Snapshot) -> Controller:

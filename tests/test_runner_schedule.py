@@ -11,7 +11,7 @@ import pytest
 from aliexpress_coins.runner.config import RunConfig
 from aliexpress_coins.runner.report import RunReport, RunStatus
 from aliexpress_coins.runner.schedule import nightly_trigger, run_schedule, should_skip_night
-from aliexpress_coins.runner.state import DailySnapshot
+from aliexpress_coins.runner.state import DailySnapshot, DailyStateStore
 
 START = datetime(2026, 11, 22, 3, 29, tzinfo=UTC)
 
@@ -57,11 +57,11 @@ class _Stop:
 
 
 class _State:
-    def __init__(self, run_count: int) -> None:
-        self.run_count = run_count
+    def __init__(self, completed_night: bool) -> None:
+        self.completed_night = completed_night
 
     def snapshot(self) -> DailySnapshot:
-        return DailySnapshot(day=date(2026, 11, 22), completions={}, run_count=self.run_count)
+        return DailySnapshot(day=date(2026, 11, 22), completions={}, completed_night=self.completed_night)
 
 
 def test_the_trigger_fires_once_a_night_inside_the_jitter_window(tmp_path: Path) -> None:
@@ -81,9 +81,17 @@ def test_a_zero_jitter_is_not_passed_to_the_trigger(tmp_path: Path) -> None:
     assert fire == datetime(2026, 11, 22, 3, 30, tzinfo=UTC)
 
 
-def test_a_night_that_already_ran_is_skipped() -> None:
-    assert should_skip_night(_State(0)) is False
-    assert should_skip_night(_State(1)) is True
+def test_only_a_completed_night_is_skipped() -> None:
+    assert should_skip_night(_State(False)) is False
+    assert should_skip_night(_State(True)) is True
+
+
+def test_a_real_daily_store_is_the_skip_source(tmp_path: Path) -> None:
+    store = DailyStateStore(tmp_path / 'state', clock=lambda: datetime(2026, 11, 22, 4, 0))
+
+    assert should_skip_night(store) is False
+    store.complete_night()
+    assert should_skip_night(store) is True
 
 
 def test_the_loop_runs_one_night_then_stops_taking_the_next_fire_time(
@@ -102,7 +110,7 @@ def test_the_loop_runs_one_night_then_stops_taking_the_next_fire_time(
         report.finish(RunStatus.COMPLETED, budget_used_seconds=12.0, finished_at=clock.now)
         return report
 
-    assert run_schedule(config, run_night=night, state=_State(0), clock=clock, stop=stop) == 0
+    assert run_schedule(config, run_night=night, state=_State(False), clock=clock, stop=stop) == 0
     assert calls == ['run']
     assert stop.waits == 2
     assert clock.now == START + timedelta(seconds=60)
@@ -126,10 +134,10 @@ def test_a_night_already_in_the_daily_store_is_not_started(
         calls.append('run')
         raise AssertionError('the night should have been skipped')
 
-    assert run_schedule(config, run_night=night, state=_State(1), clock=clock, stop=stop) == 0
+    assert run_schedule(config, run_night=night, state=_State(True), clock=clock, stop=stop) == 0
     assert calls == []
     assert 'schedule_skipped' in caplog.text
-    assert 'already ran today' in caplog.text
+    assert 'already completed today' in caplog.text
 
 
 def test_a_stop_before_the_first_fire_returns_without_waiting(tmp_path: Path) -> None:
@@ -142,6 +150,58 @@ def test_a_stop_before_the_first_fire_returns_without_waiting(tmp_path: Path) ->
         calls.append('run')
         raise AssertionError('the loop should not have fired')
 
-    assert run_schedule(config, run_night=night, state=_State(0), clock=clock, stop=stop) == 0
+    assert run_schedule(config, run_night=night, state=_State(False), clock=clock, stop=stop) == 0
     assert calls == []
     assert stop.waits == 0
+
+
+def test_a_failed_night_does_not_kill_the_daemon(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+    config = _config(tmp_path, jitter=0)
+    clock = _Clock(START)
+    stop = _Stop(clock, stop_after_waits=3)
+    calls: list[int] = []
+
+    def night() -> RunReport:
+        calls.append(len(calls) + 1)
+        if len(calls) == 1:
+            raise RuntimeError('runs volume full')
+        report = RunReport(config.runs_dir, 'run-2', budget_seconds=60.0, started_at=clock.now)
+        report.finish(RunStatus.COMPLETED, budget_used_seconds=5.0, finished_at=clock.now)
+        return report
+
+    assert run_schedule(config, run_night=night, state=_State(False), clock=clock, stop=stop) == 0
+    assert len(calls) == 2
+    assert stop.waits == 3
+    assert 'schedule_error' in caplog.text
+    assert 'runs volume full' in caplog.text
+    assert 'schedule_finished' in caplog.text
+
+
+def test_a_failed_state_check_still_runs_the_night(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+    config = _config(tmp_path, jitter=0)
+    clock = _Clock(START)
+    stop = _Stop(clock)
+    calls: list[str] = []
+
+    class BrokenState:
+        def snapshot(self) -> DailySnapshot:
+            raise OSError('state volume unreadable')
+
+    def night() -> RunReport:
+        calls.append('run')
+        report = RunReport(config.runs_dir, 'run-3', budget_seconds=60.0, started_at=clock.now)
+        report.finish(RunStatus.COMPLETED, budget_used_seconds=1.0, finished_at=clock.now)
+        return report
+
+    assert run_schedule(config, run_night=night, state=BrokenState(), clock=clock, stop=stop) == 0
+    assert calls == ['run']
+    assert 'schedule_error' in caplog.text
+    assert 'state volume unreadable' in caplog.text
