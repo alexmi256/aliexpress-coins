@@ -36,7 +36,7 @@ from enum import StrEnum
 from aliexpress_coins.perception.layout import find_action_in_row, group_rows
 from aliexpress_coins.perception.matching import DEFAULT_MIN_OCR_SCORE, normalize
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
-from aliexpress_coins.perception.state import CaptureSource, ScreenState, classify
+from aliexpress_coins.perception.state import CaptureSource, Classification, ScreenState, classify
 from aliexpress_coins.runner.failures import Failure, FailureCode, failure
 from aliexpress_coins.tasks.catalogue import TaskCatalogue
 from aliexpress_coins.tasks.signin import read_coin_balance
@@ -76,6 +76,9 @@ _COIN_REDEEM_LABEL = 'redeem'
 _LAYOUT_X_BUCKETS = 10
 _LAYOUT_Y_BUCKETS = 15
 """Coarse screen-layout buckets for the unexpected-screen fingerprint."""
+
+_COUNTDOWN = re.compile(r'^\s*\d+\s*(?:s|:\s*\d{2})\s*$', re.IGNORECASE)
+"""A running timer chip (``12s`` or ``1:20``) marks an allowed browse destination."""
 
 
 class AbortCode(StrEnum):
@@ -154,6 +157,7 @@ class SafetyGuard:
         self._streak_fingerprint: str | None = None
         self._streak = 0
         self._baseline_balance: float | None = None
+        self._disarmed = False
         self.failure: Failure | None = None
         self.last_screen: ScreenReport | None = None
         self.frames = 0
@@ -182,6 +186,7 @@ class SafetyGuard:
         self._baseline_balance = None
         self._task_depth = 0
         self._task_label = None
+        self._disarmed = True
         self._reset_streak()
 
     @contextmanager
@@ -215,9 +220,11 @@ class SafetyGuard:
     def inspect(self, snapshot: Snapshot) -> Snapshot:
         """Run the safety checks on one frame; return it unchanged when safe."""
         self.frames += 1
-        state = classify(snapshot)
+        if self._disarmed:
+            return snapshot
+        classification = classify(snapshot)
         surface = classify_surface(snapshot)
-        report = _screen_report(snapshot, state.state, surface)
+        report = _screen_report(snapshot, classification.state, surface)
         self.last_screen = report
 
         if self.task_running:
@@ -228,12 +235,12 @@ class SafetyGuard:
                 self._abort(AbortCode.DANGEROUS_CONTROL, reason, report)
             self._track_unexpected(
                 report,
-                unexpected=_is_unexpected_inside_task(snapshot, state.state),
+                unexpected=_is_unexpected_inside_task(snapshot, classification, surface),
             )
             self._check_balance(snapshot, report)
             return snapshot
 
-        self._track_unexpected(report, unexpected=_is_unexpected(snapshot, state.state, surface))
+        self._track_unexpected(report, unexpected=_is_unexpected(snapshot, classification.state, surface))
         self._check_balance(snapshot, report)
         return snapshot
 
@@ -334,7 +341,7 @@ def _screen_report(snapshot: Snapshot, state: ScreenState, surface: Surface) -> 
         )
         for box in ordered[:8]
     )
-    markers = tuple((normalize(box.text)[:1] or '?') for box in ordered[:3])
+    markers = tuple((normalize(box.text)[:3] or '?') for box in ordered[:3])
     fingerprint = f'{state.value}/{surface.value}/{layout}/{markers}'
     return ScreenReport(
         state=state.value,
@@ -352,17 +359,33 @@ def _is_unexpected(snapshot: Snapshot, state: ScreenState, surface: Surface) -> 
     return state is ScreenState.PAGE and surface is Surface.UNKNOWN
 
 
-def _is_unexpected_inside_task(snapshot: Snapshot, state: ScreenState) -> bool:
+def _is_unexpected_inside_task(
+    snapshot: Snapshot,
+    classification: Classification,
+    surface: Surface,
+) -> bool:
     """A task page only counts as unexpected when its content is truly unknown.
 
-    Known task pages (quiz, result, surprise grid) classify as ``PAGE`` but have
-    no coin/boost surface, so the route-level rule would mislabel them. A
-    measured surprise product detail is also known; a dead or unknown frame is
-    not.
+    Known task pages classify as ``PAGE``; a measured surprise product detail and
+    a signed-out screen are known too. Transient states are not "stuck": a blank
+    WebView is loading evidence, the empty boost page is a documented reset, and
+    a running countdown is an allowed browse destination. Those are left to the
+    executor's own settle timeout. Anything else that stays unknown or dead for
+    three captures is a stuck screen.
     """
     if _is_product_detail(snapshot) or is_logged_out(snapshot):
         return False
-    return state in (ScreenState.UNKNOWN, ScreenState.ERROR)
+    if surface is Surface.EMPTY_BOOST:
+        return False
+    if any(evidence.signal == 'blank_frame' for evidence in classification.evidence):
+        return False
+    if _has_countdown(snapshot):
+        return False
+    return classification.state in (ScreenState.UNKNOWN, ScreenState.ERROR)
+
+
+def _has_countdown(snapshot: Snapshot) -> bool:
+    return any(box.score >= DEFAULT_MIN_OCR_SCORE and _COUNTDOWN.match(box.text) for box in snapshot.boxes)
 
 
 def _is_safe_label(text: str) -> bool:

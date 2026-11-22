@@ -127,6 +127,16 @@ def test_ocr_jitter_on_the_same_unexpected_screen_keeps_the_streak() -> None:
     assert raised.value.code is AbortCode.UNEXPECTED_SCREEN
 
 
+def test_different_screens_with_the_same_initials_do_not_merge() -> None:
+    guard = _guard()
+
+    guard.inspect(_unknown('Alpha'))
+    guard.inspect(_unknown('April'))
+    guard.inspect(_unknown('Alpha'))
+
+    assert guard.streak == 1
+
+
 def test_the_same_unexpected_screen_counts_inside_a_task() -> None:
     guard = _guard()
 
@@ -141,6 +151,53 @@ def test_the_same_unexpected_screen_counts_inside_a_task() -> None:
 
     assert raised.value.code is AbortCode.UNEXPECTED_SCREEN
     assert 'stuck executor' not in raised.value.reason
+
+
+def test_a_blank_loading_webview_does_not_count_as_a_stuck_task_screen() -> None:
+    guard = _guard()
+    blank = _snapshot()
+
+    with guard.task('browse'):
+        guard.inspect(blank)
+        guard.inspect(blank)
+        guard.inspect(blank)
+
+
+def test_an_empty_boost_page_does_not_count_as_a_stuck_task_screen() -> None:
+    guard = _guard()
+    empty = _snapshot(
+        _box('Coins boost', 100, 100, 500, 150),
+        _box("There's nothing here yet", 100, 300, 900, 350),
+    )
+
+    with guard.task('browse'):
+        guard.inspect(empty)
+        guard.inspect(empty)
+        guard.inspect(empty)
+
+
+def test_a_running_countdown_destination_does_not_count_as_a_stuck_task_screen() -> None:
+    guard = _guard()
+    destination = _snapshot(
+        _box('Wireless Earbuds', 60, 300, 600, 350),
+        _box('12s', 1080, 900, 1160, 940),
+    )
+
+    with guard.task('browse'):
+        guard.inspect(destination)
+        guard.inspect(destination)
+        guard.inspect(destination)
+
+
+def test_disarm_stops_all_inspection_after_an_abort() -> None:
+    guard = _guard()
+    guard.disarm()
+
+    guard.inspect(_unknown())
+    guard.inspect(_unknown())
+    guard.inspect(_unknown())
+
+    assert guard.streak == 0
 
 
 def test_a_dangerous_control_is_only_fatal_while_a_task_is_running() -> None:
