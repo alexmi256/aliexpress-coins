@@ -34,14 +34,14 @@ from aliexpress_coins.control.errors import PopupUnclosable
 from aliexpress_coins.control.popups import DismissReport, PopupCorpus, load_popup_corpus
 from aliexpress_coins.perception.artifacts import ArtifactStore
 from aliexpress_coins.perception.capture import AdbSnapshotter
-from aliexpress_coins.perception.errors import SnapshotError, StateTimeout
+from aliexpress_coins.perception.errors import FrameDecodeError, SnapshotError, StateTimeout
 from aliexpress_coins.perception.ocr import RapidOcrEngine
 from aliexpress_coins.perception.snapshot import Snapshot
 from aliexpress_coins.perception.state import CaptureSource
 from aliexpress_coins.perception.templates import TemplateStore, load_templates
 from aliexpress_coins.runner.config import RunConfig
 from aliexpress_coins.runner.device import AdbDevice, HygieneDevice
-from aliexpress_coins.runner.errors import AppLoggedOut, ConfigError, DeviceError, RunInterrupted
+from aliexpress_coins.runner.errors import AppLoggedOut, ConfigError, RunInterrupted, UnsupportedGeometry
 from aliexpress_coins.runner.failures import (
     Failure,
     FailureCode,
@@ -159,6 +159,7 @@ class EngineResult:
     completed: bool
     payload: dict[str, Any]
     failure: Failure | None = None
+    acted: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         """Render the normalised result for the report."""
@@ -169,6 +170,7 @@ class EngineResult:
             'completed': self.completed,
             'payload': self.payload,
             'failure': None if self.failure is None else self.failure.as_dict(),
+            'acted': self.acted,
         }
 
 
@@ -541,25 +543,21 @@ def _discover_or_fallback(
     log = context.logger if context.logger is not None else LOG
     try:
         return (
-            _retry_stage(
-                context,
-                'route',
-                lambda: discover_roster(
-                    controller,
-                    context.capture,
-                    context.corpus,
-                    context.catalogue,
-                    navigate=context.navigate,
-                    refresh=True,
-                    templates=context.templates,
-                    timeout=DEFAULT_BOOST_TIMEOUT,
-                    interval=DEFAULT_BOOST_INTERVAL,
-                    settle=context.config.settle_seconds,
-                    clock=context.clock,
-                    sleep=context.sleep,
-                    logger=log,
-                    on_dismiss=on_dismiss,
-                ),
+            discover_roster(
+                controller,
+                context.capture,
+                context.corpus,
+                context.catalogue,
+                navigate=context.navigate,
+                refresh=True,
+                templates=context.templates,
+                timeout=DEFAULT_BOOST_TIMEOUT,
+                interval=DEFAULT_BOOST_INTERVAL,
+                settle=context.config.settle_seconds,
+                clock=context.clock,
+                sleep=context.sleep,
+                logger=log,
+                on_dismiss=on_dismiss,
             ),
             None,
         )
@@ -626,17 +624,24 @@ def _dispatch_with_retry(
     controller: Controller,
     entry: RosterEntry,
 ) -> EngineResult:
-    """Dispatch one row, spending the task retry only on an unverified result.
+    """Dispatch one row, spending the task retry only when no action was taken.
 
     A transport failure is not retried here: the capture seam already spent the
-    stage retry, and re-running a task that may have tapped is exactly the risk
-    the taxonomy's "stage vs task" distinction exists to avoid. A run-level
-    class is re-raised so the top-level catch names it and stops the night.
+    stage retry. A result that records a tap, key or page press is never re-run,
+    because the first attempt may already have changed the account (FR-5's
+    "never re-press a claimed card"). Only an unverified result with no action
+    evidence is safe to repeat. A run-level class is re-raised so the top-level
+    catch names it and stops the night.
     """
     log = context.logger if context.logger is not None else LOG
     result = _attempt_dispatch(context, controller, entry)
+    if not result.completed:
+        # A failed task is the first place a session that expired mid-walk is
+        # visible. Detect it before spending the retry, so a signed-out app
+        # stops the run instead of producing more task failures.
+        _guard_signed_in(context, _capture(context.capture))
     named = result.failure
-    if named is None or not named.retryable or named.retry is not RetryScope.TASK:
+    if named is None or not named.retryable or named.retry is not RetryScope.TASK or result.acted:
         return result
 
     delay = retry_delay(0)
@@ -676,6 +681,7 @@ def _attempt_dispatch(
             completed=False,
             payload={'error': detail},
             failure=named,
+            acted=True,
         )
 
 
@@ -745,6 +751,10 @@ def _retrying_capture(
     def capture() -> Snapshot:
         try:
             return _capture(source)
+        except FrameDecodeError:
+            # The device answered; retrying the same undecodable frame helps
+            # nobody and would only blur the cause.
+            raise
         except SnapshotError as exc:
             delay = retry_delay(0)
             log.warning(
@@ -761,6 +771,8 @@ def _retrying_capture(
             sleep(delay)
             try:
                 return _capture(source)
+            except FrameDecodeError:
+                raise
             except SnapshotError:
                 if check_connected is not None:
                     check_connected()
@@ -823,19 +835,45 @@ def _run_signin(
         completed=completed,
         payload=result.as_dict(),
         failure=failure(FailureCode.TASK_UNVERIFIED, detail=detail) if outcome == 'failed' else None,
+        acted=any(claim.tapped for claim in claims),
     )
 
 
 def _from_executor(result: ExecutorResult) -> EngineResult:
+    payload = result.as_dict()
     named = failure(FailureCode.TASK_UNVERIFIED, detail=result.detail) if result.outcome.value == 'failed' else None
     return EngineResult(
         outcome=result.outcome.value,
         verification=result.verification,
         detail=result.detail,
         completed=result.completed,
-        payload=result.as_dict(),
+        payload=payload,
         failure=named,
+        acted=_payload_acted(payload),
     )
+
+
+def _payload_acted(payload: dict[str, Any]) -> bool:
+    """Whether an executor result records any tap, key or entry press.
+
+    An unproven task is only safe to re-run when it has not acted yet. The
+    executors already record every tap in ``taps`` (and the browse executor its
+    page presses), so this reads evidence that exists rather than guessing from
+    the outcome string.
+    """
+    taps = payload.get('taps')
+    if isinstance(taps, (list, tuple)) and taps:
+        return True
+    keys = payload.get('keys')
+    if isinstance(keys, (list, tuple)) and keys:
+        return True
+    swipes = payload.get('swipes')
+    if isinstance(swipes, (list, tuple)) and swipes:
+        return True
+    if payload.get('collect') is not None:
+        return True
+    presses = payload.get('presses')
+    return isinstance(presses, int) and presses > 0
 
 
 def _observer(
@@ -885,6 +923,7 @@ def _observe(
             logger=log,
             on_dismiss=on_dismiss,
         )
+        _guard_signed_in(context, opened.snapshot)
         return observer.observe(
             opened.snapshot,
             route=opened.route if route is None else route,
@@ -892,11 +931,17 @@ def _observe(
         )
     except RunInterrupted:
         raise
+    except AppLoggedOut:
+        raise
     except Exception as exc:
         log.warning('%s', _event('roster_observe_failed', detail=f'{type(exc).__name__}: {exc}'))
         try:
-            return observer.observe(_capture(context.capture), route=route, timestamp=context.wall_clock())
+            frame = _capture(context.capture)
+            _guard_signed_in(context, frame)
+            return observer.observe(frame, route=route, timestamp=context.wall_clock())
         except RunInterrupted:
+            raise
+        except AppLoggedOut:
             raise
         except Exception as inner:
             log.warning('%s', _event('roster_observe_failed', detail=f'{type(inner).__name__}: {inner}'))
@@ -1262,7 +1307,7 @@ def _require_supported_geometry(frame: Snapshot) -> None:
     """
     geometry = frame.geometry
     if (geometry.width, geometry.height, geometry.density) != (1200, 2000, 240):
-        raise DeviceError(
+        raise UnsupportedGeometry(
             f'unsupported screen geometry: observed {geometry.width}x{geometry.height} '
             f'@ {geometry.density} dpi (profile {geometry.profile_id}); '
             'this build supports 1200x2000 @ 240 dpi',

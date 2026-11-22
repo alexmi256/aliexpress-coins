@@ -5,14 +5,16 @@ from __future__ import annotations
 import pytest
 
 from aliexpress_coins.control.errors import PopupUnclosable
-from aliexpress_coins.perception.errors import SnapshotError, StateTimeout
+from aliexpress_coins.perception.errors import FrameDecodeError, SnapshotError, StateTimeout
 from aliexpress_coins.runner.errors import (
+    AppLaunchFailed,
     AppLoggedOut,
     AppNotInstalled,
     DeviceLocked,
     DeviceSleeping,
     DeviceUnavailable,
     RunInterrupted,
+    UnsupportedGeometry,
 )
 from aliexpress_coins.runner.failures import (
     FAILURE_TABLE,
@@ -71,7 +73,7 @@ def test_the_retry_table_spells_out_the_three_behaviours() -> None:
     assert stage == {
         FailureCode.DEVICE_OFFLINE,
         FailureCode.DEVICE_SLEEPING,
-        FailureCode.NAVIGATION_FAILED,
+        FailureCode.APP_LAUNCH_FAILED,
     }
     assert task == {FailureCode.TASK_UNVERIFIED}
     assert abort == {
@@ -79,10 +81,14 @@ def test_the_retry_table_spells_out_the_three_behaviours() -> None:
         FailureCode.DEVICE_SLEEPING,
         FailureCode.DEVICE_LOCKED,
         FailureCode.APP_NOT_INSTALLED,
+        FailureCode.APP_LAUNCH_FAILED,
+        FailureCode.UNSUPPORTED_GEOMETRY,
+        FailureCode.FRAME_UNDECODABLE,
         FailureCode.APP_LOGGED_OUT,
         FailureCode.POPUP_UNCLOSABLE,
         FailureCode.INTERNAL_ERROR,
     }
+    assert FAILURE_TABLE[FailureCode.NAVIGATION_FAILED].retry is RetryScope.NONE
     assert FAILURE_TABLE[FailureCode.NAVIGATION_FAILED].abort_run is False
     assert FAILURE_TABLE[FailureCode.BUDGET_EXHAUSTED].retry is RetryScope.NONE
     assert FAILURE_TABLE[FailureCode.BUDGET_EXHAUSTED].abort_run is False
@@ -103,6 +109,9 @@ def test_the_backoff_is_exponential() -> None:
         (DeviceSleeping('asleep'), FailureCode.DEVICE_SLEEPING),
         (DeviceLocked('locked'), FailureCode.DEVICE_LOCKED),
         (AppNotInstalled('absent'), FailureCode.APP_NOT_INSTALLED),
+        (AppLaunchFailed('launch'), FailureCode.APP_LAUNCH_FAILED),
+        (UnsupportedGeometry('1080x1920'), FailureCode.UNSUPPORTED_GEOMETRY),
+        (FrameDecodeError('bad png'), FailureCode.FRAME_UNDECODABLE),
         (AppLoggedOut('signed out'), FailureCode.APP_LOGGED_OUT),
         (StateTimeout('route'), FailureCode.NAVIGATION_FAILED),
         (PopupUnclosable('popup'), FailureCode.POPUP_UNCLOSABLE),

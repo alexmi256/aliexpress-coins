@@ -34,6 +34,7 @@ from aliexpress_coins.runner.config import RunConfig
 from aliexpress_coins.runner.device import AdbDevice, DeviceCommandResult, HygieneDevice, HygieneReport
 from aliexpress_coins.runner.engine import EngineResult, RunContext
 from aliexpress_coins.runner.errors import (
+    AppLaunchFailed,
     AppLoggedOut,
     AppNotInstalled,
     DeviceError,
@@ -738,6 +739,7 @@ def test_an_unexpected_frame_geometry_is_refused_and_reported(
     report = engine.run_once(context)
 
     assert report.status is RunStatus.FAILED
+    assert report.failure_code == FailureCode.UNSUPPORTED_GEOMETRY.value
     assert report.error is not None
     assert 'unsupported screen geometry' in report.error
     assert '1080x1920' in report.error
@@ -2339,6 +2341,7 @@ def test_a_sleeping_device_wakes_and_the_run_completes(
         _adb_ok(),
         _adb_ok(),
         _adb_ok(),
+        _adb_ok('mWakefulness=Awake'),
         _adb_ok(),
         _adb_ok(),
         _adb_ok('isKeyguardShowing=false'),
@@ -2350,7 +2353,8 @@ def test_a_sleeping_device_wakes_and_the_run_completes(
         _adb_ok(),
         _adb_ok(),
     )
-    hygiene = AdbDevice('usb-serial', runner=runner, app_settle_seconds=0)
+    sleeps: list[float] = []
+    hygiene = AdbDevice('usb-serial', runner=runner, app_settle_seconds=0, settle=sleeps.append)
     frame = _boost_header_frame()
     _surface(monkeypatch, replace(full_roster, entries=()), frame)
     context = _context(
@@ -2369,6 +2373,7 @@ def test_a_sleeping_device_wakes_and_the_run_completes(
     assert report.hygiene['kept_awake'] is True
     assert ('adb', '-s', 'usb-serial', 'shell', 'input', 'keyevent', 'KEYCODE_WAKEUP') in runner.calls
     assert any('swipe' in call for call in runner.calls)
+    assert sleeps == [0.5]
     assert runner.calls[-3:] == [
         ('adb', '-s', 'usb-serial', 'shell', 'settings', 'put', 'global', 'stay_on_while_plugged_in', '15'),
         ('adb', '-s', 'usb-serial', 'shell', 'settings', 'put', 'system', 'accelerometer_rotation', '1'),
@@ -2383,6 +2388,7 @@ def test_a_sleeping_device_wakes_and_the_run_completes(
         (DeviceSleeping('did not wake'), FailureCode.DEVICE_SLEEPING, 2, 1.0),
         (DeviceLocked('PIN set'), FailureCode.DEVICE_LOCKED, 1, 0.0),
         (AppNotInstalled('package missing'), FailureCode.APP_NOT_INSTALLED, 1, 0.0),
+        (AppLaunchFailed('launch failed'), FailureCode.APP_LAUNCH_FAILED, 2, 1.0),
         (RuntimeError('bug'), FailureCode.INTERNAL_ERROR, 1, 0.0),
     ],
 )
@@ -2599,7 +2605,7 @@ def test_an_unclosable_popup_aborts_the_run_without_a_retry(
     assert report.tasks == []
 
 
-def test_a_route_timeout_is_retried_once_before_the_surface_is_used(
+def test_a_route_timeout_uses_the_route_policy_without_another_route_cycle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     full_roster: Roster,
@@ -2607,22 +2613,19 @@ def test_a_route_timeout_is_retried_once_before_the_surface_is_used(
     corpus: PopupCorpus,
 ) -> None:
     clock = _Clock()
-    frame = _boost_frame()
+    frame = _boost_header_frame()
     context = _context(
         tmp_path,
-        capture=_Capture(frame, _coin_frame()),
+        capture=_Capture(frame),
         catalogue=catalogue,
         corpus=corpus,
         clock=clock,
     )
-    roster = replace(full_roster, entries=())
     calls: list[int] = []
 
     def discover(*args: Any, **kwargs: Any) -> Roster:
         calls.append(1)
-        if len(calls) == 1:
-            raise StateTimeout('the boost page did not appear')
-        return roster
+        raise StateTimeout('the boost page did not appear')
 
     monkeypatch.setattr(engine, 'discover_roster', discover)
     monkeypatch.setattr(
@@ -2633,9 +2636,9 @@ def test_a_route_timeout_is_retried_once_before_the_surface_is_used(
 
     report = engine.run_once(context)
 
-    assert len(calls) == 2
-    assert clock.value == 1.0
-    assert report.route_error is None
+    assert len(calls) == 1
+    assert report.route_error is not None
+    assert 'StateTimeout' in report.route_error
     assert report.status is RunStatus.COMPLETED
 
 
@@ -2750,3 +2753,234 @@ def test_a_sign_out_discovered_during_the_balance_proof_is_re_raised(
             _coin_frame(),
             _logger(),
         )
+
+
+def test_an_unverified_sign_in_is_dispatched_once_and_taps_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    roster = replace(full_roster, entries=(_entry(full_roster, 'boost_checkin'),))
+    frame = _boost_frame('daily_checkin')
+    _surface(monkeypatch, roster, frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    claims = _UnverifiedSignin()
+    calls: list[int] = []
+
+    def claim(*args: Any, **kwargs: Any) -> _UnverifiedSignin:
+        calls.append(1)
+        return claims
+
+    monkeypatch.setattr(engine, 'claim_daily_signins', claim)
+
+    report = engine.run_once(context)
+
+    assert len(calls) == 1
+    assert report.tasks[0].code == FailureCode.TASK_UNVERIFIED.value
+    assert report.tasks[0].result['acted'] is True
+    assert report.status is RunStatus.COMPLETED
+
+
+class _UnverifiedClaim:
+    key = 'daily_checkin'
+    outcome = SigninOutcome.UNVERIFIED
+    verification = 'no_evidence'
+    detail = 'the control was tapped once but no fresh frame proved the claim'
+    tapped = True
+
+    @property
+    def already_done(self) -> bool:
+        return False
+
+    @property
+    def unverified(self) -> bool:
+        return True
+
+    @property
+    def unavailable(self) -> bool:
+        return False
+
+
+class _UnverifiedSignin:
+    results: tuple[_UnverifiedClaim, ...] = (_UnverifiedClaim(),)
+    completed: tuple[_UnverifiedClaim, ...] = ()
+
+    def as_dict(self) -> dict[str, Any]:
+        return {'streak': {'outcome': 'unverified', 'tapped': True}, 'boost': None}
+
+
+def test_a_sign_out_during_the_walk_stops_the_next_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    frame = _boost_frame('coins_quiz')
+    _surface(monkeypatch, roster, frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _logged_out_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    attempts: list[int] = []
+
+    def dispatch(*args: Any, **kwargs: Any) -> EngineResult:
+        attempts.append(1)
+        return EngineResult('failed', 'no_change', 'the row did not move', False, {})
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert len(attempts) == 1
+    assert report.failure_code == FailureCode.APP_LOGGED_OUT.value
+    assert report.tasks == []
+
+
+def test_an_undecodable_frame_is_named_and_not_retried(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    from aliexpress_coins.perception.errors import FrameDecodeError
+
+    clock = _Clock()
+
+    class _BadFrame:
+        def capture(self) -> Snapshot:
+            raise FrameDecodeError('screencap returned an undecodable PNG')
+
+    context = _context(
+        tmp_path,
+        capture=_Capture(_boost_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+        clock=clock,
+    )
+    context.capture = cast(Any, _BadFrame())
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.FAILED
+    assert report.failure_code == FailureCode.FRAME_UNDECODABLE.value
+    assert clock.value == 0.0
+
+
+def test_a_decode_failure_is_not_retried_by_the_capture_wrapper() -> None:
+    from aliexpress_coins.perception.errors import FrameDecodeError
+
+    class _BadFrame:
+        def capture(self) -> Snapshot:
+            raise FrameDecodeError('not a PNG')
+
+    sleeps: list[float] = []
+    capture = engine._retrying_capture(_BadFrame(), sleep=sleeps.append)
+
+    with pytest.raises(FrameDecodeError):
+        capture()
+
+    assert sleeps == []
+
+
+def test_a_decode_failure_after_the_retry_is_also_not_retried() -> None:
+    from aliexpress_coins.perception.errors import FrameDecodeError
+
+    class _BlipThenBadFrame:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def capture(self) -> Snapshot:
+            self.calls += 1
+            if self.calls == 1:
+                raise SnapshotError('adb exec-out screencap: failed')
+            raise FrameDecodeError('not a PNG')
+
+    sleeps: list[float] = []
+    capture = engine._retrying_capture(_BlipThenBadFrame(), sleep=sleeps.append)
+
+    with pytest.raises(FrameDecodeError):
+        capture()
+
+    assert sleeps == [1.0]
+
+
+def test_acted_evidence_includes_keys_and_taps() -> None:
+    assert engine._payload_acted({'keys': [{'key': 'back'}]}) is True
+    assert engine._payload_acted({'swipes': [{'from': [1, 2]}]}) is True
+    assert engine._payload_acted({'collect': {'tap': 1}}) is True
+    assert engine._payload_acted({'taps': [{'tap': 1}]}) is True
+    assert engine._payload_acted({'presses': 1}) is True
+    assert engine._payload_acted({}) is False
+
+
+def test_observation_stops_the_run_when_the_opened_surface_is_signed_out(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    context = _context(tmp_path, capture=_Capture(_boost_frame()), catalogue=catalogue, corpus=corpus)
+    assert context.controller is not None
+    observer = engine._observer(
+        context,
+        RunReport(tmp_path, 'observe-logged-out', budget_seconds=60.0, started_at=CAPTURED_AT),
+        full_roster,
+    )
+    monkeypatch.setattr(
+        engine,
+        'open_boost_list',
+        lambda *args, **kwargs: BoostList(
+            snapshot=_logged_out_frame(),
+            route=DiscoveryRoute.INLINE,
+            detail='signed out',
+        ),
+    )
+
+    with pytest.raises(AppLoggedOut):
+        engine._observe(context, context.controller, observer, route=None)
+
+
+def test_observation_stops_the_run_when_the_fallback_frame_is_signed_out(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    context = _context(tmp_path, capture=_Capture(_logged_out_frame()), catalogue=catalogue, corpus=corpus)
+    assert context.controller is not None
+    observer = engine._observer(
+        context,
+        RunReport(tmp_path, 'observe-fallback-logged-out', budget_seconds=60.0, started_at=CAPTURED_AT),
+        full_roster,
+    )
+    monkeypatch.setattr(
+        engine,
+        'open_boost_list',
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('open failed')),
+    )
+
+    with pytest.raises(AppLoggedOut):
+        engine._observe(context, context.controller, observer, route=None)
+
+
+def test_the_notification_carries_a_detail_only_run_and_no_invented_error(tmp_path: Path) -> None:
+    report = RunReport(tmp_path, 'quiet-detail', budget_seconds=60.0, started_at=CAPTURED_AT)
+    report.detail = 'roster exhausted'
+    report.finish(RunStatus.COMPLETED, detail='roster exhausted', budget_used_seconds=1.0, finished_at=CAPTURED_AT)
+
+    body = engine._notification(report).body
+
+    assert 'detail: roster exhausted' in body
+    assert 'error:' not in body

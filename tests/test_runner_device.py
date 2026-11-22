@@ -19,6 +19,7 @@ from aliexpress_coins.runner.device import (
     _screen_asleep,
 )
 from aliexpress_coins.runner.errors import (
+    AppLaunchFailed,
     AppNotInstalled,
     DeviceError,
     DeviceLocked,
@@ -60,6 +61,7 @@ def _prepare_results(
     auto: str = '1',
     rotation: str = '0',
     wake: DeviceCommandResult | None = None,
+    power_after_wake: str | None = None,
     keyguard: str = 'isKeyguardShowing=false',
     stay_on: str = '15',
     package: DeviceCommandResult | None = None,
@@ -80,6 +82,8 @@ def _prepare_results(
         _ok(keyguard),
         _ok(stay_on),
     ]
+    if power_after_wake is not None:
+        results.insert(8, _ok(power_after_wake))
     if stay_on.isdigit():
         results.append(_ok())  # svc power stayon true
     results.extend(
@@ -139,7 +143,7 @@ def test_prepare_wakes_dismisses_the_keyguard_and_warms_the_app() -> None:
 
 
 def test_a_sleeping_device_is_recorded_woken_and_then_prepared() -> None:
-    runner = _Runner(*_prepare_results(power='mWakefulness=Asleep'))
+    runner = _Runner(*_prepare_results(power='mWakefulness=Asleep', power_after_wake='mWakefulness=Awake'))
     sleeps: list[float] = []
     device = AdbDevice('usb-serial', runner=runner, app_settle_seconds=0, settle=sleeps.append)
 
@@ -154,7 +158,7 @@ def test_a_sleeping_device_is_recorded_woken_and_then_prepared() -> None:
         'wm dismiss-keyguard',
         'input swipe 600 1700 600 500 200',
     ]
-    assert sleeps == []
+    assert sleeps == [0.5]
 
 
 def daily_commands(calls: list[tuple[str, ...]]) -> list[str]:
@@ -246,10 +250,10 @@ def test_an_absent_package_is_named_as_not_installed() -> None:
         device.prepare()
 
 
-def test_a_launch_that_reports_an_error_is_named_as_not_installed() -> None:
+def test_a_launch_that_reports_an_error_is_named_as_a_launch_failure() -> None:
     runner = _Runner(*_prepare_results(start=_ok('Error: Activity class does not exist')))
     device = AdbDevice('usb-serial', runner=runner, app_settle_seconds=0)
-    with pytest.raises(AppNotInstalled, match='did not start'):
+    with pytest.raises(AppLaunchFailed, match='did not start'):
         device.prepare()
 
 
@@ -515,10 +519,10 @@ def test_restore_attempts_the_rotation_even_when_the_stay_awake_write_fails() ->
     ]
 
 
-def test_a_launch_command_that_fails_is_named_as_not_installed() -> None:
+def test_a_launch_command_that_fails_is_named_as_a_launch_failure() -> None:
     runner = _Runner(*_prepare_results(start=_fail('activity manager died')), _ok('device'))
     device = AdbDevice('usb-serial', runner=runner, app_settle_seconds=0)
-    with pytest.raises(AppNotInstalled, match='could not be started'):
+    with pytest.raises(AppLaunchFailed, match='could not be started'):
         device.prepare()
 
 
@@ -578,3 +582,17 @@ def test_a_failed_stay_awake_write_still_checks_the_serial_and_continues() -> No
 
     assert report.kept_awake is False
     assert any(call[-1] == 'get-state' for call in runner.calls)
+
+
+def test_a_sleeping_device_that_stays_dark_is_named_as_sleeping_after_the_settle() -> None:
+    runner = _Runner(
+        *_prepare_results(power='mWakefulness=Dozing', power_after_wake='mWakefulness=Dozing'),
+    )
+    sleeps: list[float] = []
+    device = AdbDevice('usb-serial', runner=runner, app_settle_seconds=0, settle=sleeps.append)
+
+    with pytest.raises(DeviceSleeping, match='still asleep'):
+        device.prepare()
+
+    assert sleeps == [0.5]
+    assert not any('dismiss-keyguard' in call for call in runner.calls)

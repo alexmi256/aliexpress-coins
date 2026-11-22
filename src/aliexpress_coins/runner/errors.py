@@ -79,7 +79,24 @@ class DeviceLocked(DeviceError):
 
 
 class AppNotInstalled(DeviceError):
-    """The configured package is absent, or its launch activity does not exist."""
+    """The configured package is absent from the device."""
+
+
+class AppLaunchFailed(DeviceError):
+    """The package exists but its launch activity did not start.
+
+    A transient activity-manager failure after a reboot is retryable, unlike an
+    absent package. Keeping the two apart stops the report telling an operator to
+    reinstall an app that is already installed.
+    """
+
+
+class UnsupportedGeometry(DeviceError):
+    """The frame does not match the measured coordinate/template profile.
+
+    This is a deliberate refusal, not a transport failure: the device may be
+    answering perfectly while running a screen the build does not support yet.
+    """
 
 
 class AppLoggedOut(DeviceError):

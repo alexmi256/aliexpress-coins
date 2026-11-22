@@ -16,6 +16,14 @@ class SnapshotError(PerceptionError):
     """A frame could not be captured, decoded or cropped."""
 
 
+class FrameDecodeError(SnapshotError):
+    """The capture bytes were present but were not a decodable PNG.
+
+    Distinct from a transport failure: the device answered, so retrying the same
+    screencap or checking the cable is not the operator's next action.
+    """
+
+
 class OcrError(PerceptionError):
     """The OCR engine could not read a frame."""
 

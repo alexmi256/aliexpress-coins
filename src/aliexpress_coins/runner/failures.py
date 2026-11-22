@@ -9,26 +9,30 @@ below, and the report records that code in ``run.json`` and ``summary.md``.
 The table is the contract. #40 notifies on it; a new class is a change here, not
 a new string somewhere in a log line.
 
-====================  ========  ==========  ==============================================
-code                  stage     retry       stop condition
-====================  ========  ==========  ==============================================
-device_offline        device    stage x1    abort the run after the retry
-device_sleeping       device    stage x1    abort the run after the retry
-device_locked         device    none        abort the run immediately (a human must unlock)
-app_not_installed     device    none        abort the run immediately
-app_logged_out        account   none        abort the run immediately, at first detection
-navigation_failed     route     stage x1    fall back to the inline surface, then report
-popup_unclosable      control   none        abort the run immediately (never tap a guess)
-task_unverified       task      task x1     report it and continue with the next task
-budget_exhausted      run       none        stop the walk cleanly and report it
-internal_error        run       none        abort the run and report the class
-====================  ========  ==========  ==============================================
+====================  ==========  ==========  ==============================================
+code                  stage       retry       stop condition
+====================  ==========  ==========  ==============================================
+device_offline        device      stage x1    abort the run after the retry
+device_sleeping       device      stage x1    abort the run after the retry
+device_locked         device      none        abort the run immediately (a human must unlock)
+app_not_installed     device      none        abort the run immediately (pm path is absent)
+app_launch_failed     device      stage x1    abort the run after the retry
+unsupported_geometry  perception  none        abort the run immediately (refusal, not a fault)
+frame_undecodable     perception  none        abort the run immediately (the device answered)
+app_logged_out        account     none        abort the run immediately, at first detection
+navigation_failed     route       none        the route's own warm re-entry; fall back and report
+popup_unclosable      control     none        abort the run immediately (never tap a guess)
+task_unverified       task        task x1     retry only when no action was taken; else report
+budget_exhausted      run         none        stop the walk cleanly and report it
+internal_error        run         none        abort the run and report the class
+====================  ==========  ==========  ==============================================
 
 "Stage" means the operation that was in flight: a hygiene pass, a route, or a
 single capture. Retrying a *stage* is safe because it repeats a read or a
 navigation, never a task that may already have tapped. "Task" means one more
-dispatch of the same row, and it is spent only after the executor returned a
-definite ``unverified`` outcome, so no state was recorded for the first attempt.
+dispatch of the same row, and it is spent only when the result carries no tap:
+an executor that already acted may have changed the account, so an unproven
+outcome is reported, never repeated.
 
 The pause is exponential and injected: ``retry_delay(0) == 1.0`` and
 ``retry_delay(1) == 2.0`` seconds. Tests pass a clock/sleep pair, so the suite
@@ -41,14 +45,16 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from aliexpress_coins.control.errors import PopupUnclosable
-from aliexpress_coins.perception.errors import SnapshotError, StateTimeout
+from aliexpress_coins.perception.errors import FrameDecodeError, SnapshotError, StateTimeout
 from aliexpress_coins.runner.errors import (
+    AppLaunchFailed,
     AppLoggedOut,
     AppNotInstalled,
     DeviceError,
     DeviceLocked,
     DeviceSleeping,
     RunInterrupted,
+    UnsupportedGeometry,
 )
 
 __all__ = [
@@ -73,6 +79,7 @@ class FailureStage(StrEnum):
     """Where in one night the failure belongs."""
 
     DEVICE = 'device'
+    PERCEPTION = 'perception'
     ACCOUNT = 'account'
     ROUTE = 'route'
     CONTROL = 'control'
@@ -95,6 +102,9 @@ class FailureCode(StrEnum):
     DEVICE_SLEEPING = 'device_sleeping'
     DEVICE_LOCKED = 'device_locked'
     APP_NOT_INSTALLED = 'app_not_installed'
+    APP_LAUNCH_FAILED = 'app_launch_failed'
+    UNSUPPORTED_GEOMETRY = 'unsupported_geometry'
+    FRAME_UNDECODABLE = 'frame_undecodable'
     APP_LOGGED_OUT = 'app_logged_out'
     NAVIGATION_FAILED = 'navigation_failed'
     POPUP_UNCLOSABLE = 'popup_unclosable'
@@ -148,6 +158,30 @@ FAILURE_TABLE: dict[FailureCode, FailureSpec] = {
         True,
         'The AliExpress app is not installed on the device.',
     ),
+    FailureCode.APP_LAUNCH_FAILED: FailureSpec(
+        FailureCode.APP_LAUNCH_FAILED,
+        FailureStage.DEVICE,
+        RetryScope.STAGE,
+        1,
+        True,
+        'The app is installed but its launch activity did not start.',
+    ),
+    FailureCode.UNSUPPORTED_GEOMETRY: FailureSpec(
+        FailureCode.UNSUPPORTED_GEOMETRY,
+        FailureStage.PERCEPTION,
+        RetryScope.NONE,
+        0,
+        True,
+        'This screen geometry is not supported by the measured profile yet.',
+    ),
+    FailureCode.FRAME_UNDECODABLE: FailureSpec(
+        FailureCode.FRAME_UNDECODABLE,
+        FailureStage.PERCEPTION,
+        RetryScope.NONE,
+        0,
+        True,
+        'A screenshot was captured but could not be decoded.',
+    ),
     FailureCode.APP_LOGGED_OUT: FailureSpec(
         FailureCode.APP_LOGGED_OUT,
         FailureStage.ACCOUNT,
@@ -159,8 +193,8 @@ FAILURE_TABLE: dict[FailureCode, FailureSpec] = {
     FailureCode.NAVIGATION_FAILED: FailureSpec(
         FailureCode.NAVIGATION_FAILED,
         FailureStage.ROUTE,
-        RetryScope.STAGE,
-        1,
+        RetryScope.NONE,
+        0,
         False,
         'The app did not reach the screen the route promised.',
     ),
@@ -275,6 +309,12 @@ def classify_exception(exc: BaseException, *, default: FailureCode = FailureCode
         return failure(FailureCode.DEVICE_LOCKED, detail=detail)
     if isinstance(exc, AppNotInstalled):
         return failure(FailureCode.APP_NOT_INSTALLED, detail=detail)
+    if isinstance(exc, AppLaunchFailed):
+        return failure(FailureCode.APP_LAUNCH_FAILED, detail=detail)
+    if isinstance(exc, UnsupportedGeometry):
+        return failure(FailureCode.UNSUPPORTED_GEOMETRY, detail=detail)
+    if isinstance(exc, FrameDecodeError):
+        return failure(FailureCode.FRAME_UNDECODABLE, detail=detail)
     if isinstance(exc, PopupUnclosable):
         return failure(FailureCode.POPUP_UNCLOSABLE, detail=detail)
     if isinstance(exc, StateTimeout):

@@ -35,6 +35,7 @@ from aliexpress_coins.tasks.surface import (
     SurfaceRoute,
     classify_surface,
     has_task_rows,
+    is_logged_out,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -505,3 +506,28 @@ def test_an_unknown_arrival_gets_the_same_single_warm_re_entry(
     assert roster.refresh_attempted is True
     assert roster.nothing_available
     assert device.taps == []
+
+
+@pytest.mark.parametrize(
+    ('boxes', 'expected'),
+    [
+        ((_box('Sign in', 100, 300, 300, 360), _box('Welcome to AliExpress', 100, 400, 800, 460)), True),
+        ((_box('Log in', 100, 300, 300, 360),), True),
+        ((_box('Sign in / Sign up', 100, 300, 400, 360),), True),
+        (
+            (
+                _box('Daily coins', 100, 560, 500, 610),
+                _box('Coins credits to redeem', 100, 330, 700, 380),
+                _box('Sign in', 900, 200, 1040, 240),
+            ),
+            False,
+        ),
+        ((_box('Coins boost', 100, 100, 500, 150), _box('Sign in', 900, 200, 1040, 240)), False),
+        ((_box('For you', 100, 200, 400, 260),), False),
+    ],
+)
+def test_logged_out_is_a_prompt_without_a_signed_in_surface(
+    boxes: tuple[TextBox, ...],
+    expected: bool,
+) -> None:
+    assert is_logged_out(_snapshot(*boxes)) is expected

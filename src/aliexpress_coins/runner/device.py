@@ -41,6 +41,7 @@ from typing import Protocol
 from aliexpress_coins.perception.errors import SnapshotError
 from aliexpress_coins.perception.geometry import parse_wm_size
 from aliexpress_coins.runner.errors import (
+    AppLaunchFailed,
     AppNotInstalled,
     DeviceError,
     DeviceLocked,
@@ -71,6 +72,9 @@ RESTORE_TIMEOUT_SECONDS = 1.5
 
 SWIPE_DURATION_MS = 200
 """The keyguard swipe is a gesture, not a tap; short enough to be a flick upward."""
+
+WAKE_SETTLE_SECONDS = 0.5
+"""A bounded pause before re-reading power state after a sleeping start."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -197,6 +201,13 @@ class AdbDevice:
             self._shell('input', 'keyevent', 'KEYCODE_WAKEUP', why='wake the screen before a run')
         except DeviceError as exc:
             raise DeviceSleeping(f'{self.serial}: the screen did not wake: {exc}') from exc
+        if was_asleep:
+            # A successful keyevent only means adb accepted the command. Re-read
+            # the power state after a bounded pause so a device that stayed dark
+            # is named `device_sleeping`, not reported awake.
+            self._settle(WAKE_SETTLE_SECONDS)
+            if _screen_asleep(self._shell_ok('dumpsys', 'power')):
+                raise DeviceSleeping(f'{self.serial}: the screen was still asleep after KEYCODE_WAKEUP')
         # Dismissing a keyguard is best-effort: the reference device has no PIN
         # (Q2), but the command can fail on a build that does not implement it.
         self._shell_ok('wm', 'dismiss-keyguard')
@@ -223,9 +234,9 @@ class AdbDevice:
             started = self._shell('am', 'start', '-n', APP_ACTIVITY, why='warm the app before the route')
         except DeviceError as exc:
             self.check_connected()
-            raise AppNotInstalled(f'{self.serial}: {APP_ACTIVITY} could not be started: {exc}') from exc
+            raise AppLaunchFailed(f'{self.serial}: {APP_ACTIVITY} could not be started: {exc}') from exc
         if _launch_failed(started):
-            raise AppNotInstalled(f'{self.serial}: {APP_ACTIVITY} did not start: {started.strip()}')
+            raise AppLaunchFailed(f'{self.serial}: {APP_ACTIVITY} did not start: {started.strip()}')
         if self._app_settle_seconds:
             self._settle(self._app_settle_seconds)
         sleep_note = 'device was asleep' if was_asleep else 'device was awake'
