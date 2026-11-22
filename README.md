@@ -65,9 +65,13 @@ manually with:
 docker compose run --rm collector python -m aliexpress_coins run --once
 ```
 
-Each night writes `runs/<UTC timestamp>/summary.md`, `run.json` and `roster.jsonl`
-into the `runs` volume. A stop signal ends the daemon within the compose grace
-period and still leaves the report written atomically.
+Each night writes `runs/<UTC timestamp>/` with `summary.md`, `run.json`,
+`run.jsonl`, `roster.jsonl` and the balance frames under `shots/` (each PNG with
+its OCR sidecar). Retention keeps the newest `AECOINS_KEEP_RUNS` directories
+(default 30). Failure notifications are optional: set `AECOINS_WEBHOOK_URL` or
+`AECOINS_NTFY_TOPIC` (or both); a broken sink is logged in the report and never
+fails the run. A stop signal ends the daemon within the compose grace period and
+still leaves the report written atomically.
 
 ### Quality gate
 

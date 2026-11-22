@@ -32,6 +32,7 @@ from aliexpress_coins.control.controller import Controller
 from aliexpress_coins.control.device import AdbInputDevice
 from aliexpress_coins.control.errors import PopupUnclosable
 from aliexpress_coins.control.popups import PopupCorpus, load_popup_corpus
+from aliexpress_coins.perception.artifacts import ArtifactStore
 from aliexpress_coins.perception.capture import AdbSnapshotter
 from aliexpress_coins.perception.errors import StateTimeout
 from aliexpress_coins.perception.ocr import RapidOcrEngine
@@ -41,7 +42,8 @@ from aliexpress_coins.perception.templates import TemplateStore, load_templates
 from aliexpress_coins.runner.config import RunConfig
 from aliexpress_coins.runner.device import AdbDevice, HygieneDevice
 from aliexpress_coins.runner.errors import ConfigError, DeviceError, RunInterrupted
-from aliexpress_coins.runner.report import RunReport, RunStatus
+from aliexpress_coins.runner.notify import Notification, NotificationSink, build_notifier
+from aliexpress_coins.runner.report import RunEventLog, RunReport, RunStatus, prune_runs
 from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks.browse import return_to_coins_page, run_browse_task
 from aliexpress_coins.tasks.catalogue import AllowedTaskSpec, TaskCatalogue, TaskCategory, load_task_catalogue
@@ -177,6 +179,7 @@ class RunContext:
     wall_clock: Callable[[], datetime] = _utc_now
     stop: StopSignal = field(default_factory=_NeverStop)
     logger: logging.Logger | None = None
+    notifier: NotificationSink | None = None
 
 
 _EXECUTORS: frozenset[TaskCategory] = frozenset(
@@ -266,6 +269,7 @@ def make_live_context(
         wall_clock=wall_clock,
         stop=stop,
         logger=log,
+        notifier=build_notifier(config),
     )
 
 
@@ -308,6 +312,15 @@ def run_once(
     detail: str | None = None
     attempted: set[str] = set()
     blocked: set[str] = set()
+    artifacts = ArtifactStore(report.runs_dir, report.run_id)
+    event_log = RunEventLog(report.event_log_path)
+    log.addHandler(event_log)
+    try:
+        event_log.record(
+            {'event': 'run_started', 'run_id': report.run_id, 'started_at': report.started_at.isoformat()},
+        )
+    except Exception as exc:
+        log.warning('%s', _event('run_log_failed', detail=f'{type(exc).__name__}: {exc}'))
 
     try:
         report.write()
@@ -316,7 +329,8 @@ def run_once(
         frame = _capture(context.capture)
         report.geometry = _geometry(frame)
         _require_supported_geometry(frame)
-        report.balance_before = read_coin_balance(frame)
+        recorded = _record_frame(report, artifacts, frame, 'balance-before', log)
+        report.balance_before = read_coin_balance(recorded)
         log.info('%s', _event('run_hygiene', **hygiene.as_dict()))
 
         controller = controller if controller is not None else _controller(context, frame)
@@ -376,6 +390,7 @@ def run_once(
                 )
             duration = max(0.0, context.clock() - task_started)
             attempted.add(identity)
+            _record_dismissals(report, result.as_dict())
             report.record_task(
                 title=entry.title,
                 key=spec.key,
@@ -427,7 +442,9 @@ def run_once(
         log.exception('%s', _event('run_failed', detail=detail))
     finally:
         if controller is not None:
-            _finish_on_coins_page(context, controller, report)
+            _finish_on_coins_page(context, controller, report, artifacts, log)
+        if status is RunStatus.FAILED:
+            _record_failure_frame(context, report, artifacts, log)
         if status is RunStatus.COMPLETED and not context.config.dry_run:
             try:
                 context.state.complete_night()
@@ -448,6 +465,8 @@ def run_once(
                     skipped=len(report.skipped),
                 ),
             )
+            _notify(context, report, log)
+            _prune(context, report, log)
         finally:
             # The report is final before cleanup touches adb. The restore is
             # bounded in the device layer, so it still fits inside the stop
@@ -456,6 +475,9 @@ def run_once(
                 context.hygiene.restore()
             except Exception as exc:
                 log.warning('%s', _event('hygiene_restore_failed', detail=f'{type(exc).__name__}: {exc}'))
+            finally:
+                log.removeHandler(event_log)
+                event_log.close()
     return report
 
 
@@ -756,13 +778,19 @@ def _next_entry(roster: Roster, state: DailyStateStore, blocked: set[str]) -> Ro
     return None
 
 
-def _finish_on_coins_page(context: RunContext, controller: Controller, report: RunReport) -> None:
-    log = context.logger if context.logger is not None else LOG
+def _finish_on_coins_page(
+    context: RunContext,
+    controller: Controller,
+    report: RunReport,
+    artifacts: ArtifactStore,
+    log: logging.Logger,
+) -> None:
     try:
         frame = _capture(context.capture)
         if _on_coin_page(frame):
             report.returned_to_coins_page = True
-            report.balance_after = read_coin_balance(frame)
+            recorded = _record_frame(report, artifacts, frame, 'balance-after', log)
+            report.balance_after = read_coin_balance(recorded)
             return
         result = return_to_coins_page(
             controller,
@@ -780,7 +808,8 @@ def _finish_on_coins_page(context: RunContext, controller: Controller, report: R
         report.returned_to_coins_page = result.returned
         report.return_error = result.error
         if result.returned and result.snapshot is not None:
-            report.balance_after = read_coin_balance(result.snapshot)
+            recorded = _record_frame(report, artifacts, result.snapshot, 'balance-after', log)
+            report.balance_after = read_coin_balance(recorded)
     except RunInterrupted as exc:
         report.returned_to_coins_page = False
         report.return_error = f'stop requested during cleanup: {exc}'
@@ -788,6 +817,138 @@ def _finish_on_coins_page(context: RunContext, controller: Controller, report: R
         report.returned_to_coins_page = False
         report.return_error = f'{type(exc).__name__}: {exc}'
         log.warning('%s', _event('return_failed', detail=report.return_error))
+
+
+def _record_frame(
+    report: RunReport,
+    artifacts: ArtifactStore,
+    frame: Snapshot,
+    name: str,
+    log: logging.Logger,
+) -> Snapshot:
+    """Write a frame and read the report balance back from the recorded copy.
+
+    Reloading the PNG sidecar is deliberate: the summary's balance must be the
+    number a human can recover from ``shots/`` with the artifact store, not a
+    value that only existed in memory. A failed artifact write is reported but
+    does not end the run; the in-memory frame is then the best available copy.
+    """
+    try:
+        paths = artifacts.write(frame, name)
+        report.record_shot(name, paths.image)
+        return artifacts.load(name)
+    except Exception as exc:
+        detail = f'{name}: {type(exc).__name__}: {exc}'
+        report.record_artifact_error(detail)
+        log.warning('%s', _event('artifact_write_failed', detail=detail))
+        return frame
+
+
+def _record_failure_frame(
+    context: RunContext,
+    report: RunReport,
+    artifacts: ArtifactStore,
+    log: logging.Logger,
+) -> None:
+    """Best-effort final frame for a failed run; never mask the original error."""
+    if 'failure' in report.shots:
+        return
+    try:
+        frame = _capture(context.capture)
+    except Exception as exc:
+        report.record_artifact_error(f'failure frame: {type(exc).__name__}: {exc}')
+        log.warning('%s', _event('failure_frame_failed', detail=f'{type(exc).__name__}: {exc}'))
+        return
+    _record_frame(report, artifacts, frame, 'failure', log)
+
+
+def _record_dismissals(report: RunReport, payload: dict[str, Any]) -> None:
+    for dismissal in _dismissal_payloads(payload):
+        closed = dismissal.get('closed')
+        if isinstance(closed, list):
+            report.record_popups(str(family) for family in closed)
+
+
+def _dismissal_payloads(value: Any) -> list[dict[str, Any]]:
+    """Find every embedded ``DismissReport.as_dict`` in an executor payload."""
+    found: list[dict[str, Any]] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in {'dismiss', 'dismissals'}:
+                if isinstance(item, dict):
+                    found.append(item)
+                elif isinstance(item, list):
+                    found.extend(entry for entry in item if isinstance(entry, dict))
+            else:
+                found.extend(_dismissal_payloads(item))
+    elif isinstance(value, list):
+        for item in value:
+            found.extend(_dismissal_payloads(item))
+    return found
+
+
+def _should_notify(report: RunReport, *, notify_on_empty: bool) -> bool:
+    if not report.ok:
+        return True
+    return bool(notify_on_empty and not any(task.completed for task in report.tasks))
+
+
+def _notification(report: RunReport) -> Notification:
+    lines = [f'status: {report.status.value}']
+    if report.error:
+        lines.append(f'error: {report.error}')
+    elif report.detail:
+        lines.append(f'detail: {report.detail}')
+    before = 'unknown' if report.balance_before is None else f'{report.balance_before:g}'
+    after = 'unknown' if report.balance_after is None else f'{report.balance_after:g}'
+    lines.append(f'balance: {before} -> {after}')
+    completed = sum(1 for task in report.tasks if task.completed)
+    lines.append(f'tasks: {completed}/{len(report.tasks)} completed')
+    lines.append(f'report: {report.summary_path}')
+    return Notification(
+        title=f'aliexpress-coins {report.status.value} {report.run_id}',
+        body='\n'.join(lines),
+        run_id=report.run_id,
+        status=report.status.value,
+        tags=('coins', report.status.value),
+    )
+
+
+def _notify(context: RunContext, report: RunReport, log: logging.Logger) -> None:
+    """Deliver one notification after the run's own outcome is already written."""
+    notifier = context.notifier
+    if notifier is None or not _should_notify(report, notify_on_empty=context.config.notify_on_empty):
+        return
+    name = getattr(notifier, 'name', type(notifier).__name__)
+    record: dict[str, Any] = {'attempted': True, 'ok': False, 'sink': name, 'error': None}
+    try:
+        notifier.send(_notification(report))
+    except Exception as exc:
+        record['error'] = f'{type(exc).__name__}: {exc}'
+        log.warning('%s', _event('notification_failed', sink=name, detail=record['error']))
+    else:
+        record['ok'] = True
+        log.info('%s', _event('notification_sent', sink=name, status=report.status.value))
+    report.notification = record
+    try:
+        report.write()
+    except Exception as exc:
+        log.warning('%s', _event('report_rewrite_failed', detail=f'{type(exc).__name__}: {exc}'))
+
+
+def _prune(context: RunContext, report: RunReport, log: logging.Logger) -> None:
+    """Apply the keep-last-N rule without letting retention fail the run."""
+    try:
+        pruned = prune_runs(
+            report.runs_dir,
+            keep=context.config.keep_runs,
+            current_run_id=report.run_id,
+        )
+    except Exception as exc:
+        log.warning('%s', _event('run_prune_failed', detail=f'{type(exc).__name__}: {exc}'))
+        return
+    if pruned:
+        log.info('%s', _event('runs_pruned', keep=context.config.keep_runs, pruned=[path.name for path in pruned]))
 
 
 def _require_supported_geometry(frame: Snapshot) -> None:

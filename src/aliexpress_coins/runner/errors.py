@@ -42,6 +42,14 @@ class ReportError(RunnerError):
     """A run report could not be written."""
 
 
+class NotificationError(RunnerError):
+    """A run notification could not be delivered.
+
+    Delivery is best-effort by contract: the caller records this error and
+    exits on the run's own status. It never turns a good night into a failure.
+    """
+
+
 class DeviceError(RunnerError):
     """The device could not be reached or prepared for a run."""
 

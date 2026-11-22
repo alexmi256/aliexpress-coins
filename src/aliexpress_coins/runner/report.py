@@ -7,14 +7,17 @@ deliberately boring: each file is staged and renamed, so a kill mid-write leaves
 the previous complete file, never a truncated one.
 
 The shape is intentionally small: what ran, what was skipped and why, the
-outcomes, and how much of the wall-clock budget was used. Notifications and the
-richer per-frame detail belong to #31.
+outcomes, the budget, the popup families closed and the balance frames the
+summary was read from. Delivery lives in ``runner/notify.py``; #40 replaces that
+transport with Apprise without changing the report contract.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+import logging
+import shutil
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -26,13 +29,15 @@ from aliexpress_coins.runner.errors import ReportError
 
 __all__ = [
     'RUN_REPORT_SCHEMA',
+    'RunEventLog',
     'RunReport',
     'RunStatus',
     'SkippedRecord',
     'TaskRecord',
+    'prune_runs',
 ]
 
-RUN_REPORT_SCHEMA = 1
+RUN_REPORT_SCHEMA = 2
 """The on-disk schema this module reads or writes."""
 
 
@@ -135,6 +140,10 @@ class RunReport:
         self.returned_to_coins_page: bool | None = None
         self.return_error: str | None = None
         self.error: str | None = None
+        self.popups_closed: dict[str, int] = {}
+        self.shots: dict[str, str] = {}
+        self.notification: dict[str, Any] | None = None
+        self.artifact_errors: list[str] = []
         self.tasks: list[TaskRecord] = []
         self.skipped: list[SkippedRecord] = []
         self._skip_keys: set[tuple[str, str]] = set()
@@ -177,9 +186,43 @@ class RunReport:
         return self.run_dir / 'roster.jsonl'
 
     @property
+    def event_log_path(self) -> Path:
+        """The structured process log for this run."""
+        return self.run_dir / 'run.jsonl'
+
+    @property
+    def shots_dir(self) -> Path:
+        """Where the artifact store writes frames and OCR sidecars."""
+        return self.run_dir / 'shots'
+
+    @property
+    def balance_delta(self) -> float | None:
+        """The change the two recorded balance frames prove, when both are readable."""
+        if self.balance_before is None or self.balance_after is None:
+            return None
+        return self.balance_after - self.balance_before
+
+    @property
     def ok(self) -> bool:
         """Whether the run itself succeeded, even if a task did not."""
         return self.status in (RunStatus.COMPLETED, RunStatus.BUDGET)
+
+    def record_shot(self, name: str, image: Path) -> None:
+        """Remember one frame the artifact store wrote, relative to the run."""
+        try:
+            relative = image.relative_to(self.run_dir)
+        except ValueError:
+            relative = image
+        self.shots[name] = str(relative)
+
+    def record_popups(self, families: Iterable[str]) -> None:
+        """Count verified popup closures by family across the run."""
+        for family in families:
+            self.popups_closed[family] = self.popups_closed.get(family, 0) + 1
+
+    def record_artifact_error(self, detail: str) -> None:
+        """Keep a best-effort artifact failure visible without failing the run."""
+        self.artifact_errors.append(detail)
 
     def record_task(
         self,
@@ -261,6 +304,11 @@ class RunReport:
             'roster_log': str(self.roster_log_path),
             'balance_before': self.balance_before,
             'balance_after': self.balance_after,
+            'balance_delta': self.balance_delta,
+            'popups_closed': dict(self.popups_closed),
+            'shots': dict(self.shots),
+            'notification': self.notification,
+            'artifact_errors': list(self.artifact_errors),
             'returned_to_coins_page': self.returned_to_coins_page,
             'return_error': self.return_error,
             'error': self.error,
@@ -295,9 +343,11 @@ class RunReport:
             f'- **Device:** {_device_summary(self.hygiene)}',
             f'- **Geometry:** {_geometry_summary(self.geometry)}',
             f'- **Surface:** {self.surface or "unknown"}',
+            f'- **Route:** {_route_summary(self.roster)}',
             f'- **Roster:** {_roster_summary(self.roster)}',
             f'- **Observations:** {self.observations} (`roster.jsonl`)',
-            f'- **Balance:** {_balance(self.balance_before)} -> {_balance(self.balance_after)}',
+            f'- **Balance:** {_balance_delta(self.balance_before, self.balance_after, self.balance_delta)}',
+            f'- **Popups closed:** {_popup_summary(self.popups_closed)}',
             f'- **Back on coins page:** {_returned(self.returned_to_coins_page, self.return_error)}',
         ]
         if self.detail:
@@ -306,12 +356,22 @@ class RunReport:
             lines.append(f'- **Route fallback:** {self.route_error}')
         if self.error:
             lines.append(f'- **Run error:** {self.error}')
+        if self.artifact_errors:
+            lines.append(f'- **Artifact errors:** {"; ".join(self.artifact_errors)}')
+        if self.notification is not None:
+            lines.append(f'- **Notification:** {_notification_summary(self.notification)}')
         lines.extend(('', '## Tasks', ''))
         if self.tasks:
-            lines.extend(('| # | task | category | outcome | verification | detail |', '|---|---|---|---|---|---|'))
+            lines.extend(
+                (
+                    '| # | task | key | outcome | evidence | seconds | detail |',
+                    '|---|---|---|---|---|---|---|',
+                ),
+            )
             for index, task in enumerate(self.tasks, start=1):
                 lines.append(
-                    f'| {index} | {_cell(task.title)} | {_cell(task.category)} | {_cell(task.outcome)} | {_cell(task.verification)} | {_cell(task.detail)} |',
+                    f'| {index} | {_cell(task.title)} | {_cell(task.key)} | {_cell(task.outcome)} | '
+                    f'{_cell(task.verification)} | {task.duration_seconds:.1f} | {_cell(task.detail)} |',
                 )
         else:
             lines.append('No task was dispatched.')
@@ -328,12 +388,119 @@ class RunReport:
         return '\n'.join(lines)
 
 
+class RunEventLog(logging.Handler):
+    """Append every runner event to ``run.jsonl`` as one JSON object per line.
+
+    The engine's log messages are already JSON documents, so they are written
+    unchanged with level/logger/time added when absent. Anything else is wrapped
+    rather than dropped. A log write failure is reported through the logging
+    machinery and never interrupts the run.
+    """
+
+    def __init__(self, path: str | Path) -> None:
+        super().__init__()
+        self.path = Path(path)
+
+    def record(self, payload: dict[str, Any]) -> None:
+        """Write one caller-built event; used for the first line of a run."""
+        self._write(payload)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            message = record.getMessage()
+            try:
+                payload = json.loads(message)
+            except TypeError, json.JSONDecodeError:
+                payload = {'event': 'log', 'message': message}
+            if not isinstance(payload, dict):
+                payload = {'event': 'log', 'value': payload}
+            payload.setdefault('level', record.levelname.lower())
+            payload.setdefault('logger', record.name)
+            payload.setdefault('time', datetime.fromtimestamp(record.created, UTC).isoformat())
+            self._write(payload)
+        except Exception:
+            self.handleError(record)
+
+    def _write(self, payload: dict[str, Any]) -> None:
+        line = json.dumps(payload, ensure_ascii=False, separators=(',', ':'), sort_keys=True, default=str)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open('a', encoding='utf-8') as stream:
+            stream.write(line + '\n')
+
+
+def prune_runs(runs_dir: str | Path, *, keep: int, current_run_id: str) -> tuple[Path, ...]:
+    """Delete the oldest run directories so ``keep`` remain, including this run.
+
+    The current run is excluded before pruning, so it is never a candidate even
+    when its id sorts before an existing directory. Names are UTC timestamps, so
+    lexical order is chronological order. A non-directory or symlink in the runs
+    root is left alone.
+    """
+    if keep < 1:
+        raise ValueError(f'keep must be positive, got {keep!r}')
+    root = Path(runs_dir)
+    try:
+        directories = [
+            path for path in root.iterdir() if path.is_dir() and not path.is_symlink() and path.name != current_run_id
+        ]
+    except FileNotFoundError:
+        return ()
+    except OSError as exc:
+        raise ReportError(f'could not list run directories in {root}: {exc}') from exc
+
+    directories.sort(key=lambda path: path.name)
+    excess = len(directories) - (keep - 1)
+    if excess <= 0:
+        return ()
+
+    pruned: list[Path] = []
+    failures: list[str] = []
+    for path in directories[:excess]:
+        try:
+            shutil.rmtree(path)
+        except OSError as exc:
+            failures.append(f'{path}: {exc}')
+        else:
+            pruned.append(path)
+    if failures:
+        raise ReportError(f'could not prune every old run: {"; ".join(failures)}')
+    return tuple(pruned)
+
+
 def _cell(value: str) -> str:
     return value.replace('|', '\\|').replace('\n', ' ')
 
 
 def _balance(value: float | None) -> str:
     return 'unknown' if value is None else f'{value:g}'
+
+
+def _balance_delta(before: float | None, after: float | None, delta: float | None) -> str:
+    line = f'{_balance(before)} -> {_balance(after)}'
+    return line if delta is None else f'{line} ({delta:+g})'
+
+
+def _popup_summary(closed: dict[str, int]) -> str:
+    if not closed:
+        return 'none'
+    return ', '.join(f'{family}: {count}' for family, count in sorted(closed.items()))
+
+
+def _route_summary(roster: dict[str, Any] | None) -> str:
+    if not roster:
+        return 'not read'
+    route = roster.get('route') or 'unknown'
+    taken = roster.get('routes_taken') or []
+    taken_text = ', '.join(str(item) for item in taken) if taken else 'none recorded'
+    return f'{route} (tried: {taken_text})'
+
+
+def _notification_summary(notification: dict[str, Any]) -> str:
+    if notification.get('ok'):
+        return f'delivered via {notification.get("sink", "unknown")}'
+    if not notification.get('attempted', False):
+        return f'not attempted ({notification.get("reason", "not requested")})'
+    return f'failed via {notification.get("sink", "unknown")}: {notification.get("error", "unknown error")}'
 
 
 def _device_summary(hygiene: dict[str, Any] | None) -> str:
