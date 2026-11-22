@@ -155,9 +155,6 @@ _PAYOUT = re.compile(r'You got\s*\+\s*(\d+)', re.IGNORECASE)
 _CORRECT_ANSWER = re.compile(r'correct\s*answer', re.IGNORECASE)
 """The marker for the learned-answer line (``Correct answer: X``)."""
 
-_GO_BACK = re.compile(r'^\s*go\s*back\s*$', re.IGNORECASE)
-"""The result page's ``Go back`` control."""
-
 _BARE_NUMBER = re.compile(r'^\s*\d{1,3}\s*$')
 """A standalone digit: a page counter, never an answer option."""
 
@@ -341,11 +338,17 @@ def find_answer_options(snapshot: Snapshot) -> tuple[AnswerOption, ...]:
 
 
 def find_go_back(snapshot: Snapshot) -> TextBox | None:
-    """Return the result page's ``Go back`` control, or ``None``."""
+    """Return the result page's ``Go back`` control, or ``None``.
+
+    OCR often appends a chevron (``Go back >``) or the app names the destination
+    (``Go back to coins``); the normalised prefix still identifies the exit
+    control. This is the one result-page control the flow must find after the
+    quiz has already paid.
+    """
     for box in snapshot.boxes:
         if box.score < DEFAULT_MIN_OCR_SCORE:
             continue
-        if _GO_BACK.match(box.text):
+        if normalize(box.text).startswith('go back'):
             return box
     return None
 
@@ -728,8 +731,6 @@ def run_quiz_task(
             )
             if dismiss is not None:
                 dismissals.append(dismiss)
-            if stop is not None:
-                break
             if not arrived:
                 return _finish_failed(
                     controller=controller,
@@ -813,6 +814,29 @@ def run_quiz_task(
             )
 
         if stop == REDEEM_INTERSTITIAL:
+            if rounds == 0:
+                # A late or leftover interstitial is not proof this visit paid.
+                return _result(
+                    spec,
+                    entry.title,
+                    QuizOutcome.FAILED,
+                    verification='redeem_interstitial',
+                    detail='the reward interstitial appeared before any answer; no completion was recorded',
+                    limit=limit,
+                    done_before=done_before,
+                    done_after=done_before,
+                    rounds=rounds,
+                    question=question,
+                    options=options,
+                    chosen=chosen,
+                    correct=correct,
+                    payout=payout,
+                    taps=taps,
+                    stop=stop,
+                    dismissals=dismissals,
+                    return_state=return_state,
+                    logger=log,
+                )
             # The quiz paid coin credit: the run is complete even though the
             # overlay cannot be closed. The coins page is what the route proves.
             state.record(spec.key)
@@ -891,11 +915,12 @@ def run_quiz_task(
                     logger=log,
                 )
 
-        # The result page's own payout is a positive signal: the spec says a
-        # wrong answer still pays, so a visible +N completes even when the row
-        # could not be read. A decisive row verdict is preferred for its name.
-        completed = verdict.decisive or payout is not None
-        if completed:
+        # A decisive row verdict is the strongest signal. The result page's own
+        # payout may stand in only when the row could not be read at all: a row
+        # that was read and still offers GO contradicts the payout, and the
+        # conventions say a false completed is worse than unverified.
+        payout_fallback = payout is not None and verdict.status == 'no_observation'
+        if verdict.decisive or payout_fallback:
             verification = verdict.status if verdict.decisive else 'result_reward'
             detail = (
                 verdict.detail

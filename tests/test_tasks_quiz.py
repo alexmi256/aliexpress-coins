@@ -433,6 +433,14 @@ def test_find_go_back_finds_the_control() -> None:
     assert box.text == 'Go back'
 
 
+def test_find_go_back_accepts_a_chevron_or_destination_wording() -> None:
+    chevron = _snapshot(_box('Go back >', 400, 1400, 800, 1500))
+    destination = _snapshot(_box('Go back to coins', 400, 1400, 800, 1500))
+
+    assert find_go_back(chevron) is not None
+    assert find_go_back(destination) is not None
+
+
 def test_find_go_back_returns_none_when_absent() -> None:
     frame = _snapshot(_box('Correct answer: True', 60, 400, 700, 450))
 
@@ -718,6 +726,37 @@ def test_run_quiz_task_completes_when_the_action_is_gone(
     assert result.outcome is QuizOutcome.COMPLETED
     assert result.verification == 'action_gone'
     assert result.recorded is True
+
+
+def test_run_quiz_task_does_not_complete_on_a_visible_payout_when_the_row_still_offers_go(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """A trusted row that still offers GO contradicts the result payout."""
+    world = _success_world(after_with_row=True, after_action='GO')
+    state = _state(tmp_path)
+
+    result = run_quiz_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        state,
+        _entry(catalogue),
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        exit_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+        rng=random.Random(3),
+    )
+
+    assert result.outcome is QuizOutcome.FAILED
+    assert result.verification == 'no_change'
+    assert result.recorded is False
+    assert state.count('coins_quiz') == 0
 
 
 def test_run_quiz_task_fails_when_nothing_changes(
@@ -1862,9 +1901,10 @@ def test_run_quiz_task_stops_on_a_redeem_seen_while_waiting_for_the_question(
         rng=random.Random(3),
     )
 
-    assert result.outcome is QuizOutcome.COMPLETED
+    assert result.outcome is QuizOutcome.FAILED
+    assert result.verification == 'redeem_interstitial'
     assert result.stop == REDEEM_INTERSTITIAL
-    assert result.recorded is True
+    assert result.recorded is False
 
 
 def test_run_quiz_task_times_out_on_a_loading_question_wait(
@@ -1946,9 +1986,9 @@ def test_run_quiz_task_reads_an_inline_route_with_no_earn_more(
         rng=random.Random(3),
     )
 
-    assert result.outcome is QuizOutcome.COMPLETED
-    assert result.verification == 'result_reward'
-    assert result.recorded is True
+    assert result.outcome is QuizOutcome.FAILED
+    assert result.verification == 'no_change'
+    assert result.recorded is False
     assert result.returned is True
 
 
