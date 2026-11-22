@@ -731,6 +731,12 @@ def run_quiz_task(
             )
             if dismiss is not None:
                 dismissals.append(dismiss)
+            if stop is not None:
+                # The sweep re-captures at exception time; the screen can turn
+                # into the redeem interstitial between the target check and the
+                # sweep's frame. Keep that stop so an answered quiz can still
+                # take the interstitial completion path.
+                break
             if not arrived:
                 return _finish_failed(
                     controller=controller,

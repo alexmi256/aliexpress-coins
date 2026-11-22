@@ -2328,3 +2328,53 @@ def test_run_quiz_task_taps_the_rng_chosen_label_in_a_reordered_answer_set(
     left, top, right, bottom = expected.box.bbox
     assert left <= answer_tap.point[0] <= right
     assert top <= answer_tap.point[1] <= bottom
+
+
+def test_run_quiz_task_keeps_a_redeem_stop_seen_by_the_exit_sweep(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """A stale frame turning into the interstitial during the sweep still completes."""
+    world = _World(
+        series={
+            'boost': (_quiz_boost_frame(),),
+            'question': (_question_frame(),),
+            'result': (_result_frame(),),
+            # The first capture is a non-redeem POPUP; the sweep's two fresh
+            # captures are the redeem interstitial that replaced it.
+            'popup': (_popup_frame(), _is_redeem_frame(), _is_redeem_frame()),
+            'coins': (_coins_frame(),),
+        },
+        transitions={
+            ('boost', 'GO'): 'question',
+            ('question', 'True'): 'result',
+            ('question', 'False'): 'result',
+            ('result', 'Go back'): 'popup',
+        },
+    )
+
+    def navigate(_route: SurfaceRoute) -> None:
+        world.navigations.append(_route)
+        world.go('coins')
+
+    result = run_quiz_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=cast(RouteFirer, navigate),
+        arrival_timeout=2.0,
+        exit_timeout=2.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+        rng=random.Random(3),
+    )
+
+    assert result.outcome is QuizOutcome.COMPLETED
+    assert result.verification == 'interstitial'
+    assert result.stop == REDEEM_INTERSTITIAL
+    assert result.recorded is True
