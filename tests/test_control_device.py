@@ -103,3 +103,40 @@ def test_subprocess_input_runner_returns_stdout_stderr_and_status(
 
     assert result == InputResult(3, b'out', b'err')
     assert calls == [(['adb', 'shell', 'input', 'tap', '1', '2'], True, 7.0, False)]
+
+
+def test_adb_input_device_presses_a_key_without_inventing_a_coordinate() -> None:
+    runner = _RecordingRunner()
+    device = AdbInputDevice('serial', runner=runner)
+
+    device.keyevent('KEYCODE_BACK')
+
+    args, _ = runner.calls[0]
+    assert list(args) == ['adb', '-s', 'serial', 'shell', 'input', 'keyevent', 'KEYCODE_BACK']
+
+
+def test_adb_input_device_swipes_with_the_duration_last() -> None:
+    runner = _RecordingRunner()
+    device = AdbInputDevice('serial', runner=runner)
+
+    device.swipe(600, 1500, 600, 800, 300)
+
+    args, _ = runner.calls[0]
+    assert list(args) == ['adb', '-s', 'serial', 'shell', 'input', 'swipe', '600', '1500', '600', '800', '300']
+
+
+def test_adb_input_device_rejects_an_empty_key_and_a_non_positive_swipe() -> None:
+    device = AdbInputDevice('serial', runner=_RecordingRunner())
+
+    with pytest.raises(ValueError, match='key name'):
+        device.keyevent('   ')
+    with pytest.raises(ValueError, match='duration must be positive'):
+        device.swipe(1, 2, 3, 4, 0)
+
+
+def test_adb_input_device_reports_a_non_zero_key_exit() -> None:
+    runner = _RecordingRunner(InputResult(2, b'', b'key rejected'))
+    device = AdbInputDevice('serial', runner=runner)
+
+    with pytest.raises(InputError, match=r'input keyevent exited 2.*key rejected'):
+        device.keyevent('KEYCODE_BACK')
