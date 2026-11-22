@@ -109,8 +109,12 @@ The boost page has one failure mode that matters, and it is silent: the honest-l
   A run must claim both; neither is evidence that the other is done. The 2×2 widget's "Check in
   now" CTA only navigates to the coin page — it does not create collectability (`aewidget_status`
   is state, not a trigger).
-* **Quiz** — one True/False question per visit. The result page prints **`Correct answer: X`** and
-  `Your answer: Y`, then `You got +6`. A wrong answer still pays something.
+* **Quiz** — **one question per visit**, and the answer set is not always two: True/False was
+  observed on 2026-11-20, while the reviewed `states/quiz.png` frame is a four-option question
+  ("Which statements about coins credits are correct?"). The result page prints
+  **`Correct answer: X`** and `Your answer: Y`, then `You got +6`. A wrong answer still pays
+  something. The quiz pays coins **and** coin credit, which is why its `Go back` can raise the
+  `YOU CAN NOW REDEEM!` interstitial.
 * **Browse tasks** — open a collection page and wait out a dwell requirement. The requirement is
   **observable**, so it does not need to be timed:
 
@@ -125,23 +129,47 @@ The boost page has one failure mode that matters, and it is silent: the honest-l
 
 ## 5b. Flows walked end to end
 
-### Browse surprise items ✅
+### Browse surprise items ✅ (re-measured 2026-11-22)
 
-Row: `Browse surprise items` / "Tap 3 items on this page to earn coins" / progress `0/2` / `+1`.
+Row: `Browse surprise items` / "Tap 3 items on this page to earn coins" / round badge `N/2` / `+1`.
 
-1. `GO` opens a page headed `Browse surprise items` with the same subtitle, a counter (`0/3`) and a
-   product grid.
-2. Tapping a tile opens a normal product page (`AIProductDetailActivity`).
-3. **BACK returns to the grid and increments the counter** — one tap does not complete the task.
-4. After three distinct items the grid is replaced by a **`Next round`** button (~597,1240).
-5. `Next round` resets the counter to `0/3` and shows a fresh grid. Two rounds match the `0/2`
-   progress badge.
-6. **Re-opening an already-opened item does not count.** In round 2, re-tapping the round-1 tiles
-   left the counter at `0/3`; new items moved it to `2/3`. Distinctness is tracked per product, not
-   per tile position.
+The task is **two rounds of three distinct products per day**. The row badge counts rounds; the
+page counter counts products in the current round.
 
-Balance moved 13 → 15 during the exercise (partial completion), so the reward is not all-or-nothing
-per round.
+1. `GO` opens a page headed `Browse surprise items` with the same subtitle, a segmented pill
+   (`+1 | N /3 | three tick placeholders`) and a two-column product grid. Entry read `0/3` with
+   three hollow placeholder icons.
+2. Tapping a tile image opens a normal product page (`AIProductDetailActivity`, `Item 1/n` in the
+   toolbar, `Add to cart` / `Buy now` at the bottom — **never tap those**).
+3. **BACK returns to the grid and increments the counter** for that product. One visit is one
+   product; a round needs three. The counter was already `1/3` in a frame taken ~1 s after BACK, so
+   the update is immediate, not polled.
+4. **The counter is per distinct product, not per tap.** Measured tap sequence on the round that
+   started at `0/3` (see docs/01 §7c for the raw frames):
+
+   | tap | product | counter after BACK |
+   |---|---|---|
+   | 1 | T9 Vintage Men's Electric Hair Clipper (left tile, row 1) | **1/3** |
+   | 2 | 1pc Pressure Cooker Silicone Exhaust Valve (right tile, row 1) | **1/3** (no change) |
+   | 3 | the same pressure-cooker tile, re-tapped with a 9 s dwell | **1/3** (still no change) |
+   | 4 | Luxury Liquid Silicone Phone Case (fresh tile, row 2) | **2/3** |
+   | 5 | Home 3-in-1 Portable Fan (fresh tile, row 2) | **3/3** |
+
+   So a non-counting tile stays non-counting across repeat visits: the page opens the product but
+   does not credit it. This is product-level distinctness, not "the first three taps count".
+   ❓ *Whether the product set resets between rounds* is not settled: the task entered this session
+   at `1/2` rounds, so finishing the round ended the task (2/2) and no round boundary with rounds
+   remaining could be observed. The pressure-cooker tile's inertness is consistent with a product
+   opened in the earlier round still being excluded, but its earlier-round history was not recorded.
+5. At `3/3` all three tick icons fill, a **`Mission Completed`** overlay drops over the grid (three
+   gold coins, no control), and the page stays on `3/3`. The overlay did **not** auto-dismiss within
+   10 s; a tap anywhere on it dismissed it immediately. On a task with rounds remaining a
+   **`Next round`** control appears at ~(597,1240) (⬜ from the 2026-11-21 session, not re-observed).
+6. **Completion**: BACK returns to the boost list, the row is gone, and the balance moves +1 once
+   (43 → 44 today). The +1 is paid on completion of the final round, not per round.
+
+The roster is server-driven and rotates immediately after this row completes: `Browse surprise
+items` was replaced in place by `Search for what you love` in the same session.
 
 ### Learn to save money with Coins Credits ✅
 
@@ -171,11 +199,18 @@ Row: `Turn on notifications` / "Stay informed when rewards drop" / `+1`.
 
 Tapping its `GO` credited **+1** (balance 15 → 16) with **no system permission dialog**, and
 `adb shell cmd appops get com.alibaba.aliexpresshd POST_NOTIFICATION` still returned `ignore`
-afterwards.
+afterwards (2026-11-20).
 
-So the reward appears to be granted on the tap, not on the permission actually being held. That is
-either an app bug or the prompt is shown once and remembered. Worth one clean re-test (fresh state,
-notifications disabled) before the executor relies on it — tracked in #28.
+So the reward is granted on the tap, not on the permission actually being held. A clean re-test
+was attempted on 2026-11-22 but the row was already claimed for the app day (drawn check, inert),
+and the task day is server-side. Two OS-side facts were measured while trying: with
+`granted=false` and the `USER_SET` flag cleared, the app's own
+`Settings → Notification settings → Push notifications → Allow phone notifications` toggle
+**deep-links to the OS `AliExpress` notification page** instead of raising the runtime dialog, and
+flipping the OS `All AliExpress notifications` switch there **grants the permission directly with
+no dialog at all**. That grant was reverted immediately (`pm revoke` + `pm clear-permission-flags`)
+and `Allow` was never tapped. The system dialog itself (`Allow AliExpress to send you
+notifications?`, close `Don't allow`) is the #11 corpus observation.
 
 ## 6. Interstitials seen
 
@@ -184,6 +219,7 @@ notifications disabled) before the executor relies on it — tracked in #28.
 | `Welcome gifts` (cold launch) | sometimes on a cold start, not always | drawn ✕ at ≈(600, 1652), no OCR text |
 | `YOU CAN NOW REDEEM!` | after a task pays credit (quiz → Go back) | no OCR-visible close; **BACK** exits it, a second BACK exits the app |
 | `Coins boost` empty state | tapping "Earn more" | back arrow in the page header |
+| `Mission Completed` | third distinct product in a surprise-items round | **tap anywhere on the overlay**; it did not auto-dismiss inside 10 s |
 
 The post-task interstitial is the dangerous one: it looks like a page, not a modal, and BACK is
 the only known exit — which is also the key that leaves the app.
@@ -207,6 +243,6 @@ open shortcut deep link
 | Is a widget/shortcut *visit* needed for those two tasks, or is creation enough? | decides whether the executor must fake an entry point | wait for the task to reappear, then visit vs not |
 | Why were task rows absent on some loads? | the executor's "nothing available" branch | observe across a day boundary; check whether rows return after the daily reset |
 | The 15 s countdown on browse tasks | per-task wait time | time one sponsored-items task from GO to progress change |
-| Surprise-items flow (3 taps, rounds) | executor design | one session with the task available |
-| Notifications task (system dialog) | executor design | one session with the task available |
+| Does the surprise-items round counter reset its product set between rounds? | the round-2 rule in #26 | one day starting at `0/2`, with the same product opened in both rounds |
+| The quiz result and the notification denial frames | #25/#28 fixtures | one day when the quiz and the notification row are still unclaimed |
 | Whether the quiz question set is finite | question bank size | capture over several days |
