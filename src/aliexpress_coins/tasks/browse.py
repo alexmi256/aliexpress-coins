@@ -1222,7 +1222,7 @@ def run_browse_task(
                     collect=collect_tap,
                     chip=chip_wait,
                     arrival=arrival,
-                    return_state=verify_return,
+                    return_state=return_state,
                     dismissals=dismissals,
                     stop=stop,
                     logger=log,

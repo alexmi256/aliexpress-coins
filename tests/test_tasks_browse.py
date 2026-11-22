@@ -1465,6 +1465,82 @@ def test_run_browse_task_fails_when_the_verification_return_fails(
     assert result.recorded is False
 
 
+def test_a_failed_verification_return_keeps_the_first_return_dismissals(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def dismissal(family: str) -> DismissReport:
+        return DismissReport(
+            closed=(family,),
+            attempts=(),
+            frames=(),
+            remaining=False,
+            stop=DismissStop.CLEAR,
+        )
+
+    first = ReturnResult(
+        returned=True,
+        reentered=True,
+        attempts=1,
+        route=SurfaceRoute.SHORTCUT,
+        elapsed=1.0,
+        snapshot=_coin_frame(),
+        navigations=(SurfaceRoute.SHORTCUT,),
+        history=('page',),
+        dismissals=(dismissal('first_modal'),),
+    )
+    second = ReturnResult(
+        returned=False,
+        reentered=True,
+        attempts=1,
+        route=SurfaceRoute.SHORTCUT,
+        elapsed=2.0,
+        navigations=(SurfaceRoute.SHORTCUT,),
+        history=('wrong',),
+        error='no coin markers',
+        dismissals=(dismissal('second_modal'),),
+    )
+    returns = iter((first, second))
+    monkeypatch.setattr(
+        'aliexpress_coins.tasks.browse.return_to_coins_page',
+        lambda *args, **kwargs: next(returns),
+    )
+    world = _World(
+        series={
+            'boost': (_boost_frame(),),
+            'destination': (_destination(chip=None), _destination(chip=None)),
+        },
+        transitions={('boost', 'go'): 'destination'},
+    )
+
+    result = run_browse_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        load_timeout=1.0,
+        chip_interval=0.5,
+        return_timeout=0.5,
+        return_interval=0.5,
+        clock=_SteppingClock(step=1.0),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is BrowseOutcome.FAILED
+    assert result.verification == 'return_failed'
+    assert result.return_state is not None
+    assert result.return_state.attempts == 2
+    assert [report.closed for report in result.return_state.dismissals] == [
+        ('first_modal',),
+        ('second_modal',),
+    ]
+
+
 def test_run_browse_task_rejects_a_denied_entry(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
