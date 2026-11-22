@@ -591,7 +591,8 @@ def _geometry_summary(geometry: dict[str, Any] | None) -> str:
         return 'not captured'
     return (
         f'{geometry.get("width", "?")}x{geometry.get("height", "?")} '
-        f'@ {geometry.get("density", "?")} dpi (sdk {geometry.get("sdk", "?")})'
+        f'@ {geometry.get("density", "?")} dpi (sdk {geometry.get("sdk", "?")}, '
+        f'{geometry.get("orientation", "?")}, profile {geometry.get("profile_id", "?")})'
     )
 
 

@@ -15,6 +15,9 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal
 
+from aliexpress_coins.perception.errors import SnapshotError
+from aliexpress_coins.perception.geometry import parse_geometry
+
 Status = Literal['ok', 'fail', 'skipped']
 
 
@@ -115,6 +118,47 @@ def check_device(serial: str | None, *, run: CommandRunner = _run_command) -> Ch
     return CheckResult('device', 'ok', f'{serial} ({state})')
 
 
+def _geometry_probe(serial: str, command: Sequence[str], run: CommandRunner) -> str:
+    """Run one read-only geometry probe and return its stdout."""
+    try:
+        result = run(['adb', '-s', serial, 'shell', *command], 10.0)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SnapshotError(f'adb {" ".join(command)} failed: {exc}') from exc
+    if result.returncode != 0:
+        raise SnapshotError(
+            f'adb {" ".join(command)} exited {result.returncode}: {_first_line(result.stderr, result.stdout)}',
+        )
+    return result.stdout
+
+
+def check_geometry(serial: str | None, *, run: CommandRunner = _run_command) -> CheckResult:
+    """Record the frame geometry that keys calibration data (issue #42).
+
+    The three probes are read-only, exactly like the capture path. The printed
+    value is the profile id plus every dimension it was derived from, so an
+    operator can key calibration by the same id ``doctor`` reports.
+    """
+    if not serial:
+        return CheckResult('geometry', 'skipped', 'AECOINS_DEVICE is not set')
+
+    try:
+        geometry = parse_geometry(
+            _geometry_probe(serial, ('wm', 'size'), run),
+            _geometry_probe(serial, ('wm', 'density'), run),
+            _geometry_probe(serial, ('getprop', 'ro.build.version.sdk'), run),
+        )
+    except SnapshotError as exc:
+        return CheckResult('geometry', 'fail', f'{serial}: {exc}')
+
+    # `wm size` reports the panel's natural orientation on the reference tablet
+    # (2000x1200) while the portrait screencap is 1200x2000. The app is
+    # portrait-only, so canonicalise to the frame shape the run actually sees;
+    # the profile id must match `Snapshot.profile_id` for calibration to apply.
+    if geometry.orientation == 'landscape':
+        geometry = geometry.with_frame_size(geometry.height, geometry.width)
+    return CheckResult('geometry', 'ok', f'{serial}: {geometry.describe()}')
+
+
 def _load_ocr() -> str:
     """Initialise RapidOCR and read a generated probe image.
 
@@ -158,6 +202,7 @@ def run_doctor(
     results = (
         check_adb(which=which, run=run),
         check_device(serial, run=run),
+        check_geometry(serial, run=run),
         check_ocr(load=load_ocr),
     )
     for result in results:

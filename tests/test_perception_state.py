@@ -24,6 +24,7 @@ from aliexpress_coins.perception.state import (
     ScreenState,
     classify,
     classify_state,
+    modal_bounds,
     wait_for_state,
 )
 
@@ -115,6 +116,35 @@ def test_popup_evidence_distinguishes_a_headline_from_a_panel(frames: dict[str, 
     assert overlay.state is ScreenState.POPUP
     assert overlay.evidence[0].signal == 'popup_panel'
     assert 'area=' in overlay.evidence[0].detail
+
+
+def test_modal_bounds_use_the_dialog_not_the_raw_frame(frames: dict[str, Snapshot]) -> None:
+    promo = modal_bounds(frames['popup_over_page.png'])
+    launch = modal_bounds(frames['launch_modal.png'])
+
+    assert promo == (0.0, 60.0, 1200.0, 1800.0)
+    assert launch == (0.0, 60.0, 1200.0, 1800.0)
+    assert modal_bounds(frames['coins.png']) is None
+
+
+def test_a_panel_is_converted_through_the_content_crop_offset() -> None:
+    image = Image.new('RGB', (1000, 2000), (200, 200, 200))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((100, 500, 900, 1500), fill=(255, 255, 255))
+    snapshot = _snapshot(image)
+    analysis = state_module._analyse(snapshot)
+    assert analysis.panel is not None
+    assert analysis.scrim is None
+
+    bounds = modal_bounds(snapshot)
+
+    assert bounds is not None
+    _, content_top, _, content_bottom = state_module._content_bounds(*image.size)
+    content_height = content_bottom - content_top
+    assert bounds[1] == pytest.approx(content_top + analysis.panel.top * content_height)
+    assert bounds[3] == pytest.approx(content_top + analysis.panel.bottom * content_height)
+    assert bounds[1] > content_top
+    assert bounds[3] < content_bottom
 
 
 def test_loading_and_blank_evidence_carry_frame_statistics(frames: dict[str, Snapshot]) -> None:

@@ -717,7 +717,7 @@ def test_a_dry_run_does_not_mark_the_night_complete(
     assert context.state.snapshot().completed_night is False
 
 
-def test_an_unexpected_frame_geometry_is_refused_and_reported(
+def test_a_phone_geometry_runs_and_records_its_profile(
     tmp_path: Path,
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -738,19 +738,17 @@ def test_an_unexpected_frame_geometry_is_refused_and_reported(
 
     report = engine.run_once(context)
 
-    assert report.status is RunStatus.FAILED
-    assert report.failure_code == FailureCode.UNSUPPORTED_GEOMETRY.value
-    assert report.error is not None
-    assert 'unsupported screen geometry' in report.error
-    assert '1080x1920' in report.error
+    assert report.status is RunStatus.COMPLETED
+    assert report.failure_code is None
     assert report.geometry is not None
     assert report.geometry['width'] == 1080
     assert report.geometry['height'] == 1920
-    assert context.state.snapshot().completed_night is False
+    assert report.geometry['orientation'] == 'portrait'
+    assert report.geometry['profile_id'] == '2d1b067c8854d499'
     assert hygiene.restored == 1
     payload = _report_payload(tmp_path)
-    assert payload['status'] == 'failed'
-    assert 'unsupported screen geometry' in payload['error']
+    assert payload['status'] == 'completed'
+    assert payload['geometry']['profile_id'] == '2d1b067c8854d499'
 
 
 def test_dispatch_routes_each_category_to_its_executor(

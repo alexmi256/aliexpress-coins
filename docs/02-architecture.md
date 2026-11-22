@@ -111,7 +111,7 @@ at a simulated phone geometry (`wm size 1080x1920`, density 320):
 | scroll distance | absolute swipe | overshoots/shorter | not portable |
 | close-button template crop | 1200-wide | wrong scale | not portable |
 
-Rules that follow, and that the perception layer must satisfy (tracked as #42):
+Rules the perception layer implements (#42):
 
 1. **No stored pixels.** Targets come from the current frame's OCR boxes.
 2. **Proportional tolerances.** Row pairing tolerance derives from the median text-box height, not a

@@ -343,6 +343,40 @@ def classify_state(snapshot: Snapshot) -> ScreenState:
     return classify(snapshot).state
 
 
+def modal_bounds(snapshot: Snapshot) -> tuple[float, float, float, float] | None:
+    """Measure the modal dialog as ``(left, top, right, bottom)`` frame pixels.
+
+    Calibration offsets are fractions of this measured region, never of the
+    screen: an aspect-ratio change moves the dialog relative to the frame while
+    the control keeps its position inside it.
+
+    The panel analysis runs on the content crop (system bars excluded), so a
+    panel fraction is converted back into frame pixels using the crop offset and
+    crop height, not the full frame. The panel is the dialog for a sheet without
+    a scrim; a scrim-backed modal is treated as a full-screen overlay, so its
+    bounds are the content region and include any header/footer. A frame with
+    neither measurable region returns ``None``, and a caller with no measured
+    dialog must report the popup unclosable rather than fall back to a screen
+    coordinate.
+    """
+    analysis = _analyse(snapshot)
+    left, top, right, bottom = _content_bounds(snapshot.width, snapshot.height)
+    if analysis.scrim is not None:
+        return float(left), float(top), float(right), float(bottom)
+
+    panel = analysis.panel
+    if panel is None:
+        return None
+    content_width = float(right - left)
+    content_height = float(bottom - top)
+    return (
+        left + panel.left * content_width,
+        top + panel.top * content_height,
+        left + panel.right * content_width,
+        top + panel.bottom * content_height,
+    )
+
+
 def wait_for_state(
     capture: CaptureSource,
     target: ScreenState | Iterable[ScreenState],

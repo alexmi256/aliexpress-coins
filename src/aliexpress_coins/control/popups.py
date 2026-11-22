@@ -29,7 +29,7 @@ import math
 import re
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 
@@ -45,7 +45,13 @@ from aliexpress_coins.perception.matching import (
     find_text,
 )
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
-from aliexpress_coins.perception.state import CaptureSource, Classification, ScreenState, classify
+from aliexpress_coins.perception.state import (
+    CaptureSource,
+    Classification,
+    ScreenState,
+    classify,
+    modal_bounds,
+)
 from aliexpress_coins.perception.templates import TemplateMatch, TemplateStore, load_templates
 
 TEMPLATE_PREFIX = 'assets/templates/'
@@ -55,6 +61,7 @@ FIXTURE_PREFIX = 'tests/data/popups/'
 """Full-frame fixtures are reviewed captures and live in exactly one directory."""
 
 _FAMILY_PATTERN = re.compile(r'[a-z][a-z0-9_]*')
+_PROFILE_PATTERN = re.compile(r'[0-9a-f]{16}')
 
 DEFAULT_MAX_DISMISS_ROUNDS = 6
 """The most capture/tap/verify rounds one sweep may take.
@@ -137,12 +144,40 @@ class ReferenceGeometry:
 
 
 @dataclass(frozen=True, slots=True)
+class PopupCalibration:
+    """One profile's last-resort close point, as a fraction of the modal.
+
+    The point is stored relative to the measured modal panel, not the screen:
+    changing the frame's aspect ratio moves the panel and the control together.
+    A profile id with no row here has no fallback for that family, so the sweep
+    reports the popup unclosable rather than tapping a remembered coordinate.
+    """
+
+    profile_id: str
+    family: str
+    modal_offset: tuple[float, float]
+
+    def __post_init__(self) -> None:
+        if _PROFILE_PATTERN.fullmatch(self.profile_id) is None:
+            raise PopupSpecError(f'calibration profile id must be 16 lowercase hex characters: {self.profile_id!r}')
+        if _FAMILY_PATTERN.fullmatch(self.family) is None:
+            raise PopupSpecError(f'calibration family must be snake_case: {self.family!r}')
+        x, y = self.modal_offset
+        if not (math.isfinite(x) and math.isfinite(y) and 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+            raise PopupSpecError(
+                f'calibration modal offset must be two fractions between 0 and 1: {self.modal_offset!r}'
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class CloseAttempt:
     """One executable dismissal attempt.
 
     Exactly the field for ``kind`` is populated. ``template`` is an absolute
     path resolved against the repository root; ``source_width`` records the
-    width of the frame the crop came from so #15 can scale it.
+    width of the frame the crop came from so #15 can scale it. A ``fraction``
+    attempt is a calibrated modal offset and therefore names the profile it was
+    measured for; there is no global screen-coordinate fallback.
     """
 
     kind: CloseKind
@@ -150,7 +185,15 @@ class CloseAttempt:
     source_width: int | None = None
     label: str | None = None
     fraction: tuple[float, float] | None = None
+    profile_id: str | None = None
     reason: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.kind is CloseKind.FRACTION:
+            if self.fraction is None or self.profile_id is None:
+                raise PopupSpecError('a fraction close must carry a modal offset and the profile it was measured for')
+        elif self.profile_id is not None:
+            raise PopupSpecError(f'a {self.kind.value} close cannot name a calibration profile')
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +226,7 @@ class PopupCorpus:
     escalation: tuple[CloseKind, ...]
     error: str
     families: tuple[PopupFamily, ...]
+    calibrations: tuple[PopupCalibration, ...] = ()
     note: str | None = None
 
     def by_family(self, family: str) -> PopupFamily:
@@ -191,6 +235,13 @@ class PopupCorpus:
             if candidate.family == family:
                 return candidate
         raise KeyError(f'unknown popup family: {family!r}')
+
+    def calibration_for(self, profile_id: str, family: str) -> PopupCalibration | None:
+        """Return the measured fallback for one profile and family, if any."""
+        for calibration in self.calibrations:
+            if calibration.profile_id == profile_id and calibration.family == family:
+                return calibration
+        return None
 
     def chain_of(self, family: str) -> tuple[PopupFamily, ...]:
         """Return the families that closing ``family`` is expected to reveal."""
@@ -221,7 +272,7 @@ def load_popup_corpus(path: str | Path, *, root: str | Path | None = None) -> Po
         raise PopupSpecError(f'invalid YAML in {corpus_path}: {exc}') from exc
 
     document = _mapping(raw, 'corpus')
-    _reject_unknown(document, {'version', 'reference', 'policy', 'families'}, 'corpus')
+    _reject_unknown(document, {'version', 'reference', 'policy', 'calibration', 'families'}, 'corpus')
 
     version = _positive_int(document.get('version'), 'version')
     reference = _reference(document.get('reference'))
@@ -230,7 +281,10 @@ def load_popup_corpus(path: str | Path, *, root: str | Path | None = None) -> Po
     if not rows:
         raise PopupSpecError('families must contain at least one row')
 
+    calibrations = _calibrations(document.get('calibration'))
     families = tuple(_family(row, corpus_root, index, escalation) for index, row in enumerate(rows))
+    _validate_calibrations(calibrations, families)
+    families, calibrations = _merge_calibrations(families, calibrations)
     _validate_chains(families)
 
     return PopupCorpus(
@@ -239,6 +293,7 @@ def load_popup_corpus(path: str | Path, *, root: str | Path | None = None) -> Po
         escalation=escalation,
         error=error,
         families=families,
+        calibrations=calibrations,
         note=note,
     )
 
@@ -672,7 +727,10 @@ def _select_target(
                     detail=attempt.reason,
                 ),
             )
-            continue
+            # An explicit fail is a stop, not a strategy to skip. Walking past
+            # it would let a later data calibration turn a known-unsafe modal
+            # into an executable guessed tap.
+            return None, tuple(considered)
 
         if attempt.kind is CloseKind.LABEL:
             target, record = _label_target(snapshot, family, attempt, round_index)
@@ -687,6 +745,20 @@ def _select_target(
                     considered.append(record)
                 continue
         elif attempt.kind is CloseKind.FRACTION:
+            if attempt.profile_id != snapshot.profile_id:
+                considered.append(
+                    DismissAttempt(
+                        round=round_index,
+                        family=family.family,
+                        kind=attempt.kind,
+                        outcome=DismissOutcome.NOT_APPLICABLE,
+                        detail=(
+                            f'no calibration for profile {snapshot.profile_id}; '
+                            f'the measured fallback belongs to {attempt.profile_id}'
+                        ),
+                    ),
+                )
+                continue
             if classification.state not in (ScreenState.POPUP, ScreenState.UNKNOWN):
                 considered.append(
                     DismissAttempt(
@@ -701,10 +773,26 @@ def _select_target(
             fraction = attempt.fraction
             if fraction is None:  # pragma: no cover - the loader rejects this
                 continue
+            bounds = modal_bounds(snapshot)
+            if bounds is None:
+                considered.append(
+                    DismissAttempt(
+                        round=round_index,
+                        family=family.family,
+                        kind=attempt.kind,
+                        outcome=DismissOutcome.NOT_APPLICABLE,
+                        detail='the modal panel could not be measured; no fractional point was tapped',
+                    ),
+                )
+                continue
+            left, top, right, bottom = bounds
             target = _Target(
                 kind=attempt.kind,
-                point=(fraction[0] * snapshot.width, fraction[1] * snapshot.height),
-                detail='configured fraction after the family anchor matched',
+                point=(
+                    left + fraction[0] * (right - left),
+                    top + fraction[1] * (bottom - top),
+                ),
+                detail=f'calibrated offset {fraction!r} inside the measured modal',
             )
         else:  # pragma: no cover - CloseKind is closed and validated at load time
             continue
@@ -964,9 +1052,9 @@ def _family(value: object, root: Path, index: int, order: tuple[CloseKind, ...])
 
 def _close(value: object, where: str, root: Path, order: tuple[CloseKind, ...]) -> tuple[CloseAttempt, ...]:
     mapping = _mapping(value, where)
-    _reject_unknown(mapping, {'template', 'source_width', 'label', 'fraction', 'fail'}, where)
+    _reject_unknown(mapping, {'template', 'source_width', 'label', 'fail'}, where)
     if not mapping:
-        raise PopupSpecError(f'{where} must contain template, label, fraction or fail')
+        raise PopupSpecError(f'{where} must contain template, label or fail')
 
     if 'fail' in mapping:
         if len(mapping) != 1:
@@ -999,13 +1087,87 @@ def _close(value: object, where: str, root: Path, order: tuple[CloseKind, ...]) 
             label=_text(mapping['label'], f'{where}.label'),
         )
 
-    if 'fraction' in mapping:
-        prepared[CloseKind.FRACTION] = CloseAttempt(
-            kind=CloseKind.FRACTION,
-            fraction=_fraction(mapping['fraction'], where),
-        )
-
     return tuple(prepared[kind] for kind in order if kind in prepared)
+
+
+def _calibrations(value: object) -> tuple[PopupCalibration, ...]:
+    """Read the per-profile modal offsets, keyed by ``DeviceGeometry.profile_id``."""
+    if value is None:
+        return ()
+    profiles = _mapping(value, 'calibration')
+    rows: list[PopupCalibration] = []
+    for profile_id, families_value in profiles.items():
+        if _PROFILE_PATTERN.fullmatch(profile_id) is None:
+            raise PopupSpecError(
+                f'calibration profile {profile_id!r} must be a 16-character lowercase hex profile id',
+            )
+        families = _mapping(families_value, f'calibration.{profile_id}')
+        for family, row_value in families.items():
+            where = f'calibration.{profile_id}.{family}'
+            if _FAMILY_PATTERN.fullmatch(family) is None:
+                raise PopupSpecError(f'{where} must use a snake_case popup family id')
+            row = _mapping(row_value, where)
+            _reject_unknown(row, {'modal_offset'}, where)
+            if 'modal_offset' not in row:
+                raise PopupSpecError(f'{where} must declare modal_offset')
+            rows.append(
+                PopupCalibration(
+                    profile_id=profile_id,
+                    family=family,
+                    modal_offset=_fraction(row['modal_offset'], where),
+                ),
+            )
+    return tuple(rows)
+
+
+def _validate_calibrations(
+    calibrations: tuple[PopupCalibration, ...],
+    families: tuple[PopupFamily, ...],
+) -> None:
+    known = {family.family for family in families}
+    for calibration in calibrations:
+        if calibration.family not in known:
+            raise PopupSpecError(f'calibration names unknown popup family {calibration.family!r}')
+
+
+def _merge_calibrations(
+    families: tuple[PopupFamily, ...],
+    calibrations: tuple[PopupCalibration, ...],
+) -> tuple[tuple[PopupFamily, ...], tuple[PopupCalibration, ...]]:
+    """Attach each profile's calibrated fraction attempt to its family.
+
+    The fraction stays last in the policy order. Every attempt names its
+    profile, so a device with no matching row cannot execute it. A calibration
+    for an explicit-fail family is rejected, logged, and removed from the
+    corpus accessor: data must never downgrade a deliberate loud failure into an
+    executable guessed tap.
+    """
+    log = logging.getLogger(LOGGER_NAME)
+    merged: list[PopupFamily] = []
+    accepted: list[PopupCalibration] = []
+    for family in families:
+        matched = tuple(calibration for calibration in calibrations if calibration.family == family.family)
+        if family.is_unclosable:
+            for calibration in matched:
+                _warn(
+                    log,
+                    'calibration_rejected',
+                    family=family.family,
+                    profile=calibration.profile_id,
+                    detail='an explicit fail family cannot be given an executable fallback',
+                )
+            matched = ()
+        accepted.extend(matched)
+        extra = tuple(
+            CloseAttempt(
+                kind=CloseKind.FRACTION,
+                fraction=calibration.modal_offset,
+                profile_id=calibration.profile_id,
+            )
+            for calibration in matched
+        )
+        merged.append(replace(family, close=(*family.close, *extra)))
+    return tuple(merged), tuple(accepted)
 
 
 def _fraction(value: object, where: str) -> tuple[float, float]:

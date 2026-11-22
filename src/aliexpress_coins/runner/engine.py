@@ -41,7 +41,7 @@ from aliexpress_coins.perception.state import CaptureSource
 from aliexpress_coins.perception.templates import TemplateStore, load_templates
 from aliexpress_coins.runner.config import RunConfig
 from aliexpress_coins.runner.device import AdbDevice, HygieneDevice
-from aliexpress_coins.runner.errors import AppLoggedOut, ConfigError, RunInterrupted, UnsupportedGeometry
+from aliexpress_coins.runner.errors import AppLoggedOut, ConfigError, RunInterrupted
 from aliexpress_coins.runner.failures import (
     Failure,
     FailureCode,
@@ -353,7 +353,6 @@ def run_once(
         frame = _capture(context.capture)
         _guard_signed_in(context, frame)
         report.geometry = _geometry(frame)
-        _require_supported_geometry(frame)
         log.info('%s', _event('run_hygiene', **hygiene.as_dict()))
 
         controller = controller if controller is not None else _controller(context, frame)
@@ -1381,22 +1380,6 @@ def _prune(context: RunContext, report: RunReport, log: logging.Logger) -> None:
         return
     if pruned:
         log.info('%s', _event('runs_pruned', keep=context.config.keep_runs, pruned=[path.name for path in pruned]))
-
-
-def _require_supported_geometry(frame: Snapshot) -> None:
-    """Refuse a frame the measured coordinate and template tables do not fit.
-
-    The brief's FR-14 names an unexpected screen geometry as a refusal, not a
-    guess. #42 and #20 extend this with real device profiles; until then the
-    measured tablet profile is the only one this run may touch.
-    """
-    geometry = frame.geometry
-    if (geometry.width, geometry.height, geometry.density) != (1200, 2000, 240):
-        raise UnsupportedGeometry(
-            f'unsupported screen geometry: observed {geometry.width}x{geometry.height} '
-            f'@ {geometry.density} dpi (profile {geometry.profile_id}); '
-            'this build supports 1200x2000 @ 240 dpi',
-        )
 
 
 def _controller(context: RunContext, frame: Snapshot) -> Controller:

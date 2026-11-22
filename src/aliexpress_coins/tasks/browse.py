@@ -50,7 +50,7 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 
 from aliexpress_coins.control.controller import LOGGER_NAME, Controller, TapRecord
-from aliexpress_coins.control.errors import PopupUnclosable
+from aliexpress_coins.control.errors import InputError, PopupUnclosable
 from aliexpress_coins.control.popups import DismissReport, PopupCorpus, dismiss_after
 from aliexpress_coins.perception.errors import StateTimeout
 from aliexpress_coins.perception.layout import (
@@ -68,6 +68,12 @@ from aliexpress_coins.perception.matching import (
     find_text,
     normalize,
     similarity,
+)
+from aliexpress_coins.perception.scroll import (
+    SCROLL_START_FRACTION,
+    SCROLL_VIEWPORT_FRACTION,
+    STABLE_FRAME_MAX_DIFFERENCE,
+    scroll_until_found,
 )
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.state import CaptureSource, ScreenState, classify
@@ -968,6 +974,65 @@ def run_browse_task(
             sleep=sleep,
             logger=log,
         )
+
+    if row is None:
+
+        def _live_row(candidate: Snapshot) -> tuple[Row, TextBox, ProgressBadge | None] | None:
+            found_row, found_action, found_badge = find_task_row(candidate, entry.title)
+            if found_row is None or found_action is None:
+                return None
+            return found_row, found_action, found_badge
+
+        def _restore_scroll(restore: Snapshot, moves: int) -> None:
+            for _ in range(moves):
+                try:
+                    controller.swipe(
+                        (
+                            restore.width / 2.0,
+                            restore.height * (SCROLL_START_FRACTION - SCROLL_VIEWPORT_FRACTION),
+                        ),
+                        (restore.width / 2.0, restore.height * SCROLL_START_FRACTION),
+                        why=f'browse {spec.key}: restore the task list after the row search',
+                        label='scroll restore',
+                    )
+                except InputError:
+                    # Cleanup is best-effort: a restore failure must not replace
+                    # the row-vanished result with an executor exception.
+                    return
+                if settle:
+                    sleep(settle)
+
+        before_swipes = controller.swipe_count
+        try:
+            search = scroll_until_found(
+                controller,
+                lambda: _capture(capture),
+                _live_row,
+                initial=frame,
+                after_swipe=(lambda: sleep(settle)) if settle else None,
+                why=f'browse {spec.key}: scroll to the task row',
+            )
+        except InputError:
+            # The failed device call may have delivered the gesture before it
+            # raised, so its effect is unknown. Restore every counted swipe;
+            # one extra inverse swipe is safer than leaving the roster hidden.
+            attempted = controller.swipe_count - before_swipes
+            _restore_scroll(frame, max(0, attempted))
+            search = None
+        if search is not None and search.found and search.target is not None:
+            row, action, fresh_badge = search.target
+            frame = search.last
+            if fresh_badge is not None:
+                progress_before = fresh_badge
+        elif search is not None:
+            # The engine keeps the original roster after a skip, so leaving the
+            # page scrolled would hide rows that were visible before this search
+            # and turn one stale entry into a cascade of false row_vanished
+            # results. Reverse only the attempts that moved the surface: the
+            # stable/no-op frame that ended a search must not be reversed into a
+            # pull-to-refresh gesture.
+            moved = sum(1 for attempt in search.attempts if attempt.difference > STABLE_FRAME_MAX_DIFFERENCE)
+            _restore_scroll(search.last, moved)
 
     if row is None or action is None:
         status = 'row_vanished' if row is None else 'row_complete'

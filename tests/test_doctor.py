@@ -147,6 +147,76 @@ def test_check_device_fails_when_connect_times_out() -> None:
     assert 'timed out' in result.detail
 
 
+def test_check_geometry_is_skipped_when_unset() -> None:
+    def unexpected(_args: Sequence[str], _timeout: float) -> doctor.CommandResult:
+        raise AssertionError('no command should run without a serial')
+
+    result = doctor.check_geometry(None, run=unexpected)
+    assert result.status == 'skipped'
+    assert 'AECOINS_DEVICE' in result.detail
+
+
+def test_check_geometry_prints_the_profile_and_every_derived_dimension() -> None:
+    calls: list[list[str]] = []
+    result = doctor.check_geometry(
+        '192.0.2.10:5555',
+        run=_runner(
+            [
+                doctor.CommandResult(0, 'Physical size: 2000x1200\n', ''),
+                doctor.CommandResult(0, 'Physical density: 240\n', ''),
+                doctor.CommandResult(0, '35\n', ''),
+            ],
+            calls,
+        ),
+    )
+
+    assert result.status == 'ok'
+    assert '1200x2000' in result.detail
+    assert '240 dpi' in result.detail
+    assert 'sdk 35' in result.detail
+    assert 'portrait' in result.detail
+    assert 'profile c9b8f88670e295b5' in result.detail
+    assert calls == [
+        ['adb', '-s', '192.0.2.10:5555', 'shell', 'wm', 'size'],
+        ['adb', '-s', '192.0.2.10:5555', 'shell', 'wm', 'density'],
+        ['adb', '-s', '192.0.2.10:5555', 'shell', 'getprop', 'ro.build.version.sdk'],
+    ]
+
+
+def test_check_geometry_reports_a_failed_probe() -> None:
+    result = doctor.check_geometry(
+        '192.0.2.10:5555',
+        run=_runner([doctor.CommandResult(1, '', 'no shell')]),
+    )
+
+    assert result.status == 'fail'
+    assert 'wm size exited 1' in result.detail
+    assert 'no shell' in result.detail
+
+
+def test_check_geometry_reports_a_timeout() -> None:
+    result = doctor.check_geometry('192.0.2.10:5555', run=_raise_timeout)
+
+    assert result.status == 'fail'
+    assert 'timed out' in result.detail
+
+
+def test_check_geometry_reports_unparseable_probe_output() -> None:
+    result = doctor.check_geometry(
+        '192.0.2.10:5555',
+        run=_runner(
+            [
+                doctor.CommandResult(0, 'size unknown\n', ''),
+                doctor.CommandResult(0, 'Physical density: 240\n', ''),
+                doctor.CommandResult(0, '35\n', ''),
+            ],
+        ),
+    )
+
+    assert result.status == 'fail'
+    assert 'could not parse wm size' in result.detail
+
+
 def test_load_ocr_reads_its_probe_image() -> None:
     assert 'COINS' in doctor._load_ocr()
 
@@ -184,6 +254,9 @@ def test_run_doctor_checks_the_configured_device() -> None:
             [
                 doctor.CommandResult(0, 'Android Debug Bridge\n', ''),
                 doctor.CommandResult(0, 'device\n', ''),
+                doctor.CommandResult(0, 'Physical size: 2000x1200\n', ''),
+                doctor.CommandResult(0, 'Physical density: 240\n', ''),
+                doctor.CommandResult(0, '35\n', ''),
             ]
         ),
         load_ocr=lambda: 'RapidOCR ready',
@@ -217,10 +290,11 @@ def test_run_doctor_prints_one_line_per_check(capsys: pytest.CaptureFixture[str]
         load_ocr=lambda: 'RapidOCR ready',
     )
     lines = capsys.readouterr().out.splitlines()
-    assert len(lines) == 3
+    assert len(lines) == 4
     assert lines[0].startswith('[ok] adb:')
     assert lines[1].startswith('[skipped] device:')
-    assert lines[2].startswith('[ok] ocr:')
+    assert lines[2].startswith('[skipped] geometry:')
+    assert lines[3].startswith('[ok] ocr:')
 
 
 def test_run_command_collects_the_process_output(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -117,8 +117,26 @@ def test_row_tolerance_is_derived_from_the_median_box_height() -> None:
         _centered_box('three', 10, 80, height=40),
     )
 
-    assert row_tolerance(boxes, _geometry()) == pytest.approx(60.0)
-    assert ROW_CENTER_TOLERANCE_HEIGHT_RATIO == 2.0
+    assert row_tolerance(boxes, _geometry(400, 2000)) == pytest.approx(67.5)
+    assert ROW_CENTER_TOLERANCE_HEIGHT_RATIO == 2.25
+
+
+def test_the_derived_tolerance_covers_both_measured_go_gaps_without_merging_neighbours() -> None:
+    tablet_boxes = (_centered_box('title', 100, 100, height=48), _centered_box('GO', 300, 200, height=48))
+    phone_boxes = (_centered_box('title', 100, 100, height=43), _centered_box('GO', 300, 169, height=43))
+    coin_boxes = (_centered_box('title', 100, 100, height=45), _centered_box('GO', 300, 133, height=45))
+
+    tablet = row_tolerance(tablet_boxes, _geometry(1200, 2000))
+    phone = row_tolerance(phone_boxes, _geometry(1080, 1920))
+    coin = row_tolerance(coin_boxes, _geometry(1200, 2000))
+
+    assert tablet == pytest.approx(108.0)
+    assert phone == pytest.approx(96.75)
+    assert coin == pytest.approx(101.25)
+    assert tablet > 100.0  # the measured tablet title -> GO gap
+    assert phone > 70.0  # the measured phone title -> GO gap
+    assert coin < 106.0  # the coin-page card -> first task row gap
+    assert tablet < 190.0  # the smallest measured gap between adjacent task rows
 
 
 def test_row_tolerance_is_capped_by_a_fraction_of_the_frame_height() -> None:
