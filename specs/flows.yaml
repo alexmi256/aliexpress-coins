@@ -5,8 +5,9 @@
 # is present and every `absence` entry is absent; `identify` and `absence` are
 # OCR text, matched case-insensitively on whole words, and `pattern` is a regex
 # over OCR text for a value that is not a fixed label (a counter, a question
-# prefix). `visual` names a non-text marker for a human reader and is never an
-# OCR match. `surfaces` lists the screen(s) the state lives on, which is what separates
+# prefix). `absence_pattern` is the regex form of `absence`. `visual` names a
+# non-text marker for a human reader and is never an OCR match. `surfaces`
+# lists the screen(s) the state lives on, which is what separates
 # two states that share labels (the boost row and the grid both say `Browse
 # surprise items`). `control` names the only thing the executor may act on while
 # in the state. Coordinates are never identifiers — a control is resolved from
