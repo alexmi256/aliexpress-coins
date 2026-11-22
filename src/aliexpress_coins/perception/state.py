@@ -344,22 +344,35 @@ def classify_state(snapshot: Snapshot) -> ScreenState:
 
 
 def modal_bounds(snapshot: Snapshot) -> tuple[float, float, float, float] | None:
-    """Measure the bright modal panel as ``(left, top, right, bottom)`` pixels.
+    """Measure the modal dialog as ``(left, top, right, bottom)`` frame pixels.
 
     Calibration offsets are fractions of this measured region, never of the
-    screen: an aspect-ratio change moves the panel relative to the frame while
-    the control keeps its position inside the modal. A frame with no measurable
-    panel returns ``None``, and a caller with no measured region must report the
-    popup unclosable rather than fall back to a screen coordinate.
+    screen: an aspect-ratio change moves the dialog relative to the frame while
+    the control keeps its position inside it.
+
+    The panel analysis runs on the content crop (system bars excluded), so a
+    panel fraction is converted back into frame pixels using the crop offset and
+    crop height, not the full frame. The panel is the dialog for a sheet without
+    a scrim; a scrim-backed full-screen modal includes its header/footer, so its
+    bounds are the content region. A frame with neither measurable region
+    returns ``None``, and a caller with no measured dialog must report the popup
+    unclosable rather than fall back to a screen coordinate.
     """
-    panel = _analyse(snapshot).panel
+    analysis = _analyse(snapshot)
+    left, top, right, bottom = _content_bounds(snapshot.width, snapshot.height)
+    if analysis.scrim is not None:
+        return float(left), float(top), float(right), float(bottom)
+
+    panel = analysis.panel
     if panel is None:
         return None
+    content_width = float(right - left)
+    content_height = float(bottom - top)
     return (
-        panel.left * snapshot.width,
-        panel.top * snapshot.height,
-        panel.right * snapshot.width,
-        panel.bottom * snapshot.height,
+        left + panel.left * content_width,
+        top + panel.top * content_height,
+        left + panel.right * content_width,
+        top + panel.bottom * content_height,
     )
 
 

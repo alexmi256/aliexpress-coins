@@ -38,8 +38,11 @@ sharing, order placement, cart building. These are refused by policy, not merely
 | launcher | `com.android.launcher3`, single page, 6×5 grid |
 | region/locale | en, CA — coin values render in `C$` |
 
-Portrait-only, 1200×2000, single account, single device. Coordinate tables in code assume
-this geometry; anything else is detected and refused rather than guessed (see FR-14).
+Portrait-only, single account, single device. 1200×2000 is the reference recording geometry;
+other portrait sizes and densities are supported by deriving targets from the frame and keying
+last-resort popup calibration by the profile id `doctor` prints. A popup without calibration for
+the measured profile is reported `popup_unclosable`, not tapped at a guessed coordinate (see FR-14
+and #42).
 
 ---
 
@@ -110,7 +113,9 @@ Each task family gets its own executor, because each fails differently:
 ### 3.5 Unattended operation
 
 - **FR-14** Run nightly from a container on a schedule, and refuse to run when the device is
-  unreachable, not rooted, or running an unexpected screen geometry.
+  unreachable or not rooted. Record the screen geometry as a device profile; do not refuse a
+  different portrait geometry, but refuse a popup whose calibration is absent for that profile
+  rather than tapping a guessed coordinate.
 - **FR-15** Write a run report every time, including on failure: `runs/<timestamp>/summary.md`,
   `run.json`, screenshots and their OCR sidecars, and a JSONL decision log.
 - **FR-16** Notify on failure (optional webhook), because a silent week of no coins is the

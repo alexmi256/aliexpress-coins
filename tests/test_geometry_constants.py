@@ -40,6 +40,7 @@ ALLOWED: dict[tuple[str, int | float], _Allowed] = {
     ('perception/capture.py', 200): _Allowed(1, 'adb error-preview byte limit'),
     ('perception/geometry.py', 16): _Allowed(1, 'profile-id hash prefix length, not pixels'),
     ('perception/scroll.py', 255.0): _Allowed(1, '8-bit luminance denominator, not a pixel size'),
+    ('perception/templates.py', 17): _Allowed(1, 'number of vertical scale steps, not pixels'),
     ('perception/state.py', 99.0): _Allowed(1, 'luminance percentile, not pixels'),
     ('perception/state.py', 100): _Allowed(1, 'popup-analysis grid resolution in cells, not pixels'),
     ('perception/state.py', 255.0): _Allowed(5, '8-bit luminance range, not a pixel size'),

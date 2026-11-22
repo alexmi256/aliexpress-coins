@@ -50,7 +50,7 @@ from dataclasses import dataclass, replace
 from enum import StrEnum
 
 from aliexpress_coins.control.controller import LOGGER_NAME, Controller, TapRecord
-from aliexpress_coins.control.errors import PopupUnclosable
+from aliexpress_coins.control.errors import InputError, PopupUnclosable
 from aliexpress_coins.control.popups import DismissReport, PopupCorpus, dismiss_after
 from aliexpress_coins.perception.errors import StateTimeout
 from aliexpress_coins.perception.layout import (
@@ -69,6 +69,7 @@ from aliexpress_coins.perception.matching import (
     normalize,
     similarity,
 )
+from aliexpress_coins.perception.scroll import scroll_until_found
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.state import CaptureSource, ScreenState, classify
 from aliexpress_coins.perception.templates import TemplateStore
@@ -968,6 +969,31 @@ def run_browse_task(
             sleep=sleep,
             logger=log,
         )
+
+    if row is None:
+
+        def _live_row(candidate: Snapshot) -> tuple[Row, TextBox, ProgressBadge | None] | None:
+            found_row, found_action, found_badge = find_task_row(candidate, entry.title)
+            if found_row is None or found_action is None:
+                return None
+            return found_row, found_action, found_badge
+
+        try:
+            search = scroll_until_found(
+                controller,
+                lambda: _capture(capture),
+                _live_row,
+                initial=frame,
+                after_swipe=(lambda: sleep(settle)) if settle else None,
+                why=f'browse {spec.key}: scroll to the task row',
+            )
+        except InputError:
+            search = None
+        if search is not None and search.found and search.target is not None:
+            row, action, fresh_badge = search.target
+            frame = search.last
+            if fresh_badge is not None:
+                progress_before = fresh_badge
 
     if row is None or action is None:
         status = 'row_vanished' if row is None else 'row_complete'

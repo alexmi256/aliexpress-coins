@@ -61,14 +61,25 @@ frame.
 SCALE_SEARCH_STEPS = 9
 """Number of scales in the bounded range (odd, so the nominal scale is included)."""
 
-ASPECT_SEARCH_STEPS = 7
-"""Vertical scales tried only when the isotropic pass finds nothing.
+ASPECT_SEARCH_RADIUS = 0.40
+"""Vertical multiplier range for the aspect-ratio fallback.
+
+A phone can be 20:9 rather than the tablet's 5:3. At 1080x2400 the width-derived
+scale is 0.9 but the glyph's vertical scale is 1.2, a multiplier of 1.333; at
+1080x1920 it is 1.067. The wider range covers those shapes while the normal
+isotropic pass remains the cheap path.
+"""
+
+ASPECT_SEARCH_STEPS = 17
+"""Vertical multipliers tried only when the isotropic pass finds nothing.
 
 A width ratio cannot explain a frame whose aspect ratio changed as well: at
-1080x1920 the launch glyph is 0.9x wide but 0.96x tall. The fallback searches
-the same bounded range vertically (derived from the nominal width scale) and
-re-runs the coarse/refine path, so a non-uniform geometry still matches without
-a stored pixel size or a second template crop.
+1080x1920 the launch glyph is 0.9x wide but 0.96x tall. The fallback searches a
+wider vertical range (derived from the nominal width scale) and re-runs the
+coarse/refine path, so a non-uniform geometry still matches without a stored
+pixel size or a second template crop. Seventeen steps make the range 0.6-1.4 in
+0.05 increments, which includes the 1.05 and 1.35 multipliers used by the
+1080x1920 and 1080x2400 replays.
 """
 
 COARSE_SEARCH_FACTOR = 0.5
@@ -357,7 +368,7 @@ def match_template(
     # A changed aspect ratio scales the glyph differently on each axis. Only pay
     # for the extra search when the normal width-derived pass failed.
     if (hit is None or hit.score < min_score) and scales is None and scale_radius > 0.0 and ASPECT_SEARCH_STEPS > 1:
-        aspects = _aspect_candidates(scale_radius, ASPECT_SEARCH_STEPS)
+        aspects = _aspect_candidates(ASPECT_SEARCH_RADIUS, ASPECT_SEARCH_STEPS)
         fallback = _find(gray, resolved, candidates, min_score, vertical=aspects)
         if fallback is not None and (hit is None or fallback.score > hit.score):
             hit = fallback
@@ -442,7 +453,7 @@ def _refine(
     """Verify ``coarse`` at full resolution in a template-sized local window."""
     scale = coarse.scale
     width = max(1, round(template.width * scale))
-    height = max(1, round(template.height * coarse.scale_y))
+    height = max(1, round(template.height * scale * coarse.scale_y))
     frame_height, frame_width = gray.shape
     predicted_left = round(coarse.location[0] / COARSE_SEARCH_FACTOR)
     predicted_top = round(coarse.location[1] / COARSE_SEARCH_FACTOR)

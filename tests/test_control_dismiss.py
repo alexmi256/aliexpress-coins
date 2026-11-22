@@ -346,7 +346,7 @@ def test_a_calibrated_fraction_is_used_inside_the_measured_modal(
         close=(
             CloseAttempt(
                 kind=CloseKind.FRACTION,
-                fraction=(0.499, 0.946),
+                fraction=(0.499, 0.877),
                 profile_id='c9b8f88670e295b5',
             ),
         ),
@@ -418,9 +418,13 @@ def test_a_fraction_without_a_calibration_for_this_profile_is_unclosable(
 
 def test_a_calibrated_fraction_without_a_measurable_modal_is_unclosable(
     corpus: PopupCorpus,
-    popup_frames: dict[str, Snapshot],
 ) -> None:
-    launch = popup_frames['launch_welcome_gifts.png']
+    frame = Snapshot(
+        image=Image.new('RGB', (1200, 2000), 'white'),
+        boxes=(_box('Welcome gifts', 400, 200, 800, 260),),
+        captured_at=CAPTURED_AT,
+        geometry=DeviceGeometry.from_frame(1200, 2000, density=240, sdk=35),
+    )
     family = replace(
         corpus.by_family('launch_welcome_gifts'),
         close=(
@@ -433,10 +437,10 @@ def test_a_calibrated_fraction_without_a_measurable_modal_is_unclosable(
     )
     custom = replace(corpus, families=(family,))
     device = _RecordingDevice()
-    controller = _controller(device, launch)
+    controller = _controller(device, frame)
 
     with pytest.raises(PopupUnclosable, match='popup_unclosable'):
-        dismiss(controller, _Capture((launch,)), custom)
+        dismiss(controller, _Capture((frame,)), custom)
 
     assert device.taps == []
 
@@ -449,6 +453,28 @@ def test_a_declared_fail_attempt_stops_the_run_without_a_tap(
     family = replace(
         corpus.by_family('launch_welcome_gifts'),
         close=(CloseAttempt(kind=CloseKind.FAIL, reason='no close control exists'),),
+    )
+    custom = replace(corpus, families=(family,))
+    device = _RecordingDevice()
+    controller = _controller(device, launch)
+
+    with pytest.raises(PopupUnclosable, match='popup_unclosable'):
+        dismiss(controller, _Capture((launch,)), custom)
+
+    assert device.taps == []
+
+
+def test_a_fraction_after_an_explicit_fail_is_never_executed(
+    corpus: PopupCorpus,
+    popup_frames: dict[str, Snapshot],
+) -> None:
+    launch = popup_frames['launch_welcome_gifts.png']
+    family = replace(
+        corpus.by_family('launch_welcome_gifts'),
+        close=(
+            CloseAttempt(kind=CloseKind.FAIL, reason='no close control exists'),
+            CloseAttempt(kind=CloseKind.FRACTION, fraction=(0.5, 0.5), profile_id='c9b8f88670e295b5'),
+        ),
     )
     custom = replace(corpus, families=(family,))
     device = _RecordingDevice()

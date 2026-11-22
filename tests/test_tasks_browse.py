@@ -70,6 +70,17 @@ class _RecordingDevice:
         self._world.tap(x, y)
 
 
+class _ScrollingDevice(_RecordingDevice):
+    """A device that also records search swipes."""
+
+    def __init__(self, world: _World) -> None:
+        super().__init__(world)
+        self.swipes: list[tuple[int, int, int, int, int]] = []
+
+    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int) -> None:
+        self.swipes.append((x1, y1, x2, y2, duration_ms))
+
+
 class _QueueCapture:
     """A plain frame sequence that holds its last frame once exhausted."""
 
@@ -1228,6 +1239,56 @@ def test_run_browse_task_skips_a_vanished_row(
     assert result.presses == 0
     assert world.taps == []
     assert state.count('sponsored_items') == 0
+
+
+@pytest.mark.parametrize('badge', ['0/6', None], ids=['with-badge', 'without-badge'])
+def test_run_browse_task_scrolls_to_a_row_below_the_fold(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+    badge: str | None,
+) -> None:
+    world = _World(
+        series={
+            'boost': (_boost_frame(with_row=False), _boost_frame(badge=badge)),
+            'destination': (
+                _destination(chip='12s'),
+                _destination(chip='12s'),
+                _destination(chip=None, collect=True),
+                _destination(chip=None, collect=True),
+            ),
+            'collected': (_destination(chip=None),),
+            'coins': (_coin_frame(),),
+            'boost_after': (_boost_frame(badge='1/6'),),
+        },
+        transitions={
+            ('boost', 'go'): 'destination',
+            ('destination', 'collect'): 'collected',
+            ('coins', 'earn more'): 'boost_after',
+        },
+    )
+    device = _ScrollingDevice(world)
+    controller = Controller.from_frame(device, world.frame, rng=random.Random(0))
+
+    result = run_browse_task(
+        controller,
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        load_timeout=1.0,
+        arrival_timeout=1.0,
+        chip_interval=0.5,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert device.swipes
+    assert result.verification != 'row_vanished'
+    assert result.presses == 1
 
 
 def test_run_browse_task_skips_a_row_with_no_action(

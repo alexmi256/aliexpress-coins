@@ -126,14 +126,16 @@ def scroll_until_found[T](
     max_attempts: int = MAX_SCROLL_ATTEMPTS,
     viewport_fraction: float = SCROLL_VIEWPORT_FRACTION,
     stable_threshold: float = STABLE_FRAME_MAX_DIFFERENCE,
+    after_swipe: Callable[[], None] | None = None,
     why: str = 'scroll to find the target',
 ) -> ScrollResult[T]:
     """Search down the current surface for ``find``'s target.
 
     The initial frame is checked first. Each attempt swipes a fraction of the
-    frame height, captures, checks the target, then checks whether the screen
-    changed at all. A stable frame or the attempt bound ends the search with no
-    target, which the caller reports honestly instead of tapping a guess.
+    frame height, invokes the optional ``after_swipe`` settle hook, captures,
+    checks the target, then checks whether the screen changed at all. A stable
+    frame or the attempt bound ends the search with no target, which the caller
+    reports honestly instead of tapping a guess.
     """
     if max_attempts < 1:
         raise ValueError(f'max_attempts must be positive, got {max_attempts!r}')
@@ -154,6 +156,8 @@ def scroll_until_found[T](
         start = (frame.width / 2.0, frame.height * SCROLL_START_FRACTION)
         end = (frame.width / 2.0, frame.height * (SCROLL_START_FRACTION - viewport_fraction))
         swipe = controller.swipe(start, end, why=why, label='scroll search')
+        if after_swipe is not None:
+            after_swipe()
         frame = capture()
         frames.append(frame)
         difference = frame_difference(previous, frame)

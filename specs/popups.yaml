@@ -49,11 +49,14 @@ policy:
 
 calibration:
   # Reference profile: 1200x2000 @ 240 dpi, sdk 35, portrait. `doctor` prints
-  # this id; a different device gets its own row only after the modal is
-  # measured there. The offset is (x, y) inside the detected modal panel.
+  # this id; a different device gets its own row only after the dialog is
+  # measured there. The offset is (x, y) inside the measured dialog: the
+  # scrim-backed overlay's content bounds, not the screen and not only the
+  # bright coupon card. The measured ✕ centre is (599, 1586); inside the
+  # content bounds (0, 60, 1200, 1800) that is (0.499, 0.877).
   c9b8f88670e295b5:
     promo_coupon_unlocked:
-      modal_offset: [0.499, 0.946]
+      modal_offset: [0.499, 0.877]
 
 families:
 # Rows are ordered topmost-first: the system dialog is a separate window

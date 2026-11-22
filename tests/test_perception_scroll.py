@@ -109,6 +109,24 @@ def test_each_swipe_is_a_fraction_of_the_current_frame() -> None:
         assert start[1] - end[1] == pytest.approx(height * SCROLL_VIEWPORT_FRACTION, abs=1)
 
 
+def test_the_settle_hook_runs_between_each_swipe_and_capture() -> None:
+    first = _snapshot((1200, 2000), shade=10)
+    second = _snapshot((1200, 2000), shade=80, target=True)
+    controller, device = _controller(first)
+    settled: list[int] = []
+
+    result = scroll_until_found(
+        controller,
+        _Capture((second,)),
+        _find_target,
+        initial=first,
+        after_swipe=lambda: settled.append(len(device.swipes)),
+    )
+
+    assert result.found
+    assert settled == [1]
+
+
 def test_an_unchanged_frame_stops_the_search_as_stable() -> None:
     frame = _snapshot((1200, 2000), shade=30)
     controller, device = _controller(frame)

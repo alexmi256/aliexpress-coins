@@ -202,6 +202,22 @@ def test_a_changed_aspect_ratio_uses_the_vertical_scale_fallback(
     assert match.location[1] == pytest.approx(1536, abs=2)
 
 
+@pytest.mark.parametrize('size', [(1080, 2400), (720, 1600)])
+def test_a_tall_phone_aspect_uses_the_wider_vertical_fallback(
+    store: TemplateStore,
+    launch_frame: Image.Image,
+    size: tuple[int, int],
+) -> None:
+    frame = launch_frame.convert('RGB').resize(size, Image.Resampling.LANCZOS)
+
+    match = match_template(frame, store.by_family('launch_welcome_gifts'))
+
+    assert match is not None
+    assert match.score >= DEFAULT_TEMPLATE_THRESHOLD
+    assert match.location[0] == pytest.approx(532 * size[0] / 1200, abs=3)
+    assert match.location[1] == pytest.approx(1600 * size[1] / 2000, abs=3)
+
+
 def test_a_wrong_glyph_scores_below_the_threshold(
     store: TemplateStore,
     launch_frame: Image.Image,

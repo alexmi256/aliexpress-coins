@@ -118,17 +118,33 @@ def test_popup_evidence_distinguishes_a_headline_from_a_panel(frames: dict[str, 
     assert 'area=' in overlay.evidence[0].detail
 
 
-def test_modal_bounds_are_measured_from_the_panel_not_the_screen(frames: dict[str, Snapshot]) -> None:
-    bounds = modal_bounds(frames['popup_over_page.png'])
+def test_modal_bounds_use_the_dialog_not_the_raw_frame(frames: dict[str, Snapshot]) -> None:
+    promo = modal_bounds(frames['popup_over_page.png'])
+    launch = modal_bounds(frames['launch_modal.png'])
+
+    assert promo == (0.0, 60.0, 1200.0, 1800.0)
+    assert launch == (0.0, 60.0, 1200.0, 1800.0)
+    assert modal_bounds(frames['coins.png']) is None
+
+
+def test_a_panel_is_converted_through_the_content_crop_offset() -> None:
+    image = Image.new('RGB', (1000, 2000), (200, 200, 200))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((100, 500, 900, 1500), fill=(255, 255, 255))
+    snapshot = _snapshot(image)
+    analysis = state_module._analyse(snapshot)
+    assert analysis.panel is not None
+    assert analysis.scrim is None
+
+    bounds = modal_bounds(snapshot)
 
     assert bounds is not None
-    left, top, right, bottom = bounds
-    assert left == pytest.approx(121.7, abs=0.1)
-    assert top == pytest.approx(640.0, abs=0.1)
-    assert right == pytest.approx(1078.3, abs=0.1)
-    assert bottom == pytest.approx(1640.0, abs=0.1)
-    assert modal_bounds(frames['launch_modal.png']) is None
-    assert modal_bounds(frames['coins.png']) is None
+    _, content_top, _, content_bottom = state_module._content_bounds(*image.size)
+    content_height = content_bottom - content_top
+    assert bounds[1] == pytest.approx(content_top + analysis.panel.top * content_height)
+    assert bounds[3] == pytest.approx(content_top + analysis.panel.bottom * content_height)
+    assert bounds[1] > content_top
+    assert bounds[3] < content_bottom
 
 
 def test_loading_and_blank_evidence_carry_frame_statistics(frames: dict[str, Snapshot]) -> None:

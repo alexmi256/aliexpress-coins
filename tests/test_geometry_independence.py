@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from aliexpress_coins.perception.geometry import DeviceGeometry
@@ -15,12 +16,13 @@ from aliexpress_coins.tasks.discovery import enumerate_roster
 
 ROOT = Path(__file__).resolve().parents[1]
 BOOST = ROOT / 'tests' / 'data' / 'states' / 'boost.png'
+COINS = ROOT / 'tests' / 'data' / 'states' / 'coins.png'
 CATALOGUE = ROOT / 'specs' / 'tasks.yaml'
 CAPTURED_AT = datetime(2026, 11, 22, 12, 0, tzinfo=UTC)
 
 
-def _load(size: tuple[int, int] | None = None) -> Snapshot:
-    with Image.open(BOOST) as opened:
+def _load(path: Path, size: tuple[int, int] | None = None) -> Snapshot:
+    with Image.open(path) as opened:
         image = opened.convert('RGB')
     boxes = RapidOcrEngine().read(image)
     if size is not None:
@@ -47,10 +49,11 @@ def _load(size: tuple[int, int] | None = None) -> Snapshot:
     )
 
 
-def test_a_scaled_task_frame_yields_the_same_roster_keys() -> None:
+@pytest.mark.parametrize('path', [BOOST, COINS], ids=['boost-page', 'coin-page'])
+def test_a_scaled_task_frame_yields_the_same_roster_keys(path: Path) -> None:
     catalogue = load_task_catalogue(CATALOGUE)
-    tablet = _load()
-    phone = _load((1080, 1920))
+    tablet = _load(path)
+    phone = _load(path, (1080, 1920))
 
     tablet_roster = enumerate_roster(tablet, catalogue)
     phone_roster = enumerate_roster(phone, catalogue)
@@ -65,13 +68,14 @@ def test_a_scaled_task_frame_yields_the_same_roster_keys() -> None:
     assert all(entry.action is not None for entry in phone_roster.entries)
 
 
-def test_every_scaled_action_stays_right_of_its_title() -> None:
+@pytest.mark.parametrize(('path', 'count'), [(BOOST, 4), (COINS, 3)], ids=['boost-page', 'coin-page'])
+def test_every_scaled_action_stays_right_of_its_title(path: Path, count: int) -> None:
     catalogue = load_task_catalogue(CATALOGUE)
-    phone = _load((1080, 1920))
+    phone = _load(path, (1080, 1920))
 
     roster = enumerate_roster(phone, catalogue)
 
-    assert roster.count == 4
+    assert roster.count == count
     for entry in roster.entries:
         assert entry.action is not None
         title = next(box for box in entry.row.boxes if box.text == entry.title)

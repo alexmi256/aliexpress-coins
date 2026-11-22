@@ -727,7 +727,10 @@ def _select_target(
                     detail=attempt.reason,
                 ),
             )
-            continue
+            # An explicit fail is a stop, not a strategy to skip. Walking past
+            # it would let a later data calibration turn a known-unsafe modal
+            # into an executable guessed tap.
+            return None, tuple(considered)
 
         if attempt.kind is CloseKind.LABEL:
             target, record = _label_target(snapshot, family, attempt, round_index)
@@ -1134,18 +1137,31 @@ def _merge_calibrations(
     """Attach each profile's calibrated fraction attempt to its family.
 
     The fraction stays last in the policy order. Every attempt names its
-    profile, so a device with no matching row cannot execute it.
+    profile, so a device with no matching row cannot execute it. A calibration
+    for an explicit-fail family is rejected and logged: data must never
+    downgrade a deliberate loud failure into an executable guessed tap.
     """
+    log = logging.getLogger(LOGGER_NAME)
     merged: list[PopupFamily] = []
     for family in families:
+        matched = tuple(calibration for calibration in calibrations if calibration.family == family.family)
+        if family.is_unclosable:
+            for calibration in matched:
+                _warn(
+                    log,
+                    'calibration_rejected',
+                    family=family.family,
+                    profile=calibration.profile_id,
+                    detail='an explicit fail family cannot be given an executable fallback',
+                )
+            matched = ()
         extra = tuple(
             CloseAttempt(
                 kind=CloseKind.FRACTION,
                 fraction=calibration.modal_offset,
                 profile_id=calibration.profile_id,
             )
-            for calibration in calibrations
-            if calibration.family == family.family
+            for calibration in matched
         )
         merged.append(replace(family, close=(*family.close, *extra)))
     return tuple(merged)

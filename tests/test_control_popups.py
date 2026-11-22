@@ -138,7 +138,7 @@ def test_the_committed_corpus_loads_and_names_every_discovered_family() -> None:
     assert [calibration.family for calibration in corpus.calibrations] == ['promo_coupon_unlocked']
     calibration = corpus.calibration_for('c9b8f88670e295b5', 'promo_coupon_unlocked')
     assert calibration is not None
-    assert calibration.modal_offset == (0.499, 0.946)
+    assert calibration.modal_offset == (0.499, 0.877)
     assert corpus.calibration_for('0000000000000000', 'promo_coupon_unlocked') is None
 
 
@@ -239,7 +239,7 @@ def test_glyph_only_families_use_a_template_and_text_families_use_a_label() -> N
 
     promo = corpus.by_family('promo_coupon_unlocked')
     assert [attempt.kind for attempt in promo.close] == [CloseKind.TEMPLATE, CloseKind.FRACTION]
-    assert promo.close[1].fraction == (0.499, 0.946)
+    assert promo.close[1].fraction == (0.499, 0.877)
     assert promo.close[1].profile_id == 'c9b8f88670e295b5'
 
     system = corpus.by_family('system_notification_permission')
@@ -477,6 +477,25 @@ def test_a_calibration_rejects_an_invalid_profile_family_or_offset() -> None:
         PopupCalibration(profile_id='c9b8f88670e295b5', family='Bad Family', modal_offset=(0.5, 0.5))
     with pytest.raises(PopupSpecError, match='between 0 and 1'):
         PopupCalibration(profile_id='c9b8f88670e295b5', family='demo', modal_offset=(float('nan'), 0.5))
+
+
+def test_a_calibration_cannot_turn_an_explicit_fail_into_a_tap(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    document = _document(
+        families=[_row(family='redeem', close={'fail': 'no close control exists'})],
+        calibration={'0123456789abcdef': {'redeem': {'modal_offset': [0.5, 0.5]}}},
+    )
+    path = _write_object(tmp_path, document)
+
+    with caplog.at_level('WARNING', logger='aliexpress_coins.control'):
+        corpus = load_popup_corpus(path)
+
+    family = corpus.by_family('redeem')
+    assert family.is_unclosable
+    assert [attempt.kind for attempt in family.close] == [CloseKind.FAIL]
+    assert 'calibration_rejected' in caplog.text
 
 
 def test_a_profile_calibration_becomes_one_fraction_attempt(tmp_path: Path) -> None:

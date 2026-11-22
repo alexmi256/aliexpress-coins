@@ -241,6 +241,21 @@ from the median box height keeps a row together without merging its neighbour. A
 still contains more than one action label is split at the action boundary; a cluster without an
 action is split when it spans more than one text line.
 
+**Geometry replay (#42).** The same frame was scaled to 1080×1920 and the OCR boxes scaled with
+it. The relevant tolerances are:
+
+| measurement | 1200×2000 | 1080×1920 |
+|---|---|---|
+| median text-box height | 48 px (boost) / 45 px (coins) | 43 px (scaled replay) |
+| title → `GO` gap | ≈100 px (boost) / ≈31 px (coins) | 68–70 px measured on the device |
+| derived row tolerance (`2.25 × median`) | 108 px (boost) / 101.25 px (coins) | ≈96.75 px |
+| smallest adjacent-task gap | ~190 px | scales with the frame |
+| coin-card → first-task gap | 106 px | scales with the frame |
+
+`2.25×` covers every within-row gap without bridging the 106 px card gap or the ~190 px task
+pitch; the issue’s suggested `3×` merged the coin card into the first task row. Template scale
+comes from the frame width, with a vertical fallback for aspect ratios up to 20:9.
+
 ## 7c. Session 3 — 2026-11-22 (quiz, surprise items, notifications)
 
 The tablet was re-addressed to `192.168.8.65:5555` after its battery died (the session of
