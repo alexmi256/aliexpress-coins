@@ -12,7 +12,10 @@ opens the full list (or degrades to the coin page's inline rows), and
 an ordered roster of allowed and refused entries. :func:`classify_surface`
 names the variant on arrival, and
 :func:`~aliexpress_coins.tasks.discovery.discover_roster` applies the one-refresh
-route policy.
+route policy. :func:`~aliexpress_coins.tasks.discovery.observe_roster` re-reads
+the surface after a completion and diffs it against the previous observation;
+:class:`~aliexpress_coins.tasks.discovery.RosterObserver` keeps that timeline in
+``<run>/roster.jsonl`` and reports unrecognised titles as catalogue candidates.
 """
 
 from aliexpress_coins.tasks.catalogue import (
@@ -30,15 +33,24 @@ from aliexpress_coins.tasks.discovery import (
     DiscoveryResult,
     DiscoveryRoute,
     Roster,
+    RosterChange,
+    RosterDiff,
     RosterEntry,
+    RosterLog,
+    RosterObservation,
+    RosterObserver,
+    RosterRow,
     RosterStatus,
+    diff_rosters,
     discover_roster,
     enumerate_roster,
     is_boost_page,
     is_empty_boost,
+    observe_roster,
     open_boost_list,
+    read_roster_log,
 )
-from aliexpress_coins.tasks.errors import TaskCatalogueError, TaskError
+from aliexpress_coins.tasks.errors import RosterLogError, TaskCatalogueError, TaskError
 from aliexpress_coins.tasks.surface import (
     SHORTCUT_DEEP_LINK,
     SURFACE_REFRESH_LIMIT,
@@ -59,7 +71,14 @@ __all__ = [
     'DiscoveryResult',
     'DiscoveryRoute',
     'Roster',
+    'RosterChange',
+    'RosterDiff',
     'RosterEntry',
+    'RosterLog',
+    'RosterLogError',
+    'RosterObservation',
+    'RosterObserver',
+    'RosterRow',
     'RosterStatus',
     'RouteFirer',
     'Surface',
@@ -70,10 +89,13 @@ __all__ = [
     'TaskDecision',
     'TaskError',
     'classify_surface',
+    'diff_rosters',
     'discover_roster',
     'enumerate_roster',
     'is_boost_page',
     'is_empty_boost',
     'load_task_catalogue',
+    'observe_roster',
     'open_boost_list',
+    'read_roster_log',
 ]

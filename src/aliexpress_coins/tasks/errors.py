@@ -15,3 +15,12 @@ class TaskCatalogueError(TaskError):
     run must never be the first place an unknown category or a contradictory
     deny rule is discovered.
     """
+
+
+class RosterLogError(TaskError):
+    """The roster observation log could not be appended to or read back.
+
+    The log is a run artifact, not run state: losing a line must be reported,
+    but it must not turn a completed task into a failed run. The observer logs
+    the failure and keeps the previous roster.
+    """
