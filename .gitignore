@@ -187,6 +187,11 @@ recon/artifacts/
 # there is a full 1200x2000 device frame with account data masked; see its README.
 !tests/data/popups/*.png
 
+# The flow fixtures (issue #10) are a dedicated, reviewed directory: one full
+# 1200x2000 frame per state of the quiz, surprise-items and notification flows.
+# Account data is masked; see tests/data/flows/README.md.
+!tests/data/flows/*.png
+
 # Glyph-only popup close controls, cropped from reviewed frames. They contain
 # artwork only, never account data; see specs/popups.yaml for the family map.
 !assets/templates/*.png

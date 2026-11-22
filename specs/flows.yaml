@@ -1,0 +1,626 @@
+# Flow state machines for the task executors (issue #10).
+#
+# One entry per flow. A reader implements an executor by walking `states`,
+# `transitions` and `exit`. A state is matched only when every `identify` entry
+# is present and every `absence` entry is absent; `identify` and `absence` are
+# OCR text, matched case-insensitively on whole words, and `pattern` is a regex
+# over OCR text for a value that is not a fixed label (a counter, a question
+# prefix). `visual` names a non-text marker for a human reader and is never an
+# OCR match. `ocr_crop` (frame fractions) is the part of the frame a pattern is
+# read from when the full-frame OCR loses the value. `surfaces`
+# lists the screen(s) the state lives on, which is what separates
+# two states that share labels (the boost row and the grid both say `Browse
+# surprise items`). `control` names the only thing the executor may act on while
+# in the state. Coordinates are never identifiers — a control is resolved from
+# its label or from the state's own geometry, and a tap that produces no state
+# change is re-captured, never repeated.
+#
+# `status` on a state is `reproduced` (seen on the device in the 2026-11-22
+# session), `prior` (seen in an earlier session, with the note saying which),
+# or `unobserved` (the transition exists in the app but was not available).
+# A flow-level `notes` block records what could not be reproduced and why.
+
+version: 1
+
+reference:
+  device: T3_US
+  app: "8.180.1"
+  width: 1200
+  height: 2000
+  density: 240
+  sdk: 35
+  captured: "2026-11-22"
+  source: "adb exec-out screencap -p (portrait; status bar and taskbar retained)"
+
+conventions:
+  perception: >-
+    Screenshot + OCR only. The coins container exposes no usable accessibility
+    tree (docs/01 §3), so every state below is recognised by text.
+  tap: >-
+    A tap is issued only inside a matched label's box. On a product detail page
+    the executor issues BACK and nothing else; `Add to cart` and `Buy now` are
+    on that page and are never touched.
+  verify: >-
+    A transition is confirmed by capturing the next state's labels, never by
+    "the tap was sent" (docs/03, verification).
+  deny: >-
+    specs/tasks.yaml is checked before a flow starts. No flow here opens an
+    order, cart, game, share or redeem control.
+
+flows:
+  - key: surprise_items
+    task: surprise_items
+    title: Browse surprise items
+    status: reproduced
+    entry:
+      surfaces: [boost_list, coin_page]
+      row:
+        label: Browse surprise items
+        subtitle: Tap 3 items on this page to earn coins
+        progress: "N/2 rounds"
+        reward: +1 coin
+        control: GO
+      note: >-
+        The row appears on the coin page's inline list and on the `Coins boost`
+        sheet. The row badge counts rounds, not products: it read `1/2` at entry
+        on 2026-11-22 and the page counter inside started at `0/3`.
+
+    states:
+      - key: entry_row
+        status: reproduced
+        surfaces: [boost_list, coin_page]
+        identify:
+          - Browse surprise items
+          - Tap 3 items on this page to earn coins
+        control:
+          kind: label
+          label: GO
+          row_scope: >-
+            The GO in the same row, i.e. within 150 px of the title's centre
+            line (docs/01 §7b).
+        fixture: tests/data/flows/surprise_items_entry_row.png
+
+      - key: round_grid
+        status: reproduced
+        surfaces: [surprise_page]
+        identify:
+          - Browse surprise items
+          - Tap 3 items on this page to earn coins
+        pattern: "\\d\\s*/\\s*3"
+        ocr_crop: [0.2, 0.195, 0.8, 0.27]
+        visual: [segmented counter pill, three tick placeholders]
+        counter:
+          note: >-
+            `ocr_crop` is the fraction of the frame that holds the pill; the
+            full frame's OCR sometimes drops the orange digit, so read the crop.
+            The counter sits in a segmented pill under the subtitle, with three
+            tick placeholders to its right that fill as distinct products are
+            credited. OCR of the full frame sometimes drops the orange digit;
+            crop the pill and re-read rather than inferring progress.
+        control:
+          kind: tile
+          note: >-
+            Tapping a product image opens that product. Use a tile whose product
+            has not been credited; a non-crediting tile stays non-crediting.
+        fixture: tests/data/flows/surprise_items_round_grid.png
+        progress_fixtures:
+          "1/3": tests/data/flows/surprise_items_progress_1of3.png
+          "2/3": tests/data/flows/surprise_items_progress_2of3.png
+
+      - key: item_detail
+        status: reproduced
+        surfaces: [product_detail]
+        identify:
+          - Add to cart
+          - Buy now
+        pattern: "Item\\s*\\d+/\\d+"
+        control:
+          kind: key
+          key: KEYCODE_BACK
+        note: >-
+          BACK is the only action. The page reports `Item 1/n` and a product
+          title; it is not the surprise grid.
+        fixture: tests/data/flows/surprise_items_item_detail.png
+
+      - key: mission_overlay
+        status: reproduced
+        surfaces: [overlay]
+        identify:
+          - Mission Completed
+        visual: [three gold coins over a dimmed grid, no close control]
+        control:
+          kind: tap
+          target: anywhere on the overlay
+        auto_dismiss: false
+        auto_dismiss_note: Still present 10 s after it appeared; a tap dismissed it immediately.
+        fixture: tests/data/flows/surprise_items_mission_completed.png
+
+      - key: round_complete
+        status: reproduced
+        surfaces: [surprise_page]
+        identify:
+          - Browse surprise items
+        pattern: "3\\s*/\\s*3"
+        ocr_crop: [0.2, 0.195, 0.8, 0.27]
+        visual: [three filled tick icons]
+        control:
+          kind: label
+          label: Next round
+          condition: only when the row's round badge has rounds remaining
+        note: >-
+          On the final round (row at `1/2` at entry) no `Next round` control was
+          offered; the page stayed on `3/3` and BACK was the exit. `Next round`
+          was seen on 2026-11-21 at ~(597,1240) (prior session), not re-observed
+          this session because the task ended. When rounds remain, `Next round`
+          is the only control in this state; when they do not, the state has no
+          control and BACK exits.
+        fixture: tests/data/flows/surprise_items_round_complete.png
+
+      - key: row_gone
+        status: reproduced
+        surfaces: [boost_list]
+        identify:
+          - Coins boost
+        absence:
+          - Browse surprise items
+        control: none
+        fixture: tests/data/flows/surprise_items_row_gone.png
+
+    transitions:
+      - from: entry_row
+        action: tap GO
+        to: round_grid
+        verify: header, subtitle and the `N /3` counter are present
+      - from: round_grid
+        action: tap a product image tile
+        to: item_detail
+        verify: Add to cart and Buy now are present
+      - from: item_detail
+        action: KEYCODE_BACK
+        to: round_grid
+        verify: >-
+          the counter advanced by one when the product is distinct and not
+          already credited; otherwise it is unchanged
+      - from: round_grid
+        action: third distinct product credited
+        to: mission_overlay
+        verify: Mission Completed is present
+      - from: mission_overlay
+        action: tap the overlay
+        to: round_complete
+        verify: the overlay is gone and the counter reads 3/3
+      - from: round_complete
+        action: tap Next round
+        to: round_grid
+        verify: a fresh grid with the counter reset
+        condition: rounds remain
+        status: prior
+      - from: round_complete
+        action: KEYCODE_BACK
+        to: row_gone
+        verify: Coins boost header; the surprise row is gone
+
+    counter_rule:
+      statement: >-
+        The counter counts distinct products, not taps. Three distinct products
+        complete a round; re-opening a product already credited does not
+        advance it, and a product tile that fails to credit stays inert across
+        repeat visits.
+      evidence:
+        - tap: T9 Vintage Men's Electric Hair Clipper
+          counter_after_back: "1/3"
+        - tap: 1pc Pressure Cooker Silicone Exhaust Valve
+          counter_after_back: "1/3"
+        - tap: the same pressure-cooker tile again, 9 s dwell
+          counter_after_back: "1/3"
+        - tap: Luxury Liquid Silicone Phone Case
+          counter_after_back: "2/3"
+        - tap: Home 3-in-1 Portable Fan
+          counter_after_back: "3/3"
+      unresolved: >-
+        Whether the product set resets between rounds was not observed: the
+        task entered at 1/2 rounds, so the round above was the final one
+        (2/2) and no round boundary with rounds remaining existed. The
+        pressure-cooker tile's inertness is consistent with a product opened in
+        the earlier round still being excluded, but its earlier-round history
+        was not recorded.
+      follow_up: "#63"
+      follow_up_note: >-
+        #63 is the fresh-day capture (start at 0/2, open the same product in
+        both rounds) that replaces this ambiguity with a measurement.
+      mitigation: >-
+        Until #63 lands, #26 implements both behaviours: it keeps the set of
+        tried products and reuses it across a round boundary, and if the counter
+        has stalled at the same value after a bounded number of distinct taps it
+        resets that set and tries fresh products. A stall is the observable
+        signature of "the server reset the round"; the executor records which
+        path it took in the run report. This is why #26 can be written without
+        the #63 measurement: the spec names the ambiguity and the executor is
+        specified to handle both sides of it.
+
+    popups:
+      families: []
+      note: >-
+        No popup-corpus family appeared on this flow. `Mission Completed` is a
+        state of the page (an overlay dismissed by a tap), not a popup with a
+        close control, and it is modelled above rather than in specs/popups.yaml.
+
+    exit:
+      steps:
+        - from: round_grid
+          action: KEYCODE_BACK
+          to: boost_list
+          verify: Coins boost header
+        - from: boost_list
+          action: close the sheet (drawn ✕ at the top right)
+          to: coin_page
+          verify: Daily coins and Coins credits to redeem are present
+
+    timings:
+      go_to_grid_seconds: {value: 5, kind: upper_bound, note: grid labels readable in the +5 s capture}
+      back_to_counter_seconds: {value: 1, kind: upper_bound, note: the +1 s frame already showed 1/3}
+      overlay_dwell_seconds: {value: 10, kind: lower_bound, note: still up at +10 s; tap dismisses}
+      taps_per_round: 3
+      rounds_per_day: 2
+      reward: >-
+        The round recorded here paid +1 on completion (balance 43 -> 44). Whether an
+        intermediate round also pays was not observed (docs/05 §5b, ⬜).
+
+  - key: coins_quiz
+    task: coins_quiz
+    title: Take the coins quiz
+    status: prior
+    notes: >-
+      The row, question and result were observed on the 2026-11-20 session
+      (docs/05 §5b, docs/01 §7) and the question layout is the reviewed
+      tests/data/states/quiz.png frame. On 2026-11-22 the row was already
+      claimed for the app day (drawn check, inert to a tap) and the task day is
+      server-side, so the live question, result and interstitial could not be
+      re-observed. The result and the interstitial therefore have no frame and
+      say why; they must be captured before #25 is implemented. Every other
+      state is either reproduced here or backed by a reviewed frame.
+
+    entry:
+      surfaces: [boost_list, coin_page]
+      row:
+        label: Take the coins quiz
+        subtitle: Each correct answer grants you more rewards
+        reward: "+3~6 coins and +0~US$0.01 coin credit"
+        control: GO
+      note: >-
+        The same row was on the boost sheet and on the coin page's inline list.
+        When the quiz is already claimed, the GO is replaced by the drawn check
+        control and the row is inert — the executor must read the control, not
+        assume GO.
+
+    states:
+      - key: entry_row
+        status: reproduced
+        surfaces: [boost_list, coin_page]
+        identify:
+          - Take the coins quiz
+          - Each correct answer grants you more rewards
+        control:
+          kind: label
+          label: GO
+          row_scope: same row as the title (within 150 px of its centre line)
+        note: >-
+          The fixture is the completed variant: a drawn check where the GO
+          sits. The labels are the same, which is why the executor reads the
+          control state as well as the row.
+        fixture: tests/data/flows/coins_quiz_entry_row.png
+
+      - key: question
+        status: prior
+        surfaces: [quiz_page]
+        identify:
+          - Coins quiz
+          - Answer quiz questions for more coins!
+        pattern: "Q\\s*:"
+        control:
+          kind: option
+          note: >-
+            Each answer is a tappable text row under the question. Two-option
+            (True / False) and four-option questions were both observed; the
+            reviewed fixture is a four-option question, so the executor must
+            enumerate options from OCR rather than assume two.
+        fixture: tests/data/flows/coins_quiz_question.png
+        notes: >-
+          The page header reads `Coins quiz`. The subtitle is `Answer quiz
+          questions for more coins!`. The question itself is prefixed `Q :` and
+          the options are plain label rows with no `True`/`False` requirement.
+
+      - key: result
+        status: prior
+        surfaces: [result_page]
+        identify:
+          - "Correct answer:"
+          - "Your answer:"
+        pattern: "You got \\+\\d+"
+        control:
+          kind: label
+          label: Go back
+        fixture: null
+        fixture_absent_reason: >-
+          Observed on 2026-11-20 (docs/05 §5b: `Correct answer: X`, `Your
+          answer: Y`, then `You got +6`) but no frame was committed then, and
+          the row was already claimed on 2026-11-22. Capture this state before
+          #25 ships.
+        notes: >-
+          A correct answer paid +6 coins and +US$0.01 credit on 2026-11-20; a
+          wrong answer still paid something (docs/05 §5). `Well done!` is named
+          in the brief but was not observed in the recorded labels; treat the
+          `Correct answer:` / `Your answer:` pair as the reliable markers.
+
+      - key: redeem_interstitial
+        status: unobserved
+        surfaces: [overlay]
+        identify:
+          - YOU CAN NOW REDEEM!
+        control:
+          kind: key
+          key: KEYCODE_BACK
+        fixture: null
+        fixture_absent_reason: >-
+          One-shot after a task pays coin credit; observed once (2026-11-20)
+          with no close control and no frame. specs/popups.yaml records the
+          family as `observed_not_reproduced`; the quiz was claimed on
+          2026-11-22, so it could not be provoked.
+        notes: >-
+          BACK exits it and returns to the coin page; a second BACK leaves the
+          app. Because a second BACK exits, the executor must verify the coin
+          page after one BACK and never chain BACKs here. If the interstitial
+          does not appear after `Go back`, the result went straight to the coin
+          page.
+
+      - key: coin_page
+        status: reproduced
+        surfaces: [coin_page]
+        identify:
+          - Daily coins
+          - Coins credits to redeem
+        control: none
+        fixture: tests/data/flows/coins_quiz_exit_coin_page.png
+
+    transitions:
+      - from: entry_row
+        action: tap GO
+        to: question
+        verify: Coins quiz and the first option row are present
+      - from: question
+        action: tap any answer option
+        to: result
+        verify: Correct answer and Your answer are present
+      - from: result
+        action: tap Go back
+        to: redeem_interstitial
+        verify: YOU CAN NOW REDEEM! is present
+        condition: the quiz paid coin credit
+      - from: result
+        action: tap Go back
+        to: coin_page
+        verify: Daily coins is present and YOU CAN NOW REDEEM! is absent
+        condition: no credit was paid
+      - from: redeem_interstitial
+        action: KEYCODE_BACK
+        to: coin_page
+        verify: Daily coins is present
+        warning: a second BACK leaves the app
+
+    popups:
+      families: [redeem_interstitial]
+      note: >-
+        The only popup-corpus family in this flow is the redeem interstitial,
+        and it is the row above rather than a separate state.
+
+    exit:
+      steps:
+        - from: redeem_interstitial
+          action: KEYCODE_BACK
+          to: coin_page
+          verify: Daily coins is present; stop after one BACK
+        - from: coin_page
+          action: fire the coins shortcut intent (or close the boost sheet)
+          to: coin_page
+          verify: header balance and the task list are readable
+
+    timings:
+      questions_per_round: {value: 1, kind: observed, note: one question per visit on 2026-11-20}
+      answer_options: {value: "2 or 4", kind: observed}
+      answer_to_result_seconds: {value: null, note: not timed; wait for the Correct answer label}
+      go_back_to_coin_page_seconds: {value: null, note: not timed; wait for Daily coins}
+      reward: "+3~6 coins and +0~US$0.01 credit; a wrong answer still pays"
+
+  - key: notifications
+    task: notifications
+    title: Turn on notifications
+    status: partial
+    notes: >-
+      The reward and its (lack of a) screen were observed on 2026-11-20; the
+      completed row and both OS-side routes were measured on 2026-11-22. The
+      system dialog and its dismissal come from the #11 popup corpus, not from
+      this session: the row was already claimed, and the app's own toggle
+      deep-links to the OS page instead of raising the runtime dialog. The
+      denial state is the one state with no frame; it is recorded from the
+      corpus rule and must be re-observed before #28 claims it.
+
+    entry:
+      surfaces: [boost_list]
+      row:
+        label: Turn on notifications
+        subtitle: Stay informed when rewards drop
+        reward: +1 coin
+        control: GO
+      note: >-
+        Measured 2026-11-20: tapping GO credited +1 coin, showed no dialog or
+        page, and flipped the row to the drawn check while
+        `POST_NOTIFICATION` stayed `ignore`. Measured 2026-11-22: the completed
+        row is inert, and the permission was still `ignore`.
+
+    states:
+      - key: entry_row
+        status: reproduced
+        surfaces: [boost_list]
+        identify:
+          - Turn on notifications
+          - Stay informed when rewards drop
+        control:
+          kind: label
+          label: GO
+          row_scope: same row as the title (within 150 px of its centre line)
+        note: The fixture shows the completed variant (drawn check where GO sits).
+        fixture: tests/data/flows/notifications_row_completed.png
+
+      - key: app_prompt
+        status: prior
+        surfaces: [app_prompt]
+        identify:
+          - Receive timely notifications
+        control:
+          kind: label
+          label: No thanks
+          alternatives: ["drawn ✕ on the full-height variant", "Enable all notifications (leads to the system dialog)"]
+        fixture: tests/data/popups/push_permission_prompt.png
+        notes: >-
+          Two layouts (bottom sheet with `No thanks`, full-height page with a
+          drawn ✕). This is the app's pre-prompt; it is not what the coins row
+          produced on 2026-11-20. `Enable all notifications` is a transition,
+          not a dismissal.
+
+      - key: system_dialog
+        status: prior
+        surfaces: [system_dialog]
+        identify:
+          - "Allow AliExpress to send you notifications?"
+        control:
+          kind: label
+          label: "Don't allow"
+        forbidden_control: Allow
+        fixture: tests/data/popups/system_notification_permission.png
+        notes: >-
+          Android runtime POST_NOTIFICATIONS dialog above the app prompt.
+          `Don't allow` is the only safe control; never tap `Allow` (the reward
+          does not require the permission — see entry).
+
+      - key: os_settings
+        status: reproduced
+        surfaces: [os_settings]
+        identify:
+          - All AliExpress notifications
+          - "You haven't allowed notifications from this app"
+        control:
+          kind: toggle
+          note: >-
+            The OS switch grants the permission directly, with no runtime
+            dialog; pressing it is a grant, so the executor must not.
+        alternative_control: {kind: key, key: KEYCODE_BACK}
+        fixture: tests/data/flows/notifications_os_settings.png
+        notes: >-
+          Destination of the app's own `Settings → Notification settings →
+          Push notifications → Allow phone notifications` toggle (and of the
+          OS notification page the toggle deep-links to). Reached 2026-11-22.
+
+      - key: after_grant
+        status: reproduced
+        surfaces: [os_settings]
+        visual: [the All AliExpress notifications switch is on]
+        identify:
+          - Categories
+          - "This app has not posted any notifications"
+          - Allow notification dot
+        absence:
+          - "You haven't allowed notifications from this app"
+        control: {kind: key, key: KEYCODE_BACK}
+        fixture: tests/data/flows/notifications_after_grant.png
+        notes: >-
+          What the OS page looks like after the permission is granted: the
+          `All AliExpress notifications` switch is on and the category list
+          appears. Captured by flipping the OS switch, then reverted with
+          `pm revoke` + `pm clear-permission-flags`; the runtime dialog's
+          `Allow` was deliberately not tapped.
+
+      - key: after_denial
+        status: unobserved
+        surfaces: [boost_list]
+        identify:
+          - Coins boost
+        absence:
+          - "Allow AliExpress to send you notifications?"
+          - Receive timely notifications
+        control: none
+        fixture: null
+        fixture_absent_reason: >-
+          The row was already claimed on 2026-11-22, and the app toggle routes
+          to OS settings rather than to the dialog. Recorded from the #11
+          corpus rule (denying closes both the system dialog and the app
+          prompt); capture the frame before #28 relies on it.
+        notes: >-
+          A denial must leave the run intact: the corpus rule says `Don't
+          allow` closes both layers with the app underneath still usable. The
+          executor should then continue; the row may remain unclaimed (it paid
+          on tap in the 2026-11-20 observation, so treat the reward as
+          best-effort, not permission-gated).
+
+    transitions:
+      - from: entry_row
+        action: tap GO
+        to: entry_row
+        verify: the control becomes the drawn check and the balance moves +1
+        outcome: completed
+        note: >-
+          Measured 2026-11-20: no screen is opened, no system dialog appears,
+          and the OS permission is unchanged. This is the row's destination.
+      - from: entry_row
+        action: tap GO
+        to: app_prompt
+        condition: the app chooses to show its pre-prompt instead
+        status: unobserved_from_this_row
+        verify: Receive timely notifications is present
+      - from: app_prompt
+        action: tap Enable all notifications
+        to: system_dialog
+        verify: Allow AliExpress to send you notifications? is present
+      - from: app_prompt
+        action: "tap No thanks (or the drawn ✕)"
+        to: after_denial
+        verify: the prompt is gone and the underlying app screen is interactive
+      - from: system_dialog
+        action: tap Don't allow
+        to: after_denial
+        verify: the dialog and the app prompt are gone; the app is interactive
+      - from: os_settings
+        action: KEYCODE_BACK
+        to: after_denial
+        verify: the app screen is interactive and the OS page is gone
+      - from: os_settings
+        action: toggle All AliExpress notifications
+        to: after_grant
+        verify: the switch is on and the Categories list appears
+        forbidden: true
+        note: grants the permission directly; never do this in a run
+
+    popups:
+      families: [system_notification_permission, push_permission_prompt]
+      note: >-
+        Both families are already in specs/popups.yaml with their close rules;
+        this flow says when they appear and which one is safe to close.
+
+    exit:
+      steps:
+        - from: after_denial
+          action: none
+          to: boost_list
+          verify: Coins boost (or the coin page) is present
+        - from: after_grant
+          action: KEYCODE_BACK
+          to: app
+          verify: the app screen is interactive
+        - from: boost_list
+          action: close the sheet (drawn ✕ at the top right)
+          to: coin_page
+          verify: Daily coins is present
+
+    timings:
+      row_to_complete_seconds: {value: null, note: the credit is applied on the tap; verify by balance/progress}
+      dialog_appearance_seconds: {value: null, note: wait for the dialog label; do not sleep a fixed time}
+      reward: "+1 coin, paid on the row's GO without the permission being held"

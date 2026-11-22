@@ -29,7 +29,18 @@ description; action phrases and precise action verbs (`Add to cart`,
 `Checkout`) may match either field. The streak `Collect` control is deliberately
 not an allow pattern: #23 owns it outside row dispatch.
 
-Run both spec checks with the normal gate:
+`flows.yaml` is the flow state machines from issue #10 for the three task
+families the executors need: `coins_quiz` (#25), `surprise_items` (#26) and
+`notifications` (#28). Each flow names its entry (surface, row label, control),
+its states with the OCR labels that identify them and the one control to act on,
+its transitions with the verification signal for each, the popup families that
+can appear, the exit back to the coins page, and the measured timings. A state
+whose frame could not be captured on the recording day carries
+`fixture: null` and `fixture_absent_reason` instead of a guessed screenshot; the
+verification test requires a reviewed full frame for every captured state. Its
+tests are [`tests/test_specs_flows.py`](../tests/test_specs_flows.py).
+
+Run all spec checks with the normal gate:
 
 ```sh
 just check

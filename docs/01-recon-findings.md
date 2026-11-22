@@ -12,7 +12,8 @@ Legend: ✅ verified by observation · ⬜ inferred, not verified · ❓ unknown
 
 ```
 adb connect 192.168.8.65:5555     -> connected
-adb shell id                      -> uid=0(root) gid=0(root) groups=... context=u:r:su:s0
+adb shell id                      -> uid=2000(shell)          (default shell)
+adb root; adb shell id            -> uid=0(root)              (verified 2026-11-22)
 adb shell getprop ro.adb.secure   -> 0
 adb shell getprop ro.debuggable   -> 1
 adb shell which su                -> "su: inaccessible or not found"
@@ -25,9 +26,10 @@ container can connect without an authorised key. This removes the usual "works o
 `unauthorized` in the container" failure — but it is a property of this build, not of the
 project, and `doctor` reports it rather than assuming it.
 
-**There is no `su` binary**; `adbd` itself runs as root, so root-only steps (launcher
-database, widget state) are plain `adb shell` commands. Do not write `su -c ...` anywhere: it
-fails on this device.
+**There is no `su` binary, but `adb root` works.** A plain `adb shell` is `uid=2000(shell)`; on this
+`userdebug` build `adb root` restarts `adbd` as root (verified 2026-11-22: the launcher database is
+readable and `am start` can launch a non-exported activity). Root-only steps are therefore plain
+`adb shell` commands *after* `adb root`, not `su -c ...`. Do not write `su` anywhere.
 
 The user's shell is shared with a human, so a run must be safe to point at a live session —
 that is why `--dry-run` suppresses taps at the `Controller` level rather than at the CLI.
@@ -177,8 +179,8 @@ So the widget is real, is 2×2, and renders the sign-in state (`signed` / `unsig
 Two paths remain open, both tracked as issues: reverse the widget/shortcut intent (what
 `AdcActivity` URL it fires) and/or let the app install the widget and read the widget state.
 
-The launcher database is readable **as the collector's own user** via adb (adbd is root), which
-makes "is the widget installed" a cheap assertion:
+The launcher database is readable via adb after `adb root` (the default shell is `uid=2000`),
+which makes "is the widget installed" a cheap assertion:
 
 ```bash
 adb shell cat /data/data/com.android.launcher3/databases/launcher_6_by_5.db
@@ -239,6 +241,69 @@ from the median box height keeps a row together without merging its neighbour. A
 still contains more than one action label is split at the action boundary; a cluster without an
 action is split when it spans more than one text line.
 
+## 7c. Session 3 — 2026-11-22 (quiz, surprise items, notifications)
+
+The tablet was re-addressed to `192.168.8.65:5555` after its battery died (the session of
+2026-11-20 used the same address; `.220` appears in older notes and is stale). App `8.180.1`,
+1200×2000 portrait.
+
+**Access.** A plain `adb shell` is `uid=2000(shell)`, which is what the first attempt used; my
+initial note here called that "no root shell" and that was wrong. `adb root` restarts `adbd` as
+root and restores the root-only steps (verified: the launcher database lists, and
+`am start -n com.alibaba.aliexpresshd/.push.PushSettingActivity` succeeds — the earlier
+`SecurityException` was the un-rooted shell, not a missing capability). `pm clear-permission-flags`
+and `cmd appops` work for either user.
+
+**Task state at entry (00:12 EST).** The boost list was populated and carried, among others,
+`Take the coins quiz`, `Check in to win Shopping credits`, `Add & start using our widget` and
+`Turn on notifications` — **all four already marked with the drawn check control**, and
+`Browse surprise items` at `1/2` rounds. The checkmark survived a `force-stop` + normal start +
+warm shortcut intent, so it is server-side, not a cached page. Changing the device timezone to
+`Pacific/Kiritimati` (a different local date) did not clear it either; the task day is decided
+server-side. At 00:2x EST the app day was still the previous UTC-8 date, which is why the daily
+tasks had not reset just after local midnight.
+
+**Surprise items — counter rule.** Entered at `0/3` in the page counter (row badge `1/2`). Then,
+deliberately, one visit per tap with BACK between each:
+
+| # | product tapped | counter after BACK |
+|---|---|---|
+| 1 | T9 Vintage Men's Electric Hair Clipper (row 1, left) | `1/3` |
+| 2 | 1pc Pressure Cooker Silicone Exhaust Valve (row 1, right) | `1/3` — no change |
+| 3 | same pressure-cooker tile, re-tapped, 9 s dwell on the product page | `1/3` — still no change |
+| 4 | Luxury Liquid Silicone Phone Case (row 2, left) | `2/3` |
+| 5 | Home 3-in-1 Portable Fan (row 2, right) | `3/3` |
+
+So the counter counts **distinct products**, not taps: a tile that does not credit the first time
+never credits, however long the product page is left open. The third distinct product produced a
+`Mission Completed` overlay (19:17:12 device frame); it stayed for >10 s and a tap dismissed it.
+Because the task was on its **final** round (`1/2` at entry → `2/2` after this round), no
+`Next round` control was offered; the `3/3` state is three ticks and the grid. BACK then returned
+to the boost list, the row was **gone** (replaced in place by `Search for what you love`), and the
+balance went `43 → 44` (+1). The cross-round half of the rule — whether a product opened in round
+1 counts again in round 2 — could not be observed, because no round boundary with rounds remaining
+existed this session.
+
+**Quiz and notifications.** Both rows were already claimed for the app day at entry. Tapping the
+quiz row (title or its completed control) is inert. The notification row's OS permission was still
+`POST_NOTIFICATION: ignore` (`granted=false`), which confirms the row pays its +1 without the
+permission being held. From the app's own `Settings → Notification settings → Push notifications`,
+the `Allow phone notifications` toggle does **not** raise the runtime dialog: it deep-links to the
+OS `AliExpress` notification page. Starting the app's `.push.PushSettingActivity` directly (as
+root, after `adb root`) gives the same deep-link, which rules out "the row's activity would have
+prompted". There, flipping the OS switch grants the permission directly,
+with no `Allow AliExpress to send you notifications?` dialog at all — that path was reverted
+(`pm revoke` + `pm clear-permission-flags … user-set`) within a minute and `Allow` was never
+tapped. The runtime dialog and its `Don't allow` close are therefore recorded in
+`specs/flows.yaml` from the #11 corpus, not re-observed here; the post-denial screen is the one
+notification state with no frame.
+
+The frames for the states observed above are committed under `tests/data/flows/` (see its README);
+the three states that could not be captured on this app day are listed there with the reason, not
+left implicit. The quiz result, the redeem interstitial and the post-denial screen need a session
+that starts before the quiz/notification rows are claimed. The state machine itself is
+`specs/flows.yaml`.
+
 ## 8. Open items
 
 | item | state | next step |
@@ -246,9 +311,10 @@ action is split when it spans more than one text line.
 | coins page canonical URL | ✅ answered | `aliexpress://goto?url=…/p/coin-index/index.html` (see §7 / doc 05) |
 | shortcut intent | ✅ answered | deep shortcut `coinsPromotion`, intent captured |
 | widget click intent | ✅ answered | `from=widget` + `aewidget_*` parameter set captured |
-| quiz flow | ✅ answered | one question, answer shown afterwards; bank is buildable |
+| quiz flow | 🟡 labels answered, frames partial | one question per visit, answer set 2 or 4; result frame still needed |
 | why task rows are sometimes absent | ❓ | observe across a day boundary; check whether they return after the daily reset |
-| surprise-items flow | ❓ | capture the page, the item tiles, and the round popups |
-| notification task | ❓ | capture the system permission dialog and the post-grant state |
-| `YOU CAN NOW REDEEM!` exit | ❓ | is there a close control off-screen, or is BACK the only exit? |
+| surprise-items flow | 🟡 answered within a round (§7c) | counter is per distinct product; the cross-round reset is #63 |
+| surprise-items round rule across rounds | ❓ #63 | start a day at `0/2` and open the same product in both rounds |
+| notification task | 🟡 OS routes answered, denial frame missing | row pays +1 without the permission; capture `Don't allow` and the screen after it |
+| `YOU CAN NOW REDEEM!` exit | ❓ | still one-shot: BACK is the only known exit; capture when a quiz pays credit |
 | API feasibility | ❓ | mitmproxy capture of a task run: are the coin awards plain HTTP the UI merely reflects? |

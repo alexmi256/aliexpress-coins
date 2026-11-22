@@ -77,7 +77,12 @@ flowchart TD
 
     coin -- 'Explore sponsored items' GO --> coll
     coll -- BACK --> coin
-    boost -- 'Browse surprise items' GO --> coll
+    boost -- 'Browse surprise items' GO --> sgrid[[Surprise grid<br/>counter N/3]]
+    sgrid -- tap tile --> sdetail[Product detail]
+    sdetail -- BACK --> sgrid
+    sgrid -- '3rd distinct product' --> sdone[[Mission Completed]]
+    sdone -- tap --> sgrid
+    sgrid -- BACK --> boost
     boost -- 'Learn to save money' GO --> explain[[Explainer page<br/>What are Coins Credits?]]
     explain -- BACK --> boost
     boost -- 'Search for what you love' GO --> landing[[Search landing<br/>category cards]]
@@ -103,6 +108,9 @@ flowchart TD
 | quiz result | `Correct answer:` + `Your answer:` | — |
 | redeem interstitial | `YOU CAN NOW REDEEM!` | — |
 | product collection | `Bundle Deals` / `Hot picks for you` + prices | any product page looks like this |
+| surprise grid | `Browse surprise items` + `Tap 3 items on this page` + `N /3` | the boost row carries the same title and subtitle; the grid adds the counter |
+| product detail (surprise) | `Add to cart` + `Buy now` + `Item 1/n` in the toolbar | every product page looks like this — BACK, never tap a purchase control |
+| mission overlay | `Mission Completed` + coin artwork over a dimmed grid | — |
 | coupon page | `Sale coupons` + `Collect all: C$…` | — |
 
 ## 3b. What ports between devices, and what does not
@@ -130,6 +138,15 @@ been. The catalogue must therefore be pattern-based and tolerate absent tasks �
 | quiz | tap an option | result | `Correct answer:` present |
 | result | tap `Go back` | redeem interstitial | `YOU CAN NOW REDEEM!` present |
 | interstitial | BACK | coin page | `Daily coins` present |
+| boost list | tap `Browse surprise items` `GO` | surprise grid | counter `N /3` present |
+| surprise grid | tap a product tile | product detail | `Add to cart` / `Buy now` present |
+| product detail | BACK | surprise grid | the counter advanced for a distinct product, otherwise unchanged |
+| surprise grid | third distinct product | mission overlay | `Mission Completed` present |
+| mission overlay | tap the overlay | surprise grid | overlay gone, counter `3/3` |
+| boost list | tap `Turn on notifications` `GO` | same row, completed | drawn check appears, balance +1, `POST_NOTIFICATION` unchanged (observed 2026-11-20) |
+| app push settings | tap `Allow phone notifications` | OS app-notification page | `All AliExpress notifications` present; no runtime dialog |
+| OS app-notification page | toggle `All AliExpress notifications` | same page with `Categories` | switch on; the permission is granted **without** a runtime dialog |
+| app pre-prompt | tap `Enable all notifications` | system permission dialog | `Allow AliExpress to send you notifications?` present |
 
 ## 5. Stuck states and recovery
 
@@ -163,7 +180,7 @@ the reference device, and replaying the widget intent without the widget install
 
 | question | where it matters |
 |---|---|
-| does the "Browse surprise items" GO open a *new* page, or the product grid on the boost page? | #26 — the row says "Tap 3 items on this page" |
+| does the "Browse surprise items" GO open a *new* page, or the product grid on the boost page? | ✅ answered 2026-11-22: it opens a **new page** with its own header, subtitle and `N /3` counter; the boost row is not the grid. |
 | is the empty boost state time-based (a rate limit) or purely a cold-cache effect? | #38 — how hard to retry |
 | can the widget intent be fired without the widget installed (`am start` of its exact URI)? | #27, #38 — route fallback |
 | does the account-page coins card ever appear when the coupon card is showing? | route fallback reliability |

@@ -27,3 +27,9 @@ with the status bar retained. They are masked the same way and described file-by
 `tests/data/popups/*.png` is limited to that directory; the glyph crops under `assets/templates/`
 have their own negation because they are artwork only. A file in either directory is reviewed
 before it is committed, and a new image is not evidence that arbitrary screenshots may enter git.
+
+`flows/` holds the reviewed fixtures for the three state machines in
+[`specs/flows.yaml`](../../specs/flows.yaml) (issue #10): one full frame per **captured** state of
+the quiz, surprise-items and notification flows, with the same masking rule and a file-by-file inventory in
+[`flows/README.md`](flows/README.md). The single `.gitignore` negation for `tests/data/flows/*.png`
+is limited to that directory.
