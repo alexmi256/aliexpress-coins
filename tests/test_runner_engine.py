@@ -567,6 +567,29 @@ def test_a_controller_factory_is_used_after_the_first_frame(
     assert context.hygiene.restored == 1
 
 
+def test_a_dry_run_does_not_mark_the_night_complete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _boost_header_frame()
+    _surface(monkeypatch, replace(full_roster, entries=()), frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.COMPLETED
+    assert context.state.snapshot().completed_night is False
+
+
 def test_an_unexpected_frame_geometry_is_refused_and_reported(
     tmp_path: Path,
     catalogue: TaskCatalogue,
@@ -1336,6 +1359,32 @@ def test_state_completion_failure_does_not_fail_a_finished_run(
 
     assert report.status is RunStatus.COMPLETED
     assert report.ok is True
+
+
+def test_a_stopped_run_skips_the_rotation_restore(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _boost_header_frame()
+    _surface(monkeypatch, replace(full_roster, entries=()), frame)
+    hygiene = _Hygiene()
+    stop = _Stop(active=True)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+        hygiene=hygiene,
+        stop=stop,
+    )
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.STOPPED
+    assert hygiene.restored == 0
 
 
 def test_hygiene_restore_failure_does_not_fail_a_finished_run(

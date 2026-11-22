@@ -158,10 +158,13 @@ class AdbDevice:
         if rotation is not None:
             previous_auto = _setting_value(self._shell_ok('settings', 'get', 'system', 'accelerometer_rotation'))
             previous_rotation = _setting_value(self._shell_ok('settings', 'get', 'system', 'user_rotation'))
+            # Never change a shared device setting unless both previous values
+            # are known and can be put back. An unreadable setting is not a
+            # reason to leave the tablet locked in a different rotation.
             if previous_auto is not None and previous_rotation is not None:
                 self._restore_rotation = (previous_auto, previous_rotation)
-            self._shell_ok('settings', 'put', 'system', 'accelerometer_rotation', '0')
-            self._shell_ok('settings', 'put', 'system', 'user_rotation', str(rotation))
+                self._shell_ok('settings', 'put', 'system', 'accelerometer_rotation', '0')
+                self._shell_ok('settings', 'put', 'system', 'user_rotation', str(rotation))
 
         started = self._shell('am', 'start', '-n', APP_ACTIVITY, why='warm the app before the route')
         if self._app_settle_seconds:
@@ -189,12 +192,31 @@ class AdbDevice:
         )
 
     def restore(self) -> None:
-        """Put the rotation settings back exactly as they were before ``prepare``."""
+        """Put the rotation settings back exactly as they were before ``prepare``.
+
+        A failed write raises :class:`DeviceError` and keeps the pending values,
+        so the caller can report it and a later attempt can still restore them.
+        The tuple is cleared only after both settings were accepted.
+        """
         if self._restore_rotation is None:
             return
         auto, rotation = self._restore_rotation
-        self._shell_ok('settings', 'put', 'system', 'accelerometer_rotation', auto)
-        self._shell_ok('settings', 'put', 'system', 'user_rotation', rotation)
+        self._shell(
+            'settings',
+            'put',
+            'system',
+            'accelerometer_rotation',
+            auto,
+            why='restore the previous auto-rotation setting',
+        )
+        self._shell(
+            'settings',
+            'put',
+            'system',
+            'user_rotation',
+            rotation,
+            why='restore the previous screen rotation',
+        )
         self._restore_rotation = None
 
     def _state(self) -> tuple[str | None, str]:

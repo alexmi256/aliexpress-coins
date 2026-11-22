@@ -7,7 +7,7 @@ one night's engine synchronously and react to SIGTERM inside it, so a small loop
 that asks the trigger for the next fire time is easier to test and to stop than
 a scheduler thread.
 
-A night that already has a run in the daily store is skipped. That is what makes
+A night already completed in the daily store is skipped. That is what makes
 a manual ``run --once`` and the daemon coexist: the daemon does not start a
 second walk over the same day's state.
 """

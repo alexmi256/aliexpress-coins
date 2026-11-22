@@ -78,7 +78,7 @@ addopts = [
 # landed (measured 99.11%), then to 99.15 when the notifications executor
 # landed (measured 99.20%), then to 99.2 when the roster observation log
 # landed (measured 99.25%), then to 99.25 when the nightly runner landed
-# (measured 99.30%). See "Quality gate" in README.md.
+# (measured 99.31%). See "Quality gate" in README.md.
 [tool.coverage.run]
 branch = true
 source = ["aliexpress_coins"]

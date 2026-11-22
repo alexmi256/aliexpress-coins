@@ -263,7 +263,7 @@ def test_an_unparseable_panel_size_skips_the_rotation_lock() -> None:
     assert not any('settings' in call for call in runner.calls)
 
 
-def test_a_missing_previous_setting_still_locks_but_does_not_restore() -> None:
+def test_a_missing_previous_setting_leaves_rotation_alone() -> None:
     runner = _Runner(
         _ok('device'),
         _ok(),
@@ -271,15 +271,42 @@ def test_a_missing_previous_setting_still_locks_but_does_not_restore() -> None:
         _ok('Physical size: 2000x1200'),
         _ok('null'),
         _ok('0'),
-        _ok(),
-        _ok(),
         _ok('Starting: Intent'),
     )
     device = AdbDevice('usb-serial', runner=runner, app_settle_seconds=0)
+
     device.prepare()
     calls = len(runner.calls)
+    device.restore()
+
+    assert not any('settings' in call and 'put' in call for call in runner.calls)
+    assert len(runner.calls) == calls
+
+
+def test_a_failed_restore_raises_and_keeps_the_pending_values() -> None:
+    runner = _Runner(
+        _ok('device'),
+        _ok(),
+        _ok(),
+        _ok('Physical size: 2000x1200'),
+        _ok('1'),
+        _ok('0'),
+        _ok(),
+        _ok(),
+        _ok('Starting: Intent'),
+        _fail('settings write failed'),
+        _ok(),
+        _ok(),
+    )
+    device = AdbDevice('usb-serial', runner=runner, app_settle_seconds=0)
+    device.prepare()
+
+    with pytest.raises(DeviceError, match='restore the previous auto-rotation'):
+        device.restore()
 
     device.restore()
 
-    assert len(runner.calls) == calls
-    assert ('adb', '-s', 'usb-serial', 'shell', 'settings', 'put', 'system', 'user_rotation', '1') in runner.calls
+    assert runner.calls[-2:] == [
+        ('adb', '-s', 'usb-serial', 'shell', 'settings', 'put', 'system', 'accelerometer_rotation', '1'),
+        ('adb', '-s', 'usb-serial', 'shell', 'settings', 'put', 'system', 'user_rotation', '0'),
+    ]

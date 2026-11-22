@@ -21,7 +21,7 @@ services:
     # Named volumes inherit the image's ownership, so the non-root collector
     # can write without a host-side chown. Inspect with `docker compose cp`.
     stop_grace_period: 5s
-    restart: unless-stopped
+    restart: on-failure:5
     command: ["python", "-m", "aliexpress_coins", "run", "--schedule"]
 
 volumes:

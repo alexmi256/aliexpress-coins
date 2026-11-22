@@ -57,8 +57,9 @@ time, timezone, jitter and wall-clock budget come from `AECOINS_SCHEDULE_TIME`,
 `AECOINS_TIMEZONE`, `AECOINS_SCHEDULE_JITTER_SECONDS` and
 `AECOINS_RUN_BUDGET_SECONDS` (see `.env.example`); a night that finished its roster
 walk marks the day complete and is skipped on a retry, while a manual run stopped by
-its budget leaves the nightly window open. Compose restarts the daemon unless it was
-stopped deliberately. Run one night manually with:
+its budget leaves the nightly window open. Compose retries a failed daemon a bounded
+number of times rather than looping forever on a configuration error. Run one night
+manually with:
 
 ```sh
 docker compose run --rm collector python -m aliexpress_coins run --once
@@ -80,7 +81,7 @@ capture module landed (measured 98.45%), to **98.8%** when the daily state store
 (measured 98.87%), to **99.0%** when the daily sign-in executor landed (measured 99.01%), to
 **99.1%** when the browse-and-wait executor landed (measured 99.11%), to **99.15%** when the
 notifications executor landed (measured 99.20%), to **99.2%** when the roster observation log
-landed (measured 99.25%), and to **99.25%** when the nightly runner landed (measured 99.30%).
+landed (measured 99.25%), and to **99.25%** when the nightly runner landed (measured 99.31%).
 The scaffold is fully covered, but a one-statement package makes that 100% an artefact of the
 stub, so the floor starts below the maximum. As real modules land, raise the floor toward the
 measured number; never lower it to make a change pass. The gate fails the build when coverage
