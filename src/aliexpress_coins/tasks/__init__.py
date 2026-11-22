@@ -1,4 +1,4 @@
-"""Task specs, the default-deny policy and task discovery (issues #21 and #22).
+"""Task specs, the default-deny policy, discovery and the task surface (#21, #22, #38).
 
 The catalogue is data: :func:`~aliexpress_coins.tasks.catalogue.load_task_catalogue`
 turns ``specs/tasks.yaml`` into typed specs and refuses every label it does not
@@ -9,7 +9,10 @@ executor sees a row.
 Discovery lives alongside it: :func:`~aliexpress_coins.tasks.discovery.open_boost_list`
 opens the full list (or degrades to the coin page's inline rows), and
 :func:`~aliexpress_coins.tasks.discovery.enumerate_roster` turns one frame into
-an ordered roster of allowed and refused entries.
+an ordered roster of allowed and refused entries. :func:`classify_surface`
+names the variant on arrival, and
+:func:`~aliexpress_coins.tasks.discovery.discover_roster` applies the one-refresh
+route policy.
 """
 
 from aliexpress_coins.tasks.catalogue import (
@@ -36,8 +39,18 @@ from aliexpress_coins.tasks.discovery import (
     open_boost_list,
 )
 from aliexpress_coins.tasks.errors import TaskCatalogueError, TaskError
+from aliexpress_coins.tasks.surface import (
+    SHORTCUT_DEEP_LINK,
+    SURFACE_REFRESH_LIMIT,
+    RouteFirer,
+    Surface,
+    SurfaceRoute,
+    classify_surface,
+)
 
 __all__ = [
+    'SHORTCUT_DEEP_LINK',
+    'SURFACE_REFRESH_LIMIT',
     'AllowedTaskSpec',
     'BoostList',
     'BoostOpenResult',
@@ -48,11 +61,15 @@ __all__ = [
     'Roster',
     'RosterEntry',
     'RosterStatus',
+    'RouteFirer',
+    'Surface',
+    'SurfaceRoute',
     'TaskCatalogue',
     'TaskCatalogueError',
     'TaskCategory',
     'TaskDecision',
     'TaskError',
+    'classify_surface',
     'discover_roster',
     'enumerate_roster',
     'is_boost_page',

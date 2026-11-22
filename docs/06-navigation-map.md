@@ -157,6 +157,10 @@ This is the cheapest stuck-detector available and belongs in the controller, not
 
 ## 7. Open questions about the map
 
+The widget-route fallback is deliberately not implemented in #38. The launcher items were removed from
+the reference device, and replaying the widget intent without the widget installed is unresolved pending
+#27; the runner does not guess at that action. #38 uses the measured warm shortcut re-entry instead.
+
 | question | where it matters |
 |---|---|
 | does the "Browse surprise items" GO open a *new* page, or the product grid on the boost page? | #26 — the row says "Tap 3 items on this page" |
