@@ -26,6 +26,7 @@ from PIL import Image
 from aliexpress_coins.control.controller import Controller
 from aliexpress_coins.control.errors import PopupUnclosable
 from aliexpress_coins.control.popups import DismissReport, PopupCorpus, load_popup_corpus
+from aliexpress_coins.perception.errors import OcrError
 from aliexpress_coins.perception.geometry import DeviceGeometry
 from aliexpress_coins.perception.ocr import RapidOcrEngine
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
@@ -465,10 +466,12 @@ def test_find_surprise_tiles_on_the_measured_grid_does_not_return_the_header(eng
 
     tiles = find_surprise_tiles(frame)
 
-    assert len(tiles) >= 2
+    assert len(tiles) >= 3
     assert all('browse surprise items' not in tile.normalized_label for tile in tiles)
     assert all('tap 3 items' not in tile.normalized_label for tile in tiles)
     assert {tile.column for tile in tiles} == {0, 1}
+    assert not any(tile.label == 'WEE' for tile in tiles)
+    assert any('Luxury Silicone Case' in tile.label for tile in tiles)
     merged = [tile for tile in tiles if tile.shared_label]
     assert merged, 'the measured frame OCR merges the two row-1 titles into one line'
     assert any('T9 Vintage' in tile.label for tile in merged)
@@ -476,12 +479,15 @@ def test_find_surprise_tiles_on_the_measured_grid_does_not_return_the_header(eng
 
 def test_the_measured_counter_fixtures_read_through_the_pill_crop(engine: RapidOcrEngine) -> None:
     grid = _load(DATA / 'flows' / 'surprise_items_round_grid.png', engine)
+    one = _load(DATA / 'flows' / 'surprise_items_progress_1of3.png', engine)
     two = _load(DATA / 'flows' / 'surprise_items_progress_2of3.png', engine)
     complete = _load(DATA / 'flows' / 'surprise_items_round_complete.png', engine)
 
-    assert read_surprise_counter(grid) == CounterState(0, 3, read_surprise_counter(grid).box)  # type: ignore[union-attr]
-    assert read_surprise_counter(two).completed == 2  # type: ignore[union-attr]
-    assert read_surprise_counter(complete).complete  # type: ignore[union-attr]
+    grid_reading = read_surprise_counter(grid, ocr=engine)
+    assert grid_reading == CounterState(0, 3, grid_reading.box)  # type: ignore[union-attr]
+    assert read_surprise_counter(one, ocr=engine).completed == 1  # type: ignore[union-attr]
+    assert read_surprise_counter(two, ocr=engine).completed == 2  # type: ignore[union-attr]
+    assert read_surprise_counter(complete, ocr=engine).complete  # type: ignore[union-attr]
 
 
 def test_read_surprise_counter_reads_a_slashed_box_and_returns_none_without_a_digit() -> None:
@@ -769,9 +775,9 @@ def test_run_surprise_task_walks_two_rounds_and_resets_only_when_reuse_stalls(
     assert state.count('surprise_items') == 2
 
     reset_round = result.round_records[1]
-    assert reset_round.items[:2] == ('Product A', 'Product B')
-    assert 'Product D' in reset_round.items
-    assert 'Product C' not in reset_round.items[2:]
+    assert reset_round.items == ('Product D', 'Product E', 'Product F')
+    assert 'Product A' not in reset_round.items
+    assert 'Product B' not in reset_round.items
     assert world.current == 'coins'
 
 
@@ -1483,14 +1489,16 @@ def test_surprise_private_helpers_cover_the_bounded_paths() -> None:
     controller = _controller(world, world.frame)
     frame = world.frame
 
-    assert _scroll(controller, frame, lambda snapshot: False, 0) is None
-    assert _scroll(controller, frame, lambda snapshot: True, 0) is not None
-    assert _scroll(controller, frame, None, MAX_SCROLLS) is None
-    assert _scroll(controller, frame, None, 0) is not None
+    assert _scroll(controller, frame, lambda snapshot: False, 0) == (False, None)
+    assert _scroll(controller, frame, lambda snapshot: True, 0) == (True, None)
+    assert _scroll(controller, frame, None, MAX_SCROLLS) == (False, None)
+    scrolled, record = _scroll(controller, frame, None, 0)
+    assert scrolled is True
+    assert record is not None
     assert world.swipes
 
     no_swipe = Controller.from_frame(cast(Any, _TapOnlyDevice()), frame, rng=random.Random(0))
-    assert _scroll(no_swipe, frame, None, 0) is None
+    assert _scroll(no_swipe, frame, None, 0) == (False, None)
 
     cases = {
         'the round counter could not be read': 'counter_unreadable',
@@ -1686,7 +1694,7 @@ def test_run_surprise_task_scrolls_for_new_products_before_giving_up(
 
     assert result.outcome is SurpriseOutcome.FAILED
     assert result.verification == 'counter_stalled'
-    assert result.swipes
+    assert result.round_records[0].scrolls == 1
 
 
 def test_run_surprise_task_uses_an_injected_back_seam(
@@ -2394,3 +2402,56 @@ def test_run_surprise_task_stops_when_next_round_reveals_the_redeem_overlay(
     assert result.outcome is SurpriseOutcome.COMPLETED
     assert result.rounds == 1
     assert result.returned is True
+
+
+def test_surprise_sweep_does_not_close_the_boost_list_it_was_opened_from(
+    corpus: PopupCorpus,
+    engine: RapidOcrEngine,
+) -> None:
+    from aliexpress_coins.tasks.surprise import _sweep
+
+    launch = _load(DATA / 'popups' / 'launch_welcome_gifts.png', engine)
+    boost = _boost_frame(progress='0/2')
+    world = _World(
+        {'popup': (launch,), 'boost': (boost,)},
+        {},
+        start='popup',
+        on_tap=lambda screen, _label, _count: 'boost' if screen == 'popup' else None,
+    )
+
+    report, stop = _sweep(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        templates=None,
+        settle=0.0,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+        logger=_logger(),
+    )
+
+    assert report is not None
+    assert stop is None
+    assert world.current == 'boost'
+    assert not any('coins_boost_sheet' in family for family in report.closed)
+
+
+def test_surprise_completed_detail_counts_only_completed_rounds() -> None:
+    from aliexpress_coins.tasks.surprise import _completed_detail
+
+    records = (
+        RoundRecord(1, 0, 3, 3, 3, RULE_PATH_REUSE, True, 'done'),
+        RoundRecord(2, 0, 2, 3, 5, RULE_PATH_RESET, False, 'stalled'),
+    )
+
+    assert _completed_detail(records) == '1 round(s) completed with counter evidence (0/3 -> 3/3)'
+
+
+def test_read_surprise_counter_returns_none_when_the_crop_ocr_fails() -> None:
+    class _FailingOcr:
+        def read(self, _image: object) -> object:
+            raise OcrError('crop OCR failed')
+
+    frame = _snapshot(_box(SURPRISE_TITLE, 270, 200, 930, 270))
+
+    assert read_surprise_counter(frame, ocr=_FailingOcr()) is None  # type: ignore[arg-type]

@@ -35,13 +35,15 @@ import statistics
 import time
 import unicodedata
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
 from aliexpress_coins.control.controller import LOGGER_NAME, Controller, KeyRecord, SwipeRecord, TapRecord
 from aliexpress_coins.control.errors import InputError, PopupUnclosable
 from aliexpress_coins.control.popups import DismissReport, PopupCorpus, dismiss_after
+from aliexpress_coins.perception.errors import OcrError
 from aliexpress_coins.perception.matching import DEFAULT_MIN_OCR_SCORE, normalize
+from aliexpress_coins.perception.ocr import OcrEngine, RapidOcrEngine
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.state import CaptureSource, ScreenState, classify
 from aliexpress_coins.perception.templates import TemplateStore
@@ -51,6 +53,7 @@ from aliexpress_coins.tasks.catalogue import AllowedTaskSpec, TaskCategory
 from aliexpress_coins.tasks.discovery import RosterEntry
 from aliexpress_coins.tasks.errors import TaskError
 from aliexpress_coins.tasks.surface import (
+    BOOST_MARKER,
     COIN_PAGE_MARKERS,
     REDEEM_MARKER,
     RouteFirer,
@@ -180,7 +183,7 @@ The distance is a frame fraction rather than a measured swipe so the same
 gesture ports to another geometry (docs/02, geometry independence).
 """
 
-_PRICE = re.compile(r'(?:C\$|US\s*\$|CS|\$)\s*\d|[%]', re.IGNORECASE)
+_PRICE = re.compile(r'(?:C\$|US\s*\$|CS|\$)\s*\d', re.IGNORECASE)
 """A line carrying a price or a discount percentage is not a product title."""
 
 _NON_PRODUCT_PARTS: tuple[str, ...] = (
@@ -207,6 +210,9 @@ _NON_PRODUCT_PARTS: tuple[str, ...] = (
 
 _MIN_LABEL_CHARS = 3
 """A shorter OCR fragment is tracked by its position, not by its label."""
+
+_DEFAULT_COUNTER_OCR: OcrEngine | None = None
+"""The lazy engine used only when the full-frame boxes lost the counter digit."""
 
 
 class SurpriseOutcome(StrEnum):
@@ -506,6 +512,9 @@ def find_surprise_tiles(snapshot: Snapshot) -> tuple[SurpriseTile, ...]:
             # shipping or sold line. Branding painted on the image sits above
             # it and is not a link; choosing it is how a tap becomes inert.
             sources = _titles_above_anchors(titles, anchors, group_gap=median_height * _ANCHOR_GROUP_GAP_RATIO)
+            below = _first_title_below(titles, max(anchor.bbox[3] for anchor in anchors))
+            if below is not None:
+                sources.append(below)
         else:
             sources = [cluster[-1] for cluster in _cluster_titles(titles, gap_limit)]
         for source in sources:
@@ -517,18 +526,47 @@ def find_surprise_tiles(snapshot: Snapshot) -> tuple[SurpriseTile, ...]:
     return tuple(sorted(tiles, key=lambda tile: (tile.box.bbox[1], tile.box.bbox[0])))
 
 
-def read_surprise_counter(snapshot: Snapshot, *, total: int = 3) -> CounterState | None:
-    """Read the round counter, preferring the measured pill crop.
+def read_surprise_counter(
+    snapshot: Snapshot,
+    *,
+    total: int = 3,
+    ocr: OcrEngine | None = None,
+) -> CounterState | None:
+    """Read the round counter, re-OCRing the measured pill crop when needed.
 
     The full-frame OCR sometimes returns ``2/3`` as one box; on other frames it
-    drops the slash and returns ``2`` and ``3`` separately. The crop narrows the
-    search to the pill, and the leftmost standalone digit is the completed
-    count (the total is the rightmost). A frame with no digit in the pill is
-    ``None`` rather than a guessed zero.
+    drops the slash and returns ``2`` and ``3`` separately. On the measured
+    ``1/3`` frame it drops the orange digit altogether, which is why
+    ``specs/flows.yaml`` gives the pill an ``ocr_crop``. The full-frame read is
+    tried first; only when it fails is the crop extracted and read again.
     """
-    in_band = _counter_boxes(snapshot)
+    found = _counter_from_boxes(_counter_boxes(snapshot), total)
+    if found is not None:
+        return found
 
-    for box in in_band:
+    left = round(snapshot.width * _COUNTER_LEFT_FRACTION)
+    top = round(snapshot.height * _COUNTER_TOP_FRACTION)
+    right = round(snapshot.width * _COUNTER_RIGHT_FRACTION)
+    bottom = round(snapshot.height * _COUNTER_BOTTOM_FRACTION)
+    cropped = snapshot.crop((left, top, right, bottom))
+    engine = ocr if ocr is not None else _counter_ocr()
+    try:
+        boxes = tuple(box.shifted(left, top) for box in engine.read(cropped.image))
+    except OcrError:
+        return None
+    return _counter_from_boxes(boxes, total)
+
+
+def _counter_ocr() -> OcrEngine:
+    """Load the crop reader once; it is only needed on frames full OCR fails."""
+    global _DEFAULT_COUNTER_OCR
+    if _DEFAULT_COUNTER_OCR is None:
+        _DEFAULT_COUNTER_OCR = RapidOcrEngine()
+    return _DEFAULT_COUNTER_OCR
+
+
+def _counter_from_boxes(boxes: Sequence[TextBox], total: int) -> CounterState | None:
+    for box in boxes:
         match = _COUNTER.search(unicodedata.normalize('NFKC', box.text))
         if match is not None:
             done = int(match.group('done'))
@@ -536,7 +574,7 @@ def read_surprise_counter(snapshot: Snapshot, *, total: int = 3) -> CounterState
             if found_total > 0 and done <= found_total:
                 return CounterState(completed=done, total=found_total, box=box)
 
-    digits = [box for box in in_band if _BARE_DIGIT.match(unicodedata.normalize('NFKC', box.text))]
+    digits = [box for box in boxes if _BARE_DIGIT.match(unicodedata.normalize('NFKC', box.text))]
     if digits:
         digits.sort(key=lambda box: box.center[0])
         value = int(_BARE_DIGIT.match(unicodedata.normalize('NFKC', digits[0].text)).group('value'))  # type: ignore[union-attr]
@@ -1122,7 +1160,9 @@ def _run_round(
     inert = 0
     round_taps = 0
     scrolls = 0
+    scroll_stable = False
     items: list[str] = []
+    pending_item = ''
     stop: str | None = None
     detail = 'the round counter advanced to its target'
 
@@ -1175,12 +1215,17 @@ def _run_round(
                 reset_used = True
                 inert = 0
                 continue
-            swipe = _scroll(controller, current, scroll, scrolls)
-            if swipe is not None and scrolls < MAX_SCROLLS:
-                swipes.append(swipe)
-                scrolls += 1
-                current = _capture(capture)
-                continue
+            if not scroll_stable:
+                before_scroll = _grid_signature(current)
+                scrolled, swipe = _scroll(controller, current, scroll, scrolls)
+                if scrolled and scrolls < MAX_SCROLLS:
+                    if swipe is not None:
+                        swipes.append(swipe)
+                    scrolls += 1
+                    current = _capture(capture)
+                    if _grid_signature(current) == before_scroll:
+                        scroll_stable = True
+                    continue
             detail = 'no unopened product tile was available and the grid could not be scrolled further'
             break
 
@@ -1192,7 +1237,7 @@ def _run_round(
             ),
         )
         round_taps += 1
-        items.append(tile.label)
+        pending_item = tile.label
         round_tried.add(tile)
         task_tried.add(tile)
 
@@ -1216,6 +1261,7 @@ def _run_round(
             detail = 'the reward interstitial appeared before the detail page returned'
             break
 
+        pending_item = tile.label
         if arrived:
             if not _go_back(controller, current, back, keys=keys, taps=taps):
                 detail = 'the product detail page was open but no BACK control was available'
@@ -1262,6 +1308,7 @@ def _run_round(
         after = read_surprise_counter(current)
         if after is not None and (before is None or after.completed > before):
             before = after.completed
+            items.append(pending_item)
             inert = 0
             if after.complete:
                 detail = 'the round counter advanced to its target'
@@ -1275,13 +1322,18 @@ def _run_round(
                 reset_used = True
                 inert = 0
                 continue
-            swipe = _scroll(controller, current, scroll, scrolls)
-            if swipe is not None and scrolls < MAX_SCROLLS:
-                swipes.append(swipe)
-                scrolls += 1
-                current = _capture(capture)
-                inert = 0
-                continue
+            if not scroll_stable:
+                before_scroll = _grid_signature(current)
+                scrolled, swipe = _scroll(controller, current, scroll, scrolls)
+                if scrolled and scrolls < MAX_SCROLLS:
+                    if swipe is not None:
+                        swipes.append(swipe)
+                    scrolls += 1
+                    current = _capture(capture)
+                    if _grid_signature(current) == before_scroll:
+                        scroll_stable = True
+                    inert = 0
+                    continue
 
     return (
         RoundRecord(
@@ -1358,30 +1410,28 @@ def _scroll(
     snapshot: Snapshot,
     scroll: Callable[[Snapshot], bool] | None,
     already: int,
-) -> SwipeRecord | None:
-    """Scroll the grid once, or return ``None`` when no further scroll is allowed."""
+) -> tuple[bool, SwipeRecord | None]:
+    """Scroll the grid once, returning whether it happened and its real record."""
     if already >= MAX_SCROLLS:
-        return None
+        return False, None
     if scroll is not None:
-        return (
-            None
-            if not scroll(snapshot)
-            else SwipeRecord(
-                index=0,
-                label='grid scroll',
-                reason='surprise: search the grid for unopened products',
-                requested=((0, 0), (0, 0)),
-                clamped=((0, 0), (0, 0)),
-                duration_ms=0,
-                suppressed=False,
-            )
-        )
+        return scroll(snapshot), None
     start = (snapshot.width / 2.0, snapshot.height * _SCROLL_START_FRACTION)
     end = (snapshot.width / 2.0, snapshot.height * _SCROLL_END_FRACTION)
     try:
-        return controller.swipe(start, end, why='surprise: search the grid for unopened products', label='grid scroll')
+        return True, controller.swipe(
+            start,
+            end,
+            why='surprise: search the grid for unopened products',
+            label='grid scroll',
+        )
     except InputError:
-        return None
+        return False, None
+
+
+def _grid_signature(snapshot: Snapshot) -> tuple[tuple[str, int, float], ...]:
+    """What the grid shows now, so a scroll that changes nothing can stop."""
+    return tuple((tile.normalized_label, tile.column, tile.box.bbox[1]) for tile in find_surprise_tiles(snapshot))
 
 
 def _dismiss_mission(
@@ -1578,7 +1628,7 @@ def _sweep(
         report = dismiss_after(
             controller,
             capture,
-            corpus,
+            _without_boost_sheet(corpus),
             templates=templates,
             settle=settle,
             clock=clock,
@@ -1591,6 +1641,14 @@ def _sweep(
             return None, REDEEM_INTERSTITIAL
         raise
     return report, None
+
+
+def _without_boost_sheet(corpus: PopupCorpus) -> PopupCorpus:
+    """Never let a sweep close the task list the run was opened from."""
+    families = tuple(family for family in corpus.families if family.anchor != BOOST_MARKER)
+    if len(families) == len(corpus.families):
+        return corpus
+    return replace(corpus, families=families)
 
 
 def _allowed_spec(entry: RosterEntry) -> AllowedTaskSpec:
@@ -1693,6 +1751,24 @@ def _titles_above_anchors(
     return chosen
 
 
+def _first_title_below(titles: Sequence[TextBox], anchor_bottom: float) -> TextBox | None:
+    """The next card's title when its price row is below the visible grid.
+
+    Only a multi-word line is taken: a lone uppercase token just below a card
+    is usually branding on the next image, while the visible title of a card
+    whose price has not painted yet carries the product name.
+    """
+    below = sorted(
+        (box for box in titles if box.bbox[1] > anchor_bottom),
+        key=lambda box: (box.bbox[1], box.bbox[0]),
+    )
+    for box in below:
+        text = box.text.strip()
+        if len(text) >= 12 and ' ' in text:
+            return box
+    return None
+
+
 def _tile_from_source(
     snapshot: Snapshot,
     source: TextBox,
@@ -1780,8 +1856,9 @@ def _failure_verification(record: RoundRecord) -> str:
 
 
 def _completed_detail(records: Sequence[RoundRecord]) -> str:
-    deltas = ', '.join(record.counter_change for record in records)
-    return f'{len(records)} round(s) completed with counter evidence ({deltas})'
+    completed = [record for record in records if record.complete]
+    deltas = ', '.join(record.counter_change for record in completed)
+    return f'{len(completed)} round(s) completed with counter evidence ({deltas})'
 
 
 def _skipped(
