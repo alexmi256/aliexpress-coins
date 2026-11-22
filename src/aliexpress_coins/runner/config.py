@@ -26,7 +26,9 @@ __all__ = [
     'DEFAULT_CATALOGUE_PATH',
     'DEFAULT_CORPUS_PATH',
     'DEFAULT_JITTER_SECONDS',
+    'DEFAULT_KEEP_RUNS',
     'DEFAULT_MAX_TASKS',
+    'DEFAULT_NTFY_SERVER',
     'DEFAULT_RUNS_DIR',
     'DEFAULT_RUN_BUDGET_SECONDS',
     'DEFAULT_SCHEDULE_TIME',
@@ -37,6 +39,12 @@ __all__ = [
 
 DEFAULT_SCHEDULE_TIME = time(3, 30)
 """The default local start time, 03:30."""
+
+DEFAULT_KEEP_RUNS = 30
+"""How many run directories retention keeps, including the current one."""
+
+DEFAULT_NTFY_SERVER = 'https://ntfy.sh'
+"""The public ntfy server; a self-hosted one is set with ``AECOINS_NTFY_SERVER``."""
 
 DEFAULT_JITTER_SECONDS = 180
 """A three-minute jitter: a few minutes, not a different schedule."""
@@ -78,6 +86,11 @@ class RunConfig:
     settle_seconds: float
     app_settle_seconds: float
     dry_run: bool = False
+    keep_runs: int = DEFAULT_KEEP_RUNS
+    webhook_url: str | None = None
+    ntfy_topic: str | None = None
+    ntfy_server: str = DEFAULT_NTFY_SERVER
+    notify_on_empty: bool = False
 
     @classmethod
     def from_environment(
@@ -112,7 +125,16 @@ class RunConfig:
                 DEFAULT_APP_SETTLE_SECONDS,
             ),
             dry_run=_flag(env.get('AECOINS_DRY_RUN', '')),
+            keep_runs=_positive_int(env, 'AECOINS_KEEP_RUNS', DEFAULT_KEEP_RUNS),
+            webhook_url=_optional(env, 'AECOINS_WEBHOOK_URL'),
+            ntfy_topic=_optional(env, 'AECOINS_NTFY_TOPIC'),
+            ntfy_server=_optional(env, 'AECOINS_NTFY_SERVER') or DEFAULT_NTFY_SERVER,
+            notify_on_empty=_flag(env.get('AECOINS_NOTIFY_ON_EMPTY', '')),
         )
+
+
+def _optional(environment: Mapping[str, str], name: str) -> str | None:
+    return environment.get(name, '').strip() or None
 
 
 def _positive_float(environment: Mapping[str, str], name: str, default: float) -> float:

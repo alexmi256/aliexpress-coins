@@ -1064,6 +1064,7 @@ def open_boost_list(
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     logger: logging.Logger | None = None,
+    on_dismiss: Callable[[DismissReport], None] | None = None,
 ) -> BoostList:
     """Open ``Earn more`` and wait for the ``Coins boost`` destination.
 
@@ -1120,6 +1121,8 @@ def open_boost_list(
                 sleep=sleep,
                 logger=logger,
             )
+            if on_dismiss is not None:
+                on_dismiss(dismiss)
         else:
             sleep(min(interval, max(0.0, deadline - now)))
         initial = _capture(capture)
@@ -1182,6 +1185,8 @@ def open_boost_list(
                 sleep=sleep,
                 logger=logger,
             )
+            if on_dismiss is not None:
+                on_dismiss(dismiss)
             previous_signature = None
             continue
 
@@ -1293,6 +1298,7 @@ def discover_roster(
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     logger: logging.Logger | None = None,
+    on_dismiss: Callable[[DismissReport], None] | None = None,
 ) -> Roster:
     """Open the best available surface, apply the route policy and enumerate it.
 
@@ -1336,6 +1342,7 @@ def discover_roster(
             clock=clock,
             sleep=sleep,
             logger=logger,
+            on_dismiss=on_dismiss,
         )
         variant = classify_surface(opened.snapshot)
         variants.append(variant)

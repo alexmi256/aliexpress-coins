@@ -18,7 +18,7 @@ import pytest
 from PIL import Image
 
 from aliexpress_coins.control.controller import Controller
-from aliexpress_coins.control.popups import PopupCorpus, load_popup_corpus
+from aliexpress_coins.control.popups import DismissReport, PopupCorpus, load_popup_corpus
 from aliexpress_coins.perception.errors import SnapshotError, StateTimeout
 from aliexpress_coins.perception.geometry import DeviceGeometry
 from aliexpress_coins.perception.matching import find_text
@@ -595,6 +595,7 @@ def test_open_boost_list_sweeps_an_initial_popup_before_reading_the_coin_page(
     controller = _controller(device, overlay)
     clock = _SteppingClock()
     capture = _Capture((overlay, overlay, frames['coins'], frames['coins'], frames['state_boost']))
+    dismissals: list[DismissReport] = []
 
     opened = open_boost_list(
         controller,
@@ -604,11 +605,13 @@ def test_open_boost_list_sweeps_an_initial_popup_before_reading_the_coin_page(
         interval=1,
         clock=clock,
         sleep=clock.sleep,
+        on_dismiss=dismissals.append,
     )
 
     assert opened.route is DiscoveryRoute.BOOST
     assert opened.dismiss is not None
     assert opened.dismiss.closed == ('launch_welcome_gifts',)
+    assert [report.closed for report in dismissals] == [('launch_welcome_gifts',)]
     assert opened.tap is not None
     assert len(device.taps) == 2
 
@@ -624,6 +627,7 @@ def test_open_boost_list_does_not_tap_through_a_stuck_initial_popup(
     device = _RecordingDevice()
     controller = _controller(device, overlay)
     clock = _SteppingClock()
+    dismissals: list[DismissReport] = []
 
     with pytest.raises(StateTimeout, match='initial popup'):
         open_boost_list(
@@ -634,8 +638,11 @@ def test_open_boost_list_does_not_tap_through_a_stuck_initial_popup(
             interval=1,
             clock=clock,
             sleep=clock.sleep,
+            on_dismiss=dismissals.append,
         )
 
+    assert len(dismissals) == 1
+    assert dismissals[0].closed == ()
     assert device.taps
     assert controller.tap_count == len(device.taps)
     assert all(abs(x - earn_more.center[0]) > 100 or abs(y - earn_more.center[1]) > 100 for x, y in device.taps)

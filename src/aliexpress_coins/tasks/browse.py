@@ -371,10 +371,23 @@ class ReturnResult:
     navigations: tuple[SurfaceRoute, ...] = ()
     history: tuple[str, ...] = ()
     error: str | None = None
+    dismissals: tuple[DismissReport, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, 'navigations', tuple(self.navigations))
         object.__setattr__(self, 'history', tuple(self.history))
+        object.__setattr__(self, 'dismissals', tuple(self.dismissals))
+
+    def merged(self, later: ReturnResult) -> ReturnResult:
+        """Combine this return sweep with a later verification return."""
+        return replace(
+            later,
+            attempts=self.attempts + later.attempts,
+            navigations=self.navigations + later.navigations,
+            history=self.history + later.history,
+            elapsed=self.elapsed + later.elapsed,
+            dismissals=self.dismissals + later.dismissals,
+        )
 
     def as_dict(self) -> dict[str, object]:
         """Render the return evidence for the run report."""
@@ -387,6 +400,7 @@ class ReturnResult:
             'navigations': [item.value for item in self.navigations],
             'history': list(self.history),
             'error': self.error,
+            'dismissals': [report.as_dict() for report in self.dismissals],
         }
 
 
@@ -687,6 +701,7 @@ def return_to_coins_page(
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     logger: logging.Logger | None = None,
+    on_dismiss: Callable[[DismissReport], None] | None = None,
 ) -> ReturnResult:
     """Re-enter the coins page through the shortcut route and prove it arrived.
 
@@ -709,6 +724,7 @@ def return_to_coins_page(
     started = clock()
     navigations: list[SurfaceRoute] = []
     history: list[str] = []
+    dismissals: list[DismissReport] = []
     current = snapshot if snapshot is not None else _capture(capture)
     if _on_coins_page(current):
         return ReturnResult(
@@ -719,6 +735,7 @@ def return_to_coins_page(
             elapsed=max(0.0, clock() - started),
             snapshot=current,
             history=(classify(current).state.value,),
+            dismissals=tuple(dismissals),
         )
 
     error: str | None = None
@@ -746,6 +763,7 @@ def return_to_coins_page(
                     snapshot=frame,
                     navigations=tuple(navigations),
                     history=tuple(history),
+                    dismissals=tuple(dismissals),
                 )
             if classification.state is ScreenState.POPUP:
                 try:
@@ -759,6 +777,9 @@ def return_to_coins_page(
                         sleep=sleep,
                         logger=log,
                     )
+                    dismissals.append(report)
+                    if on_dismiss is not None:
+                        on_dismiss(report)
                 except PopupUnclosable:
                     if contains_text(frame, REDEEM_MARKER):
                         return ReturnResult(
@@ -770,6 +791,7 @@ def return_to_coins_page(
                             snapshot=frame,
                             navigations=tuple(navigations),
                             history=tuple(history),
+                            dismissals=tuple(dismissals),
                         )
                     raise
                 if report.frames and _on_coins_page(report.frames[-1].snapshot):
@@ -782,6 +804,7 @@ def return_to_coins_page(
                         snapshot=report.frames[-1].snapshot,
                         navigations=tuple(navigations),
                         history=tuple(history),
+                        dismissals=tuple(dismissals),
                     )
             now = clock()
             if now >= deadline:
@@ -799,6 +822,7 @@ def return_to_coins_page(
         navigations=tuple(navigations),
         history=tuple(history),
         error=error,
+        dismissals=tuple(dismissals),
     )
 
 
@@ -1177,15 +1201,8 @@ def run_browse_task(
         if verify_sweep is not None:
             dismissals.append(verify_sweep)
         if verify_return is not None:
-            verify_return = replace(
-                verify_return,
-                attempts=return_state.attempts + verify_return.attempts,
-                navigations=return_state.navigations + verify_return.navigations,
-                history=return_state.history + verify_return.history,
-                elapsed=return_state.elapsed + verify_return.elapsed,
-            )
-            return_state = verify_return
-            if not verify_return.returned:
+            return_state = return_state.merged(verify_return)
+            if not return_state.returned:
                 return _result(
                     spec,
                     entry.title,
@@ -1205,7 +1222,7 @@ def run_browse_task(
                     collect=collect_tap,
                     chip=chip_wait,
                     arrival=arrival,
-                    return_state=verify_return,
+                    return_state=return_state,
                     dismissals=dismissals,
                     stop=stop,
                     logger=log,

@@ -11,7 +11,9 @@ import pytest
 from aliexpress_coins.runner.config import (
     DEFAULT_APP_SETTLE_SECONDS,
     DEFAULT_JITTER_SECONDS,
+    DEFAULT_KEEP_RUNS,
     DEFAULT_MAX_TASKS,
+    DEFAULT_NTFY_SERVER,
     DEFAULT_RUN_BUDGET_SECONDS,
     DEFAULT_SCHEDULE_TIME,
     DEFAULT_SETTLE_SECONDS,
@@ -36,6 +38,11 @@ def test_defaults_keep_the_container_paths_and_the_local_zone() -> None:
     assert config.settle_seconds == DEFAULT_SETTLE_SECONDS
     assert config.app_settle_seconds == DEFAULT_APP_SETTLE_SECONDS
     assert config.dry_run is False
+    assert config.keep_runs == DEFAULT_KEEP_RUNS
+    assert config.webhook_url is None
+    assert config.ntfy_topic is None
+    assert config.ntfy_server == DEFAULT_NTFY_SERVER
+    assert config.notify_on_empty is False
 
 
 def test_every_documented_variable_is_read() -> None:
@@ -54,6 +61,11 @@ def test_every_documented_variable_is_read() -> None:
             'AECOINS_SETTLE_SECONDS': '2.5',
             'AECOINS_APP_SETTLE_SECONDS': '0',
             'AECOINS_DRY_RUN': 'yes',
+            'AECOINS_KEEP_RUNS': '7',
+            'AECOINS_WEBHOOK_URL': ' https://hooks.example/coins ',
+            'AECOINS_NTFY_TOPIC': 'coins-nightly',
+            'AECOINS_NTFY_SERVER': 'https://ntfy.example',
+            'AECOINS_NOTIFY_ON_EMPTY': 'true',
         },
         root='/srv/app',
     )
@@ -71,6 +83,11 @@ def test_every_documented_variable_is_read() -> None:
     assert config.settle_seconds == 2.5
     assert config.app_settle_seconds == 0.0
     assert config.dry_run is True
+    assert config.keep_runs == 7
+    assert config.webhook_url == 'https://hooks.example/coins'
+    assert config.ntfy_topic == 'coins-nightly'
+    assert config.ntfy_server == 'https://ntfy.example'
+    assert config.notify_on_empty is True
 
 
 @pytest.mark.parametrize('value', ['0', 'false', 'no', 'off'])
@@ -95,6 +112,8 @@ def test_explicit_timezone_wins_over_tz() -> None:
         ({'AECOINS_RUN_BUDGET_SECONDS': '0'}, 'must be positive'),
         ({'AECOINS_MAX_TASKS_PER_RUN': 'many'}, 'must be an integer'),
         ({'AECOINS_MAX_TASKS_PER_RUN': '0'}, 'must be positive'),
+        ({'AECOINS_KEEP_RUNS': 'many'}, 'must be an integer'),
+        ({'AECOINS_KEEP_RUNS': '0'}, 'must be positive'),
         ({'AECOINS_SCHEDULE_TIME': '0330'}, 'must be HH:MM'),
         ({'AECOINS_SCHEDULE_TIME': 'aa:bb'}, 'must be HH:MM'),
         ({'AECOINS_SCHEDULE_TIME': '24:00'}, 'out of range'),
