@@ -28,7 +28,7 @@ from aliexpress_coins.runner import engine
 from aliexpress_coins.runner.config import RunConfig
 from aliexpress_coins.runner.device import HygieneReport
 from aliexpress_coins.runner.engine import EngineResult, RunContext
-from aliexpress_coins.runner.errors import DeviceError, RunInterrupted
+from aliexpress_coins.runner.errors import DeviceError, ReportError, RunInterrupted
 from aliexpress_coins.runner.report import RunReport, RunStatus
 from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks.browse import ReturnResult
@@ -1361,7 +1361,7 @@ def test_state_completion_failure_does_not_fail_a_finished_run(
     assert report.ok is True
 
 
-def test_a_stopped_run_skips_the_rotation_restore(
+def test_a_stopped_run_still_restores_rotation_after_the_report(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     full_roster: Roster,
@@ -1384,7 +1384,46 @@ def test_a_stopped_run_skips_the_rotation_restore(
     report = engine.run_once(context)
 
     assert report.status is RunStatus.STOPPED
-    assert hygiene.restored == 0
+    assert hygiene.restored == 1
+    assert report.json_path.is_file()
+
+
+def test_a_final_report_write_failure_still_restores_rotation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _boost_header_frame()
+    _surface(monkeypatch, replace(full_roster, entries=()), frame)
+    hygiene = _Hygiene()
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+        hygiene=hygiene,
+    )
+    report = RunReport(
+        context.config.runs_dir,
+        'report-failure',
+        budget_seconds=60.0,
+        started_at=CAPTURED_AT,
+    )
+    original_write = report.write
+
+    def flaky_write() -> Path:
+        if report.status is not RunStatus.RUNNING:
+            raise ReportError('runs volume full')
+        return original_write()
+
+    monkeypatch.setattr(report, 'write', flaky_write)
+
+    with pytest.raises(ReportError, match='runs volume full'):
+        engine.run_once(context, report=report)
+
+    assert hygiene.restored == 1
 
 
 def test_hygiene_restore_failure_does_not_fail_a_finished_run(

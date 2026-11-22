@@ -42,6 +42,8 @@ APP_ACTIVITY = f'{APP_PACKAGE}/com.aliexpress.app.FirstActivity'
 """The normal launcher activity; starting it warms the process the route needs."""
 
 _PREVIEW_BYTES = 200
+RESTORE_TIMEOUT_SECONDS = 1.5
+"""A cleanup write gets a short bound so it cannot outlive the container grace."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,6 +210,7 @@ class AdbDevice:
             'accelerometer_rotation',
             auto,
             why='restore the previous auto-rotation setting',
+            timeout=RESTORE_TIMEOUT_SECONDS,
         )
         self._shell(
             'settings',
@@ -216,6 +219,7 @@ class AdbDevice:
             'user_rotation',
             rotation,
             why='restore the previous screen rotation',
+            timeout=RESTORE_TIMEOUT_SECONDS,
         )
         self._restore_rotation = None
 
@@ -226,9 +230,9 @@ class AdbDevice:
             return None, output or f'adb exited {result.returncode}'
         return output, output
 
-    def _shell(self, *command: str, why: str) -> str:
+    def _shell(self, *command: str, why: str, timeout: float | None = None) -> str:
         args = ('adb', '-s', self.serial, 'shell', *command)
-        result = self._run(args)
+        result = self._run(args, timeout=timeout)
         if result.returncode != 0:
             raise DeviceError(f'{why}: adb {" ".join(command)} exited {result.returncode}: {_text(result)}')
         return _text(result)
@@ -238,11 +242,12 @@ class AdbDevice:
         result = self._run(args)
         return _text(result)
 
-    def _run(self, args: Sequence[str]) -> DeviceCommandResult:
+    def _run(self, args: Sequence[str], *, timeout: float | None = None) -> DeviceCommandResult:
+        effective = self._timeout if timeout is None else timeout
         try:
-            return self._runner(args, self._timeout)
+            return self._runner(args, effective)
         except subprocess.TimeoutExpired as exc:
-            raise DeviceError(f'adb timed out after {self._timeout:g}s: {" ".join(args)}') from exc
+            raise DeviceError(f'adb timed out after {effective:g}s: {" ".join(args)}') from exc
         except OSError as exc:
             raise DeviceError(f'could not run adb: {exc}') from exc
 

@@ -22,10 +22,12 @@ class _Runner:
     def __init__(self, *results: DeviceCommandResult | Exception) -> None:
         self.results = list(results)
         self.calls: list[tuple[str, ...]] = []
+        self.timeouts: list[float] = []
 
     def __call__(self, args: Sequence[str], timeout: float) -> DeviceCommandResult:
         assert timeout > 0
         self.calls.append(tuple(args))
+        self.timeouts.append(timeout)
         result = self.results.pop(0)
         if isinstance(result, Exception):
             raise result
@@ -102,6 +104,7 @@ def test_restore_puts_the_previous_rotation_settings_back() -> None:
         ('adb', '-s', 'usb-serial', 'shell', 'settings', 'put', 'system', 'accelerometer_rotation', '1'),
         ('adb', '-s', 'usb-serial', 'shell', 'settings', 'put', 'system', 'user_rotation', '0'),
     ]
+    assert runner.timeouts[-2:] == [1.5, 1.5]
     calls = len(runner.calls)
     device.restore()
     assert len(runner.calls) == calls

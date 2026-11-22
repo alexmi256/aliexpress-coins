@@ -433,26 +433,25 @@ def run_once(
                 context.state.complete_night()
             except Exception as exc:
                 log.warning('%s', _event('state_complete_failed', detail=f'{type(exc).__name__}: {exc}'))
-        used = max(0.0, context.clock() - started)
-        report.finish(status, detail=detail, budget_used_seconds=used, finished_at=context.wall_clock())
-        report.write()
-        log.info(
-            '%s',
-            _event(
-                'run_finished',
-                run_id=report.run_id,
-                status=report.status.value,
-                budget_used_seconds=round(report.budget_used_seconds, 3),
-                tasks=len(report.tasks),
-                skipped=len(report.skipped),
-            ),
-        )
-        # The report is final before the cleanup touches adb again. A hung
-        # restore can no longer cost the stopped-run report, and a deliberate
-        # stop skips it so the process exits inside the container grace period.
-        if context.stop.is_set():
-            log.info('%s', _event('hygiene_restore_skipped', reason='stop requested'))
-        else:
+        try:
+            used = max(0.0, context.clock() - started)
+            report.finish(status, detail=detail, budget_used_seconds=used, finished_at=context.wall_clock())
+            report.write()
+            log.info(
+                '%s',
+                _event(
+                    'run_finished',
+                    run_id=report.run_id,
+                    status=report.status.value,
+                    budget_used_seconds=round(report.budget_used_seconds, 3),
+                    tasks=len(report.tasks),
+                    skipped=len(report.skipped),
+                ),
+            )
+        finally:
+            # The report is final before cleanup touches adb. The restore is
+            # bounded in the device layer, so it still fits inside the stop
+            # grace and a failed report write does not leave the device locked.
             try:
                 context.hygiene.restore()
             except Exception as exc:
