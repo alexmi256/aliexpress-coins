@@ -69,7 +69,11 @@ from aliexpress_coins.perception.matching import (
     normalize,
     similarity,
 )
-from aliexpress_coins.perception.scroll import scroll_until_found
+from aliexpress_coins.perception.scroll import (
+    SCROLL_START_FRACTION,
+    SCROLL_VIEWPORT_FRACTION,
+    scroll_until_found,
+)
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.state import CaptureSource, ScreenState, classify
 from aliexpress_coins.perception.templates import TemplateStore
@@ -994,6 +998,24 @@ def run_browse_task(
             frame = search.last
             if fresh_badge is not None:
                 progress_before = fresh_badge
+        elif search is not None:
+            # The engine keeps the original roster after a skip, so leaving the
+            # page scrolled would hide rows that were visible before this search
+            # and turn one stale entry into a cascade of false row_vanished
+            # results. Reverse the search before returning.
+            restore = search.last
+            for _attempt in search.attempts:
+                controller.swipe(
+                    (
+                        restore.width / 2.0,
+                        restore.height * (SCROLL_START_FRACTION - SCROLL_VIEWPORT_FRACTION),
+                    ),
+                    (restore.width / 2.0, restore.height * SCROLL_START_FRACTION),
+                    why=f'browse {spec.key}: restore the task list after the row search',
+                    label='scroll restore',
+                )
+                if settle:
+                    sleep(settle)
 
     if row is None or action is None:
         status = 'row_vanished' if row is None else 'row_complete'

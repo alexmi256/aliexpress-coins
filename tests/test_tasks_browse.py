@@ -1291,6 +1291,40 @@ def test_run_browse_task_scrolls_to_a_row_below_the_fold(
     assert result.presses == 1
 
 
+def test_a_failed_below_fold_search_restores_the_scroll_position(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    world = _World(
+        series={'boost': (_boost_frame(with_row=False), _boost_frame(with_row=False))},
+        transitions={},
+    )
+    device = _ScrollingDevice(world)
+    controller = Controller.from_frame(device, world.frame, rng=random.Random(0))
+
+    result = run_browse_task(
+        controller,
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        load_timeout=1.0,
+        settle=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.verification == 'row_vanished'
+    assert len(device.swipes) == 2
+    down, restore = device.swipes
+    assert down[1] > down[3]
+    assert restore[1] < restore[3]
+    assert down[0] == restore[0]
+    assert down[2] == restore[2]
+
+
 def test_run_browse_task_skips_a_row_with_no_action(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,

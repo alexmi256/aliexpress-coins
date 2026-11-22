@@ -69,10 +69,10 @@ To add a popup family:
    unclosable popup uses an explicit `fail` reason so the runner stops loudly.
    A fallback is not a global coordinate: measure the close control inside the
    dialog's own bounds and add it under `calibration.<profile-id>` using the
-   offset fraction. A scrim-backed full-screen modal uses the content bounds
-   (system bars excluded, header/footer included); a panel without a scrim uses
-   the measured panel. Do not add a fallback for a frame whose dialog bounds
-   cannot be measured.
+   offset fraction. A scrim-backed modal is treated as a full-screen overlay and
+   uses the content bounds (system bars excluded, header/footer included); a
+   panel without a scrim uses the measured panel. Do not add a fallback for a
+   frame whose dialog bounds cannot be measured.
 4. Add a fixture-backed assertion only for facts the loader cannot know (for
    example, the two layouts of a family, or a template match at a second
    geometry).

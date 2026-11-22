@@ -284,7 +284,7 @@ def load_popup_corpus(path: str | Path, *, root: str | Path | None = None) -> Po
     calibrations = _calibrations(document.get('calibration'))
     families = tuple(_family(row, corpus_root, index, escalation) for index, row in enumerate(rows))
     _validate_calibrations(calibrations, families)
-    families = _merge_calibrations(families, calibrations)
+    families, calibrations = _merge_calibrations(families, calibrations)
     _validate_chains(families)
 
     return PopupCorpus(
@@ -1133,16 +1133,18 @@ def _validate_calibrations(
 def _merge_calibrations(
     families: tuple[PopupFamily, ...],
     calibrations: tuple[PopupCalibration, ...],
-) -> tuple[PopupFamily, ...]:
+) -> tuple[tuple[PopupFamily, ...], tuple[PopupCalibration, ...]]:
     """Attach each profile's calibrated fraction attempt to its family.
 
     The fraction stays last in the policy order. Every attempt names its
     profile, so a device with no matching row cannot execute it. A calibration
-    for an explicit-fail family is rejected and logged: data must never
-    downgrade a deliberate loud failure into an executable guessed tap.
+    for an explicit-fail family is rejected, logged, and removed from the
+    corpus accessor: data must never downgrade a deliberate loud failure into an
+    executable guessed tap.
     """
     log = logging.getLogger(LOGGER_NAME)
     merged: list[PopupFamily] = []
+    accepted: list[PopupCalibration] = []
     for family in families:
         matched = tuple(calibration for calibration in calibrations if calibration.family == family.family)
         if family.is_unclosable:
@@ -1155,6 +1157,7 @@ def _merge_calibrations(
                     detail='an explicit fail family cannot be given an executable fallback',
                 )
             matched = ()
+        accepted.extend(matched)
         extra = tuple(
             CloseAttempt(
                 kind=CloseKind.FRACTION,
@@ -1164,7 +1167,7 @@ def _merge_calibrations(
             for calibration in matched
         )
         merged.append(replace(family, close=(*family.close, *extra)))
-    return tuple(merged)
+    return tuple(merged), tuple(accepted)
 
 
 def _fraction(value: object, where: str) -> tuple[float, float]:

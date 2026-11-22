@@ -353,10 +353,11 @@ def modal_bounds(snapshot: Snapshot) -> tuple[float, float, float, float] | None
     The panel analysis runs on the content crop (system bars excluded), so a
     panel fraction is converted back into frame pixels using the crop offset and
     crop height, not the full frame. The panel is the dialog for a sheet without
-    a scrim; a scrim-backed full-screen modal includes its header/footer, so its
-    bounds are the content region. A frame with neither measurable region
-    returns ``None``, and a caller with no measured dialog must report the popup
-    unclosable rather than fall back to a screen coordinate.
+    a scrim; a scrim-backed modal is treated as a full-screen overlay, so its
+    bounds are the content region and include any header/footer. A frame with
+    neither measurable region returns ``None``, and a caller with no measured
+    dialog must report the popup unclosable rather than fall back to a screen
+    coordinate.
     """
     analysis = _analyse(snapshot)
     left, top, right, bottom = _content_bounds(snapshot.width, snapshot.height)

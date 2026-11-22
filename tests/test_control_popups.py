@@ -495,6 +495,8 @@ def test_a_calibration_cannot_turn_an_explicit_fail_into_a_tap(
     family = corpus.by_family('redeem')
     assert family.is_unclosable
     assert [attempt.kind for attempt in family.close] == [CloseKind.FAIL]
+    assert corpus.calibrations == ()
+    assert corpus.calibration_for('0123456789abcdef', 'redeem') is None
     assert 'calibration_rejected' in caplog.text
 
 
