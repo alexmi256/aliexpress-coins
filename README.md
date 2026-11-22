@@ -68,10 +68,18 @@ docker compose run --rm collector python -m aliexpress_coins run --once
 Each night writes `runs/<UTC timestamp>/` with `summary.md`, `run.json`,
 `run.jsonl`, `roster.jsonl` and the balance frames under `shots/` (each PNG with
 its OCR sidecar). Retention keeps the newest `AECOINS_KEEP_RUNS` directories
-(default 30). Failure notifications are optional: set `AECOINS_WEBHOOK_URL` or
-`AECOINS_NTFY_TOPIC` (or both); a broken sink is logged in the report and never
-fails the run. A stop signal ends the daemon within the compose grace period and
-still leaves the report written atomically.
+(default 30). Notifications are optional and go through an Apprise API server:
+set `AECOINS_APPRISE_URL` (and optionally `AECOINS_APPRISE_KEY` and
+`AECOINS_APPRISE_TAG`) to receive one message per run. The message contains the
+run status, the failure code when it failed, counts by task outcome and the
+report path; it never contains the account name, an absolute balance or order
+details. Set `AECOINS_NOTIFY_BALANCE_DELTA=true` to add the balance delta. A
+broken Apprise endpoint is logged with its exception class and HTTP status only,
+and never changes the run's exit status. The older `AECOINS_WEBHOOK_URL` and
+`AECOINS_NTFY_TOPIC` settings still work with the failure-only selection and
+`AECOINS_NOTIFY_ON_EMPTY`; use only one transport so a run sends one message. A
+stop signal ends the daemon within the compose grace period and still leaves the
+report written atomically.
 
 ### Quality gate
 
@@ -85,8 +93,9 @@ capture module landed (measured 98.45%), to **98.8%** when the daily state store
 (measured 98.87%), to **99.0%** when the daily sign-in executor landed (measured 99.01%), to
 **99.1%** when the browse-and-wait executor landed (measured 99.11%), to **99.15%** when the
 notifications executor landed (measured 99.20%), to **99.2%** when the roster observation log
-landed (measured 99.25%), to **99.25%** when the nightly runner landed (measured 99.31%), and to
-**99.3%** when the failure taxonomy, retries and device hygiene landed (measured 99.31%).
+landed (measured 99.25%), to **99.25%** when the nightly runner landed (measured 99.31%), to
+**99.3%** when the failure taxonomy, retries and device hygiene landed (measured 99.31%), and to
+**99.31%** when Apprise notifications and log levels landed (measured 99.32%).
 The scaffold is fully covered, but a one-statement package makes that 100% an artefact of the
 stub, so the floor starts below the maximum. As real modules land, raise the floor toward the
 measured number; never lower it to make a change pass. The gate fails the build when coverage

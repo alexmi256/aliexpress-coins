@@ -1,10 +1,14 @@
-"""Best-effort run notifications (issue #31).
+"""Best-effort run notifications (issues #31 and #40).
 
-The transport is deliberately small: a generic JSON webhook and an ntfy topic,
-both configured from the environment. Delivery is never allowed to change the
-run's outcome. The engine catches :class:`NotificationError`, records it in the
-report and the structured event log, and exits on the run's own status; Apprise
-(#40) replaces this transport without changing that contract.
+The primary transport is the Apprise HTTP API: the operator runs an Apprise
+server with their own targets, and this project sends it one plain-text message
+per run. A generic JSON webhook and an ntfy topic remain available for an
+operator who already configured them; Apprise is the documented default because
+it does not make this project own every notification backend.
+
+Delivery is never allowed to change the run's outcome. The engine catches
+:class:`NotificationError`, records it in the report and the structured event
+log, and exits on the run's own status.
 
 Tests inject the opener (the callable that performs the HTTP request), so the
 suite never opens a socket.
@@ -16,13 +20,14 @@ import json
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 from aliexpress_coins.runner.config import RunConfig
 from aliexpress_coins.runner.errors import NotificationError
 
 __all__ = [
+    'AppriseSink',
     'CompositeSink',
     'Notification',
     'NotificationSink',
@@ -89,6 +94,84 @@ def _post(opener: Opener, request: Request, timeout: float, name: str) -> None:
             f'{name} delivery failed: {type(exc).__name__}{suffix}',
             status=status if isinstance(status, int) else None,
         ) from exc
+
+
+_APPRISE_TYPES: dict[str, str] = {
+    'completed': 'success',
+    'budget': 'success',
+    'stopped': 'warning',
+    'failed': 'failure',
+}
+"""Run status -> Apprise message type (its own severity vocabulary)."""
+
+
+def _apprise_endpoint(url: str, key: str | None) -> str:
+    """Build ``<base>/notify[/<key>]`` without duplicating an explicit endpoint.
+
+    ``AECOINS_APPRISE_URL`` is normally the server base. Accepting a full
+    ``/notify`` (or ``/notify/<key>``) URL as well means an operator who copied
+    an endpoint from the Apprise UI is not silently given a doubled path. An
+    explicit ``/notify/<key>`` path wins over the separate key, and any query
+    string or fragment is preserved rather than being folded into the path.
+    """
+    parts = urlsplit(url)
+    path = parts.path.rstrip('/')
+    if path.endswith('/notify'):
+        path = path if key is None else f'{path}/{quote(key, safe="")}'
+    elif '/notify/' not in path:
+        path = f'{path}/notify' if key is None else f'{path}/notify/{quote(key, safe="")}'
+    return urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
+
+
+@dataclass(frozen=True, slots=True)
+class AppriseSink:
+    """POST one plain-text message to an Apprise API server.
+
+    The operator supplies the server base URL and, when their Apprise instance
+    uses a saved configuration, its key and optional tag. Apprise owns the fan
+    out to ntfy, mail, Discord or anything else, so this class only speaks the
+    one documented HTTP endpoint.
+    """
+
+    url: str
+    key: str | None = None
+    tag: str | None = None
+    timeout: float = DEFAULT_NOTIFICATION_TIMEOUT
+    opener: Opener = urlopen
+
+    def __post_init__(self) -> None:
+        if not self.url.strip():
+            raise ValueError('an Apprise URL is required')
+        if self.timeout <= 0:
+            raise ValueError(f'the notification timeout must be positive, got {self.timeout!r}')
+        if self.key is not None and not self.key.strip():
+            raise ValueError('an Apprise key must not be blank')
+
+    @property
+    def name(self) -> str:
+        return 'apprise'
+
+    @property
+    def endpoint(self) -> str:
+        """The notify endpoint this sink posts to (never logged)."""
+        return _apprise_endpoint(self.url, self.key)
+
+    def send(self, notification: Notification) -> None:
+        payload: dict[str, str] = {
+            'title': notification.title,
+            'body': notification.body,
+            'type': _APPRISE_TYPES.get(notification.status, 'info'),
+            'format': 'text',
+        }
+        if self.tag:
+            payload['tag'] = self.tag
+        request = Request(
+            self.endpoint,
+            data=json.dumps(payload, ensure_ascii=False, separators=(',', ':')).encode('utf-8'),
+            headers={'Content-Type': 'application/json; charset=utf-8'},
+            method='POST',
+        )
+        _post(self.opener, request, self.timeout, self.name)
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,8 +265,16 @@ class CompositeSink:
 
 
 def build_notifier(config: RunConfig) -> NotificationSink | None:
-    """Build the configured sinks, or ``None`` when notifications are off."""
+    """Build the configured sinks, or ``None`` when notifications are off.
+
+    Apprise is built first because it is the documented transport. The older
+    webhook/ntfy settings still work so an existing deployment does not lose
+    notifications on upgrade; configure only one transport to receive one
+    message per run.
+    """
     sinks: list[NotificationSink] = []
+    if config.apprise_url:
+        sinks.append(AppriseSink(config.apprise_url, key=config.apprise_key, tag=config.apprise_tag))
     if config.webhook_url:
         sinks.append(WebhookSink(config.webhook_url))
     if config.ntfy_topic:

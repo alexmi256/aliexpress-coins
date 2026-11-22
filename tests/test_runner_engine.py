@@ -45,7 +45,7 @@ from aliexpress_coins.runner.errors import (
     RunInterrupted,
 )
 from aliexpress_coins.runner.failures import FailureCode, failure
-from aliexpress_coins.runner.notify import Notification, NotificationSink, WebhookSink
+from aliexpress_coins.runner.notify import AppriseSink, Notification, NotificationSink, WebhookSink
 from aliexpress_coins.runner.report import RunEventLog, RunReport, RunStatus
 from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks.browse import ReturnResult
@@ -1893,6 +1893,166 @@ def test_a_broken_webhook_is_logged_after_the_run_and_keeps_the_night_successful
     )
 
 
+def test_a_failed_run_logs_error_and_sends_one_apprise_message(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    requests: list[tuple[Any, float]] = []
+
+    class _Response:
+        def read(self) -> bytes:
+            return b'ok'
+
+        def __enter__(self) -> _Response:
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
+    def opener(request: Any, *, timeout: float) -> _Response:
+        requests.append((request, timeout))
+        return _Response()
+
+    context = _context(
+        tmp_path,
+        capture=_Capture(_boost_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+        hygiene=_Hygiene(DeviceError('tablet absent')),
+        notifier=AppriseSink('https://apprise.example', key='coins', opener=opener),
+    )
+    context.controller = None
+
+    with caplog.at_level(logging.DEBUG, logger='test.engine'):
+        report = engine.run_once(context)
+
+    assert report.status is RunStatus.FAILED
+    assert report.failure_code == FailureCode.DEVICE_OFFLINE.value
+    assert len(requests) == 1
+    request, timeout = requests[0]
+    assert request.full_url == 'https://apprise.example/notify/coins'
+    assert timeout == 10.0
+    payload = json.loads(request.data)
+    assert payload['type'] == 'failure'
+    assert FailureCode.DEVICE_OFFLINE.value in payload['body']
+    assert report.notification == {'attempted': True, 'ok': True, 'sink': 'apprise', 'error': None}
+
+    errors = [
+        json.loads(record.getMessage())
+        for record in caplog.records
+        if record.levelno == logging.ERROR and record.name == 'test.engine'
+    ]
+    assert any(event['event'] == 'run_finished' and event['status'] == 'failed' for event in errors)
+
+    logged = [json.loads(line) for line in report.event_log_path.read_text(encoding='utf-8').splitlines()]
+    finished = next(event for event in logged if event['event'] == 'run_finished')
+    assert finished['level'] == 'error'
+    assert finished['failure_code'] == FailureCode.DEVICE_OFFLINE.value
+
+
+def test_a_broken_apprise_endpoint_keeps_the_night_successful_and_redacts_its_url(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    frame = _boost_header_frame()
+    _surface(monkeypatch, replace(full_roster, entries=()), frame)
+    secret = 'do-not-record-this'
+
+    def broken(request: Any, *, timeout: float) -> Any:
+        del request, timeout
+        raise HTTPError(
+            f'https://apprise.example/notify/{secret}',
+            503,
+            f'Service Unavailable {secret}',
+            HTTPMessage(),
+            None,
+        )
+
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+        notifier=AppriseSink('https://apprise.example', opener=broken),
+        notify_on_empty=True,
+    )
+
+    with caplog.at_level(logging.WARNING, logger='test.engine'):
+        report = engine.run_once(context)
+
+    assert report.status is RunStatus.COMPLETED
+    assert report.ok is True
+    assert report.notification == {
+        'attempted': True,
+        'ok': False,
+        'sink': 'apprise',
+        'error': 'NotificationError (HTTP 503)',
+    }
+    assert secret not in caplog.text
+    assert secret not in report.summary_path.read_text(encoding='utf-8')
+    assert secret not in report.json_path.read_text(encoding='utf-8')
+    assert secret not in report.event_log_path.read_text(encoding='utf-8')
+
+
+def test_a_refused_row_logs_task_skipped_at_warning_once(
+    tmp_path: Path,
+    full_roster: Roster,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    report = RunReport(tmp_path, 'run-1', budget_seconds=60.0, started_at=CAPTURED_AT)
+    logger = _logger()
+
+    with caplog.at_level(logging.DEBUG, logger='test.engine'):
+        engine._record_policy_skips(report, full_roster, logger=logger)
+        engine._record_policy_skips(report, full_roster, logger=logger)
+
+    skipped = [
+        (record.levelno, json.loads(record.getMessage()))
+        for record in caplog.records
+        if record.name == 'test.engine' and json.loads(record.getMessage()).get('event') == 'task_skipped'
+    ]
+    assert any(level == logging.WARNING and event['reason'] == 'policy' for level, event in skipped)
+    assert len([event for _level, event in skipped if event['reason'] == 'policy']) == 1
+
+
+def test_the_notification_body_has_counts_and_only_an_opted_in_balance_delta(tmp_path: Path) -> None:
+    report = RunReport(tmp_path, 'run-1', budget_seconds=60.0, started_at=CAPTURED_AT)
+    for outcome, completed in (('completed', True), ('skipped', False), ('failed', False)):
+        report.record_task(
+            title=f'{outcome} task',
+            key=outcome,
+            category='quiz',
+            outcome=outcome,
+            verification='fake',
+            detail=outcome,
+            duration_seconds=1.0,
+            completed=completed,
+            result={},
+        )
+    report.skip('Place an order', key=None, category=None, reason='policy', detail='refused')
+    report.balance_before = 1240.0
+    report.balance_after = 1246.0
+    report.finish(RunStatus.COMPLETED, detail='roster exhausted', budget_used_seconds=1.0)
+
+    body = engine._notification(report).body
+    assert 'tasks: completed=1, skipped=1, failed=1' in body
+    assert 'not run: policy=1' in body
+    assert '1240' not in body
+    assert '1246' not in body
+    assert 'balance delta' not in body
+
+    opted_in = engine._notification(report, include_balance_delta=True).body
+    assert 'balance delta: +6' in opted_in
+    assert '1240' not in opted_in
+    assert '1246' not in opted_in
+
+
 def test_a_webhook_password_never_reaches_the_report_or_the_log(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2036,6 +2196,46 @@ def test_a_night_that_claims_nothing_notifies_only_when_configured(
     assert noisy_report.ok is True
     assert len(noisy.messages) == 1
     assert noisy_report.notification == {'attempted': True, 'ok': True, 'sink': 'webhook', 'error': None}
+
+
+def test_a_completed_run_with_a_task_sends_one_apprise_message(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boost_frame: Snapshot,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    wanted = ('coins_quiz',)
+    roster = replace(full_roster, entries=tuple(entry for entry in full_roster.entries if entry.key in wanted))
+    frame = _boost_frame(*wanted)
+    _surface(monkeypatch, roster, frame)
+    notifier = _Notifier()
+    notifier.name = 'apprise'
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+        notifier=notifier,
+    )
+    context.config = replace(context.config, apprise_url='https://apprise.example')
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        if entry.key is not None:
+            _context.state.record(entry.key)
+        return EngineResult('completed', 'fake', 'done', True, {'key': entry.key})
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.COMPLETED
+    assert report.ok is True
+    assert len(notifier.messages) == 1
+    assert notifier.messages[0].status == 'completed'
+    assert 'tasks: completed=1, skipped=0, failed=0' in notifier.messages[0].body
+    assert report.notification == {'attempted': True, 'ok': True, 'sink': 'apprise', 'error': None}
 
 
 def test_retention_prunes_old_runs_after_the_current_report_is_written(

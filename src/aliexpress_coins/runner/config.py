@@ -87,10 +87,14 @@ class RunConfig:
     app_settle_seconds: float
     dry_run: bool = False
     keep_runs: int = DEFAULT_KEEP_RUNS
+    apprise_url: str | None = None
+    apprise_key: str | None = None
+    apprise_tag: str | None = None
     webhook_url: str | None = None
     ntfy_topic: str | None = None
     ntfy_server: str = DEFAULT_NTFY_SERVER
     notify_on_empty: bool = False
+    notify_balance_delta: bool = False
 
     @classmethod
     def from_environment(
@@ -124,12 +128,16 @@ class RunConfig:
                 'AECOINS_APP_SETTLE_SECONDS',
                 DEFAULT_APP_SETTLE_SECONDS,
             ),
-            dry_run=_flag(env.get('AECOINS_DRY_RUN', '')),
+            dry_run=_flag(env.get('AECOINS_DRY_RUN', ''), 'AECOINS_DRY_RUN'),
             keep_runs=_positive_int(env, 'AECOINS_KEEP_RUNS', DEFAULT_KEEP_RUNS),
+            apprise_url=_optional(env, 'AECOINS_APPRISE_URL') or _optional(env, 'APPRISE_URL'),
+            apprise_key=_optional(env, 'AECOINS_APPRISE_KEY') or _optional(env, 'APPRISE_KEY'),
+            apprise_tag=_optional(env, 'AECOINS_APPRISE_TAG') or _optional(env, 'APPRISE_TAG'),
             webhook_url=_optional(env, 'AECOINS_WEBHOOK_URL'),
             ntfy_topic=_optional(env, 'AECOINS_NTFY_TOPIC'),
             ntfy_server=_optional(env, 'AECOINS_NTFY_SERVER') or DEFAULT_NTFY_SERVER,
-            notify_on_empty=_flag(env.get('AECOINS_NOTIFY_ON_EMPTY', '')),
+            notify_on_empty=_flag(env.get('AECOINS_NOTIFY_ON_EMPTY', ''), 'AECOINS_NOTIFY_ON_EMPTY'),
+            notify_balance_delta=_flag(env.get('AECOINS_NOTIFY_BALANCE_DELTA', ''), 'AECOINS_NOTIFY_BALANCE_DELTA'),
         )
 
 
@@ -231,7 +239,7 @@ def _spec_path(environment: Mapping[str, str], name: str, default: str, base: Pa
     return base / path
 
 
-def _flag(raw: str) -> bool:
+def _flag(raw: str, name: str = 'AECOINS_DRY_RUN') -> bool:
     value = raw.strip().casefold()
     if not value:
         return False
@@ -239,4 +247,4 @@ def _flag(raw: str) -> bool:
         return True
     if value in {'0', 'false', 'no', 'off'}:
         return False
-    raise ConfigError(f'AECOINS_DRY_RUN must be a boolean, got {raw!r}')
+    raise ConfigError(f'{name} must be a boolean, got {raw!r}')

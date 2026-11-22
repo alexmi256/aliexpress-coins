@@ -284,11 +284,15 @@ class RunReport:
         self.tasks.append(record)
         return record
 
-    def skip(self, title: str, *, key: str | None, category: str | None, reason: str, detail: str) -> None:
-        """Record a row that was not dispatched; duplicate reason/title pairs collapse."""
+    def skip(self, title: str, *, key: str | None, category: str | None, reason: str, detail: str) -> bool:
+        """Record a row that was not dispatched; duplicate reason/title pairs collapse.
+
+        Returns true only when a new skip was appended, so the caller can log the
+        event once without repeating it on every roster observation.
+        """
         identity = (title, reason)
         if identity in self._skip_keys:
-            return
+            return False
         self._skip_keys.add(identity)
         self.skipped.append(
             SkippedRecord(
@@ -299,6 +303,7 @@ class RunReport:
                 detail=detail,
             ),
         )
+        return True
 
     def finish(
         self,
