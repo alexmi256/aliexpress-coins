@@ -680,6 +680,7 @@ def test_a_dialog_with_only_a_denial_control_is_recorded_and_does_not_raise(
     assert result.dialog_appeared is True
     assert [tap.label for tap in result.taps] == ['GO', "Don't allow"]
     assert result.returned is True
+    assert result.recorded is True
     assert state.count('notifications') == 1
     assert result.done_today_after == 1
 
@@ -1223,7 +1224,7 @@ def test_an_os_settings_page_at_entry_is_routed_without_reading_a_row(
     assert state.count('notifications') == 1
 
 
-def test_an_app_prompt_at_entry_is_reported_unavailable_without_a_blind_tap(
+def test_an_app_prompt_at_entry_is_resolved_before_the_row_is_tapped(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
     tmp_path: Path,
@@ -1236,8 +1237,40 @@ def test_an_app_prompt_at_entry_is_reported_unavailable_without_a_blind_tap(
 
     result = _run(world, catalogue, corpus, _state(tmp_path))
 
-    assert result.outcome is NotificationOutcome.UNAVAILABLE
-    assert world.taps == []
+    assert result.outcome is NotificationOutcome.PERMISSION_DENIED
+    assert next(tap.label for tap in result.taps) == 'Enable all notifications'
+    assert all(tap.label != 'GO' for tap in result.taps)
+
+
+def test_a_system_dialog_at_entry_is_handled_before_the_row_is_tapped(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    overlaying = _snapshot(
+        _box('Coins boost', 80, 90, 400, 150),
+        _box(NOTIFICATIONS_TITLE, 60, 420, 700, 470),
+        _box('Stay informed when rewards drop', 60, 480, 700, 530),
+        _box('GO', 1000, 480, 1080, 530),
+        _box('Allow AliExpress to send you notifications?', 300, 890, 900, 930),
+        _box('Allow', 560, 990, 640, 1025),
+        _box("Don't allow", 540, 1080, 660, 1115),
+    )
+    world = _World(
+        {
+            'entry_dialog': (overlaying,),
+            'boost_done': (_boost_frame(done=True),),
+            'coins': (_coins_frame(),),
+        },
+        {('entry_dialog', 'Allow'): 'boost_done'},
+        start='entry_dialog',
+    )
+
+    result = _run(world, catalogue, corpus, _state(tmp_path))
+
+    assert result.outcome is NotificationOutcome.ALREADY_DONE
+    assert [tap.label for tap in result.taps] == ['Allow']
+    assert result.dialog_appeared is True
 
 
 def test_a_row_that_disappears_from_the_populated_boost_list_is_completed(
@@ -1375,6 +1408,79 @@ def test_a_generic_popup_that_closes_lets_the_flow_continue_to_completion(
 
     assert result.outcome is NotificationOutcome.COMPLETED
     assert any(attempt.label == 'Dismiss' for report in result.dismissals for attempt in report.taps)
+
+
+def test_an_enable_tap_that_changes_nothing_is_not_repeated_forever(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    world = _World(
+        {
+            'boost': (_boost_frame(),),
+            'prompt': (_app_prompt_frame(),),
+            'coins': (_coins_frame(),),
+        },
+        {('boost', 'GO'): 'prompt'},
+    )
+
+    result = _run(world, catalogue, corpus, _state(tmp_path))
+
+    assert result.outcome is NotificationOutcome.PERMISSION_DENIED
+    assert [tap.label for tap in result.taps].count('Enable all notifications') == 1
+    assert result.recorded is True
+
+
+def test_a_popup_over_the_boost_list_is_swept_before_a_missing_action_means_complete(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    from dataclasses import replace
+
+    from aliexpress_coins.control.popups import CloseAttempt, CloseKind
+
+    family = replace(
+        corpus.by_family('promo_coupon_unlocked'),
+        anchor='Welcome gifts',
+        close=(CloseAttempt(kind=CloseKind.LABEL, label='Dismiss'),),
+    )
+    labelled = replace(corpus, families=(family,))
+    over_boost = _snapshot(
+        _box('Coins boost', 80, 90, 400, 150),
+        _box(NOTIFICATIONS_TITLE, 60, 420, 700, 470),
+        _box('Stay informed when rewards drop', 60, 480, 700, 530),
+        _box('Welcome gifts', 100, 600, 1100, 700),
+        _box('Dismiss', 540, 900, 660, 940),
+    )
+    world = _World(
+        {'boost': (_boost_frame(),), 'popup_over': (over_boost,), 'coins': (_coins_frame(),)},
+        {('boost', 'GO'): 'popup_over'},
+        on_tap=lambda screen, label, count: 'boost_done' if label == 'Dismiss' else None,
+    )
+    world._series['boost_done'] = (_boost_frame(done=True),)
+    state = _state(tmp_path)
+
+    result = _run(world, catalogue, labelled, state)
+
+    assert result.outcome is NotificationOutcome.COMPLETED
+    assert result.dismissals
+    assert any(attempt.label == 'Dismiss' for report in result.dismissals for attempt in report.taps)
+    assert state.count('notifications') == 1
+
+
+def test_the_result_log_carries_the_notifications_task_event(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    world = _dialog_world(allow=False)
+
+    with caplog.at_level('INFO', logger='aliexpress_coins.control'):
+        _run(world, catalogue, corpus, _state(tmp_path))
+
+    assert '"event":"notifications_task"' in caplog.text
 
 
 def test_a_loading_frame_is_waited_out_before_reading_the_row(

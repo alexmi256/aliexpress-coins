@@ -677,6 +677,66 @@ def run_notifications_task(
             dialog_appeared=dialog_appeared,
         )
 
+    # A prompt already on top of the entry frame must be resolved before the
+    # row is read. Otherwise the row's GO can be tapped through the system
+    # window, and the leftover dialog is mistaken for this task's result.
+    if final_screen in (NotificationScreen.SYSTEM_DIALOG, NotificationScreen.APP_PROMPT):
+        stop, dialog_appeared, grant_attempted, denial_attempted = _wait_after_action(
+            controller,
+            capture,
+            sweep_corpus,
+            current,
+            title=entry.title,
+            spec=spec,
+            enable_notifications=enable_notifications,
+            arrival_timeout=arrival_timeout,
+            exit_timeout=exit_timeout,
+            interval=interval,
+            settle=settle,
+            templates=templates,
+            clock=clock,
+            sleep=sleep,
+            logger=log,
+            taps=taps,
+            dismissals=dismissals,
+            dialog_appeared=dialog_appeared,
+            grant_attempted=grant_attempted,
+            denial_attempted=denial_attempted,
+        )
+        current = _capture(capture)
+        final_screen = classify_notification_screen(current)
+        final_classification = classify(current)
+        if stop is not None:
+            _record_once(state, spec)
+            return _finish_denied_or_routed(
+                controller,
+                capture,
+                sweep_corpus,
+                navigate,
+                spec,
+                entry,
+                done_before,
+                limit,
+                stop=stop,
+                current=current,
+                taps=taps,
+                dismissals=dismissals,
+                route=route,
+                templates=templates,
+                return_timeout=return_timeout,
+                return_interval=return_interval,
+                return_attempts=return_attempts,
+                settle=settle,
+                clock=clock,
+                sleep=sleep,
+                logger=log,
+                permission_before=permission_before,
+                notification_screen=final_screen,
+                classification=final_classification,
+                dialog_appeared=dialog_appeared,
+                grant_attempted=grant_attempted,
+            )
+
     if not _is_task_surface(current):
         return _finish_unavailable(
             controller,
@@ -756,6 +816,7 @@ def run_notifications_task(
             logger=log,
             notification_screen=final_screen,
             classification=final_classification,
+            dialog_appeared=dialog_appeared,
         )
 
     try:
@@ -1094,6 +1155,8 @@ def _wait_after_action(
     started = clock()
     deadline = started + arrival_timeout
     grant_deadline: float | None = None
+    enable_deadline: float | None = None
+    enable_attempted = False
     current = snapshot
     while True:
         now = clock()
@@ -1146,15 +1209,34 @@ def _wait_after_action(
         if screen is NotificationScreen.APP_PROMPT:
             enable = find_enable_all_control(current)
             if enable is not None and enable_notifications:
-                taps.append(
-                    controller.tap_box(
-                        enable,
-                        why=f'notifications {spec.key}: ask the app for the system dialog',
-                        label=enable.text,
-                    ),
-                )
-                current = _capture(capture)
-                continue
+                if not enable_attempted:
+                    taps.append(
+                        controller.tap_box(
+                            enable,
+                            why=f'notifications {spec.key}: ask the app for the system dialog',
+                            label=enable.text,
+                        ),
+                    )
+                    enable_attempted = True
+                    enable_deadline = clock() + exit_timeout
+                    current = _capture(capture)
+                    continue
+                assert enable_deadline is not None
+                if now < enable_deadline:
+                    sleep(min(interval, max(0.0, enable_deadline - now)))
+                    current = _capture(capture)
+                    continue
+                deny = find_deny_control(current)
+                if deny is not None and not denial_attempted:
+                    taps.append(
+                        controller.tap_box(
+                            deny,
+                            why=f'notifications {spec.key}: decline a pre-prompt whose enable tap did not take',
+                            label=deny.text,
+                        ),
+                    )
+                    denial_attempted = True
+                return 'permission_denied', dialog_appeared, grant_attempted, denial_attempted
             deny = find_deny_control(current)
             if deny is not None and not denial_attempted:
                 taps.append(
@@ -1185,7 +1267,9 @@ def _wait_after_action(
         if screen in (NotificationScreen.OS_SETTINGS, NotificationScreen.OS_SETTINGS_GRANTED):
             return 'routed_to_settings', dialog_appeared, grant_attempted, denial_attempted
 
-        if _is_task_surface(current):
+        if _is_task_surface(current) and (
+            classification.state is ScreenState.PAGE or _is_trusted_page(current, screen, corpus)
+        ):
             _row, action, _badge = find_task_row(current, title)
             if action is None:
                 return None, dialog_appeared, grant_attempted, denial_attempted
@@ -1246,9 +1330,12 @@ def _verify_row(
 ) -> tuple[_Verdict, DismissReport | None, ReturnResult | None]:
     """Read the row on the returned surface, then re-open the list if needed."""
     del load_timeout
-    first = _row_verdict(frame, title, trusted=False)
-    if first.decisive:
-        return first, None, None
+    classification = classify(frame)
+    screen = classify_notification_screen(frame, classification=classification)
+    if classification.state is ScreenState.PAGE or _is_trusted_page(frame, screen, corpus):
+        first = _row_verdict(frame, title, trusted=False)
+        if first.decisive:
+            return first, None, None
 
     try:
         opened = open_boost_list(
@@ -1608,6 +1695,7 @@ def _finish_already_done(
     logger: logging.Logger,
     notification_screen: NotificationScreen | None = None,
     classification: Classification | None = None,
+    dialog_appeared: bool = False,
 ) -> NotificationResult:
     return_state = _return_quietly(
         controller,
@@ -1638,6 +1726,7 @@ def _finish_already_done(
         dismissals=dismissals,
         return_state=return_state,
         recorded=True,
+        dialog_appeared=dialog_appeared,
         classification=None if classification is None else classification.state.value,
         screen=None if notification_screen is None else notification_screen.value,
         permission_before=permission_before,
@@ -1723,6 +1812,7 @@ def _finish_denied_or_routed(
         taps=taps,
         dismissals=dismissals,
         return_state=state,
+        recorded=True,
         classification=None if classification is None else classification.state.value,
         screen=None if notification_screen is None else notification_screen.value,
         permission_before=permission_before,
@@ -1904,7 +1994,7 @@ def _terminal(
 
 
 def _log_result(logger: logging.Logger, result: NotificationResult) -> None:
-    logger.info('%s', _json(result.as_dict()))
+    logger.info('%s', _json({'event': 'notifications_task', **result.as_dict()}))
 
 
 def _json(fields: dict[str, object]) -> str:
