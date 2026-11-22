@@ -92,7 +92,7 @@ _COLLECTION_HEADER_TOP_FRACTION = 0.35
 
 _PRICE = re.compile(r'(?:C\$|US\s*\$|CS|\$)\s*\d', re.IGNORECASE)
 
-_TASK_TITLES: tuple[str, ...] = (
+TASK_TITLES: tuple[str, ...] = (
     'Daily check-in',
     'Take the coins quiz',
     'Learn to save money with Coins Credits',
@@ -498,7 +498,7 @@ def _loading_evidence(
         )
 
     boost = _match(snapshot, 'Coins boost')
-    if boost is not None and not _any_match(snapshot, _TASK_TITLES):
+    if boost is not None and not _any_match(snapshot, TASK_TITLES):
         return Evidence(
             'boost_without_rows',
             boost.score,
@@ -518,7 +518,7 @@ def _page_marker(snapshot: Snapshot) -> Evidence | None:
 
     boost = _match(snapshot, 'Coins boost')
     if boost is not None:
-        title = _first_match(snapshot, _TASK_TITLES)
+        title = _first_match(snapshot, TASK_TITLES)
         if title is not None:
             score = min(boost.score, title.score)
             return Evidence('page_marker', score, f'boost page: Coins boost + task {title.text!r}')

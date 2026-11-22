@@ -15,8 +15,10 @@ denied row still records the action it was rendered with for diagnostics, but
 a target for it.
 
 The empty ``Coins boost`` page (``There's nothing here yet``) is an arrival, not
-a timeout: :class:`Roster` reports it as ``nothing available``. Reset policy for
-that state belongs to #38; discovery only has to describe what it saw.
+a timeout. :func:`discover_roster` applies the #38 route policy: one shortcut
+route, at most one warm re-entry when the surface has no usable rows, then
+``nothing available``. The variant and every route fired are kept on
+:class:`Roster`, ready for the #31 run report.
 """
 
 from __future__ import annotations
@@ -41,7 +43,6 @@ from aliexpress_coins.perception.layout import (
     parse_progress_badge,
 )
 from aliexpress_coins.perception.matching import (
-    DEFAULT_MIN_OCR_SCORE,
     DEFAULT_MIN_SCORE,
     find_text,
     normalize,
@@ -64,15 +65,41 @@ from aliexpress_coins.tasks.catalogue import (
     TaskCategory,
     TaskDecision,
 )
+from aliexpress_coins.tasks.surface import (
+    BOOST_MARKER,
+    EMPTY_BOOST_MARKER,
+    SURFACE_REFRESH_LIMIT,
+    RouteFirer,
+    Surface,
+    SurfaceRoute,
+    classify_surface,
+    has_task_rows,
+    is_boost_page,
+    is_empty_boost,
+)
+
+__all__ = [
+    'BOOST_MARKER',
+    'DEFAULT_BOOST_INTERVAL',
+    'DEFAULT_BOOST_TIMEOUT',
+    'EARN_MORE_LABEL',
+    'EMPTY_BOOST_MARKER',
+    'BoostList',
+    'BoostOpenResult',
+    'DiscoveryResult',
+    'DiscoveryRoute',
+    'Roster',
+    'RosterEntry',
+    'RosterStatus',
+    'discover_roster',
+    'enumerate_roster',
+    'is_boost_page',
+    'is_empty_boost',
+    'open_boost_list',
+]
 
 EARN_MORE_LABEL = 'Earn more'
 """The control that opens the full task list from the coin page."""
-
-BOOST_MARKER = 'Coins boost'
-"""The header shared by the populated boost page and its empty state."""
-
-EMPTY_BOOST_MARKER = "There's nothing here yet"
-"""The sentence the app renders when the boost list failed to populate."""
 
 DEFAULT_BOOST_TIMEOUT = 30.0
 """How long to wait for the boost destination after tapping ``Earn more``."""
@@ -218,9 +245,15 @@ class Roster:
     route: DiscoveryRoute | None = None
     catalogue_version: int | None = None
     default_deny_reason: str = DEFAULT_DENY_REASON
+    surface_variant: Surface | None = None
+    routes_taken: tuple[SurfaceRoute, ...] = ()
+    refresh_attempted: bool = False
+    variants_seen: tuple[Surface, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, 'entries', tuple(self.entries))
+        object.__setattr__(self, 'routes_taken', tuple(self.routes_taken))
+        object.__setattr__(self, 'variants_seen', tuple(self.variants_seen))
 
     @property
     def tasks(self) -> tuple[RosterEntry, ...]:
@@ -281,6 +314,10 @@ class Roster:
         """Render the whole catalogue snapshot for the run report."""
         return {
             'route': self.route.value if self.route is not None else None,
+            'surface_variant': self.surface_variant.value if self.surface_variant is not None else None,
+            'routes_taken': [route.value for route in self.routes_taken],
+            'refresh_attempted': self.refresh_attempted,
+            'variants_seen': [variant.value for variant in self.variants_seen],
             'status': self.status.value,
             'count': self.count,
             'allowed_count': len(self.allowed_entries),
@@ -579,6 +616,9 @@ def discover_roster(
     corpus: PopupCorpus,
     catalogue: TaskCatalogue,
     *,
+    navigate: RouteFirer | None = None,
+    entry_route: SurfaceRoute = SurfaceRoute.SHORTCUT,
+    refresh: bool = True,
     templates: TemplateStore | None = None,
     timeout: float = DEFAULT_BOOST_TIMEOUT,
     interval: float = DEFAULT_BOOST_INTERVAL,
@@ -588,54 +628,94 @@ def discover_roster(
     sleep: Callable[[float], None] = time.sleep,
     logger: logging.Logger | None = None,
 ) -> Roster:
-    """Open the best available surface and enumerate it in one call.
+    """Open the best available surface, apply the route policy and enumerate it.
 
-    This is the integration point for the run loop and #38: it returns a roster
-    whose :attr:`Roster.route` records ``boost`` or ``inline``. The caller
-    decides whether an empty roster is a reset (`#38`) or the end of the run.
+    This is the integration point for the run loop and #38. It returns a roster
+    whose :attr:`Roster.route` records ``boost`` or ``inline`` and whose
+    :attr:`Roster.surface_variant` / :attr:`Roster.routes_taken` record what the
+    page looked like and which route produced it.
+
+    ``navigate`` is the flow layer's route firer. When supplied, the policy is:
+
+    1. fire the shortcut route once (the app must already be started and warm);
+    2. if the surface has no usable rows, fire it **once more** and try again —
+       the measured failure is a cold-start first-load race, and a warm re-entry
+       populates the list;
+    3. if rows are still absent, return an empty roster. Its status is
+       ``nothing available``, not an error.
+
+    The budget is exactly :data:`SURFACE_REFRESH_LIMIT`. More attempts do not
+    help: the roster is server-driven, so repeated navigation cannot create
+    tasks and only resembles automation. When ``navigate`` is ``None`` the
+    caller has already arrived; the function classifies and enumerates that
+    single frame and records no route.
+
+    Rows present are never re-navigated. The first route either works and the
+    run proceeds, or it does not and the one permitted refresh runs. A needless
+    relaunch is a chance to lose a page that was already loaded.
     """
-    opened = open_boost_list(
-        controller,
-        capture,
-        corpus,
-        templates=templates,
-        timeout=timeout,
-        interval=interval,
-        settle=settle,
-        clock=clock,
-        sleep=sleep,
-        logger=logger,
+    routes: list[SurfaceRoute] = []
+    variants: list[Surface] = []
+    refresh_attempted = False
+
+    def _open() -> tuple[Roster, Surface]:
+        opened = open_boost_list(
+            controller,
+            capture,
+            corpus,
+            templates=templates,
+            timeout=timeout,
+            interval=interval,
+            settle=settle,
+            clock=clock,
+            sleep=sleep,
+            logger=logger,
+        )
+        variant = classify_surface(opened.snapshot)
+        variants.append(variant)
+        roster = enumerate_roster(
+            opened.snapshot,
+            catalogue,
+            route=opened.route,
+            action_labels=action_labels,
+        )
+        return roster, variant
+
+    # TODO(#27): the widget-route fallback is deliberately not fired here. The
+    # launcher items were removed from the reference device, and replaying the
+    # widget intent without the widget installed is unresolved. Do not guess at
+    # that action; #27 owns the measured fallback.
+    if navigate is not None:
+        navigate(entry_route)
+        routes.append(entry_route)
+
+    roster, variant = _open()
+
+    if (
+        refresh
+        and navigate is not None
+        and len(routes) < SURFACE_REFRESH_LIMIT + 1
+        and roster.empty
+        and variant is not Surface.REDEEM_INTERSTITIAL
+    ):
+        refresh_attempted = True
+        navigate(entry_route)
+        routes.append(entry_route)
+        roster, variant = _open()
+
+    return replace(
+        roster,
+        surface_variant=variant,
+        routes_taken=tuple(routes),
+        refresh_attempted=refresh_attempted,
+        variants_seen=tuple(variants),
     )
-    return enumerate_roster(
-        opened.snapshot,
-        catalogue,
-        route=opened.route,
-        action_labels=action_labels,
-    )
-
-
-def is_boost_page(snapshot: Snapshot) -> bool:
-    """Whether the ``Coins boost`` header is in the frame."""
-    return _contains_text(snapshot, BOOST_MARKER)
-
-
-def is_empty_boost(snapshot: Snapshot) -> bool:
-    """Whether the frame is the boost page's empty state.
-
-    The empty sentence is checked with a substring fallback because OCR often
-    reads the whole call-to-action on one line.
-    """
-    return is_boost_page(snapshot) and _contains_text(snapshot, EMPTY_BOOST_MARKER) and not _has_task_rows(snapshot)
 
 
 def _boost_arrived(snapshot: Snapshot) -> bool:
     if not is_boost_page(snapshot):
         return False
-    return is_empty_boost(snapshot) or _has_task_rows(snapshot)
-
-
-def _has_task_rows(snapshot: Snapshot) -> bool:
-    return any(find_action_in_row(row) is not None for row in group_rows(snapshot.boxes, snapshot.geometry))
+    return is_empty_boost(snapshot) or has_task_rows(snapshot)
 
 
 def _task_signature(snapshot: Snapshot) -> tuple[tuple[str, str, tuple[int, int] | None], ...]:
@@ -658,15 +738,6 @@ def _arrival_detail(snapshot: Snapshot) -> str:
     if is_empty_boost(snapshot):
         return f'{BOOST_MARKER!r} is empty ({EMPTY_BOOST_MARKER!r}); report nothing available'
     return f'{EARN_MORE_LABEL!r} opened the {BOOST_MARKER!r} task list'
-
-
-def _contains_text(snapshot: Snapshot, label: str) -> bool:
-    if find_text(snapshot, label, min_score=DEFAULT_MIN_SCORE, min_ocr_score=DEFAULT_MIN_OCR_SCORE) is not None:
-        return True
-    needle = normalize(label)
-    if not needle:
-        return False
-    return any(needle in normalize(box.text) for box in snapshot.boxes if box.score >= DEFAULT_MIN_OCR_SCORE)
 
 
 def _title_and_subtitle(
