@@ -180,7 +180,11 @@ Each task family gets its own executor, because each fails differently:
 ## 7. Assumptions
 
 - The device stays powered and on the LAN overnight (charger attached).
-- The account stays logged in; a logged-out app fails the run at the coins-page assertion.
+- The account stays logged in. A signed-out app is detected from the account surface, reported as
+  `app_logged_out`, and stops the run at the first detection — every remaining task would fail for
+  the same reason, so pretending each one failed would misreport the night.
+- The device is left unlocked (see Q2). The run wakes the screen, dismisses the keyguard and checks
+  it is gone; a keyguard that survives that is reported as `device_locked` and stops the run.
 - Coin values and task rewards can change at any time; the project asserts on UI state, not on
   reward amounts.
 
@@ -199,7 +203,7 @@ The operator answered the open questions; the answers are now requirements, not 
 | # | question | decision |
 |---|---|---|
 | Q1 | Repository visibility | **Private now.** Open-source only once a developer can get it running in ≤5 minutes *and* it has been stable for a couple of weeks. |
-| Q2 | Device lock | **Assume no PIN/biometric lock.** Any user of this tool is expected to leave the device unlocked. |
+| Q2 | Device lock | **Assume no PIN/biometric lock.** Any user of this tool is expected to leave the device unlocked. The run still asks: after `KEYCODE_WAKEUP`, a keyguard dismiss and an upward swipe, it reads the keyguard state. If the screen is still locked it reports `device_locked` and stops without tapping — the collector cannot enter a PIN or biometric and must never guess at one. |
 | Q3 | Shortcut/widget reward trigger | **Answered by observation**: the operator completed both tasks by *adding* the items. Treat "creation is enough" as the default, with the caveat that a widget/shortcut visit may credit a separate repeatable task (❓ one more observation). |
 | Q4 | Quiz accuracy | **Accuracy is rewarded** (+6 on a correct answer) but a wrong answer still pays. The result page prints `Correct answer: X`, so the project will **build a question bank**: record question → options → correct answer → answer from the bank next time. |
 | Q5 | Notifications | **Apprise** (`caronc/apprise`) is the notification layer; users configure their own targets. The project emits proper Python log levels and an Apprise message; it does not own the transport. |
