@@ -1163,6 +1163,7 @@ def _run_round(
     scroll_stable = False
     items: list[str] = []
     pending_item: str | None = None
+    baseline_unknown = False
     stop: str | None = None
     detail = 'the round counter advanced to its target'
 
@@ -1305,8 +1306,28 @@ def _run_round(
             break
 
         after = read_surprise_counter(current)
-        if after is not None and (before is None or after.completed > before):
-            delta = after.completed - (before if before is not None else 0)
+        if after is None:
+            # The missed read hides whether this tile credited. Do not let the
+            # next successful read attribute that hidden credit to the next tap.
+            pending_item = None
+            baseline_unknown = True
+            continue
+
+        if baseline_unknown:
+            # Re-establish the baseline without naming a tile: the advance may
+            # belong to an earlier tap whose own read failed.
+            before = after.completed
+            baseline_unknown = False
+            pending_item = None
+            inert = 0
+            if after.complete:
+                detail = 'the round counter advanced to its target'
+                break
+            continue
+
+        assert before is not None
+        if after.completed > before:
+            delta = after.completed - before
             if delta == 1 and pending_item is not None:
                 items.append(pending_item)
             pending_item = None

@@ -2503,3 +2503,55 @@ def test_run_surprise_task_does_not_attribute_a_multi_credit_jump_to_one_tile(
     assert result.round_records[0].counter_change == '0/3 -> 3/3'
     assert result.round_records[0].items == ('Product C',)
     assert 'Product B' not in result.round_records[0].items
+
+
+def test_run_surprise_task_does_not_attribute_a_delayed_credit_to_the_next_tile(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    pending: dict[str, str] = {}
+
+    def on_tap(screen: str, label: str | None, _count: int) -> str | None:
+        if screen == 'grid0' and label == 'Product A':
+            pending['return'] = 'after_a'
+            return 'detail'
+        if screen == 'after_a' and label == 'Product B':
+            pending['return'] = 'grid1'
+            return 'detail'
+        if screen == 'grid1' and label == 'Product C':
+            pending['return'] = 'grid2'
+            return 'detail'
+        if screen == 'grid2' and label == 'Product D':
+            pending['return'] = 'grid3'
+            return 'detail'
+        return None
+
+    def on_key(screen: str, _key: str, _count: int) -> str | None:
+        if screen == 'detail':
+            return pending.pop('return')
+        return None
+
+    world = _World(
+        series={
+            'boost': (_boost_frame(progress='1/2'),),
+            'grid0': (_grid_frame(0),),
+            'after_a': (_grid_frame(None),),
+            'grid1': (_grid_frame(1),),
+            'grid2': (_grid_frame(2),),
+            'grid3': (_grid_frame(3),),
+            'detail': (_detail_frame(),),
+            'coins': (_coins_frame(),),
+        },
+        transitions={('boost', 'GO'): 'grid0'},
+        on_tap=on_tap,
+        on_key=on_key,
+    )
+
+    result = _run(world, catalogue, corpus, _state(tmp_path), max_rounds=1)
+
+    assert result.outcome is SurpriseOutcome.COMPLETED
+    assert result.round_records[0].counter_change == '0/3 -> 3/3'
+    assert result.round_records[0].items == ('Product C', 'Product D')
+    assert 'Product A' not in result.round_records[0].items
+    assert 'Product B' not in result.round_records[0].items
