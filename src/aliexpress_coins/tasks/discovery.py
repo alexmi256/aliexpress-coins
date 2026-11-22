@@ -627,9 +627,10 @@ def observe_roster(
             raise _ObservationFailure(problem)
         if (
             previous is not None
+            and previous.entries
             and previous.surface_variant is not None
             and variant is not None
-            and variant is not previous.surface_variant
+            and _surface_family(variant) != _surface_family(previous.surface_variant)
         ):
             raise _ObservationFailure(
                 f'the surface changed from {previous.surface_variant.value} to {variant.value}; '
@@ -921,6 +922,15 @@ def _rows_by_identity(roster: Roster | None) -> dict[str, RosterRow]:
 
 def _rows_of(roster: Roster | None) -> tuple[RosterRow, ...]:
     return tuple(_rows_by_identity(roster).values())
+
+
+def _surface_family(variant: Surface) -> str:
+    """Group the variants that describe the same task surface."""
+    if variant in (Surface.BOOST_PAGE, Surface.EMPTY_BOOST):
+        return 'boost'
+    if variant in (Surface.ROWS_PRESENT, Surface.ROWS_ABSENT):
+        return 'coin'
+    return variant.value
 
 
 def _observation_problem(state: ScreenState, variant: Surface | None) -> str | None:

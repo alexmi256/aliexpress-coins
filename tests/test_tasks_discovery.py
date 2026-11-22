@@ -1110,6 +1110,48 @@ def test_a_changed_surface_does_not_erase_the_boost_roster(
     assert observer.roster is first.roster
 
 
+def test_an_empty_boost_seed_can_recover_to_a_populated_boost(
+    catalogue: TaskCatalogue,
+) -> None:
+    observer = RosterObserver(
+        catalogue,
+        previous=Roster(entries=(), surface_variant=Surface.EMPTY_BOOST),
+        clock=lambda: CAPTURED_AT,
+    )
+
+    observation = observer.observe(
+        _boost_frame(
+            _task_row('Daily check-in', 100),
+            _task_row('Explore sponsored items', 300, badge='0/6'),
+        ),
+    )
+
+    assert observation.failed is False
+    assert observation.surface_variant is Surface.BOOST_PAGE
+    assert [row.label for row in observation.diff.added] == ['Daily check-in', 'Explore sponsored items']
+
+
+def test_inline_rows_disappearing_are_logged_as_removals(
+    frames: dict[str, Snapshot],
+    catalogue: TaskCatalogue,
+) -> None:
+    observer = RosterObserver(catalogue, clock=lambda: CAPTURED_AT)
+    first = observer.observe(frames['coins'])
+    no_rows = _snapshot(
+        _box('Daily coins', 100, 500, 500, 540),
+        _box('Coins credits to redeem >', 100, 300, 800, 340),
+    )
+
+    second = observer.observe(no_rows)
+
+    assert first.surface_variant is Surface.ROWS_PRESENT
+    assert first.rows
+    assert second.failed is False
+    assert second.surface_variant is Surface.ROWS_ABSENT
+    assert second.rows == ()
+    assert [row.label for row in second.diff.removed] == [row.label for row in first.rows]
+
+
 def test_a_candidate_in_the_seeded_previous_roster_is_reported(
     catalogue: TaskCatalogue,
 ) -> None:
