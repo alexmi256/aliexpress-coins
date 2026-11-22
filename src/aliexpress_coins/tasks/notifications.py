@@ -737,6 +737,42 @@ def run_notifications_task(
                 grant_attempted=grant_attempted,
             )
 
+    if grant_attempted and (not _is_task_surface(current) or find_task_row(current, entry.title)[0] is None):
+        permission_after = _probe(permission_probe, log)
+        if (
+            permission_after is not None
+            and permission_after.granted
+            and (permission_before is None or not permission_before.granted)
+        ):
+            return _finish_permission_granted(
+                controller,
+                capture,
+                sweep_corpus,
+                navigate,
+                state,
+                spec,
+                entry,
+                done_before,
+                limit,
+                current=current,
+                taps=taps,
+                dismissals=dismissals,
+                route=route,
+                templates=templates,
+                return_timeout=return_timeout,
+                return_interval=return_interval,
+                return_attempts=return_attempts,
+                settle=settle,
+                clock=clock,
+                sleep=sleep,
+                logger=log,
+                permission_before=permission_before,
+                permission_after=permission_after,
+                notification_screen=final_screen,
+                classification=final_classification,
+                dialog_appeared=dialog_appeared,
+            )
+
     if not _is_task_surface(current):
         return _finish_unavailable(
             controller,
@@ -1730,6 +1766,78 @@ def _finish_already_done(
         classification=None if classification is None else classification.state.value,
         screen=None if notification_screen is None else notification_screen.value,
         permission_before=permission_before,
+        logger=logger,
+    )
+
+
+def _finish_permission_granted(
+    controller: Controller,
+    capture: CaptureSource,
+    corpus: PopupCorpus,
+    navigate: RouteFirer,
+    state: DailyStateStore,
+    spec: AllowedTaskSpec,
+    entry: RosterEntry,
+    done_before: int,
+    limit: int,
+    *,
+    current: Snapshot,
+    taps: Sequence[TapRecord],
+    dismissals: Sequence[DismissReport],
+    route: SurfaceRoute,
+    templates: TemplateStore | None,
+    return_timeout: float,
+    return_interval: float,
+    return_attempts: int,
+    settle: float,
+    clock: Callable[[], float],
+    sleep: Callable[[float], None],
+    logger: logging.Logger,
+    permission_before: PermissionReading | None,
+    permission_after: PermissionReading,
+    notification_screen: NotificationScreen | None,
+    classification: Classification | None,
+    dialog_appeared: bool,
+) -> NotificationResult:
+    """Record a grant proved by the probe after an entry prompt."""
+    return_state = return_to_coins_page(
+        controller,
+        capture,
+        corpus,
+        navigate,
+        snapshot=current if _on_coin_page(current) else None,
+        templates=templates,
+        route=route,
+        timeout=return_timeout,
+        interval=return_interval,
+        attempts=return_attempts,
+        settle=settle,
+        clock=clock,
+        sleep=sleep,
+        logger=logger,
+    )
+    state.record(spec.key)
+    detail = 'the notification permission probe reports the permission as granted'
+    if not return_state.returned:
+        detail = f'{detail}; the shortcut route did not prove the coins page'
+    return _terminal(
+        spec,
+        entry.title,
+        NotificationOutcome.COMPLETED,
+        verification='permission_granted',
+        detail=detail,
+        limit=limit,
+        done_before=done_before,
+        done_after=state.count(spec.key),
+        taps=taps,
+        dismissals=dismissals,
+        return_state=return_state,
+        recorded=True,
+        dialog_appeared=dialog_appeared,
+        classification=None if classification is None else classification.state.value,
+        screen=None if notification_screen is None else notification_screen.value,
+        permission_before=permission_before,
+        permission_after=permission_after,
         logger=logger,
     )
 

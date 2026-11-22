@@ -1273,6 +1273,41 @@ def test_a_system_dialog_at_entry_is_handled_before_the_row_is_tapped(
     assert result.dialog_appeared is True
 
 
+def test_an_entry_prompt_grant_is_probed_and_recorded_when_no_row_remains(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    overlaying = _snapshot(
+        _box('Daily coins', 66, 919, 320, 978),
+        _box('Coins credits to redeem', 59, 567, 552, 617),
+        _box('Allow AliExpress to send you notifications?', 300, 890, 900, 930),
+        _box('Allow', 560, 990, 640, 1025),
+        _box("Don't allow", 540, 1080, 660, 1115),
+    )
+    world = _World(
+        {'entry_dialog': (overlaying,), 'coins': (_coins_frame(),)},
+        {('entry_dialog', 'Allow'): 'coins'},
+        start='entry_dialog',
+    )
+    state = _state(tmp_path)
+    readings = iter(('ignore', 'allow'))
+
+    result = _run(
+        world,
+        catalogue,
+        corpus,
+        state,
+        permission_probe=lambda: next(readings, 'allow'),
+    )
+
+    assert result.outcome is NotificationOutcome.COMPLETED
+    assert result.verification == 'permission_granted'
+    assert [tap.label for tap in result.taps] == ['Allow']
+    assert result.recorded is True
+    assert state.count('notifications') == 1
+
+
 def test_a_row_that_disappears_from_the_populated_boost_list_is_completed(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1429,6 +1464,80 @@ def test_an_enable_tap_that_changes_nothing_is_not_repeated_forever(
     assert result.outcome is NotificationOutcome.PERMISSION_DENIED
     assert [tap.label for tap in result.taps].count('Enable all notifications') == 1
     assert result.recorded is True
+
+
+def test_an_enable_tap_that_changes_nothing_without_a_deny_control_still_terminates(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    enable_only = _snapshot(
+        _box('Receive timely notifications', 12, 1186, 550, 1241),
+        _box('Enable all notifications', 474, 1650, 726, 1681),
+    )
+    world = _World(
+        {'boost': (_boost_frame(),), 'prompt': (enable_only,), 'coins': (_coins_frame(),)},
+        {('boost', 'GO'): 'prompt'},
+    )
+
+    result = _run(world, catalogue, corpus, _state(tmp_path))
+
+    assert result.outcome is NotificationOutcome.PERMISSION_DENIED
+    assert [tap.label for tap in result.taps].count('Enable all notifications') == 1
+
+
+def test_an_entry_prompt_grant_without_a_probe_still_reports_what_it_saw(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    overlaying = _snapshot(
+        _box('Daily coins', 66, 919, 320, 978),
+        _box('Coins credits to redeem', 59, 567, 552, 617),
+        _box('Allow AliExpress to send you notifications?', 300, 890, 900, 930),
+        _box('Allow', 560, 990, 640, 1025),
+    )
+    world = _World(
+        {'entry_dialog': (overlaying,), 'coins': (_coins_frame(),)},
+        {('entry_dialog', 'Allow'): 'coins'},
+        start='entry_dialog',
+    )
+
+    result = _run(world, catalogue, corpus, _state(tmp_path))
+
+    assert result.outcome is NotificationOutcome.UNAVAILABLE
+    assert [tap.label for tap in result.taps] == ['Allow']
+
+
+def test_an_entry_prompt_grant_keeps_the_grant_when_the_return_fails(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    overlaying = _snapshot(
+        _box('Allow AliExpress to send you notifications?', 300, 890, 900, 930),
+        _box('Allow', 560, 990, 640, 1025),
+    )
+    world = _World(
+        {'entry_dialog': (overlaying,), 'wrong': (_wrong_frame(),), 'coins': (_coins_frame(),)},
+        {('entry_dialog', 'Allow'): 'wrong'},
+        start='entry_dialog',
+        fail_navigation=True,
+    )
+    readings = iter(('ignore', 'allow'))
+
+    result = _run(
+        world,
+        catalogue,
+        corpus,
+        _state(tmp_path),
+        permission_probe=lambda: next(readings, 'allow'),
+    )
+
+    assert result.outcome is NotificationOutcome.COMPLETED
+    assert result.verification == 'permission_granted'
+    assert result.returned is False
+    assert result.detail.endswith('the shortcut route did not prove the coins page')
 
 
 def test_a_popup_over_the_boost_list_is_swept_before_a_missing_action_means_complete(

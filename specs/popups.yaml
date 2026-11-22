@@ -57,9 +57,12 @@ families:
     close:
       label: "Don't allow"
     notes: >-
-      Never tap `Allow`. The dismissal label is `Don't allow`; denying closes
-      both the system dialog and the app's prompt. No fraction fallback is
-      configured because a guessed tap could grant the permission.
+      The generic dismissal loop never taps `Allow`; its dismissal label is
+      `Don't allow`, and denying closes both the system dialog and the app's
+      prompt. No fraction fallback is configured because a guessed tap could
+      grant the permission. The #28 notifications executor is the deliberate
+      exception: it recognises this dialog itself and grants via `Allow` for
+      the notification task.
 
   - family: launch_welcome_gifts
     when: >-
