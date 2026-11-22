@@ -54,8 +54,14 @@ def _validate_component(value: str, kind: str) -> str:
     return value
 
 
-def _stage(path: Path, data: bytes) -> Path:
-    """Write the complete payload to a sibling temp file, not the target yet."""
+def stage_file(path: Path, data: bytes) -> Path:
+    """Write the complete payload to a sibling temp file, not the target yet.
+
+    The temp file lives in ``path.parent`` so the caller's ``os.replace`` stays
+    within one filesystem and is atomic. The directory is created when missing.
+    A failed stage removes its own temp file and re-raises ``OSError``; callers
+    translate that into their layer's typed error.
+    """
     temporary: str | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -65,10 +71,37 @@ def _stage(path: Path, data: bytes) -> Path:
             stream.flush()
             os.fsync(stream.fileno())
         return Path(temporary)
-    except OSError as exc:
+    except OSError:
         if temporary is not None:
             with contextlib.suppress(OSError):
                 os.unlink(temporary)
+        raise
+
+
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Write one payload so a reader sees the old file or the new one.
+
+    The payload is staged and fsynced first, then renamed over the target. A
+    kill between those steps leaves the staged ``.name.*`` sibling behind, not
+    a truncated target. Failures clean up the staged file and re-raise
+    ``OSError`` for the caller to wrap.
+    """
+    staged: Path | None = None
+    try:
+        staged = stage_file(path, data)
+        os.replace(staged, path)
+    except OSError:
+        if staged is not None:
+            with contextlib.suppress(OSError):
+                staged.unlink()
+        raise
+
+
+def _stage(path: Path, data: bytes) -> Path:
+    """Stage a payload, translating an I/O failure into :class:`ArtifactError`."""
+    try:
+        return stage_file(path, data)
+    except OSError as exc:
         raise ArtifactError(f'could not write {path}: {exc}') from exc
 
 
