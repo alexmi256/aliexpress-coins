@@ -51,6 +51,7 @@ from aliexpress_coins.runner.failures import (
     retry_delay,
     task_failure,
 )
+from aliexpress_coins.runner.levels import SKIPPED_ROW_LOG_LEVEL, run_log_level, task_log_level
 from aliexpress_coins.runner.notify import Notification, NotificationSink, build_notifier
 from aliexpress_coins.runner.report import RunEventLog, RunReport, RunStatus, prune_runs
 from aliexpress_coins.runner.state import DailyStateStore
@@ -380,7 +381,7 @@ def run_once(
             observer if observer is not None else _observer(context, report, roster, max_observations=task_limit + 2)
         )
         _observe(context, controller, observer, route=roster.route, on_dismiss=record_dismissal)
-        _record_policy_skips(report, roster)
+        _record_policy_skips(report, roster, logger=log)
         report.observations = observer.sequence
         report.write()
 
@@ -430,7 +431,8 @@ def run_once(
                 result=result.as_dict(),
                 failure=result.failure,
             )
-            log.info(
+            log.log(
+                task_log_level(result.outcome),
                 '%s',
                 _event(
                     'task_outcome',
@@ -445,14 +447,14 @@ def run_once(
             )
             if result.completed:
                 _observe(context, controller, observer, route=None, on_dismiss=record_dismissal)
-                _record_policy_skips(report, observer.roster or roster)
+                _record_policy_skips(report, observer.roster or roster, logger=log)
                 report.observations = observer.sequence
             else:
                 blocked.add(identity)
             report.write()
 
         final_roster = observer.roster if observer is not None and observer.roster is not None else roster
-        _record_unrun(report, final_roster, context.state, attempted, status=status, detail=detail)
+        _record_unrun(report, final_roster, context.state, attempted, status=status, detail=detail, logger=log)
         if observer is not None:
             report.observations = observer.sequence
         if final_roster is not None:
@@ -496,12 +498,14 @@ def run_once(
             report.finish(status, detail=detail, budget_used_seconds=used, finished_at=context.wall_clock())
             report.write()
             finalized = True
-            log.info(
+            log.log(
+                run_log_level(report.status),
                 '%s',
                 _event(
                     'run_finished',
                     run_id=report.run_id,
                     status=report.status.value,
+                    failure_code=report.failure_code,
                     budget_used_seconds=round(report.budget_used_seconds, 3),
                     tasks=len(report.tasks),
                     skipped=len(report.skipped),
@@ -948,29 +952,72 @@ def _observe(
             return None
 
 
-def _record_policy_skips(report: RunReport, roster: Roster | None) -> None:
+def _skip(
+    report: RunReport,
+    logger: logging.Logger | None,
+    *,
+    title: str,
+    key: str | None,
+    category: str | None,
+    reason: str,
+    detail: str,
+) -> None:
+    """Record and log one row that was not dispatched.
+
+    ``RunReport.skip`` collapses duplicates, so the WARNING event is emitted
+    only when the row is new to this report.
+    """
+    if not report.skip(title, key=key, category=category, reason=reason, detail=detail):
+        return
+    if logger is not None:
+        logger.log(
+            SKIPPED_ROW_LOG_LEVEL,
+            '%s',
+            _event(
+                'task_skipped',
+                title=title,
+                key=key,
+                category=category,
+                reason=reason,
+                detail=detail,
+            ),
+        )
+
+
+def _record_policy_skips(
+    report: RunReport,
+    roster: Roster | None,
+    *,
+    logger: logging.Logger | None = None,
+) -> None:
     if roster is None:
         return
     for entry in roster.entries:
         if entry.denied:
-            report.skip(
-                entry.title,
+            _skip(
+                report,
+                logger,
+                title=entry.title,
                 key=None,
                 category=None,
                 reason='policy',
                 detail=entry.reason or 'refused by the default-deny policy',
             )
         elif entry.spec is not None and entry.spec.category not in _EXECUTORS:
-            report.skip(
-                entry.title,
+            _skip(
+                report,
+                logger,
+                title=entry.title,
                 key=entry.key,
                 category=entry.spec.category.value,
                 reason='no executor',
                 detail=f'{entry.spec.category.value!r} has no executor in this issue',
             )
         elif entry.dispatch_target is None:
-            report.skip(
-                entry.title,
+            _skip(
+                report,
+                logger,
+                title=entry.title,
                 key=entry.key,
                 category=entry.spec.category.value if entry.spec is not None else None,
                 reason='no action',
@@ -986,6 +1033,7 @@ def _record_unrun(
     *,
     status: RunStatus,
     detail: str | None,
+    logger: logging.Logger | None = None,
 ) -> None:
     if roster is None:
         return
@@ -1006,16 +1054,20 @@ def _record_unrun(
         if entry.dispatch_target is None:
             continue
         if state.count(spec.key) >= spec.max_per_run:
-            report.skip(
-                entry.title,
+            _skip(
+                report,
+                logger,
+                title=entry.title,
                 key=spec.key,
                 category=spec.category.value,
                 reason='daily limit',
                 detail=f'{spec.key!r} already reached its {spec.max_per_run} completion(s) today',
             )
             continue
-        report.skip(
-            entry.title,
+        _skip(
+            report,
+            logger,
+            title=entry.title,
             key=spec.key,
             category=spec.category.value,
             reason=reason,
@@ -1212,7 +1264,14 @@ def _should_notify(report: RunReport, *, notify_on_empty: bool) -> bool:
     return bool(notify_on_empty and not any(task.completed for task in report.tasks))
 
 
-def _notification(report: RunReport) -> Notification:
+def _notification(report: RunReport, *, include_balance_delta: bool = False) -> Notification:
+    """Build the one message a run sends.
+
+    The body deliberately carries no account data: no nickname, no absolute
+    balance and no order/address text. The balance *delta* is included only when
+    the operator opts in, because even a small change is account information
+    they may not want in a third-party notification service.
+    """
     lines = [f'status: {report.status.value}']
     if report.failure is not None:
         lines.append(f'failure: {_failure_line(report.failure)}')
@@ -1220,11 +1279,12 @@ def _notification(report: RunReport) -> Notification:
         lines.append(f'error: {report.error}')
     elif report.detail:
         lines.append(f'detail: {report.detail}')
-    before = 'unknown' if report.balance_before is None else f'{report.balance_before:g}'
-    after = 'unknown' if report.balance_after is None else f'{report.balance_after:g}'
-    lines.append(f'balance: {before} -> {after}')
-    completed = sum(1 for task in report.tasks if task.completed)
-    lines.append(f'tasks: {completed}/{len(report.tasks)} completed')
+    lines.append(f'tasks: {_task_count_line(report)}')
+    if report.skipped:
+        lines.append(f'not run: {_skip_count_line(report)}')
+    if include_balance_delta:
+        delta = report.balance_delta
+        lines.append(f'balance delta: {"unknown" if delta is None else f"{delta:+g}"}')
     lines.append(f'report: {report.summary_path}')
     tags: tuple[str, ...] = ('coins', report.status.value)
     if report.failure_code:
@@ -1236,6 +1296,25 @@ def _notification(report: RunReport) -> Notification:
         status=report.status.value,
         tags=tags,
     )
+
+
+def _task_count_line(report: RunReport) -> str:
+    """Counts by dispatched outcome, with the three common outcomes first."""
+    counts: dict[str, int] = {}
+    for task in report.tasks:
+        counts[task.outcome] = counts.get(task.outcome, 0) + 1
+    order = ('completed', 'skipped', 'failed')
+    parts = [f'{outcome}={counts.pop(outcome, 0)}' for outcome in order]
+    parts.extend(f'{outcome}={count}' for outcome, count in sorted(counts.items()))
+    return ', '.join(parts)
+
+
+def _skip_count_line(report: RunReport) -> str:
+    """Counts for rows that were never dispatched, grouped by report reason."""
+    counts: dict[str, int] = {}
+    for skip in report.skipped:
+        counts[skip.reason] = counts.get(skip.reason, 0) + 1
+    return ', '.join(f'{reason}={count}' for reason, count in sorted(counts.items()))
 
 
 def _failure_line(failure_dict: dict[str, Any]) -> str:
@@ -1268,7 +1347,7 @@ def _notify(context: RunContext, report: RunReport, log: logging.Logger) -> None
     name = getattr(notifier, 'name', type(notifier).__name__)
     record: dict[str, Any] = {'attempted': True, 'ok': False, 'sink': name, 'error': None}
     try:
-        notifier.send(_notification(report))
+        notifier.send(_notification(report, include_balance_delta=context.config.notify_balance_delta))
     except Exception as exc:
         record['error'] = _delivery_error(exc)
         log.warning('%s', _event('notification_failed', sink=name, detail=record['error']))

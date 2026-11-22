@@ -39,10 +39,14 @@ def test_defaults_keep_the_container_paths_and_the_local_zone() -> None:
     assert config.app_settle_seconds == DEFAULT_APP_SETTLE_SECONDS
     assert config.dry_run is False
     assert config.keep_runs == DEFAULT_KEEP_RUNS
+    assert config.apprise_url is None
+    assert config.apprise_key is None
+    assert config.apprise_tag is None
     assert config.webhook_url is None
     assert config.ntfy_topic is None
     assert config.ntfy_server == DEFAULT_NTFY_SERVER
     assert config.notify_on_empty is False
+    assert config.notify_balance_delta is False
 
 
 def test_every_documented_variable_is_read() -> None:
@@ -62,10 +66,14 @@ def test_every_documented_variable_is_read() -> None:
             'AECOINS_APP_SETTLE_SECONDS': '0',
             'AECOINS_DRY_RUN': 'yes',
             'AECOINS_KEEP_RUNS': '7',
+            'AECOINS_APPRISE_URL': ' https://apprise.example ',
+            'AECOINS_APPRISE_KEY': 'coins-nightly',
+            'AECOINS_APPRISE_TAG': 'ops',
             'AECOINS_WEBHOOK_URL': ' https://hooks.example/coins ',
             'AECOINS_NTFY_TOPIC': 'coins-nightly',
             'AECOINS_NTFY_SERVER': 'https://ntfy.example',
             'AECOINS_NOTIFY_ON_EMPTY': 'true',
+            'AECOINS_NOTIFY_BALANCE_DELTA': 'yes',
         },
         root='/srv/app',
     )
@@ -84,15 +92,38 @@ def test_every_documented_variable_is_read() -> None:
     assert config.app_settle_seconds == 0.0
     assert config.dry_run is True
     assert config.keep_runs == 7
+    assert config.apprise_url == 'https://apprise.example'
+    assert config.apprise_key == 'coins-nightly'
+    assert config.apprise_tag == 'ops'
     assert config.webhook_url == 'https://hooks.example/coins'
     assert config.ntfy_topic == 'coins-nightly'
     assert config.ntfy_server == 'https://ntfy.example'
     assert config.notify_on_empty is True
+    assert config.notify_balance_delta is True
 
 
 @pytest.mark.parametrize('value', ['0', 'false', 'no', 'off'])
 def test_boolean_flag_accepts_every_false_spelling(value: str) -> None:
     assert RunConfig.from_environment({'AECOINS_DRY_RUN': value}).dry_run is False
+
+
+def test_apprise_accepts_the_unprefixed_names_and_prefers_the_project_prefix() -> None:
+    plain = RunConfig.from_environment(
+        {'APPRISE_URL': 'https://apprise.example', 'APPRISE_KEY': 'coins', 'APPRISE_TAG': 'ops'},
+    )
+    assert (plain.apprise_url, plain.apprise_key, plain.apprise_tag) == (
+        'https://apprise.example',
+        'coins',
+        'ops',
+    )
+
+    prefixed = RunConfig.from_environment(
+        {
+            'APPRISE_URL': 'https://ignored.example',
+            'AECOINS_APPRISE_URL': 'https://apprise.example',
+        },
+    )
+    assert prefixed.apprise_url == 'https://apprise.example'
 
 
 def test_tz_is_used_when_the_explicit_timezone_is_absent() -> None:
@@ -124,6 +155,7 @@ def test_explicit_timezone_wins_over_tz() -> None:
         ({'AECOINS_APP_SETTLE_SECONDS': 'fast'}, 'must be a number'),
         ({'AECOINS_TIMEZONE': 'Mars/Olympus'}, 'unknown timezone'),
         ({'AECOINS_DRY_RUN': 'maybe'}, 'must be a boolean'),
+        ({'AECOINS_NOTIFY_BALANCE_DELTA': 'sometimes'}, 'AECOINS_NOTIFY_BALANCE_DELTA must be a boolean'),
     ],
 )
 def test_invalid_values_raise_a_configuration_error(environment: dict[str, str], message: str) -> None:
