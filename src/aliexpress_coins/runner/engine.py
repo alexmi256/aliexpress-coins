@@ -998,6 +998,18 @@ def _notification(report: RunReport) -> Notification:
     )
 
 
+def _delivery_error(exc: Exception) -> str:
+    """Name a delivery failure without recording its untrusted message.
+
+    A target URL is a secret when it carries userinfo, and a custom sink can
+    raise an exception whose text includes it. The class plus an HTTP status is
+    enough to diagnose delivery without ever copying that text into artifacts.
+    """
+    status = getattr(exc, 'code', None)
+    suffix = f' (HTTP {status})' if isinstance(status, int) else ''
+    return f'{type(exc).__name__}{suffix}'
+
+
 def _notify(context: RunContext, report: RunReport, log: logging.Logger) -> None:
     """Deliver one notification after the run's own outcome is already written."""
     notifier = context.notifier
@@ -1008,7 +1020,7 @@ def _notify(context: RunContext, report: RunReport, log: logging.Logger) -> None
     try:
         notifier.send(_notification(report))
     except Exception as exc:
-        record['error'] = f'{type(exc).__name__}: {exc}'
+        record['error'] = _delivery_error(exc)
         log.warning('%s', _event('notification_failed', sink=name, detail=record['error']))
     else:
         record['ok'] = True

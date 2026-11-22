@@ -1620,6 +1620,37 @@ def test_an_unproven_coin_page_leaves_the_balance_unknown_and_says_why(
     assert '**Balance note:** coins page not proven before the first task' in summary
 
 
+def test_a_proven_coin_page_without_a_readable_balance_says_so(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _boost_header_frame()
+    _surface(monkeypatch, replace(full_roster, entries=()), frame)
+    coin = _snapshot(
+        _box('Coins', 100, 220, 300, 280),
+        _box('Coins credits to redeem', 100, 330, 700, 380),
+        _box('Daily coins', 100, 560, 500, 610),
+    )
+    context = _context(
+        tmp_path,
+        capture=_Capture(coin, coin),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+
+    report = engine.run_once(context)
+
+    assert report.balance_before is None
+    assert report.balance_delta is None
+    assert report.balance_note == 'the coins page did not render a readable balance before the first task'
+    assert 'balance-before' in report.shots
+    summary = report.summary_path.read_text(encoding='utf-8')
+    assert '**Balance note:** the coins page did not render a readable balance before the first task' in summary
+
+
 def test_a_balance_capture_route_error_is_named_without_failing_the_run(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1650,6 +1681,37 @@ def test_a_balance_capture_route_error_is_named_without_failing_the_run(
     assert '**Balance note:** coins page not proven before the first task: RuntimeError: route died' in (
         report.summary_path.read_text(encoding='utf-8')
     )
+
+
+def test_a_stop_during_the_balance_proof_is_re_raised(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    context = _context(
+        tmp_path,
+        capture=_Capture(_coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    assert context.controller is not None
+    report = RunReport(tmp_path, 'run-1', budget_seconds=60.0, started_at=CAPTURED_AT)
+    monkeypatch.setattr(
+        engine,
+        'return_to_coins_page',
+        lambda *args, **kwargs: (_ for _ in ()).throw(RunInterrupted('stop')),
+    )
+
+    with pytest.raises(RunInterrupted, match='stop'):
+        engine._record_balance_before(
+            context,
+            context.controller,
+            report,
+            ArtifactStore(report.runs_dir, report.run_id),
+            _coin_frame(),
+            _logger(),
+        )
 
 
 def test_popups_closed_during_discovery_observation_and_cleanup_are_counted(
@@ -1737,7 +1799,7 @@ def test_a_broken_webhook_is_logged_after_the_run_and_keeps_the_night_successful
         'attempted': True,
         'ok': False,
         'sink': 'webhook',
-        'error': 'RuntimeError: webhook down',
+        'error': 'RuntimeError',
     }
     events = [
         json.loads(line)['event']
@@ -1747,7 +1809,7 @@ def test_a_broken_webhook_is_logged_after_the_run_and_keeps_the_night_successful
     assert events.index('run_finished') < events.index('notification_failed')
     payload = _report_payload(tmp_path)
     assert payload['notification']['ok'] is False
-    assert '**Notification:** failed via webhook: RuntimeError: webhook down' in report.summary_path.read_text(
+    assert '**Notification:** failed via webhook: RuntimeError' in report.summary_path.read_text(
         encoding='utf-8',
     )
 
@@ -1764,11 +1826,8 @@ def test_a_webhook_password_never_reaches_the_report_or_the_log(
     _surface(monkeypatch, replace(full_roster, entries=()), frame)
     secret = 'correct-horse-battery-staple'
 
-    def broken(request: Any, *, timeout: float) -> Any:
-        del request, timeout
-        raise RuntimeError(f"nonnumeric port: '{secret}@example.invalid'")
-
-    notifier = WebhookSink(f'https://alice:{secret}@example.invalid/hook', opener=broken)
+    # No scheme: urllib raises while building the Request, before _post runs.
+    notifier = WebhookSink(f'hooks.example/{secret}')
     context = _context(
         tmp_path,
         capture=_Capture(frame, _coin_frame()),
@@ -1782,7 +1841,7 @@ def test_a_webhook_password_never_reaches_the_report_or_the_log(
         report = engine.run_once(context)
 
     assert report.notification is not None
-    assert report.notification['error'] == 'NotificationError: webhook delivery failed: RuntimeError'
+    assert report.notification['error'] == 'ValueError'
     assert secret not in caplog.text
     assert secret not in report.summary_path.read_text(encoding='utf-8')
     assert secret not in report.json_path.read_text(encoding='utf-8')

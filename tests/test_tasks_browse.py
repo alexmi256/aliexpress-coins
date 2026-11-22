@@ -18,7 +18,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from PIL import Image
@@ -728,6 +728,9 @@ def test_return_to_coins_page_sweeps_a_popup_on_arrival(
     assert result.returned is True
     assert world.current == 'coins'
     assert [report.closed for report in dismissals] == [('launch_welcome_gifts',)]
+    assert [item['closed'] for item in cast(list[dict[str, Any]], result.as_dict()['dismissals'])] == [
+        ['launch_welcome_gifts'],
+    ]
 
 
 def test_return_to_coins_page_accepts_the_redeem_interstitial_as_arrival(corpus: PopupCorpus) -> None:
