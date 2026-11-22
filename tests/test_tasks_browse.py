@@ -24,7 +24,7 @@ import pytest
 from PIL import Image
 
 from aliexpress_coins.control.controller import Controller
-from aliexpress_coins.control.errors import PopupUnclosable
+from aliexpress_coins.control.errors import InputError, PopupUnclosable
 from aliexpress_coins.control.popups import DismissReport, DismissStop, PopupCorpus, load_popup_corpus
 from aliexpress_coins.perception.geometry import DeviceGeometry
 from aliexpress_coins.perception.matching import normalize
@@ -79,6 +79,20 @@ class _ScrollingDevice(_RecordingDevice):
 
     def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int) -> None:
         self.swipes.append((x1, y1, x2, y2, duration_ms))
+
+
+class _FailingSwipeDevice(_ScrollingDevice):
+    """A device whose next search swipe fails after one successful move."""
+
+    def __init__(self, world: _World) -> None:
+        super().__init__(world)
+        self.calls = 0
+
+    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int) -> None:
+        self.calls += 1
+        if self.calls == 2:
+            raise InputError('adb input failed')
+        super().swipe(x1, y1, x2, y2, duration_ms)
 
 
 class _QueueCapture:
@@ -1291,7 +1305,7 @@ def test_run_browse_task_scrolls_to_a_row_below_the_fold(
     assert result.presses == 1
 
 
-def test_a_failed_below_fold_search_restores_the_scroll_position(
+def test_a_stable_noop_search_does_not_add_a_restore_swipe(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
     tmp_path: Path,
@@ -1317,12 +1331,74 @@ def test_a_failed_below_fold_search_restores_the_scroll_position(
     )
 
     assert result.verification == 'row_vanished'
-    assert len(device.swipes) == 2
-    down, restore = device.swipes
-    assert down[1] > down[3]
+    assert len(device.swipes) == 1
+    assert device.swipes[0][1] > device.swipes[0][3]
+
+
+def test_a_failed_search_restores_only_the_moves_that_changed_the_frame(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    first = _boost_frame(with_row=False)
+    moved = replace(first, image=Image.new('RGB', first.image.size, (80, 80, 80)))
+    stable = replace(moved, image=Image.new('RGB', moved.image.size, (80, 80, 80)))
+    world = _World(series={'boost': (first, moved, stable)}, transitions={})
+    device = _ScrollingDevice(world)
+    controller = Controller.from_frame(device, world.frame, rng=random.Random(0))
+
+    result = run_browse_task(
+        controller,
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        load_timeout=1.0,
+        settle=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.verification == 'row_vanished'
+    assert len(device.swipes) == 3
+    first_move, second_move, restore = device.swipes
+    assert first_move[1] > first_move[3]
+    assert second_move[1] > second_move[3]
     assert restore[1] < restore[3]
-    assert down[0] == restore[0]
-    assert down[2] == restore[2]
+    assert restore[0] == first_move[0]
+    assert restore[2] == first_move[2]
+
+
+def test_a_swipe_error_mid_search_restores_the_successful_moves(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    first = _boost_frame(with_row=False)
+    moved = replace(first, image=Image.new('RGB', first.image.size, (80, 80, 80)))
+    world = _World(series={'boost': (first, moved)}, transitions={})
+    device = _FailingSwipeDevice(world)
+    controller = Controller.from_frame(device, world.frame, rng=random.Random(0))
+
+    result = run_browse_task(
+        controller,
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        load_timeout=1.0,
+        settle=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.verification == 'row_vanished'
+    assert len(device.swipes) == 2
+    forward, restore = device.swipes
+    assert forward[1] > forward[3]
+    assert restore[1] < restore[3]
 
 
 def test_run_browse_task_skips_a_row_with_no_action(
