@@ -9,6 +9,7 @@ full-frame fixture; and every transition points at a state that exists.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,9 @@ FIXTURES = ROOT / 'tests' / 'data' / 'flows'
 
 FLOW_KEYS = ('surprise_items', 'coins_quiz', 'notifications')
 FLOW_FIELDS = ('key', 'title', 'entry', 'states', 'transitions', 'popups', 'exit', 'timings')
-STATE_FIELDS = ('key', 'identify', 'control', 'fixture')
+STATE_FIELDS = ('key', 'status', 'surfaces', 'identify', 'control')
+STATE_STATUSES = {'reproduced', 'prior', 'unobserved'}
+POPUPS_PATH = ROOT / 'specs' / 'popups.yaml'
 FRAME_SIZE = (1200, 2000)
 
 
@@ -72,11 +75,39 @@ def test_every_flow_has_the_fields_an_executor_needs(spec: dict[str, Any]) -> No
 def test_every_state_names_labels_and_a_control(spec: dict[str, Any]) -> None:
     for flow in _flows(spec):
         for state in flow['states']:
+            name = f'{flow["key"]}/{state.get("key")}'
             missing = [field for field in STATE_FIELDS if field not in state]
-            assert not missing, f'{flow["key"]}/{state.get("key")} is missing {missing}'
-            assert state['identify'], f'{flow["key"]}/{state["key"]} has no identifying labels'
-            assert all(isinstance(label, str) and label.strip() for label in state['identify'])
-            assert state['control'], f'{flow["key"]}/{state["key"]} has no control'
+            assert not missing, f'{name} is missing {missing}'
+            assert state['identify'], f'{name} has no identifying labels'
+            assert state['surfaces'], f'{name} names no surface'
+            assert state['control'], f'{name} has no control'
+
+            # `identify` and `absence` are the OCR contract: concrete labels, not
+            # prose or placeholders. A value that varies (a counter, a question
+            # prefix) belongs in `pattern`; a non-text marker in `visual`.
+            for label in [*state['identify'], *state.get('absence', [])]:
+                assert isinstance(label, str), f'{name} has a non-string label'
+                assert label.strip(), f'{name} has a blank label'
+                assert '<' not in label, f'{name}: {label!r} is a placeholder'
+                assert '>' not in label, f'{name}: {label!r} is a placeholder'
+                assert not label.lower().startswith('absence of'), f'{name}: {label!r} is prose'
+            for key in ('pattern', 'absence_pattern'):
+                if key in state:
+                    re.compile(state[key])
+
+
+def test_every_state_declares_valid_provenance(spec: dict[str, Any]) -> None:
+    for flow in _flows(spec):
+        for state in flow['states']:
+            assert state['status'] in STATE_STATUSES, f'{flow["key"]}/{state["key"]} has status {state["status"]!r}'
+
+
+def test_flow_popup_families_exist_in_the_corpus(spec: dict[str, Any]) -> None:
+    corpus = yaml.safe_load(POPUPS_PATH.read_text(encoding='utf-8'))
+    known = {family['family'] for family in corpus['families']}
+    for flow in _flows(spec):
+        for family in flow['popups']['families']:
+            assert family in known, f'{flow["key"]} names unknown popup family {family!r}'
 
 
 def test_every_state_fixture_is_a_reviewed_full_frame(spec: dict[str, Any]) -> None:

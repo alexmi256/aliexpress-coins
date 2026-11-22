@@ -1,9 +1,12 @@
 # Flow fixtures
 
-One full 1200×2000 frame per state of the three flows captured for issue #10 —
+One full 1200×2000 frame per **captured** state of the three flows from issue #10 —
 `specs/flows.yaml` is the state machine, these are the frames a reviewer can check it against.
+Three states were not captured and have no file (listed at the end of this README).
 Every file is exactly the shape `AdbSnapshotter.capture()` returns: the status-bar clock and the
-Android taskbar are retained, so a state is tested on the frame a run actually sees.
+Android taskbar are retained, so a state is tested on the frame a run actually sees. On the
+boost-sheet frames the clock sits behind the sheet and is dimmed by its scrim exactly as it is on
+the live screen; the mask starts below the status bar, so the system UI is not painted over.
 
 Account data is removed by masking the specific pixels, never by cropping. Masked here: the coin
 balance and coin-credit balance in both header pills and in the coin page behind the boost sheet.

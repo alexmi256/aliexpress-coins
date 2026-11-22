@@ -44,7 +44,9 @@ Run all spec checks with the normal gate:
 
 ```sh
 just check
-```To add a task family:
+```
+
+To add a task family:
 
 1. Add an `allowed` row with a unique snake_case key, one or more patterns taken
    from the measured title or subtitle, a known category, and a wait from the

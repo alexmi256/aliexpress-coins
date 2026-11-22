@@ -29,7 +29,7 @@ have their own negation because they are artwork only. A file in either director
 before it is committed, and a new image is not evidence that arbitrary screenshots may enter git.
 
 `flows/` holds the reviewed fixtures for the three state machines in
-[`specs/flows.yaml`](../../specs/flows.yaml) (issue #10): one full frame per state of the quiz,
-surprise-items and notification flows, with the same masking rule and a file-by-file inventory in
+[`specs/flows.yaml`](../../specs/flows.yaml) (issue #10): one full frame per **captured** state of
+the quiz, surprise-items and notification flows, with the same masking rule and a file-by-file inventory in
 [`flows/README.md`](flows/README.md). The single `.gitignore` negation for `tests/data/flows/*.png`
 is limited to that directory.

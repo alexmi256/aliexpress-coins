@@ -74,8 +74,8 @@ next: that skips the step a machine cannot do — checking the delivered work ag
 asked, and noticing that the next issue now needs re-scoping. Prompts for upcoming issues are drafted
 ahead of time, but nothing consumes them automatically.
 
-The device is at `192.168.8.220:38045` (wireless-debugging port — it changes when the tablet reconnects,
-and every task prompt carries it literally). CI cannot reach the device, so device tests skip when
+The device is at `192.168.8.65:5555` (the tablet was re-addressed after its battery died; the port and
+address change when it reconnects, and every task prompt carries them literally). CI cannot reach the device, so device tests skip when
 `AECOINS_DEVICE` is unset.
 
 ## Milestones
@@ -115,7 +115,7 @@ failure handling in #32 has proven itself.
 | #7 ✅ | shortcut and widget entry points — **answered**, intents captured |
 | #8 ✅ | the canonical coins-page intent — **answered**, `aliexpress://goto?url=…` |
 | #9 | whether the coin awards are replayable HTTP (updates ADR-0001) |
-| #10 | the surprise-items and notification flows, captured (quiz now captured) |
+| #10 | quiz, surprise-items and notification flows, captured in `specs/flows.yaml` and `tests/data/flows/`; the surprise round-2 reset is #63 |
 | #11 | popup corpus and per-family dismissal rules |
 
 ### #2 Epic: perception layer — M1
@@ -210,8 +210,9 @@ and the policy (#21) are in place, and the task surface is variable enough to be
 ## Recommended working order
 
 1. **#33** scaffold — unblocks nine other issues and makes every later change reviewable.
-2. **#10 + #11** — one more device session for the surprise-items and notification flows and the
-   popup corpus. Everything else can proceed without it, but those executors need it.
+2. **#10 + #11** — both captured (#10 in `specs/flows.yaml`, #11 in `specs/popups.yaml`). The one
+   remaining measurement, the surprise round-2 product reset, is #63 and does not block #26: the
+   flow spec specifies both behaviours.
 3. **#12 → #13 → #14**, with **#42** as a constraint on all three — no stored pixels, tolerances
    derived from the frame, scrolling as a search. The ladder is where portability is won or lost.
 4. **#16, #15** — classifier and glyph matching, in parallel.
@@ -240,7 +241,7 @@ and the policy (#21) are in place, and the task surface is variable enough to be
 | unknown | issue | how to settle |
 |---|---|---|
 | whether the empty boost page is only a cold-cache effect, or also rate limiting | #38 | repeat a cold-start trial series |
-| surprise-items flow and its rounds | #26 | one session with the task available |
-| notification task's system dialog | #28 | one session with the task available |
+| surprise-items round-2 product reset | #63 | start a day at `0/2` and open the same product in both rounds |
+| notification task's denial screen | #28 | a fresh day with the row unclaimed; the dialog itself is in the #11 corpus |
 | how to exit `YOU CAN NOW REDEEM!` other than BACK | #11 | capture the interstitial's full extent |
 | whether the coin awards are replayable HTTP | #9 | mitmproxy capture |

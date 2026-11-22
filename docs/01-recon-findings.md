@@ -12,7 +12,8 @@ Legend: ✅ verified by observation · ⬜ inferred, not verified · ❓ unknown
 
 ```
 adb connect 192.168.8.65:5555     -> connected
-adb shell id                      -> uid=2000(shell) ...  (2026-11-22; was uid=0(root) on 2026-11-19)
+adb shell id                      -> uid=2000(shell)          (default shell)
+adb root; adb shell id            -> uid=0(root)              (verified 2026-11-22)
 adb shell getprop ro.adb.secure   -> 0
 adb shell getprop ro.debuggable   -> 1
 adb shell which su                -> "su: inaccessible or not found"
@@ -25,10 +26,10 @@ container can connect without an authorised key. This removes the usual "works o
 `unauthorized` in the container" failure — but it is a property of this build, not of the
 project, and `doctor` reports it rather than assuming it.
 
-**There is no `su` binary.** On 2026-11-19 `adbd` ran as root, so root-only steps (launcher
-database, widget state) were plain `adb shell` commands. On 2026-11-22 the shell is
-`uid=2000(shell)`: root-only steps and starting non-exported activities do not work on that
-build, and `su -c ...` fails on both. Do not write `su` anywhere; do not assume root.
+**There is no `su` binary, but `adb root` works.** A plain `adb shell` is `uid=2000(shell)`; on this
+`userdebug` build `adb root` restarts `adbd` as root (verified 2026-11-22: the launcher database is
+readable and `am start` can launch a non-exported activity). Root-only steps are therefore plain
+`adb shell` commands *after* `adb root`, not `su -c ...`. Do not write `su` anywhere.
 
 The user's shell is shared with a human, so a run must be safe to point at a live session —
 that is why `--dry-run` suppresses taps at the `Controller` level rather than at the CLI.
@@ -178,8 +179,8 @@ So the widget is real, is 2×2, and renders the sign-in state (`signed` / `unsig
 Two paths remain open, both tracked as issues: reverse the widget/shortcut intent (what
 `AdcActivity` URL it fires) and/or let the app install the widget and read the widget state.
 
-The launcher database is readable **as the collector's own user** via adb (adbd is root), which
-makes "is the widget installed" a cheap assertion:
+The launcher database is readable **as the collector's own user** via adb after `adb root` (the
+default shell is `uid=2000`), which makes "is the widget installed" a cheap assertion:
 
 ```bash
 adb shell cat /data/data/com.android.launcher3/databases/launcher_6_by_5.db
@@ -246,10 +247,12 @@ The tablet was re-addressed to `192.168.8.65:5555` after its battery died (the s
 2026-11-20 used the same address; `.220` appears in older notes and is stale). App `8.180.1`,
 1200×2000 portrait.
 
-**Access correction.** `adb shell id` now returns `uid=2000(shell)`, not `uid=0(root)` as recorded
-in §1. `ro.debuggable=1` and `ro.adb.secure=0` still hold, but there is no root shell, so
-root-only steps (launcher database, starting non-exported activities) do **not** work on this
-build. `pm clear-permission-flags` and `cmd appops` still work for the shell user.
+**Access.** A plain `adb shell` is `uid=2000(shell)`, which is what the first attempt used; my
+initial note here called that "no root shell" and that was wrong. `adb root` restarts `adbd` as
+root and restores the root-only steps (verified: the launcher database lists, and
+`am start -n com.alibaba.aliexpresshd/.push.PushSettingActivity` succeeds — the earlier
+`SecurityException` was the un-rooted shell, not a missing capability). `pm clear-permission-flags`
+and `cmd appops` work for either user.
 
 **Task state at entry (00:12 EST).** The boost list was populated and carried, among others,
 `Take the coins quiz`, `Check in to win Shopping credits`, `Add & start using our widget` and
@@ -286,7 +289,9 @@ quiz row (title or its completed control) is inert. The notification row's OS pe
 `POST_NOTIFICATION: ignore` (`granted=false`), which confirms the row pays its +1 without the
 permission being held. From the app's own `Settings → Notification settings → Push notifications`,
 the `Allow phone notifications` toggle does **not** raise the runtime dialog: it deep-links to the
-OS `AliExpress` notification page. There, flipping the OS switch grants the permission directly,
+OS `AliExpress` notification page. Starting the app's `.push.PushSettingActivity` directly (as
+root, after `adb root`) gives the same deep-link, which rules out "the row's activity would have
+prompted". There, flipping the OS switch grants the permission directly,
 with no `Allow AliExpress to send you notifications?` dialog at all — that path was reverted
 (`pm revoke` + `pm clear-permission-flags … user-set`) within a minute and `Allow` was never
 tapped. The runtime dialog and its `Don't allow` close are therefore recorded in

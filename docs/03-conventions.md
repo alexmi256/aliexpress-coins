@@ -16,7 +16,7 @@ Nothing here describes code that exists yet — this repo is the plan.
 | No raw coordinate taps outside a documented popup fallback | a blind three-tap sequence during recon landed on a product page |
 | A task counts as completed only if the screen agrees (balance, progress badge, row gone) | "the taps were sent" is how a run reports ten successes and earns nothing |
 | Sweep popups after **every** navigation | the modal is invisible to the accessibility tree; the next tap silently hits the scrim |
-| Never `su -c` on this device | there is no `su` binary; `adbd` already runs as root |
+| Never `su -c` on this device | there is no `su` binary; use `adb root` (a plain shell is `uid=2000`) |
 | Screenshots and OCR dumps never enter git | they contain the account nickname, orders and cart |
 | Tests never spawn a process or open a socket | a test that reaches the real phone "passes" while testing nothing |
 | Unknown task labels are skipped, not attempted | default-deny is the only safe default |

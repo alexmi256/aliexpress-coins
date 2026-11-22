@@ -32,7 +32,7 @@ sharing, order placement, cart building. These are refused by policy, not merely
 |---|---|
 | device | `192.168.8.65:5555`, wireless adb, model `T3_US` |
 | Android | 15 (SDK 35), `userdebug`, `ro.adb.secure=0` (no adb key authorisation) |
-| adb | adbd already runs as **root** (no `su` binary on the image) |
+| adb | `adb root` restarts adbd as **root**; a plain shell is `uid=2000` (no `su` binary on the image) |
 | screen | 2000×1200 physical, 240 dpi, portrait screenshots are **1200×2000** |
 | app | `com.alibaba.aliexpresshd` 8.180.1 (versionCode 80005998) |
 | launcher | `com.android.launcher3`, single page, 6×5 grid |

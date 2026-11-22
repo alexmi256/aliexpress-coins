@@ -74,12 +74,14 @@ Full list observed on one page (2026-11-20), in order:
 | Add a coins shortcut | One tap away from your daily rewards | +1 | — | launcher item |
 | Add & start using our widget | Add our widget to your homescreen to use | +1 | — | launcher item |
 | Search for what you love | Earn by using keywords to explore items | +1 | `0/2` | browse-and-wait (search page) |
-| *coin page only:* Take the coins quiz | — | +3~6 coins, +0~US$0.01 | — | quiz |
+| Take the coins quiz | — | +3~6 coins, +0~US$0.01 | — | quiz |
 | *coin page only:* Merge Boss / Play & Earn / Prize Land | — | +30 / +900 | — | **refused** (games) |
 
-The roster is **server-driven and changes between loads**: at a second geometry `Browse surprise
-items` was replaced by `Search for what you love` on the same account, minutes later. The catalogue
-must therefore match by pattern and treat any missing task as normal.
+The quiz row appears **both** on the coin page's inline list and on the `Coins boost` sheet; the
+game tiles in the row below it are coin-page only. The roster is **server-driven and changes
+between loads**: at a second geometry `Browse surprise items` was replaced by `Search for what you
+love` on the same account, minutes later. The catalogue must therefore match by pattern and treat
+any missing task as normal.
 
 Five of the twelve rows are refusals, all on the page the executor must open. That is the argument
 for enforcing the deny list at dispatch rather than per-executor: the order, cart, water and share
@@ -166,7 +168,9 @@ page counter counts products in the current round.
    10 s; a tap anywhere on it dismissed it immediately. On a task with rounds remaining a
    **`Next round`** control appears at ~(597,1240) (⬜ from the 2026-11-21 session, not re-observed).
 6. **Completion**: BACK returns to the boost list, the row is gone, and the balance moves +1 once
-   (43 → 44 today). The +1 is paid on completion of the final round, not per round.
+   (43 → 44 today). The final round paid +1; whether an intermediate round also pays was not
+   observed this session. An earlier note recorded the balance rising during partial progress
+   (13 → 15 on 2026-11-20), which suggests it may pay per round — ⬜, not settled.
 
 The roster is server-driven and rotates immediately after this row completes: `Browse surprise
 items` was replaced in place by `Search for what you love` in the same session.
@@ -243,6 +247,6 @@ open shortcut deep link
 | Is a widget/shortcut *visit* needed for those two tasks, or is creation enough? | decides whether the executor must fake an entry point | wait for the task to reappear, then visit vs not |
 | Why were task rows absent on some loads? | the executor's "nothing available" branch | observe across a day boundary; check whether rows return after the daily reset |
 | The 15 s countdown on browse tasks | per-task wait time | time one sponsored-items task from GO to progress change |
-| Does the surprise-items round counter reset its product set between rounds? | the round-2 rule in #26 | one day starting at `0/2`, with the same product opened in both rounds |
+| Does the surprise-items round counter reset its product set between rounds? | the round-2 rule in #26 | #63: one day starting at `0/2`, with the same product opened in both rounds |
 | The quiz result and the notification denial frames | #25/#28 fixtures | one day when the quiz and the notification row are still unclaimed |
 | Whether the quiz question set is finite | question bank size | capture over several days |

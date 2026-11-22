@@ -1,11 +1,17 @@
 # Flow state machines for the task executors (issue #10).
 #
 # One entry per flow. A reader implements an executor by walking `states`,
-# `transitions` and `exit`: `identify` lists the OCR labels that define a state
-# (matched case-insensitively, whole words), and `control` names the only thing
-# the executor may act on while in it. Coordinates are never identifiers — a
-# control is resolved from its label or from the state's own geometry, and a tap
-# that produces no state change is re-captured, never repeated.
+# `transitions` and `exit`. A state is matched only when every `identify` entry
+# is present and every `absence` entry is absent; `identify` and `absence` are
+# OCR text, matched case-insensitively on whole words, and `pattern` is a regex
+# over OCR text for a value that is not a fixed label (a counter, a question
+# prefix). `visual` names a non-text marker for a human reader and is never an
+# OCR match. `surfaces` lists the screen(s) the state lives on, which is what separates
+# two states that share labels (the boost row and the grid both say `Browse
+# surprise items`). `control` names the only thing the executor may act on while
+# in the state. Coordinates are never identifiers — a control is resolved from
+# its label or from the state's own geometry, and a tap that produces no state
+# change is re-captured, never repeated.
 #
 # `status` on a state is `reproduced` (seen on the device in the 2026-11-22
 # session), `prior` (seen in an earlier session, with the note saying which),
@@ -45,7 +51,7 @@ flows:
     title: Browse surprise items
     status: reproduced
     entry:
-      surfaces: [boost_list, coin_page_inline]
+      surfaces: [boost_list, coin_page]
       row:
         label: Browse surprise items
         subtitle: Tap 3 items on this page to earn coins
@@ -60,9 +66,11 @@ flows:
     states:
       - key: entry_row
         status: reproduced
+        surfaces: [boost_list, coin_page]
         identify:
           - Browse surprise items
           - Tap 3 items on this page to earn coins
+        absence_pattern: "\\d\\s*/\\s*3"
         control:
           kind: label
           label: GO
@@ -73,12 +81,13 @@ flows:
 
       - key: round_grid
         status: reproduced
+        surfaces: [surprise_page]
         identify:
           - Browse surprise items
           - Tap 3 items on this page to earn coins
-          - "N /3 counter"
+        pattern: "\\d\\s*/\\s*3"
+        visual: [segmented counter pill, three tick placeholders]
         counter:
-          pattern: "\\d\\s*/\\s*3"
           note: >-
             The counter sits in a segmented pill under the subtitle, with three
             tick placeholders to its right that fill as distinct products are
@@ -96,10 +105,11 @@ flows:
 
       - key: item_detail
         status: reproduced
+        surfaces: [product_detail]
         identify:
           - Add to cart
           - Buy now
-          - "Item 1/n"
+        pattern: "Item\\s*\\d+/\\d+"
         control:
           kind: key
           key: KEYCODE_BACK
@@ -110,8 +120,10 @@ flows:
 
       - key: mission_overlay
         status: reproduced
+        surfaces: [overlay]
         identify:
           - Mission Completed
+        visual: [three gold coins over a dimmed grid, no close control]
         control:
           kind: tap
           target: anywhere on the overlay
@@ -121,10 +133,11 @@ flows:
 
       - key: round_complete
         status: reproduced
+        surfaces: [surprise_page]
         identify:
           - Browse surprise items
-          - "3 /3 counter"
-          - three filled tick icons
+        pattern: "3\\s*/\\s*3"
+        visual: [three filled tick icons]
         control:
           kind: label
           label: Next round
@@ -133,14 +146,18 @@ flows:
           On the final round (row at `1/2` at entry) no `Next round` control was
           offered; the page stayed on `3/3` and BACK was the exit. `Next round`
           was seen on 2026-11-21 at ~(597,1240) (prior session), not re-observed
-          this session because the task ended.
+          this session because the task ended. When rounds remain, `Next round`
+          is the only control in this state; when they do not, the state has no
+          control and BACK exits.
         fixture: tests/data/flows/surprise_items_round_complete.png
 
       - key: row_gone
         status: reproduced
+        surfaces: [boost_list]
         identify:
           - Coins boost
-          - absence of the Browse surprise items row
+        absence:
+          - Browse surprise items
         control: none
         fixture: tests/data/flows/surprise_items_row_gone.png
 
@@ -202,6 +219,19 @@ flows:
         pressure-cooker tile's inertness is consistent with a product opened in
         the earlier round still being excluded, but its earlier-round history
         was not recorded.
+      follow_up: "#63"
+      follow_up_note: >-
+        #63 is the fresh-day capture (start at 0/2, open the same product in
+        both rounds) that replaces this ambiguity with a measurement.
+      mitigation: >-
+        Until #63 lands, #26 implements both behaviours: it keeps the set of
+        tried products and reuses it across a round boundary, and if the counter
+        has stalled at the same value after a bounded number of distinct taps it
+        resets that set and tries fresh products. A stall is the observable
+        signature of "the server reset the round"; the executor records which
+        path it took in the run report. This is why #26 can be written without
+        the #63 measurement: the spec names the ambiguity and the executor is
+        specified to handle both sides of it.
 
     popups:
       families: []
@@ -227,7 +257,9 @@ flows:
       overlay_dwell_seconds: {value: 10, kind: lower_bound, note: still up at +10 s; tap dismisses}
       taps_per_round: 3
       rounds_per_day: 2
-      reward: "+1 coin on completing the final round; balance 43 -> 44"
+      reward: >-
+        The round recorded here paid +1 on completion (balance 43 -> 44). Whether an
+        intermediate round also pays was not observed (docs/05 §5b, ⬜).
 
   - key: coins_quiz
     task: coins_quiz
@@ -244,7 +276,7 @@ flows:
       state is either reproduced here or backed by a reviewed frame.
 
     entry:
-      surfaces: [coin_page_inline, boost_list]
+      surfaces: [boost_list, coin_page]
       row:
         label: Take the coins quiz
         subtitle: Each correct answer grants you more rewards
@@ -259,6 +291,7 @@ flows:
     states:
       - key: entry_row
         status: reproduced
+        surfaces: [boost_list, coin_page]
         identify:
           - Take the coins quiz
           - Each correct answer grants you more rewards
@@ -274,10 +307,11 @@ flows:
 
       - key: question
         status: prior
+        surfaces: [quiz_page]
         identify:
           - Coins quiz
           - Answer quiz questions for more coins!
-          - "Q : <question>"
+        pattern: "Q\\s*:"
         control:
           kind: option
           note: >-
@@ -293,10 +327,11 @@ flows:
 
       - key: result
         status: prior
+        surfaces: [result_page]
         identify:
           - "Correct answer:"
           - "Your answer:"
-          - "You got +N"
+        pattern: "You got \\+\\d+"
         control:
           kind: label
           label: Go back
@@ -314,6 +349,7 @@ flows:
 
       - key: redeem_interstitial
         status: unobserved
+        surfaces: [overlay]
         identify:
           - YOU CAN NOW REDEEM!
         control:
@@ -334,6 +370,7 @@ flows:
 
       - key: coin_page
         status: reproduced
+        surfaces: [coin_page]
         identify:
           - Daily coins
           - Coins credits to redeem
@@ -418,6 +455,7 @@ flows:
     states:
       - key: entry_row
         status: reproduced
+        surfaces: [boost_list]
         identify:
           - Turn on notifications
           - Stay informed when rewards drop
@@ -430,6 +468,7 @@ flows:
 
       - key: app_prompt
         status: prior
+        surfaces: [app_prompt]
         identify:
           - Receive timely notifications
         control:
@@ -445,6 +484,7 @@ flows:
 
       - key: system_dialog
         status: prior
+        surfaces: [system_dialog]
         identify:
           - "Allow AliExpress to send you notifications?"
         control:
@@ -459,9 +499,9 @@ flows:
 
       - key: os_settings
         status: reproduced
+        surfaces: [os_settings]
         identify:
           - All AliExpress notifications
-          - "You haven't allowed notifications from this app"
         control:
           kind: toggle
           note: >-
@@ -476,6 +516,8 @@ flows:
 
       - key: after_grant
         status: reproduced
+        surfaces: [os_settings]
+        visual: [the All AliExpress notifications switch is on]
         identify:
           - Categories
           - "This app has not posted any notifications"
@@ -491,9 +533,12 @@ flows:
 
       - key: after_denial
         status: unobserved
+        surfaces: [boost_list]
         identify:
-          - the app screen that was underneath (Coins boost / coin page)
-          - absence of the system dialog and of the app prompt
+          - Coins boost
+        absence:
+          - "Allow AliExpress to send you notifications?"
+          - Receive timely notifications
         control: none
         fixture: null
         fixture_absent_reason: >-
