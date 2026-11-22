@@ -10,12 +10,15 @@ full-frame fixture; and every transition points at a state that exists.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 from PIL import Image
+
+from aliexpress_coins.perception.ocr import RapidOcrEngine
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC_PATH = ROOT / 'specs' / 'flows.yaml'
@@ -34,6 +37,33 @@ def spec() -> dict[str, Any]:
     loaded = yaml.safe_load(SPEC_PATH.read_text(encoding='utf-8'))
     assert isinstance(loaded, dict)
     return loaded
+
+
+@pytest.fixture(scope='module')
+def fixture_text() -> Callable[[Path, list[float] | None], str]:
+    """OCR a fixture once, optionally over the state's declared `ocr_crop`."""
+    engine = RapidOcrEngine()
+    cache: dict[tuple[str, tuple[float, ...] | None], str] = {}
+
+    def read(path: Path, crop: list[float] | None = None) -> str:
+        key = (str(path), tuple(crop) if crop is not None else None)
+        if key not in cache:
+            with Image.open(path) as image:
+                frame = image.convert('RGB')
+                if crop is not None:
+                    width, height = frame.size
+                    frame = frame.crop(
+                        (
+                            int(crop[0] * width),
+                            int(crop[1] * height),
+                            int(crop[2] * width),
+                            int(crop[3] * height),
+                        )
+                    )
+                cache[key] = ' | '.join(box.text for box in engine.read(frame))
+        return cache[key]
+
+    return read
 
 
 def _flows(spec: dict[str, Any]) -> list[dict[str, Any]]:
@@ -100,6 +130,32 @@ def test_every_state_declares_valid_provenance(spec: dict[str, Any]) -> None:
     for flow in _flows(spec):
         for state in flow['states']:
             assert state['status'] in STATE_STATUSES, f'{flow["key"]}/{state["key"]} has status {state["status"]!r}'
+
+
+def test_declared_patterns_and_absences_match_their_fixture(
+    spec: dict[str, Any], fixture_text: Callable[[Path, list[float] | None], str]
+) -> None:
+    """Evaluate the state matchers against the frame they claim to identify.
+
+    This is the regression guard for a matcher that is true in prose but false on
+    the committed frame — for example a frame-wide `0/3` absence on a page whose
+    other rows carry a `0/3` badge of their own.
+    """
+    for flow in _flows(spec):
+        for state in flow['states']:
+            fixture = state.get('fixture')
+            if fixture is None:
+                continue
+            text = fixture_text(ROOT / fixture, state.get('ocr_crop'))
+            name = f'{flow["key"]}/{state["key"]}'
+            if 'pattern' in state:
+                assert re.search(state['pattern'], text), (
+                    f'{name}: pattern {state["pattern"]!r} does not match {fixture}'
+                )
+            for label in state.get('absence', []):
+                assert label.casefold() not in text.casefold(), (
+                    f'{name}: absent label {label!r} is present in {fixture}'
+                )
 
 
 def test_flow_popup_families_exist_in_the_corpus(spec: dict[str, Any]) -> None:

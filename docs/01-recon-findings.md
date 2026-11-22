@@ -179,8 +179,8 @@ So the widget is real, is 2×2, and renders the sign-in state (`signed` / `unsig
 Two paths remain open, both tracked as issues: reverse the widget/shortcut intent (what
 `AdcActivity` URL it fires) and/or let the app install the widget and read the widget state.
 
-The launcher database is readable **as the collector's own user** via adb after `adb root` (the
-default shell is `uid=2000`), which makes "is the widget installed" a cheap assertion:
+The launcher database is readable via adb after `adb root` (the default shell is `uid=2000`),
+which makes "is the widget installed" a cheap assertion:
 
 ```bash
 adb shell cat /data/data/com.android.launcher3/databases/launcher_6_by_5.db
@@ -313,8 +313,8 @@ that starts before the quiz/notification rows are claimed. The state machine its
 | widget click intent | ✅ answered | `from=widget` + `aewidget_*` parameter set captured |
 | quiz flow | 🟡 labels answered, frames partial | one question per visit, answer set 2 or 4; result frame still needed |
 | why task rows are sometimes absent | ❓ | observe across a day boundary; check whether they return after the daily reset |
-| surprise-items flow | ✅ answered (§7c) | counter is per distinct product; the cross-round reset is still open |
-| surprise-items round rule across rounds | ❓ | start a day at `0/2` and open the same product in both rounds |
+| surprise-items flow | 🟡 answered within a round (§7c) | counter is per distinct product; the cross-round reset is #63 |
+| surprise-items round rule across rounds | ❓ #63 | start a day at `0/2` and open the same product in both rounds |
 | notification task | 🟡 OS routes answered, denial frame missing | row pays +1 without the permission; capture `Don't allow` and the screen after it |
 | `YOU CAN NOW REDEEM!` exit | ❓ | still one-shot: BACK is the only known exit; capture when a quiz pays credit |
 | API feasibility | ❓ | mitmproxy capture of a task run: are the coin awards plain HTTP the UI merely reflects? |
