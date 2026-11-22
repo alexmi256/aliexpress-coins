@@ -62,11 +62,12 @@ and `tests/`. Ruff checks those two trees only: `tools/` is excluded because its
 issue-filing scripts contain intentional prose punctuation and are not package code.
 
 Coverage is a **ratchet** with a starting floor of **85%**, raised to **98%** when the perception
-capture module landed (measured 98.45%) and to **98.8%** when the daily state store landed
-(measured 98.87%). The scaffold is fully covered, but a one-statement package makes that 100% an
-artefact of the stub, so the floor starts below the maximum. As real modules land, raise the floor
-toward the measured number; never lower it to make a change pass. The gate fails the build when
-coverage drops below the floor.
+capture module landed (measured 98.45%), to **98.8%** when the daily state store landed
+(measured 98.87%), and to **99.0%** when the daily sign-in executor landed (measured 99.01%).
+The scaffold is fully covered, but a one-statement package makes that 100% an artefact of the
+stub, so the floor starts below the maximum. As real modules land, raise the floor toward the
+measured number; never lower it to make a change pass. The gate fails the build when coverage
+drops below the floor.
 
 The plan and the conventions the build must follow are in [`docs/`](docs/) — start with
 [`docs/03-conventions.md`](docs/03-conventions.md) and
