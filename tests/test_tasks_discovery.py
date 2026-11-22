@@ -19,7 +19,7 @@ from PIL import Image
 
 from aliexpress_coins.control.controller import Controller
 from aliexpress_coins.control.popups import PopupCorpus, load_popup_corpus
-from aliexpress_coins.perception.errors import StateTimeout
+from aliexpress_coins.perception.errors import SnapshotError, StateTimeout
 from aliexpress_coins.perception.geometry import DeviceGeometry
 from aliexpress_coins.perception.matching import find_text
 from aliexpress_coins.perception.ocr import RapidOcrEngine
@@ -989,6 +989,27 @@ def test_an_action_change_is_logged_with_before_and_after(
     assert second.rows[0].action == 'Claimed'
 
 
+def test_ocr_spacing_and_case_are_not_progress_or_action_changes(
+    catalogue: TaskCatalogue,
+) -> None:
+    before = _boost_frame(
+        _task_row('Daily check-in', 100),
+        _task_row('Explore sponsored items', 300, badge='0 / 6', action='go'),
+    )
+    after = _boost_frame(
+        _task_row('Daily check-in', 100),
+        _task_row('Explore sponsored items', 300, badge='0/6', action='GO'),
+    )
+
+    first = _observe(catalogue, before)
+    second = _observe(catalogue, after, previous=first.roster)
+
+    assert second.diff.progress_moved == ()
+    assert second.diff.action_changed == ()
+    assert second.rows[1].badge == '0/6'
+    assert second.rows[1].action == 'GO'
+
+
 def test_an_unknown_title_is_a_candidate_that_is_never_dispatchable(
     catalogue: TaskCatalogue,
 ) -> None:
@@ -1025,7 +1046,7 @@ def test_a_failed_observation_keeps_the_previous_roster_and_the_walk_continues(
     observer = RosterObserver(catalogue, log=log, clock=lambda: CAPTURED_AT)
     first = observer.observe(good)
 
-    failed = observer.observe(lambda: (_ for _ in ()).throw(RuntimeError('capture died')))
+    failed = observer.observe(lambda: (_ for _ in ()).throw(SnapshotError('capture died')))
 
     assert failed.failed
     assert failed.error is not None
@@ -1042,6 +1063,69 @@ def test_a_failed_observation_keeps_the_previous_roster_and_the_walk_continues(
         'Daily check-in',
         'Explore sponsored items',
     ]
+
+
+def test_an_unexpected_observation_error_is_not_hidden(
+    catalogue: TaskCatalogue,
+) -> None:
+    with pytest.raises(RuntimeError, match='programming bug'):
+        observe_roster(
+            lambda: (_ for _ in ()).throw(RuntimeError('programming bug')),
+            catalogue,
+            timestamp=CAPTURED_AT,
+        )
+
+
+def test_an_empty_boost_observation_keeps_the_previous_roster(
+    frames: dict[str, Snapshot],
+    catalogue: TaskCatalogue,
+) -> None:
+    good = _boost_frame(_task_row('Daily check-in', 100), _task_row('Explore sponsored items', 300, badge='0/6'))
+    observer = RosterObserver(catalogue, clock=lambda: CAPTURED_AT)
+    first = observer.observe(good)
+
+    failed = observer.observe(_empty_boost(frames['state_boost']))
+
+    assert failed.failed
+    assert failed.error is not None
+    assert failed.rows == first.rows
+    assert failed.diff.changed is False
+    assert observer.roster is first.roster
+
+
+def test_a_changed_surface_does_not_erase_the_boost_roster(
+    frames: dict[str, Snapshot],
+    catalogue: TaskCatalogue,
+) -> None:
+    good = _boost_frame(_task_row('Daily check-in', 100), _task_row('Explore sponsored items', 300, badge='0/6'))
+    observer = RosterObserver(catalogue, clock=lambda: CAPTURED_AT)
+    first = observer.observe(good)
+
+    failed = observer.observe(frames['coins'])
+
+    assert failed.failed
+    assert failed.error is not None
+    assert 'surface changed' in failed.error
+    assert failed.rows == first.rows
+    assert observer.roster is first.roster
+
+
+def test_a_candidate_in_the_seeded_previous_roster_is_reported(
+    catalogue: TaskCatalogue,
+) -> None:
+    frame = _boost_frame(
+        _task_row('Daily check-in', 100),
+        _task_row('Invent a new task', 300, badge='0/6', subtitle='Try the mystery box'),
+    )
+    initial = _observe(catalogue, frame)
+    observer = RosterObserver(catalogue, previous=initial.roster, clock=lambda: CAPTURED_AT)
+
+    first = observer.observe(frame)
+    second = observer.observe(frame)
+
+    assert [row.label for row in first.diff.candidates] == ['Invent a new task']
+    assert [row.label for row in first.diff.added] == []
+    assert [row.label for row in second.diff.candidates] == []
 
 
 @pytest.mark.parametrize(
@@ -1123,8 +1207,8 @@ def test_the_observation_cap_is_logged_once_and_stops_capture(
     again = observer.observe(capture(second_frame))
 
     assert capped.cap_reached
-    assert capped.error is not None
-    assert 'cap reached (1)' in capped.error
+    assert capped.failed is False
+    assert capped.error is None
     assert [row.label for row in capped.rows] == ['Daily check-in', 'Explore sponsored items']
     assert again is capped
     assert len(captures) == 1
@@ -1133,7 +1217,7 @@ def test_the_observation_cap_is_logged_once_and_stops_capture(
     records = read_roster_log(observer.log.path) if observer.log is not None else ()
     assert [record['observation_seq'] for record in records] == [1, 2]
     assert records[1]['cap_reached'] is True
-    assert records[1]['error'] is not None
+    assert records[1]['error'] is None
 
 
 def test_the_log_is_append_only_jsonl_across_restarts(
@@ -1164,6 +1248,12 @@ def test_the_log_is_append_only_jsonl_across_restarts(
     assert json.loads(lines[1])['observation_seq'] == 1
     assert observation.sequence == 1
     assert read_roster_log(path)[1]['rows'] == [row.as_dict() for row in observation.rows]
+
+
+@pytest.mark.parametrize('run_id', ['', '.', '..', 'a/b', '..\\escape', '   '])
+def test_roster_log_run_ids_cannot_escape_the_runs_directory(tmp_path: Path, run_id: str) -> None:
+    with pytest.raises(ValueError, match='single path component'):
+        RosterLog.for_run(tmp_path, run_id)
 
 
 def test_roster_log_reports_an_unreadable_or_invalid_file(tmp_path: Path) -> None:
@@ -1241,7 +1331,7 @@ def test_the_observer_reads_the_run_directory_and_cap_from_the_environment(
         environment={'AECOINS_MAX_TASKS_PER_RUN': '5'},
         clock=lambda: CAPTURED_AT,
     )
-    assert from_tasks.max_observations == 5
+    assert from_tasks.max_observations == 6
 
     default = RosterObserver.from_environment(
         catalogue,
@@ -1249,10 +1339,19 @@ def test_the_observer_reads_the_run_directory_and_cap_from_the_environment(
         environment={},
         clock=lambda: CAPTURED_AT,
     )
-    assert default.max_observations == DEFAULT_OBSERVATION_CAP == 12
+    assert default.max_observations == DEFAULT_OBSERVATION_CAP == 13
 
     unnamed = RosterLog.from_environment({'AECOINS_RUNS_DIR': str(tmp_path)}, run_id='', clock=lambda: CAPTURED_AT)
     assert unnamed.path == tmp_path / '20261121T120000Z' / ROSTER_LOG_NAME
+
+    unnamed_observer = RosterObserver.from_environment(
+        catalogue,
+        run_id='   ',
+        environment={'AECOINS_RUNS_DIR': str(tmp_path)},
+        clock=lambda: CAPTURED_AT,
+    )
+    assert unnamed_observer.log is not None
+    assert unnamed_observer.log.path == tmp_path / '20261121T120000Z' / ROSTER_LOG_NAME
 
 
 @pytest.mark.parametrize(
@@ -1269,6 +1368,17 @@ def test_the_environment_cap_must_be_a_positive_integer(
             catalogue,
             run_id='run-1',
             environment={'AECOINS_MAX_ROSTER_OBSERVATIONS': value},
+        )
+
+
+def test_the_task_cap_error_names_the_task_environment_variable(
+    catalogue: TaskCatalogue,
+) -> None:
+    with pytest.raises(ValueError, match='AECOINS_MAX_TASKS_PER_RUN'):
+        RosterObserver.from_environment(
+            catalogue,
+            run_id='run-1',
+            environment={'AECOINS_MAX_TASKS_PER_RUN': 'many'},
         )
 
 

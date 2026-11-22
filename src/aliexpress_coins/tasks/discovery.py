@@ -37,7 +37,7 @@ from typing import Any, cast
 
 from aliexpress_coins.control.controller import Controller, TapRecord
 from aliexpress_coins.control.popups import DismissReport, PopupCorpus, _matching_family, dismiss_after
-from aliexpress_coins.perception.errors import StateTimeout
+from aliexpress_coins.perception.errors import OcrError, SnapshotError, StateTimeout
 from aliexpress_coins.perception.layout import (
     DEFAULT_ACTION_LABELS,
     ProgressBadge,
@@ -131,13 +131,12 @@ ROSTER_OBSERVATION_SCHEMA = 1
 ROSTER_LOG_NAME = 'roster.jsonl'
 """The append-only observation log inside one run directory."""
 
-DEFAULT_OBSERVATION_CAP = 12
+DEFAULT_OBSERVATION_CAP = 13
 """The default number of re-enumerations a run may make.
 
-Deliberately the same order as the measured ``AECOINS_MAX_TASKS_PER_RUN``
-default (12): one observation per completed task, plus the final capture, can
-never need many more than the run's own task budget. The cap is a churn guard,
-not a work budget.
+The measured ``AECOINS_MAX_TASKS_PER_RUN`` default is 12. One observation per
+completed task plus the final capture needs 13, so the cap always leaves room
+for that final capture. The cap is a churn guard, not a work budget.
 """
 
 _MAX_TASKS_ENV = 'AECOINS_MAX_TASKS_PER_RUN'
@@ -559,7 +558,7 @@ def diff_rosters(
         old = before.get(identity)
         if old is None:
             continue
-        if old.badge != row.badge:
+        if _progress_key(old.badge) != _progress_key(row.badge):
             progress_moved.append(
                 RosterChange(
                     identity=identity,
@@ -569,7 +568,7 @@ def diff_rosters(
                     after=row.badge,
                 ),
             )
-        if old.action != row.action:
+        if _action_key(old.action) != _action_key(row.action):
             action_changed.append(
                 RosterChange(
                     identity=identity,
@@ -581,7 +580,7 @@ def diff_rosters(
             )
 
     known = set(known_candidates)
-    candidates = tuple(row for row in added if row.candidate and row.identity not in known)
+    candidates = tuple(row for row in after.values() if row.candidate and row.identity not in known)
     return RosterDiff(
         added=added,
         removed=removed,
@@ -626,13 +625,26 @@ def observe_roster(
         problem = _observation_problem(classification.state, variant)
         if problem is not None:
             raise _ObservationFailure(problem)
-        roster = enumerate_roster(
-            snapshot,
-            catalogue,
-            route=route if route is not None else (previous.route if previous is not None else None),
-            action_labels=action_labels,
+        if (
+            previous is not None
+            and previous.surface_variant is not None
+            and variant is not None
+            and variant is not previous.surface_variant
+        ):
+            raise _ObservationFailure(
+                f'the surface changed from {previous.surface_variant.value} to {variant.value}; '
+                'the previous roster is kept',
+            )
+        roster = replace(
+            enumerate_roster(
+                snapshot,
+                catalogue,
+                route=route if route is not None else (previous.route if previous is not None else None),
+                action_labels=action_labels,
+            ),
+            surface_variant=variant,
         )
-    except Exception as exc:
+    except (OcrError, OSError, SnapshotError, StateTimeout, _ObservationFailure) as exc:
         rows = _rows_of(previous)
         observation = RosterObservation(
             sequence=sequence,
@@ -658,6 +670,14 @@ def observe_roster(
     return observation
 
 
+def _log_run_id(run_id: str) -> str:
+    """Keep the log inside ``<runs_dir>/<run_id>``; no path escapes."""
+    cleaned = run_id.strip()
+    if not cleaned or cleaned in {'.', '..'} or Path(cleaned).name != cleaned or '/' in cleaned or '\\' in cleaned:
+        raise ValueError(f'run id must be a single path component: {run_id!r}')
+    return cleaned
+
+
 class RosterLog:
     """Append-only ``roster.jsonl`` in one run directory.
 
@@ -672,7 +692,7 @@ class RosterLog:
     @classmethod
     def for_run(cls, runs_dir: str | Path, run_id: str) -> RosterLog:
         """The log at ``<runs_dir>/<run_id>/roster.jsonl``."""
-        return cls(Path(runs_dir) / run_id / ROSTER_LOG_NAME)
+        return cls(Path(runs_dir) / _log_run_id(run_id) / ROSTER_LOG_NAME)
 
     @classmethod
     def from_environment(
@@ -685,7 +705,8 @@ class RosterLog:
         """Use the container's ``AECOINS_RUNS_DIR``, falling back to ``runs/``."""
         env = os.environ if environment is None else environment
         root = env.get('AECOINS_RUNS_DIR', '').strip() or 'runs'
-        return cls.for_run(root, run_id if run_id else clock().strftime('%Y%m%dT%H%M%SZ'))
+        identifier = (run_id or '').strip() or clock().strftime('%Y%m%dT%H%M%SZ')
+        return cls.for_run(root, identifier)
 
     def append(self, observation: RosterObservation) -> Path:
         """Append one line and fsync it; raise :class:`RosterLogError` on failure."""
@@ -773,7 +794,7 @@ class RosterObserver:
     ) -> RosterObserver:
         """Build the observer from the container's run directory and task caps."""
         env = os.environ if environment is None else environment
-        identifier = run_id if run_id is not None else clock().strftime('%Y%m%dT%H%M%SZ')
+        identifier = (run_id or '').strip() or clock().strftime('%Y%m%dT%H%M%SZ')
         observer_log = log if log is not None else RosterLog.from_environment(env, run_id=identifier)
         return cls(
             catalogue,
@@ -840,7 +861,7 @@ class RosterObserver:
         self._write(observation)
         if observation.roster is not None:
             self._roster = observation.roster
-        self._seen_candidates.update(row.identity for row in observation.candidates)
+        self._seen_candidates.update(row.identity for row in observation.diff.candidates)
         return observation
 
     def _report_cap(self, timestamp: datetime | None) -> RosterObservation:
@@ -851,7 +872,6 @@ class RosterObserver:
             timestamp=timestamp if timestamp is not None else self._clock(),
             rows=_rows_of(self._roster),
             surface_variant=None,
-            error=f're-enumeration cap reached ({self.max_observations}); no further observations this run',
             cap_reached=True,
             roster=self._roster,
         )
@@ -876,6 +896,19 @@ def read_roster_log(path: str | Path) -> tuple[dict[str, Any], ...]:
     return RosterLog(path).read()
 
 
+def _progress_key(badge: str | None) -> object:
+    """Compare parsed badges so OCR spacing is not a progress change."""
+    if badge is None:
+        return None
+    parsed = parse_progress_badge(badge)
+    return parsed if parsed is not None else badge
+
+
+def _action_key(action: str | None) -> str | None:
+    """Compare actions case/punctuation-insensitively; log the raw text."""
+    return normalize(action) if action is not None else None
+
+
 def _rows_by_identity(roster: Roster | None) -> dict[str, RosterRow]:
     rows: dict[str, RosterRow] = {}
     if roster is None:
@@ -895,10 +928,14 @@ def _observation_problem(state: ScreenState, variant: Surface | None) -> str | N
         return 'the task surface is still loading'
     if state is ScreenState.POPUP:
         return 'a popup covers the task surface'
+    if state is ScreenState.ERROR:
+        return 'the task surface is in an error state'
     if variant is Surface.UNKNOWN:
         return 'the surface variant is UNKNOWN'
     if variant is Surface.REDEEM_INTERSTITIAL:
         return 'the reward interstitial covers the task surface'
+    if variant is Surface.EMPTY_BOOST:
+        return 'the empty boost page is a load fault, not an empty roster'
     return None
 
 
@@ -928,18 +965,22 @@ def _log_observation(
 
 
 def _cap_from_environment(environment: Mapping[str, str]) -> int:
-    raw = environment.get(_MAX_OBSERVATIONS_ENV, '').strip()
+    name = _MAX_OBSERVATIONS_ENV
+    raw = environment.get(name, '').strip()
+    final_capture = False
     if not raw:
-        raw = environment.get(_MAX_TASKS_ENV, '').strip()
+        name = _MAX_TASKS_ENV
+        raw = environment.get(name, '').strip()
+        final_capture = True
     if not raw:
         return DEFAULT_OBSERVATION_CAP
     try:
         cap = int(raw)
     except ValueError as exc:
-        raise ValueError(f'{_MAX_OBSERVATIONS_ENV} must be an integer, got {raw!r}') from exc
+        raise ValueError(f'{name} must be an integer, got {raw!r}') from exc
     if cap < 1:
-        raise ValueError(f'{_MAX_OBSERVATIONS_ENV} must be positive, got {cap!r}')
-    return cap
+        raise ValueError(f'{name} must be positive, got {cap!r}')
+    return cap + 1 if final_capture else cap
 
 
 class _ObservationFailure(Exception):
