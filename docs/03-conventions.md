@@ -58,6 +58,19 @@ Row-parsing fixtures use the **measured** coins-page geometry (label at x≈180,
 at x≈980 and ~31 px lower). If a fixture is invented rather than measured, a real layout change
 looks like a test bug.
 
+## Verification: absence is not evidence
+
+A task is `completed` only when a **positive** signal says so: the progress badge advanced, the row's action
+flipped to a completed state, or the row disappeared from a surface that is *known to be complete*.
+
+Two surfaces are complete and can be trusted for a "gone" verdict: the populated boost list, and a page the
+`Surface` classifier positively identifies. The **inline coin page is a partial subset** — rows come and go
+with the variant and the entry route — so a missing row there proves nothing on its own.
+
+Corollary, learned three times over (#23 streak scoping, #24 row-gone, the #23 interstitial): **a false
+`completed` is worse than `unverified`.** `unverified` costs one night and retries tomorrow; a false
+`completed` is recorded in daily state and silently skips the task for the rest of the day.
+
 ## Logging and reporting
 
 - Structured events, not sentences: `task_skipped` with `reason` is groupable; a prose line is not.
