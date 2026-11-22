@@ -45,6 +45,8 @@ ALLOWED: dict[tuple[str, int | float], _Allowed] = {
     ('perception/state.py', 100): _Allowed(1, 'popup-analysis grid resolution in cells, not pixels'),
     ('perception/state.py', 255.0): _Allowed(5, '8-bit luminance range, not a pixel size'),
     ('perception/state.py', 256): _Allowed(4, 'histogram bin count, not a pixel size'),
+    ('perception/waits.py', 32): _Allowed(1, 'downscaled stability signature resolution in cells, not pixels'),
+    ('perception/waits.py', 255.0): _Allowed(1, '8-bit luminance denominator, not a pixel size'),
     ('runner/config.py', 23): _Allowed(1, 'clock hour range, not pixels'),
     ('runner/config.py', 30): _Allowed(2, 'run-retention default in runs, not pixels'),
     ('runner/config.py', 59): _Allowed(1, 'clock minute range, not pixels'),

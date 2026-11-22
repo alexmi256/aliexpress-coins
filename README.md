@@ -99,7 +99,8 @@ landed (measured 99.25%), to **99.25%** when the nightly runner landed (measured
 when geometry independence landed (measured 99.33%), to **99.33%** when the dispatch gate and
 abort conditions landed (measured 99.33%), to **99.35%** when abort propagation through executor
 and cleanup handlers landed (measured 99.36%), and to **99.37%** when the inside-task countdown
-band was narrowed (measured 99.38%).
+band was narrowed (measured 99.38%), then to **99.39%** when the wait primitives landed (measured
+99.40%).
 The scaffold is fully covered, but a one-statement package makes that 100% an artefact of the
 stub, so the floor starts below the maximum. As real modules land, raise the floor toward the
 measured number; never lower it to make a change pass. The gate fails the build when coverage

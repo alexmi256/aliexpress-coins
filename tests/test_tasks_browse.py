@@ -13,6 +13,7 @@ use.
 
 from __future__ import annotations
 
+import logging
 import random
 from collections.abc import Callable, Sequence
 from dataclasses import replace
@@ -30,6 +31,7 @@ from aliexpress_coins.perception.geometry import DeviceGeometry
 from aliexpress_coins.perception.matching import normalize
 from aliexpress_coins.perception.ocr import RapidOcrEngine
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
+from aliexpress_coins.perception.waits import CountdownEnding
 from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks.browse import (
     MAX_PRESSES,
@@ -518,6 +520,8 @@ def test_wait_for_timer_chip_is_ended_by_the_read_not_the_bound() -> None:
     assert wait.initial is not None
     assert wait.initial.countdown == 12
     assert wait.final is None
+    assert wait.ended_by is CountdownEnding.FRAME
+    assert wait.as_dict()['ended_by'] == 'frame'
 
 
 def test_wait_for_timer_chip_accepts_the_arrival_frame_as_the_initial_read() -> None:
@@ -640,6 +644,35 @@ def test_find_task_row_returns_none_for_a_missing_title(monkeypatch: pytest.Monk
 
     monkeypatch.setattr('aliexpress_coins.tasks.browse.group_rows', lambda *_args, **_kwargs: ())
     assert find_task_row(_boost_frame(), TITLE) == (None, None, None)
+
+
+def test_browse_surface_settle_waits_out_loading_before_reading_rows(corpus: PopupCorpus) -> None:
+    from aliexpress_coins.tasks.browse import _settle_surface
+
+    world = _World(
+        {'frames': (_loading_frame(), _boost_frame()), 'coins': (_coin_frame(),)},
+        {},
+        start='frames',
+    )
+    clock = _SteppingClock(step=0.25)
+
+    frame, settled, dismiss = _settle_surface(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        world.frame,
+        templates=None,
+        timeout=2.0,
+        interval=0.5,
+        settle=0.0,
+        clock=clock,
+        sleep=clock.sleep,
+        logger=logging.getLogger('test'),
+    )
+
+    assert settled is True
+    assert dismiss is None
+    assert frame.has('Coins boost')
 
 
 def test_return_to_coins_page_already_there_uses_no_route(
