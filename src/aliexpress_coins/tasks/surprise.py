@@ -44,6 +44,7 @@ from aliexpress_coins.control.popups import DismissReport, PopupCorpus, dismiss_
 from aliexpress_coins.perception.errors import OcrError
 from aliexpress_coins.perception.matching import DEFAULT_MIN_OCR_SCORE, normalize
 from aliexpress_coins.perception.ocr import OcrEngine, RapidOcrEngine
+from aliexpress_coins.perception.scroll import SCROLL_START_FRACTION, SCROLL_VIEWPORT_FRACTION
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.state import CaptureSource, ScreenState, classify
 from aliexpress_coins.perception.templates import TemplateStore
@@ -175,13 +176,12 @@ _ANCHOR_GROUP_GAP_RATIO = 4.0
 _POSITION_BUCKET_FRACTION = 0.05
 """A fallback tile identity is a 5%-of-height band plus its column."""
 
-_SCROLL_START_FRACTION = 0.75
-_SCROLL_END_FRACTION = 0.20
-"""Scroll up by 0.55 of the frame, then re-capture and look again.
+_SCROLL_START_FRACTION = SCROLL_START_FRACTION
+_SCROLL_END_FRACTION = SCROLL_START_FRACTION - SCROLL_VIEWPORT_FRACTION
+"""Scroll up by the shared search distance, then re-capture and look again.
 
-The distance is a frame fraction rather than a measured swipe so the same
-gesture ports to another geometry (docs/02, issue #42). It sits in the measured
-0.5-0.6 search range shared with ``perception.scroll``.
+The constants come from ``perception.scroll`` so the grid and the executor use
+one fraction rather than two copies of the same number (issue #42).
 """
 
 _PRICE = re.compile(r'(?:C\$|US\s*\$|CS|\$)\s*\d', re.IGNORECASE)
