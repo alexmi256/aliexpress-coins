@@ -7,6 +7,7 @@ or a hand-built box list. No test reaches adb.
 
 from __future__ import annotations
 
+import json
 import random
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -18,7 +19,7 @@ from PIL import Image
 
 from aliexpress_coins.control.controller import Controller
 from aliexpress_coins.control.popups import PopupCorpus, load_popup_corpus
-from aliexpress_coins.perception.errors import StateTimeout
+from aliexpress_coins.perception.errors import SnapshotError, StateTimeout
 from aliexpress_coins.perception.geometry import DeviceGeometry
 from aliexpress_coins.perception.matching import find_text
 from aliexpress_coins.perception.ocr import RapidOcrEngine
@@ -33,19 +34,28 @@ from aliexpress_coins.tasks.catalogue import (
 from aliexpress_coins.tasks.discovery import (
     DEFAULT_BOOST_INTERVAL,
     DEFAULT_BOOST_TIMEOUT,
+    DEFAULT_OBSERVATION_CAP,
     EARN_MORE_LABEL,
     EMPTY_BOOST_MARKER,
+    ROSTER_LOG_NAME,
+    ROSTER_OBSERVATION_SCHEMA,
     BoostList,
     DiscoveryRoute,
     Roster,
     RosterEntry,
+    RosterLog,
+    RosterObserver,
     RosterStatus,
     discover_roster,
     enumerate_roster,
     is_boost_page,
     is_empty_boost,
+    observe_roster,
     open_boost_list,
+    read_roster_log,
 )
+from aliexpress_coins.tasks.errors import RosterLogError
+from aliexpress_coins.tasks.surface import Surface
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / 'tests' / 'data'
@@ -827,3 +837,618 @@ def test_open_boost_list_rejects_invalid_wait_options(
         open_boost_list(controller, _Capture((frames['coins'],)), corpus, **options)
 
     assert device.taps == []
+
+
+def _task_row(
+    title: str,
+    top: int,
+    *,
+    action: str = 'GO',
+    badge: str | None = None,
+    subtitle: str | None = None,
+) -> tuple[TextBox, ...]:
+    """One measured-shape task row: title left, action right, badge between."""
+    boxes = [
+        _box(title, 80, top, 700, top + 40),
+        _box(action, 980, top + 31, 1040, top + 61),
+    ]
+    if badge is not None:
+        boxes.append(_box(badge, 900, top, 1000, top + 30))
+    if subtitle is not None:
+        boxes.append(_box(subtitle, 80, top + 50, 700, top + 80))
+    return tuple(boxes)
+
+
+def _boost_frame(*rows: tuple[TextBox, ...]) -> Snapshot:
+    """A synthetic boost page: header plus the supplied task rows."""
+    boxes = (_box('Coins boost', 100, 10, 500, 40), *[box for row in rows for box in row])
+    return _snapshot(*boxes)
+
+
+def _observe(
+    catalogue: TaskCatalogue,
+    frame: Snapshot,
+    *,
+    previous: Roster | None = None,
+    action_labels: Sequence[str] = ('GO',),
+) -> Any:
+    return observe_roster(
+        frame,
+        catalogue,
+        previous=previous,
+        sequence=1,
+        timestamp=CAPTURED_AT,
+        action_labels=action_labels,
+    )
+
+
+def test_an_observation_logs_a_task_that_appears_after_a_completion(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+) -> None:
+    before = _boost_frame(
+        _task_row('Daily check-in', 100),
+        _task_row('Explore sponsored items', 300, badge='0/6'),
+    )
+    after = _boost_frame(
+        _task_row('Take the coins quiz', 100),
+        _task_row('Daily check-in', 300),
+        _task_row('Explore sponsored items', 500, badge='0/6'),
+    )
+    log = RosterLog.for_run(tmp_path, 'run-1')
+    observer = RosterObserver(catalogue, log=log, clock=lambda: CAPTURED_AT)
+
+    first = observer.observe(_Capture((before,)))
+    second = observer.observe(lambda: after)
+
+    assert [row.label for row in first.rows] == ['Daily check-in', 'Explore sponsored items']
+    assert [row.label for row in first.diff.added] == ['Daily check-in', 'Explore sponsored items']
+    assert [row.label for row in second.diff.added] == ['Take the coins quiz']
+    assert second.diff.removed == ()
+    assert [row.label for row in second.rows] == [
+        'Take the coins quiz',
+        'Daily check-in',
+        'Explore sponsored items',
+    ]
+    assert observer.sequence == 2
+    assert observer.roster is second.roster
+
+    records = read_roster_log(log.path)
+    assert [record['observation_seq'] for record in records] == [1, 2]
+    assert len(cast('list[object]', records[0]['rows'])) == 2
+    assert len(cast('list[object]', records[1]['rows'])) == 3
+    assert records[1]['surface_variant'] == 'boost_page'
+    assert [row['label'] for row in cast('list[dict[str, object]]', records[1]['diff']['added'])] == [
+        'Take the coins quiz'
+    ]
+
+
+def test_a_removed_row_is_logged_with_its_label_and_previous_progress(
+    catalogue: TaskCatalogue,
+) -> None:
+    before = _boost_frame(
+        _task_row('Daily check-in', 100),
+        _task_row('Explore sponsored items', 300, badge='0/6'),
+        _task_row('Browse surprise items', 500, badge='0/2'),
+    )
+    after = _boost_frame(
+        _task_row('Daily check-in', 100),
+        _task_row('Explore sponsored items', 300, badge='2/6'),
+    )
+
+    first = _observe(catalogue, before)
+    second = _observe(catalogue, after, previous=first.roster)
+
+    assert [row.label for row in second.diff.removed] == ['Browse surprise items']
+    assert second.diff.removed[0].badge == '0/2'
+    assert second.diff.added == ()
+    assert len(second.diff.progress_moved) == 1
+    moved = second.diff.progress_moved[0]
+    assert (moved.key, moved.label, moved.before, moved.after) == (
+        'sponsored_items',
+        'Explore sponsored items',
+        '0/6',
+        '2/6',
+    )
+    changes = cast('list[dict[str, object]]', second.diff.as_dict()['progress_moved'])
+    assert changes[0] == {
+        'key': 'sponsored_items',
+        'label': 'Explore sponsored items',
+        'before': '0/6',
+        'after': '2/6',
+    }
+    assert second.diff.changed
+
+
+def test_an_action_change_is_logged_with_before_and_after(
+    catalogue: TaskCatalogue,
+) -> None:
+    before = _boost_frame(
+        _task_row('Daily check-in', 100, action='GO'),
+        _task_row('Explore sponsored items', 300, badge='0/6'),
+    )
+    after = _boost_frame(
+        _task_row('Daily check-in', 100, action='Claimed'),
+        _task_row('Explore sponsored items', 300, badge='0/6'),
+    )
+    labels = ('GO', 'Claimed')
+
+    first = _observe(catalogue, before, action_labels=labels)
+    second = _observe(catalogue, after, previous=first.roster, action_labels=labels)
+
+    assert second.diff.added == ()
+    assert second.diff.removed == ()
+    assert second.diff.progress_moved == ()
+    changed = second.diff.action_changed[0]
+    assert (changed.key, changed.label, changed.before, changed.after) == (
+        'boost_checkin',
+        'Daily check-in',
+        'GO',
+        'Claimed',
+    )
+    assert second.rows[0].action == 'Claimed'
+
+
+def test_ocr_spacing_and_case_are_not_progress_or_action_changes(
+    catalogue: TaskCatalogue,
+) -> None:
+    before = _boost_frame(
+        _task_row('Daily check-in', 100),
+        _task_row('Explore sponsored items', 300, badge='0 / 6', action='go'),
+    )
+    after = _boost_frame(
+        _task_row('Daily check-in', 100),
+        _task_row('Explore sponsored items', 300, badge='0/6', action='GO'),
+    )
+
+    first = _observe(catalogue, before)
+    second = _observe(catalogue, after, previous=first.roster)
+
+    assert second.diff.progress_moved == ()
+    assert second.diff.action_changed == ()
+    assert second.rows[1].badge == '0/6'
+    assert second.rows[1].action == 'GO'
+
+
+def test_an_unknown_title_is_a_candidate_that_is_never_dispatchable(
+    catalogue: TaskCatalogue,
+) -> None:
+    unknown = _boost_frame(
+        _task_row('Daily check-in', 100),
+        _task_row('Invent a new task', 300, badge='0/6', subtitle='Try the mystery box'),
+    )
+    observer = RosterObserver(catalogue, clock=lambda: CAPTURED_AT)
+
+    first = observer.observe(unknown)
+    second = observer.observe(unknown)
+
+    candidate = next(row for row in first.rows if row.label == 'Invent a new task')
+    assert candidate.key is None
+    assert candidate.subtitle == 'Try the mystery box'
+    assert candidate.badge == '0/6'
+    assert candidate.decision is DecisionKind.DENY
+    assert candidate.reason == 'unrecognised'
+    assert candidate.candidate is True
+    assert candidate.action == 'GO'
+    assert candidate.dispatch_target is None
+    assert [row.label for row in first.diff.candidates] == ['Invent a new task']
+    assert [row.label for row in second.diff.candidates] == []
+    assert [row.label for row in observer.candidates] == ['Invent a new task']
+
+
+def test_a_failed_observation_keeps_the_previous_roster_and_the_walk_continues(
+    tmp_path: Path,
+    frames: dict[str, Snapshot],
+    catalogue: TaskCatalogue,
+) -> None:
+    good = _boost_frame(_task_row('Daily check-in', 100), _task_row('Explore sponsored items', 300, badge='0/6'))
+    log = RosterLog.for_run(tmp_path, 'run-1')
+    observer = RosterObserver(catalogue, log=log, clock=lambda: CAPTURED_AT)
+    first = observer.observe(good)
+
+    failed = observer.observe(lambda: (_ for _ in ()).throw(SnapshotError('capture died')))
+
+    assert failed.failed
+    assert failed.error is not None
+    assert 'capture died' in failed.error
+    assert [row.label for row in failed.rows] == [row.label for row in first.rows]
+    assert failed.diff.changed is False
+    assert observer.roster is first.roster
+    assert observer.sequence == 2
+
+    records = read_roster_log(log.path)
+    assert len(records) == 2
+    assert records[1]['error'] is not None
+    assert [row['label'] for row in cast('list[dict[str, object]]', records[1]['rows'])] == [
+        'Daily check-in',
+        'Explore sponsored items',
+    ]
+
+
+def test_an_unexpected_observation_error_is_not_hidden(
+    catalogue: TaskCatalogue,
+) -> None:
+    with pytest.raises(RuntimeError, match='programming bug'):
+        observe_roster(
+            lambda: (_ for _ in ()).throw(RuntimeError('programming bug')),
+            catalogue,
+            timestamp=CAPTURED_AT,
+        )
+
+
+def test_an_empty_boost_observation_keeps_the_previous_roster(
+    frames: dict[str, Snapshot],
+    catalogue: TaskCatalogue,
+) -> None:
+    good = _boost_frame(_task_row('Daily check-in', 100), _task_row('Explore sponsored items', 300, badge='0/6'))
+    observer = RosterObserver(catalogue, clock=lambda: CAPTURED_AT)
+    first = observer.observe(good)
+
+    failed = observer.observe(_empty_boost(frames['state_boost']))
+
+    assert failed.failed
+    assert failed.error is not None
+    assert failed.rows == first.rows
+    assert failed.diff.changed is False
+    assert observer.roster is first.roster
+
+
+def test_a_changed_surface_does_not_erase_the_boost_roster(
+    frames: dict[str, Snapshot],
+    catalogue: TaskCatalogue,
+) -> None:
+    good = _boost_frame(_task_row('Daily check-in', 100), _task_row('Explore sponsored items', 300, badge='0/6'))
+    observer = RosterObserver(catalogue, clock=lambda: CAPTURED_AT)
+    first = observer.observe(good)
+
+    failed = observer.observe(frames['coins'])
+
+    assert failed.failed
+    assert failed.error is not None
+    assert 'surface changed' in failed.error
+    assert failed.rows == first.rows
+    assert observer.roster is first.roster
+
+
+def test_an_empty_boost_seed_can_recover_to_a_populated_boost(
+    catalogue: TaskCatalogue,
+) -> None:
+    observer = RosterObserver(
+        catalogue,
+        previous=Roster(entries=(), surface_variant=Surface.EMPTY_BOOST),
+        clock=lambda: CAPTURED_AT,
+    )
+
+    observation = observer.observe(
+        _boost_frame(
+            _task_row('Daily check-in', 100),
+            _task_row('Explore sponsored items', 300, badge='0/6'),
+        ),
+    )
+
+    assert observation.failed is False
+    assert observation.surface_variant is Surface.BOOST_PAGE
+    assert [row.label for row in observation.diff.added] == ['Daily check-in', 'Explore sponsored items']
+
+
+def test_inline_rows_disappearing_are_logged_as_removals(
+    frames: dict[str, Snapshot],
+    catalogue: TaskCatalogue,
+) -> None:
+    observer = RosterObserver(catalogue, clock=lambda: CAPTURED_AT)
+    first = observer.observe(frames['coins'])
+    no_rows = _snapshot(
+        _box('Daily coins', 100, 500, 500, 540),
+        _box('Coins credits to redeem >', 100, 300, 800, 340),
+    )
+
+    second = observer.observe(no_rows)
+
+    assert first.surface_variant is Surface.ROWS_PRESENT
+    assert first.rows
+    assert second.failed is False
+    assert second.surface_variant is Surface.ROWS_ABSENT
+    assert second.rows == ()
+    assert [row.label for row in second.diff.removed] == [row.label for row in first.rows]
+
+
+def test_a_candidate_in_the_seeded_previous_roster_is_reported(
+    catalogue: TaskCatalogue,
+) -> None:
+    frame = _boost_frame(
+        _task_row('Daily check-in', 100),
+        _task_row('Invent a new task', 300, badge='0/6', subtitle='Try the mystery box'),
+    )
+    initial = _observe(catalogue, frame)
+    observer = RosterObserver(catalogue, previous=initial.roster, clock=lambda: CAPTURED_AT)
+
+    first = observer.observe(frame)
+    second = observer.observe(frame)
+
+    assert [row.label for row in first.diff.candidates] == ['Invent a new task']
+    assert [row.label for row in first.diff.added] == []
+    assert [row.label for row in second.diff.candidates] == []
+
+
+@pytest.mark.parametrize(
+    ('frame_name', 'error_part'),
+    [
+        ('skeleton', 'loading'),
+        ('launch', 'popup'),
+    ],
+)
+def test_an_unreadable_surface_is_recorded_not_raised(
+    frames: dict[str, Snapshot],
+    catalogue: TaskCatalogue,
+    frame_name: str,
+    error_part: str,
+) -> None:
+    observer = RosterObserver(catalogue, clock=lambda: CAPTURED_AT)
+    observation = observer.observe(frames[frame_name])
+
+    assert observation.failed
+    assert observation.error is not None
+    assert error_part in observation.error
+    assert observation.rows == ()
+    assert observation.roster is None
+    assert observer.roster is None
+    assert observer.observations == (observation,)
+
+
+@pytest.mark.parametrize('variant', [Surface.UNKNOWN, Surface.REDEEM_INTERSTITIAL])
+def test_an_unknown_or_interstitial_variant_is_a_failed_observation(
+    frames: dict[str, Snapshot],
+    catalogue: TaskCatalogue,
+    variant: Surface,
+) -> None:
+    observation = observe_roster(
+        frames['state_boost'],
+        catalogue,
+        sequence=1,
+        timestamp=CAPTURED_AT,
+        surface_variant=variant,
+    )
+
+    assert observation.failed
+    assert observation.surface_variant is variant
+    assert observation.error is not None
+    assert 'variant' in observation.error or 'interstitial' in observation.error
+
+
+def test_the_observation_cap_is_logged_once_and_stops_capture(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+) -> None:
+    first_frame = _boost_frame(
+        _task_row('Daily check-in', 100),
+        _task_row('Explore sponsored items', 300, badge='0/6'),
+    )
+    second_frame = _boost_frame(
+        _task_row('Daily check-in', 100),
+        _task_row('Take the coins quiz', 300),
+        _task_row('Explore sponsored items', 500, badge='0/6'),
+    )
+    captures: list[Snapshot] = []
+
+    def capture(frame: Snapshot) -> Any:
+        def _capture_frame() -> Snapshot:
+            captures.append(frame)
+            return frame
+
+        return _capture_frame
+
+    observer = RosterObserver(
+        catalogue,
+        log=RosterLog.for_run(tmp_path, 'run-1'),
+        max_observations=1,
+        clock=lambda: CAPTURED_AT,
+    )
+
+    observer.observe(capture(first_frame))
+    capped = observer.observe(capture(second_frame))
+    again = observer.observe(capture(second_frame))
+
+    assert capped.cap_reached
+    assert capped.failed is False
+    assert capped.error is None
+    assert [row.label for row in capped.rows] == ['Daily check-in', 'Explore sponsored items']
+    assert again is capped
+    assert len(captures) == 1
+    assert observer.cap_reached
+
+    records = read_roster_log(observer.log.path) if observer.log is not None else ()
+    assert [record['observation_seq'] for record in records] == [1, 2]
+    assert records[1]['cap_reached'] is True
+    assert records[1]['error'] is None
+
+
+def test_the_log_is_append_only_jsonl_across_restarts(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+) -> None:
+    path = tmp_path / 'run-1' / ROSTER_LOG_NAME
+    path.parent.mkdir(parents=True)
+    sentinel = {'schema': ROSTER_OBSERVATION_SCHEMA, 'observation_seq': 0, 'rows': [], 'diff': {}}
+    path.write_text(json.dumps(sentinel) + '\n', encoding='utf-8')
+
+    observer = RosterObserver(
+        catalogue,
+        log=RosterLog.for_run(tmp_path, 'run-1'),
+        clock=lambda: CAPTURED_AT,
+    )
+    observation = observer.observe(
+        _boost_frame(
+            _task_row('Daily check-in', 100),
+            _task_row('Explore sponsored items', 300, badge='0/6'),
+        ),
+    )
+
+    lines = path.read_text(encoding='utf-8').splitlines()
+    assert len(lines) == 2
+    assert all(isinstance(json.loads(line), dict) for line in lines)
+    assert json.loads(lines[0]) == sentinel
+    assert json.loads(lines[1])['observation_seq'] == 1
+    assert observation.sequence == 1
+    assert read_roster_log(path)[1]['rows'] == [row.as_dict() for row in observation.rows]
+
+
+@pytest.mark.parametrize('run_id', ['', '.', '..', 'a/b', '..\\escape', '   '])
+def test_roster_log_run_ids_cannot_escape_the_runs_directory(tmp_path: Path, run_id: str) -> None:
+    with pytest.raises(ValueError, match='single path component'):
+        RosterLog.for_run(tmp_path, run_id)
+
+
+def test_roster_log_reports_an_unreadable_or_invalid_file(tmp_path: Path) -> None:
+    path = tmp_path / 'roster.jsonl'
+    assert read_roster_log(path) == ()
+
+    path.write_text('{not json}\n', encoding='utf-8')
+    with pytest.raises(RosterLogError, match='not valid JSON'):
+        read_roster_log(path)
+
+    path.write_text('[1, 2]\n', encoding='utf-8')
+    with pytest.raises(RosterLogError, match='not a JSON object'):
+        read_roster_log(path)
+
+
+def test_blank_log_lines_are_ignored_and_an_unreadable_path_is_typed(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / 'roster.jsonl'
+    record = {'observation_seq': 1, 'rows': [], 'diff': {}}
+    path.write_text(f'\n{json.dumps(record)}\n\n', encoding='utf-8')
+    assert read_roster_log(path) == (record,)
+
+    directory = tmp_path / 'a-directory'
+    directory.mkdir()
+    with pytest.raises(RosterLogError, match='could not read'):
+        read_roster_log(directory)
+
+
+def test_the_observation_cap_must_be_positive(catalogue: TaskCatalogue) -> None:
+    with pytest.raises(ValueError, match='max_observations'):
+        RosterObserver(catalogue, max_observations=0)
+
+
+def test_roster_log_append_failure_is_typed_and_does_not_stop_the_observer(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    blocker = tmp_path / 'not-a-directory'
+    blocker.write_text('x', encoding='utf-8')
+    log = RosterLog(blocker / 'roster.jsonl')
+    observation = _observe(catalogue, _boost_frame(_task_row('Daily check-in', 100)))
+
+    with pytest.raises(RosterLogError, match='could not append'):
+        log.append(observation)
+
+    observer = RosterObserver(catalogue, log=log, clock=lambda: CAPTURED_AT)
+    with caplog.at_level('INFO', logger='aliexpress_coins.tasks.discovery'):
+        logged = observer.observe(_boost_frame(_task_row('Daily check-in', 100)))
+    assert logged.sequence == 1
+    assert any('roster log write failed' in record.message for record in caplog.records)
+
+
+def test_the_observer_reads_the_run_directory_and_cap_from_the_environment(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+) -> None:
+    observer = RosterObserver.from_environment(
+        catalogue,
+        run_id='run-7',
+        environment={
+            'AECOINS_RUNS_DIR': str(tmp_path / 'artifacts'),
+            'AECOINS_MAX_ROSTER_OBSERVATIONS': '3',
+        },
+        clock=lambda: CAPTURED_AT,
+    )
+    assert observer.log is not None
+    assert observer.log.path == tmp_path / 'artifacts' / 'run-7' / ROSTER_LOG_NAME
+    assert observer.max_observations == 3
+
+    from_tasks = RosterObserver.from_environment(
+        catalogue,
+        run_id='run-8',
+        environment={'AECOINS_MAX_TASKS_PER_RUN': '5'},
+        clock=lambda: CAPTURED_AT,
+    )
+    assert from_tasks.max_observations == 6
+
+    default = RosterObserver.from_environment(
+        catalogue,
+        run_id='run-9',
+        environment={},
+        clock=lambda: CAPTURED_AT,
+    )
+    assert default.max_observations == DEFAULT_OBSERVATION_CAP == 13
+
+    unnamed = RosterLog.from_environment({'AECOINS_RUNS_DIR': str(tmp_path)}, run_id='', clock=lambda: CAPTURED_AT)
+    assert unnamed.path == tmp_path / '20261121T120000Z' / ROSTER_LOG_NAME
+
+    unnamed_observer = RosterObserver.from_environment(
+        catalogue,
+        run_id='   ',
+        environment={'AECOINS_RUNS_DIR': str(tmp_path)},
+        clock=lambda: CAPTURED_AT,
+    )
+    assert unnamed_observer.log is not None
+    assert unnamed_observer.log.path == tmp_path / '20261121T120000Z' / ROSTER_LOG_NAME
+
+
+@pytest.mark.parametrize(
+    ('value', 'message'),
+    [('many', 'must be an integer'), ('0', 'must be positive'), ('-2', 'must be positive')],
+)
+def test_the_environment_cap_must_be_a_positive_integer(
+    catalogue: TaskCatalogue,
+    value: str,
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        RosterObserver.from_environment(
+            catalogue,
+            run_id='run-1',
+            environment={'AECOINS_MAX_ROSTER_OBSERVATIONS': value},
+        )
+
+
+def test_the_task_cap_error_names_the_task_environment_variable(
+    catalogue: TaskCatalogue,
+) -> None:
+    with pytest.raises(ValueError, match='AECOINS_MAX_TASKS_PER_RUN'):
+        RosterObserver.from_environment(
+            catalogue,
+            run_id='run-1',
+            environment={'AECOINS_MAX_TASKS_PER_RUN': 'many'},
+        )
+
+
+def test_observe_roster_rejects_an_impossible_sequence(catalogue: TaskCatalogue) -> None:
+    with pytest.raises(ValueError, match='sequence'):
+        observe_roster(_boost_frame(_task_row('Daily check-in', 100)), catalogue, sequence=0)
+
+
+def test_the_observation_schema_names_the_record_and_log(
+    catalogue: TaskCatalogue,
+) -> None:
+    observation = _observe(
+        catalogue,
+        _boost_frame(
+            _task_row('Daily check-in', 100),
+            _task_row('Explore sponsored items', 300, badge='0/6'),
+        ),
+    )
+    payload = observation.as_dict()
+
+    assert ROSTER_OBSERVATION_SCHEMA == 1
+    assert ROSTER_LOG_NAME == 'roster.jsonl'
+    assert payload['schema'] == ROSTER_OBSERVATION_SCHEMA
+    assert payload['observation_seq'] == 1
+    assert payload['timestamp'] == CAPTURED_AT.isoformat()
+    assert payload['error'] is None
+    assert payload['cap_reached'] is False
+    assert payload['diff']['added'][0]['label'] == 'Daily check-in'
+    assert observation.added == observation.diff.added
+    assert observation.removed == ()
+    assert observation.failed is False
