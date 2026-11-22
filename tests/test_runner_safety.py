@@ -176,10 +176,71 @@ def test_an_empty_boost_page_does_not_count_as_a_stuck_task_screen() -> None:
         guard.inspect(empty)
 
 
+def test_a_status_bar_clock_does_not_disable_inside_task_detection() -> None:
+    guard = _guard()
+    frame = _snapshot(
+        _box('12:30', 1000, 40, 1100, 80),
+        *(
+            _box(
+                f'Mystery panel {index}',
+                60 + (index % 3) * 380,
+                300 + index * 90,
+                400 + (index % 3) * 380,
+                370 + index * 90,
+            )
+            for index in range(8)
+        ),
+    )
+
+    def inspect_three() -> None:
+        with guard.task('stuck executor'):
+            guard.inspect(frame)
+            guard.inspect(frame)
+            guard.inspect(frame)
+
+    with pytest.raises(RunAborted) as raised:
+        inspect_three()
+
+    assert raised.value.code is AbortCode.UNEXPECTED_SCREEN
+
+
+def test_an_ns_product_label_outside_the_timer_band_does_not_mask_a_stuck_screen() -> None:
+    guard = _guard()
+    frame = _snapshot(
+        _box('12s', 100, 300, 200, 340),
+        *(
+            _box(
+                f'Mystery panel {index}',
+                60 + (index % 3) * 380,
+                400 + index * 90,
+                400 + (index % 3) * 380,
+                470 + index * 90,
+            )
+            for index in range(8)
+        ),
+    )
+
+    def inspect_three() -> None:
+        with guard.task('stuck executor'):
+            guard.inspect(frame)
+            guard.inspect(frame)
+            guard.inspect(frame)
+
+    with pytest.raises(RunAborted) as raised:
+        inspect_three()
+
+    assert raised.value.code is AbortCode.UNEXPECTED_SCREEN
+
+
 def test_a_running_countdown_destination_does_not_count_as_a_stuck_task_screen() -> None:
     guard = _guard()
     destination = _snapshot(
         _box('Wireless Earbuds', 60, 300, 600, 350),
+        TextBox(
+            text='12s',
+            box=((1080, 960), (1160, 960), (1160, 1000), (1080, 1000)),
+            score=0.1,
+        ),
         _box('12s', 1080, 900, 1160, 940),
     )
 

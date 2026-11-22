@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import unicodedata
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -77,8 +78,13 @@ _LAYOUT_X_BUCKETS = 10
 _LAYOUT_Y_BUCKETS = 15
 """Coarse screen-layout buckets for the unexpected-screen fingerprint."""
 
-_COUNTDOWN = re.compile(r'^\s*\d+\s*(?:s|:\s*\d{2})\s*$', re.IGNORECASE)
-"""A running timer chip (``12s`` or ``1:20``) marks an allowed browse destination."""
+_COUNTDOWN = re.compile(r'^\s*\d{1,3}\s*s\s*$', re.IGNORECASE)
+"""The measured ``Ns`` timer-chip form; a status-bar clock is not a countdown."""
+
+_COUNTDOWN_RIGHT_FRACTION = 0.72
+_COUNTDOWN_TOP_FRACTION = 0.12
+_COUNTDOWN_BOTTOM_FRACTION = 0.88
+"""The measured right-edge/content band of the browse timer chip (docs/01 §7b)."""
 
 
 class AbortCode(StrEnum):
@@ -385,7 +391,18 @@ def _is_unexpected_inside_task(
 
 
 def _has_countdown(snapshot: Snapshot) -> bool:
-    return any(box.score >= DEFAULT_MIN_OCR_SCORE and _COUNTDOWN.match(box.text) for box in snapshot.boxes)
+    left = snapshot.width * _COUNTDOWN_RIGHT_FRACTION
+    top = snapshot.height * _COUNTDOWN_TOP_FRACTION
+    bottom = snapshot.height * _COUNTDOWN_BOTTOM_FRACTION
+    for box in snapshot.boxes:
+        if box.score < DEFAULT_MIN_OCR_SCORE:
+            continue
+        centre_x, centre_y = box.center
+        if centre_x < left or not top <= centre_y <= bottom:
+            continue
+        if _COUNTDOWN.match(unicodedata.normalize('NFKC', box.text)):
+            return True
+    return False
 
 
 def _is_safe_label(text: str) -> bool:
