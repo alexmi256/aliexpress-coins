@@ -46,6 +46,28 @@ class InputDevice(Protocol):
         ...
 
 
+class KeyDevice(Protocol):
+    """An input device that can press a named Android key.
+
+    Kept separate from :class:`InputDevice` so a tap-only fake stays a valid
+    device. The controller checks for this capability only on the paths that
+    need a key (the surprise-item detail page's BACK, for example), and raises
+    a clear input error rather than silently doing nothing.
+    """
+
+    def keyevent(self, key: str) -> None:
+        """Press ``key`` (a ``KEYCODE_*`` name)."""
+        ...
+
+
+class SwipeDevice(Protocol):
+    """An input device that can drag between two screen points."""
+
+    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int) -> None:
+        """Swipe from ``(x1, y1)`` to ``(x2, y2)`` over ``duration_ms``."""
+        ...
+
+
 def _preview(data: bytes) -> str:
     if len(data) <= _PREVIEW_BYTES:
         return repr(data)
@@ -72,7 +94,22 @@ class AdbInputDevice:
 
     def tap(self, x: int, y: int) -> None:
         """Run ``adb -s <serial> shell input tap <x> <y>``."""
-        args = ('adb', '-s', self._serial, 'shell', 'input', 'tap', str(x), str(y))
+        self._run_input('tap', str(x), str(y))
+
+    def keyevent(self, key: str) -> None:
+        """Run ``adb -s <serial> shell input keyevent <KEYCODE_* >``."""
+        if not key.strip():
+            raise ValueError('a key name is required')
+        self._run_input('keyevent', key)
+
+    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int) -> None:
+        """Run ``adb -s <serial> shell input swipe <x1> <y1> <x2> <y2> <ms>``."""
+        if duration_ms <= 0:
+            raise ValueError(f'the swipe duration must be positive, got {duration_ms!r}')
+        self._run_input('swipe', str(x1), str(y1), str(x2), str(y2), str(duration_ms))
+
+    def _run_input(self, *command: str) -> None:
+        args = ('adb', '-s', self._serial, 'shell', 'input', *command)
         try:
             result = self._runner(args, self._timeout)
         except subprocess.TimeoutExpired as exc:
@@ -82,5 +119,6 @@ class AdbInputDevice:
 
         if result.returncode != 0:
             raise InputError(
-                f'adb input tap exited {result.returncode}: {_preview(result.stdout)} {_preview(result.stderr)}',
+                f'adb input {command[0]} exited {result.returncode}: '
+                f'{_preview(result.stdout)} {_preview(result.stderr)}',
             )

@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from aliexpress_coins.control.device import InputDevice
-from aliexpress_coins.control.errors import TapTargetNotFound
+from aliexpress_coins.control.errors import InputError, TapTargetNotFound
 from aliexpress_coins.perception.geometry import DeviceGeometry
 from aliexpress_coins.perception.snapshot import TextBox
 
@@ -116,6 +116,60 @@ class TapRecord:
         return json.dumps(self.as_dict(), separators=(',', ':'), sort_keys=True)
 
 
+@dataclass(frozen=True, slots=True)
+class KeyRecord:
+    """One key press, whether it was issued or suppressed by dry run."""
+
+    index: int
+    key: str
+    reason: str
+    suppressed: bool
+
+    def as_dict(self) -> dict[str, object]:
+        """The machine-readable fields of the log line."""
+        return {
+            'event': 'key',
+            'key_press': self.index,
+            'name': self.key,
+            'reason': self.reason,
+            'suppressed': self.suppressed,
+        }
+
+    def to_json(self) -> str:
+        """Render the record as one JSON line."""
+        return json.dumps(self.as_dict(), separators=(',', ':'), sort_keys=True)
+
+
+@dataclass(frozen=True, slots=True)
+class SwipeRecord:
+    """One swipe decision, including its clamped endpoints."""
+
+    index: int
+    label: str | None
+    reason: str
+    requested: tuple[Pixel, Pixel]
+    clamped: tuple[Pixel, Pixel]
+    duration_ms: int
+    suppressed: bool
+
+    def as_dict(self) -> dict[str, object]:
+        """The machine-readable fields of the log line."""
+        return {
+            'event': 'swipe',
+            'swipe': self.index,
+            'label': self.label,
+            'reason': self.reason,
+            'requested': [list(point) for point in self.requested],
+            'clamped': [list(point) for point in self.clamped],
+            'duration_ms': self.duration_ms,
+            'suppressed': self.suppressed,
+        }
+
+    def to_json(self) -> str:
+        """Render the record as one JSON line."""
+        return json.dumps(self.as_dict(), separators=(',', ':'), sort_keys=True)
+
+
 def safe_inset(geometry: DeviceGeometry) -> int:
     """The border, in pixels, derived from the shorter screen dimension."""
     shorter = min(geometry.width, geometry.height)
@@ -189,6 +243,8 @@ class Controller:
         self._rng = rng if rng is not None else random.Random()
         self._logger = logger if logger is not None else logging.getLogger(LOGGER_NAME)
         self._tap_count = 0
+        self._key_count = 0
+        self._swipe_count = 0
 
     @classmethod
     def from_frame(
@@ -229,6 +285,16 @@ class Controller:
         """Intended taps so far, including those suppressed by dry run."""
         return self._tap_count
 
+    @property
+    def key_count(self) -> int:
+        """Intended key presses so far, including dry-run suppressions."""
+        return self._key_count
+
+    @property
+    def swipe_count(self) -> int:
+        """Intended swipes so far, including dry-run suppressions."""
+        return self._swipe_count
+
     def tap(self, point: Point, *, why: str, label: str | None = None) -> TapRecord:
         """Tap ``point``, clamped and jittered, with a mandatory reason."""
         return self._tap(point, why=why, label=label, geometry=self._geometry)
@@ -251,6 +317,71 @@ class Controller:
             geometry=self._geometry,
             box=box,
         )
+
+    def press_key(self, key: str, *, why: str) -> KeyRecord:
+        """Press one Android key (``KEYCODE_BACK``) through the input device.
+
+        A key is a navigation action, not a tap: it has a mandatory reason and
+        is logged like one, but it does not move the tap counter. A device that
+        cannot press keys raises :class:`InputError` instead of silently doing
+        nothing, so a caller can fall back to a visible control.
+        """
+        reason = _required_reason(why)
+        name = key.strip()
+        if not name:
+            raise ValueError('a key name is required')
+        self._key_count += 1
+        record = KeyRecord(
+            index=self._key_count,
+            key=name,
+            reason=reason,
+            suppressed=self._dry_run,
+        )
+        self._logger.info('%s', record.to_json())
+        if not self._dry_run:
+            keyevent = getattr(self._device, 'keyevent', None)
+            if keyevent is None:
+                raise InputError(f'the input device cannot press {name!r}')
+            keyevent(name)
+        return record
+
+    def swipe(
+        self,
+        start: Point,
+        end: Point,
+        *,
+        why: str,
+        label: str | None = None,
+        duration_ms: int = 300,
+    ) -> SwipeRecord:
+        """Swipe between two points, clamped to the safe inset of the frame.
+
+        Scrolling is a search, not a fixed gesture: the caller derives both
+        points from the current frame, and this method only guarantees the
+        gesture starts and ends on the screen.
+        """
+        reason = _required_reason(why)
+        if duration_ms <= 0:
+            raise ValueError(f'the swipe duration must be positive, got {duration_ms!r}')
+        requested = (_pixel(start), _pixel(end))
+        clamped = (clamp_point(start, self._geometry), clamp_point(end, self._geometry))
+        self._swipe_count += 1
+        record = SwipeRecord(
+            index=self._swipe_count,
+            label=label,
+            reason=reason,
+            requested=requested,
+            clamped=clamped,
+            duration_ms=duration_ms,
+            suppressed=self._dry_run,
+        )
+        self._logger.info('%s', record.to_json())
+        if not self._dry_run:
+            swipe = getattr(self._device, 'swipe', None)
+            if swipe is None:
+                raise InputError('the input device cannot swipe')
+            swipe(clamped[0][0], clamped[0][1], clamped[1][0], clamped[1][1], duration_ms)
+        return record
 
     def tap_text(self, frame: Frame, label: str, *, why: str) -> TapRecord:
         """Find ``label`` in an already-captured frame and tap its centre.

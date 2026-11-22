@@ -477,3 +477,83 @@ def test_tap_record_renders_the_same_fields_as_json() -> None:
 
     assert record.as_dict() == json.loads(record.to_json())
     assert record.as_dict()['event'] == 'tap'
+
+
+class _GestureDevice:
+    def __init__(self) -> None:
+        self.taps: list[tuple[int, int]] = []
+        self.keys: list[str] = []
+        self.swipes: list[tuple[int, int, int, int, int]] = []
+
+    def tap(self, x: int, y: int) -> None:
+        self.taps.append((x, y))
+
+    def keyevent(self, key: str) -> None:
+        self.keys.append(key)
+
+    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int) -> None:
+        self.swipes.append((x1, y1, x2, y2, duration_ms))
+
+
+def test_press_key_logs_once_and_does_not_move_the_tap_counter() -> None:
+    device = _GestureDevice()
+    controller = _controller(device)
+
+    record = controller.press_key('KEYCODE_BACK', why='leave the product page')
+
+    assert record.key == 'KEYCODE_BACK'
+    assert record.as_dict()['event'] == 'key'
+    assert device.keys == ['KEYCODE_BACK']
+    assert controller.key_count == 1
+    assert controller.tap_count == 0
+
+
+def test_press_key_dry_run_suppresses_the_device() -> None:
+    device = _GestureDevice()
+    controller = _controller(device, dry_run=True)
+
+    record = controller.press_key('KEYCODE_BACK', why='leave the product page')
+
+    assert record.suppressed is True
+    assert device.keys == []
+    assert controller.key_count == 1
+
+
+def test_press_key_requires_a_reason_and_a_capable_device() -> None:
+    controller = _controller(_FakeDevice())
+
+    with pytest.raises(ValueError, match='reason is required'):
+        controller.press_key('KEYCODE_BACK', why='   ')
+    with pytest.raises(ValueError, match='key name is required'):
+        controller.press_key('   ', why='leave')
+    with pytest.raises(InputError, match='cannot press'):
+        controller.press_key('KEYCODE_BACK', why='leave')
+
+
+def test_swipe_clamps_both_endpoints_and_reports_the_gesture() -> None:
+    device = _GestureDevice()
+    controller = _controller(device)
+
+    record = controller.swipe((0, 3000), (1200, -100), why='search the grid', label='grid scroll')
+
+    assert record.clamped == ((48, 1952), (1152, 48))
+    assert record.requested == ((0, 3000), (1200, -100))
+    assert record.as_dict()['event'] == 'swipe'
+    assert device.swipes == [(48, 1952, 1152, 48, 300)]
+    assert controller.swipe_count == 1
+
+
+def test_swipe_dry_run_suppresses_the_device_and_rejects_bad_arguments() -> None:
+    device = _GestureDevice()
+    controller = _controller(device, dry_run=True)
+
+    record = controller.swipe((600, 1500), (600, 800), why='search', duration_ms=250)
+    assert record.suppressed is True
+    assert device.swipes == []
+
+    with pytest.raises(ValueError, match='duration must be positive'):
+        controller.swipe((600, 1500), (600, 800), why='search', duration_ms=0)
+    with pytest.raises(ValueError, match='reason is required'):
+        controller.swipe((600, 1500), (600, 800), why='   ')
+    with pytest.raises(InputError, match='cannot swipe'):
+        _controller(_FakeDevice()).swipe((600, 1500), (600, 800), why='search')
