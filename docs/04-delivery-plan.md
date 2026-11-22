@@ -74,7 +74,11 @@ next: that skips the step a machine cannot do — checking the delivered work ag
 asked, and noticing that the next issue now needs re-scoping. Prompts for upcoming issues are drafted
 ahead of time, but nothing consumes them automatically.
 
-The device is at `192.168.8.220:38045` (wireless-debugging port — it changes when the tablet reconnects,
+The device address is configuration, not a constant: **both the IP and the port change** when the tablet
+reconnects (wired ethernet vs wireless debugging, DHCP, and the adb wireless port have each moved it).
+`~/scripts/aecoins-preflight.sh` checks it on the box that owns the adb server and exits non-zero when the
+device is absent, and every intake runs it first. Last known: `192.168.8.65:5555`. It was
+`192.168.8.220:5555` (wireless-debugging port) and before that `192.168.8.220:38045` (
 and every task prompt carries it literally). CI cannot reach the device, so device tests skip when
 `AECOINS_DEVICE` is unset.
 
