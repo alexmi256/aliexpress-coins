@@ -71,6 +71,17 @@ Corollary, learned three times over (#23 streak scoping, #24 row-gone, the #23 i
 `completed` is worse than `unverified`.** `unverified` costs one night and retries tomorrow; a false
 `completed` is recorded in daily state and silently skips the task for the rest of the day.
 
+## Retries: never repeat an unknown action
+
+A retry may re-read the screen, re-navigate, or re-open a page. It must **never** repeat an action whose effect
+is unknown but possibly already applied. A tap that has been sent is not re-sent, because the app's reaction to a
+second press — "already collected", a duplicate claim, a second order — is a *new* side effect rather than a
+second attempt at the first.
+
+So a failure is retryable only when its stage can be re-entered without repeating a side effect. Where an
+executor cannot prove what an action did, it reports `unverified` and the run moves on: a missed claim costs one
+night, a double claim costs the day.
+
 ## Logging and reporting
 
 - Structured events, not sentences: `task_skipped` with `reason` is groupable; a prose line is not.
