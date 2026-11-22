@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -23,7 +24,10 @@ from aliexpress_coins.runner.safety import (
     SafetyGuard,
     find_dangerous_controls,
 )
+from aliexpress_coins.tasks.catalogue import TaskCatalogue, load_task_catalogue
 
+ROOT = Path(__file__).resolve().parents[1]
+CATALOGUE: TaskCatalogue = load_task_catalogue(ROOT / 'specs' / 'tasks.yaml')
 CAPTURED_AT = datetime(2026, 11, 22, 3, 30, tzinfo=UTC)
 
 
@@ -69,7 +73,7 @@ def _danger(label: str = 'Buy now') -> Snapshot:
 
 
 def _guard() -> SafetyGuard:
-    return SafetyGuard(logger=logging.getLogger('test.safety'))
+    return SafetyGuard(catalogue=CATALOGUE, logger=logging.getLogger('test.safety'))
 
 
 def test_the_same_unexpected_screen_aborts_on_the_third_frame() -> None:
@@ -110,6 +114,33 @@ def test_three_different_unexpected_screens_do_not_abort() -> None:
     guard.inspect(_unknown('Third'))
 
     assert guard.streak == 1
+
+
+def test_ocr_jitter_on_the_same_unexpected_screen_keeps_the_streak() -> None:
+    guard = _guard()
+
+    guard.inspect(_unknown('Mystery panel'))
+    guard.inspect(_unknown('Mystery pane1'))
+    with pytest.raises(RunAborted) as raised:
+        guard.inspect(_unknown('Mystery panel'))
+
+    assert raised.value.code is AbortCode.UNEXPECTED_SCREEN
+
+
+def test_the_same_unexpected_screen_counts_inside_a_task() -> None:
+    guard = _guard()
+
+    def inspect_three() -> None:
+        with guard.task('stuck executor'):
+            guard.inspect(_unknown())
+            guard.inspect(_unknown())
+            guard.inspect(_unknown())
+
+    with pytest.raises(RunAborted) as raised:
+        inspect_three()
+
+    assert raised.value.code is AbortCode.UNEXPECTED_SCREEN
+    assert 'stuck executor' not in raised.value.reason
 
 
 def test_a_dangerous_control_is_only_fatal_while_a_task_is_running() -> None:
@@ -163,6 +194,36 @@ def test_a_refused_task_row_on_the_list_is_not_a_live_purchase_control() -> None
 
     with guard.task('Take the coins quiz'):
         guard.inspect(boost_list)
+
+
+def test_a_row_without_a_textual_title_does_not_exempt_its_dangerous_neighbour() -> None:
+    guard = _guard()
+    page = _snapshot(
+        _box('52', 100, 260, 200, 300),
+        _box('GO', 980, 280, 1040, 320),
+        _box('Buy now', 400, 1800, 700, 1860),
+    )
+
+    with pytest.raises(RunAborted) as raised, guard.task('Daily coins'):
+        guard.inspect(page)
+
+    assert raised.value.code is AbortCode.DANGEROUS_CONTROL
+
+
+def test_a_dangerous_label_beside_an_allowed_rows_go_is_still_a_live_control() -> None:
+    guard = _guard()
+    page = _snapshot(
+        _box('Coins boost', 100, 100, 500, 150),
+        _box('Daily check-in', 100, 260, 700, 300),
+        _box('Buy now', 720, 280, 900, 320),
+        _box('GO', 980, 280, 1040, 320),
+    )
+
+    with pytest.raises(RunAborted) as raised, guard.task('Daily coins'):
+        guard.inspect(page)
+
+    assert raised.value.code is AbortCode.DANGEROUS_CONTROL
+    assert 'Buy now' in raised.value.reason
 
 
 def test_a_standalone_purchase_control_on_the_task_surface_still_aborts() -> None:

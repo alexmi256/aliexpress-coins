@@ -82,14 +82,15 @@ addopts = [
 # device hygiene landed (measured 99.31%), then to 99.31 when Apprise
 # notifications and log levels landed (measured 99.32%), then to 99.32 when
 # geometry independence landed (measured 99.33%), then to 99.33 when the
-# dispatch gate and abort conditions landed (measured 99.33%). See "Quality
-# gate" in README.md.
+# dispatch gate and abort conditions landed (measured 99.33%), then to 99.35
+# when abort propagation through executor/cleanup handlers landed (measured
+# 99.36%). See "Quality gate" in README.md.
 [tool.coverage.run]
 branch = true
 source = ["aliexpress_coins"]
 
 [tool.coverage.report]
-fail_under = 99.33
+fail_under = 99.35
 precision = 2
 show_missing = true
 skip_covered = true

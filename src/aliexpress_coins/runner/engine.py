@@ -354,7 +354,7 @@ def run_once(
     except Exception as exc:
         log.warning('%s', _event('run_log_failed', detail=f'{type(exc).__name__}: {exc}'))
 
-    safety = context.safety if context.safety is not None else SafetyGuard(logger=log)
+    safety = context.safety if context.safety is not None else SafetyGuard(catalogue=context.catalogue, logger=log)
     if context.safety is None:
         context.safety = safety
         context.capture = safety.wrap(context.capture)
@@ -368,7 +368,7 @@ def run_once(
         frame = _capture(context.capture)
         _guard_signed_in(context, frame)
         if context.config.dry_run:
-            _plan_dry_run(context, report, frame, gate, log)
+            _plan_dry_run(context, report, frame, gate, log, max_tasks=task_limit, budget_seconds=budget)
             status = report.status
             detail = report.detail or 'dry run planned no tasks'
         else:
@@ -506,21 +506,30 @@ def run_once(
         report.error = f'{type(exc).__name__}: {exc}'
         log.exception('%s', _event('run_failed', detail=detail))
     finally:
-        if (
-            controller is not None
-            and not context.config.dry_run
-            and report.failure_code != FailureCode.APP_LOGGED_OUT.value
-        ):
-            _finish_on_coins_page(
-                context,
-                controller,
-                report,
-                artifacts,
-                log,
-                on_dismiss=record_dismissal,
-            )
-        if status is RunStatus.FAILED:
-            _record_failure_frame(context, report, artifacts, log)
+        try:
+            if (
+                controller is not None
+                and not context.config.dry_run
+                and report.failure_code != FailureCode.APP_LOGGED_OUT.value
+            ):
+                _finish_on_coins_page(
+                    context,
+                    controller,
+                    report,
+                    artifacts,
+                    log,
+                    on_dismiss=record_dismissal,
+                )
+            if status is RunStatus.FAILED:
+                _record_failure_frame(context, report, artifacts, log)
+        except RunAborted as exc:
+            status = RunStatus.ABORTED
+            if context.safety is not None:
+                context.safety.disarm()
+            report.abort = exc.as_dict()
+            report.record_failure(exc.failure)
+            detail = exc.failure.describe()
+            log.error('%s', _event('run_aborted', code=exc.code.value, detail=detail))
         if status is RunStatus.COMPLETED and not context.config.dry_run:
             try:
                 context.state.complete_night()
@@ -570,6 +579,9 @@ def _plan_dry_run(
     frame: Snapshot,
     gate: DispatchGate,
     log: logging.Logger,
+    *,
+    max_tasks: int,
+    budget_seconds: float,
 ) -> None:
     """Plan the night from the visible surface without tapping or dispatching.
 
@@ -585,6 +597,8 @@ def _plan_dry_run(
     if surface is Surface.UNKNOWN and not _on_coin_page(frame):
         try:
             context.navigate(SurfaceRoute.SHORTCUT)
+        except RunAborted, RunInterrupted:
+            raise
         except Exception as exc:
             report.plan_note = f'could not read the coins page: {type(exc).__name__}: {exc}'
         else:
@@ -663,7 +677,7 @@ def _plan_dry_run(
                 detail=f'{spec.key!r} already reached its {spec.max_per_run} completion(s) today',
             )
             continue
-        if len(steps) >= context.config.max_tasks:
+        if len(steps) >= max_tasks:
             _skip(
                 report,
                 log,
@@ -671,7 +685,7 @@ def _plan_dry_run(
                 key=spec.key,
                 category=spec.category.value,
                 reason='run budget',
-                detail=f'the task budget of {context.config.max_tasks} would stop the walk here',
+                detail=f'the task budget of {max_tasks} would stop the walk here',
             )
             continue
         steps.append(
@@ -689,6 +703,8 @@ def _plan_dry_run(
     report.plan = {
         'dry_run': True,
         'surface': surface.value,
+        'max_tasks': max_tasks,
+        'budget_seconds': budget_seconds,
         'steps': steps,
         'refusals': refusals,
         'taps_issued': 0,
@@ -914,7 +930,7 @@ def _retry_stage(context: RunContext, stage: str, action: Callable[[], Any]) -> 
     log = context.logger if context.logger is not None else LOG
     try:
         return action()
-    except RunInterrupted:
+    except RunAborted, RunInterrupted:
         raise
     except Exception as exc:
         named = classify_exception(exc, default=FailureCode.INTERNAL_ERROR)
@@ -1144,7 +1160,7 @@ def _observe(
             route=opened.route if route is None else route,
             timestamp=context.wall_clock(),
         )
-    except RunInterrupted:
+    except RunAborted, RunInterrupted:
         raise
     except AppLoggedOut:
         raise
@@ -1154,7 +1170,7 @@ def _observe(
             frame = _capture(context.capture)
             _guard_signed_in(context, frame)
             return observer.observe(frame, route=route, timestamp=context.wall_clock())
-        except RunInterrupted:
+        except RunAborted, RunInterrupted:
             raise
         except AppLoggedOut:
             raise
@@ -1344,7 +1360,7 @@ def _record_balance_before(
             logger=log,
             on_dismiss=on_dismiss,
         )
-    except RunInterrupted:
+    except RunAborted, RunInterrupted:
         raise
     except AppLoggedOut:
         raise
@@ -1401,6 +1417,8 @@ def _finish_on_coins_page(
         if result.returned and result.snapshot is not None:
             recorded = _record_frame(report, artifacts, result.snapshot, 'balance-after', log)
             report.balance_after = read_coin_balance(recorded)
+    except RunAborted:
+        raise
     except RunInterrupted as exc:
         report.returned_to_coins_page = False
         report.return_error = f'stop requested during cleanup: {exc}'
@@ -1446,6 +1464,8 @@ def _record_failure_frame(
         return
     try:
         frame = _capture(context.capture)
+    except RunAborted:
+        raise
     except Exception as exc:
         report.record_artifact_error(f'failure frame: {type(exc).__name__}: {exc}')
         log.warning('%s', _event('failure_frame_failed', detail=f'{type(exc).__name__}: {exc}'))

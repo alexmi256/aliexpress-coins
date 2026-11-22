@@ -31,7 +31,7 @@ from aliexpress_coins.tasks.dispatch import DispatchGate, PolicyRefused, authori
 from aliexpress_coins.tasks.errors import TaskError
 from aliexpress_coins.tasks.notifications import run_notifications_task
 from aliexpress_coins.tasks.quiz import run_quiz_task
-from aliexpress_coins.tasks.signin import claim_daily_signins
+from aliexpress_coins.tasks.signin import claim_boost_checkin, claim_daily_signins, claim_streak
 from aliexpress_coins.tasks.surface import SurfaceRoute
 from aliexpress_coins.tasks.surprise import run_surprise_task
 
@@ -271,14 +271,10 @@ def test_a_raw_row_cannot_reach_any_executor(
         with pytest.raises(TaskError, match='policy gate was bypassed'):
             executor(controller, capture, corpus, state, raw, navigate=navigate)
 
-    with pytest.raises(TaskError, match='policy gate was bypassed'):
-        claim_daily_signins(
-            controller,
-            capture,
-            corpus,
-            state,
-            authorization=cast(Any, None),
-        )
+    signin_tappers: tuple[Callable[..., Any], ...] = (claim_streak, claim_boost_checkin, claim_daily_signins)
+    for tapper in signin_tappers:
+        with pytest.raises(TaskError, match='policy gate was bypassed'):
+            tapper(controller, capture, corpus, state, authorization=cast(Any, None))
 
     quiz = DispatchGate(catalogue).authorize(_entry(catalogue, 'Take the coins quiz'))
     assert quiz.authorization is not None

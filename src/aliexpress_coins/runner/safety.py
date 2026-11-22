@@ -5,9 +5,10 @@ checks rather than each executor re-implementing them. Three conditions abort th
 whole run:
 
 * ``unexpected_screen`` — the *same* unrecognised or dead screen is captured
-  three times in a row while the run is navigating/reading a surface. A known
-  screen resets the count, and a task's own pages are not counted: the condition
-  is "the same surface", not "three arbitrary failures".
+  three times in a row, during navigation or inside a task. A known screen
+  resets the count, and the identity is the classifier state/surface plus a
+  coarse layout/marker fingerprint, so OCR jitter does not reset it. The
+  condition is "the same surface", not "three arbitrary failures".
 * ``dangerous_control`` — a buy / order / cart / redeem control is visible while
   a task is running. The one exception is the measured surprise-item product
   detail page, whose unavoidable ``Add to cart`` / ``Buy now`` buttons are
@@ -37,6 +38,7 @@ from aliexpress_coins.perception.matching import DEFAULT_MIN_OCR_SCORE, normaliz
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.state import CaptureSource, ScreenState, classify
 from aliexpress_coins.runner.failures import Failure, FailureCode, failure
+from aliexpress_coins.tasks.catalogue import TaskCatalogue
 from aliexpress_coins.tasks.signin import read_coin_balance
 from aliexpress_coins.tasks.surface import (
     COIN_PAGE_MARKERS,
@@ -45,6 +47,7 @@ from aliexpress_coins.tasks.surface import (
     classify_surface,
     contains_text,
     is_boost_page,
+    is_logged_out,
 )
 
 __all__ = [
@@ -69,6 +72,10 @@ _SAFE_REDEEM_LABELS = frozenset({'coins credits to redeem', 'you can now redeem'
 _PRODUCT_DETAIL = re.compile(r'\bitem\s+\d+\s*/\s*\d+\b')
 _PRODUCT_DETAIL_SAFE = frozenset({'add to cart', 'buy', 'buy now'})
 _COIN_REDEEM_LABEL = 'redeem'
+
+_LAYOUT_X_BUCKETS = 10
+_LAYOUT_Y_BUCKETS = 15
+"""Coarse screen-layout buckets for the unexpected-screen fingerprint."""
 
 
 class AbortCode(StrEnum):
@@ -133,12 +140,14 @@ class SafetyGuard:
     def __init__(
         self,
         *,
+        catalogue: TaskCatalogue | None = None,
         logger: logging.Logger | None = None,
         limit: int = UNEXPECTED_SCREEN_LIMIT,
     ) -> None:
         if limit < 1:
             raise ValueError(f'limit must be positive, got {limit!r}')
         self.limit = limit
+        self.catalogue = catalogue
         self._logger = logger if logger is not None else logging.getLogger(__name__)
         self._task_depth = 0
         self._task_label: str | None = None
@@ -212,28 +221,35 @@ class SafetyGuard:
         self.last_screen = report
 
         if self.task_running:
-            controls = find_dangerous_controls(snapshot)
+            controls = find_dangerous_controls(snapshot, self.catalogue)
             if controls:
                 label = controls[0].text.strip()
                 reason = f'a {label!r} control appeared while {self._task_label or "a task"} was running'
                 self._abort(AbortCode.DANGEROUS_CONTROL, reason, report)
+            self._track_unexpected(
+                report,
+                unexpected=_is_unexpected_inside_task(snapshot, state.state),
+            )
             self._check_balance(snapshot, report)
             return snapshot
 
-        if _is_unexpected(state.state, surface):
-            if self._streak_fingerprint == report.fingerprint:
-                self._streak += 1
-            else:
-                self._streak_fingerprint = report.fingerprint
-                self._streak = 1
-            if self._streak >= self.limit:
-                reason = f'the same unexpected screen was seen {self._streak} times in a row: {report.summary}'
-                self._abort(AbortCode.UNEXPECTED_SCREEN, reason, report)
-        else:
-            self._reset_streak()
-
+        self._track_unexpected(report, unexpected=_is_unexpected(snapshot, state.state, surface))
         self._check_balance(snapshot, report)
         return snapshot
+
+    def _track_unexpected(self, screen: ScreenReport, *, unexpected: bool) -> None:
+        """Count consecutive sightings of the same unexpected screen."""
+        if not unexpected:
+            self._reset_streak()
+            return
+        if self._streak_fingerprint == screen.fingerprint:
+            self._streak += 1
+        else:
+            self._streak_fingerprint = screen.fingerprint
+            self._streak = 1
+        if self._streak >= self.limit:
+            reason = f'the same unexpected screen was seen {self._streak} times in a row: {screen.summary}'
+            self._abort(AbortCode.UNEXPECTED_SCREEN, reason, screen)
 
     def _check_balance(self, snapshot: Snapshot, screen: ScreenReport) -> None:
         baseline = self._baseline_balance
@@ -268,15 +284,20 @@ class SafetyGuard:
         self._streak = 0
 
 
-def find_dangerous_controls(snapshot: Snapshot) -> tuple[TextBox, ...]:
+def find_dangerous_controls(
+    snapshot: Snapshot,
+    catalogue: TaskCatalogue | None = None,
+) -> tuple[TextBox, ...]:
     """Return the OCR boxes that name a buy/order/cart/redeem control.
 
     The known surprise-item product detail page is exempt for its two purchase
     buttons because the task visits that page deliberately and never taps them;
-    any other dangerous control on that page still aborts.
+    any other dangerous control on that page still aborts. With a catalogue, the
+    labels of *denied* task rows are exempt (policy refuses those rows); a
+    purchase label beside an allowed row is still a live control.
     """
     product_detail = _is_product_detail(snapshot)
-    refused_row_labels = _refused_row_labels(snapshot)
+    refused_row_labels = _refused_row_labels(snapshot, catalogue)
     found: list[TextBox] = []
     for box in snapshot.boxes:
         if box.score < DEFAULT_MIN_OCR_SCORE:
@@ -300,22 +321,48 @@ def find_dangerous_controls(snapshot: Snapshot) -> tuple[TextBox, ...]:
 
 
 def _screen_report(snapshot: Snapshot, state: ScreenState, surface: Surface) -> ScreenReport:
-    labels = tuple(
-        box.text.strip() for box in snapshot.boxes if box.text.strip() and box.score >= DEFAULT_MIN_OCR_SCORE
+    boxes = tuple(box for box in snapshot.boxes if box.text.strip() and box.score >= DEFAULT_MIN_OCR_SCORE)
+    labels = tuple(box.text.strip() for box in boxes)
+    ordered = sorted(boxes, key=lambda box: (box.bbox[1], box.bbox[0]))
+    # A stuck screen repeats its layout even when OCR misreads a character.
+    # Quantised centres plus the initials of the first few labels identify it
+    # without depending on every glyph, so jitter does not reset the streak.
+    layout = tuple(
+        (
+            round(box.center[0] / max(1, snapshot.width) * _LAYOUT_X_BUCKETS),
+            round(box.center[1] / max(1, snapshot.height) * _LAYOUT_Y_BUCKETS),
+        )
+        for box in ordered[:8]
     )
-    fingerprint = '|'.join(sorted(normalize(label) for label in labels)) or '<blank>'
+    markers = tuple((normalize(box.text)[:1] or '?') for box in ordered[:3])
+    fingerprint = f'{state.value}/{surface.value}/{layout}/{markers}'
     return ScreenReport(
         state=state.value,
         surface=surface.value,
         labels=labels,
-        fingerprint=f'{state.value}/{surface.value}/{fingerprint}',
+        fingerprint=fingerprint,
     )
 
 
-def _is_unexpected(state: ScreenState, surface: Surface) -> bool:
+def _is_unexpected(snapshot: Snapshot, state: ScreenState, surface: Surface) -> bool:
+    if is_logged_out(snapshot):
+        return False
     if state in (ScreenState.UNKNOWN, ScreenState.ERROR):
         return True
     return state is ScreenState.PAGE and surface is Surface.UNKNOWN
+
+
+def _is_unexpected_inside_task(snapshot: Snapshot, state: ScreenState) -> bool:
+    """A task page only counts as unexpected when its content is truly unknown.
+
+    Known task pages (quiz, result, surprise grid) classify as ``PAGE`` but have
+    no coin/boost surface, so the route-level rule would mislabel them. A
+    measured surprise product detail is also known; a dead or unknown frame is
+    not.
+    """
+    if _is_product_detail(snapshot) or is_logged_out(snapshot):
+        return False
+    return state in (ScreenState.UNKNOWN, ScreenState.ERROR)
 
 
 def _is_safe_label(text: str) -> bool:
@@ -324,23 +371,32 @@ def _is_safe_label(text: str) -> bool:
     return any(text.startswith(safe) and text.count(' ') <= len(safe.split()) + 1 for safe in _SAFE_REDEEM_LABELS)
 
 
-def _refused_row_labels(snapshot: Snapshot) -> set[int]:
-    """Labels that belong to a task row with an action, not to a live control.
+def _refused_row_labels(snapshot: Snapshot, catalogue: TaskCatalogue | None) -> set[int]:
+    """Labels of catalogue-denied task rows with an action, not live controls.
 
     The boost list always renders the refused families, including ``Place an
     order on this page`` and ``Add 5 items to your cart``, each with its own
     ``GO``. Those are policy decisions, not controls the running task can press:
-    the dispatcher never hands them to an executor. Excluding the labels of an
-    actionable row keeps the guard focused on standalone purchase/redeem
-    controls (a product page's ``Buy now``) rather than aborting every run on the
-    list it was about to work.
+    the dispatcher never hands them to an executor. Only a label the catalogue
+    actually denies is exempt; a dangerous label beside an allowed row's ``GO``
+    remains a live control.
     """
+    if catalogue is None:
+        return set()
     protected: set[int] = set()
     for row in group_rows(snapshot.boxes, snapshot.geometry):
         action = find_action_in_row(row)
         if action is None:
             continue
-        protected.update(id(box) for box in row.boxes if box is not action)
+        title = next(
+            (box for box in row.boxes if box is not action and any(character.isalpha() for character in box.text)),
+            None,
+        )
+        if title is None:
+            continue
+        decision = catalogue.decide(title.text)
+        if decision.denied and decision.rule is not None:
+            protected.update(id(box) for box in row.boxes if box is not action)
     return protected
 
 

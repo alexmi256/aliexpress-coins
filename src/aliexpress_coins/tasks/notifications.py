@@ -54,6 +54,8 @@ from aliexpress_coins.perception.matching import DEFAULT_MIN_OCR_SCORE, normaliz
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.state import CaptureSource, Classification, ScreenState, classify
 from aliexpress_coins.perception.templates import TemplateStore
+from aliexpress_coins.runner.errors import RunInterrupted
+from aliexpress_coins.runner.safety import RunAborted
 from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks.browse import ReturnResult, find_task_row, return_to_coins_page
 from aliexpress_coins.tasks.catalogue import AllowedTaskSpec, TaskCategory
@@ -1123,6 +1125,8 @@ def run_notifications_task(
             classification=final_classification,
             dialog_appeared=dialog_appeared,
         )
+    except RunAborted, RunInterrupted:
+        raise
     except Exception as exc:
         # A prompt the corpus cannot close, a transport fault or an unexpected
         # state must not abort the night. Return to the coins page and record it.
@@ -1973,6 +1977,8 @@ def _return_quietly(
             sleep=sleep,
             logger=logger,
         )
+    except RunAborted, RunInterrupted:
+        raise
     except Exception as exc:
         logger.warning('%s', _json({'event': 'notification_return_failed', 'detail': f'{type(exc).__name__}: {exc}'}))
         return ReturnResult(

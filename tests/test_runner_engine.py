@@ -49,6 +49,7 @@ from aliexpress_coins.runner.notify import AppriseSink, Notification, Notificati
 from aliexpress_coins.runner.report import RunEventLog, RunReport, RunStatus
 from aliexpress_coins.runner.safety import AbortCode, RunAborted, ScreenReport
 from aliexpress_coins.runner.state import DailyStateStore
+from aliexpress_coins.tasks import notifications as notifications_module
 from aliexpress_coins.tasks.browse import ReturnResult
 from aliexpress_coins.tasks.catalogue import TaskCatalogue, TaskCategory, load_task_catalogue
 from aliexpress_coins.tasks.discovery import (
@@ -321,6 +322,16 @@ def _dismiss(*families: str) -> DismissReport:
         remaining=False,
         stop=DismissStop.CLEAR,
     )
+
+
+def _safety_abort(code: AbortCode = AbortCode.DANGEROUS_CONTROL) -> RunAborted:
+    screen = ScreenReport(
+        state='unknown',
+        surface='unknown',
+        labels=('Mystery checkout', 'Buy now'),
+        fingerprint='unknown/unknown/test',
+    )
+    return RunAborted(code=code, reason="a 'Buy now' control appeared", screen=screen)
 
 
 @pytest.fixture(scope='module')
@@ -795,16 +806,18 @@ def test_the_dry_run_plan_reports_every_reason_a_row_is_not_a_step(
         capture=_Capture(frame),
         catalogue=catalogue,
         corpus=corpus,
-        max_tasks=1,
+        max_tasks=12,
     )
     context.config = replace(context.config, dry_run=True)
     for _ in range(sponsored.spec.max_per_run if sponsored.spec is not None else 1):
         context.state.record('sponsored_items')
 
-    report = engine.run_once(context)
+    report = engine.run_once(context, max_tasks=1, budget_seconds=5.0)
 
     assert report.status is RunStatus.PLANNED
     assert report.plan is not None
+    assert report.plan['max_tasks'] == 1
+    assert report.plan['budget_seconds'] == 5.0
     assert [step['key'] for step in report.plan['steps']] == ['coins_quiz']
     reasons = {skip.reason for skip in report.skipped}
     assert {'no action', 'no executor', 'daily limit', 'run budget'} <= reasons
@@ -1379,6 +1392,100 @@ def test_a_stop_during_hygiene_is_reported_without_a_controller(
     assert report.returned_to_coins_page is None
 
 
+def test_roster_observation_re_raises_a_safety_abort(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    context = _context(
+        tmp_path,
+        capture=_Capture(_boost_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    assert context.controller is not None
+    observer = engine._observer(
+        context,
+        RunReport(tmp_path, 'observe-abort', budget_seconds=60.0, started_at=CAPTURED_AT),
+        full_roster,
+    )
+    monkeypatch.setattr(
+        engine,
+        'open_boost_list',
+        lambda *args, **kwargs: (_ for _ in ()).throw(_safety_abort()),
+    )
+
+    with pytest.raises(RunAborted):
+        engine._observe(context, context.controller, observer, route=None)
+
+
+def test_balance_proof_re_raises_a_safety_abort(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _coin_frame()
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    assert context.controller is not None
+    report = RunReport(tmp_path / 'runs', 'run-1', budget_seconds=60.0, started_at=CAPTURED_AT)
+    monkeypatch.setattr(
+        engine,
+        'return_to_coins_page',
+        lambda *args, **kwargs: (_ for _ in ()).throw(_safety_abort(AbortCode.BALANCE_DECREASED)),
+    )
+
+    with pytest.raises(RunAborted):
+        engine._record_balance_before(
+            context,
+            context.controller,
+            report,
+            ArtifactStore(report.runs_dir, report.run_id),
+            frame,
+            _logger(),
+        )
+
+
+def test_a_notification_task_abort_reaches_the_engine_and_returns_home(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    roster = replace(
+        full_roster,
+        entries=(_entry(full_roster, 'notifications'),),
+        surface_variant=Surface.BOOST_PAGE,
+    )
+    _surface(monkeypatch, roster, _boost_frame('notifications'))
+    context = _context(
+        tmp_path,
+        capture=_Capture(_coin_frame(), _boost_frame('notifications'), _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    monkeypatch.setattr(
+        notifications_module,
+        '_wait_after_action',
+        lambda *args, **kwargs: (_ for _ in ()).throw(_safety_abort()),
+    )
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.ABORTED
+    assert report.failure_code == FailureCode.DANGEROUS_CONTROL.value
+    assert report.abort is not None
+    assert report.returned_to_coins_page is True
+
+
 def test_roster_observation_falls_back_to_the_current_frame(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1605,6 +1712,91 @@ def test_a_cleanup_error_is_reported_without_escaping(
 
     assert report.returned_to_coins_page is False
     assert report.return_error is not None
+
+
+def test_a_safety_abort_during_cleanup_is_recorded_as_aborted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _coin_frame()
+    _surface(monkeypatch, replace(full_roster, entries=()), frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    calls = {'count': 0}
+
+    def capture() -> Snapshot:
+        if calls['count'] == 0:
+            calls['count'] += 1
+            return frame
+        raise _safety_abort(AbortCode.BALANCE_DECREASED)
+
+    context.capture = capture
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.ABORTED
+    assert report.failure_code == FailureCode.BALANCE_DECREASED.value
+    assert report.abort is not None
+    assert report.abort['code'] == 'balance_decreased'
+
+
+def test_a_safety_abort_while_recording_a_failure_frame_is_recorded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    context = _context(
+        tmp_path,
+        capture=_Capture(_coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    monkeypatch.setattr(
+        context.hygiene,
+        'prepare',
+        lambda: (_ for _ in ()).throw(DeviceUnavailable('device gone')),
+    )
+    context.controller = None
+    context.capture = lambda: (_ for _ in ()).throw(_safety_abort())
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.ABORTED
+    assert report.failure_code == FailureCode.DANGEROUS_CONTROL.value
+    assert report.abort is not None
+
+
+def test_a_stop_while_planning_a_dry_run_is_not_swallowed(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    context = _context(
+        tmp_path,
+        capture=_Capture(_home_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+
+    def stop(_route: SurfaceRoute) -> None:
+        raise RunInterrupted('stop during dry run')
+
+    context.navigate = cast(Any, stop)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.STOPPED
+    assert report.detail is not None
+    assert 'stop during dry run' in report.detail
 
 
 def test_a_context_without_a_controller_factory_is_a_configuration_error(

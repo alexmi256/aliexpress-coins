@@ -78,6 +78,8 @@ from aliexpress_coins.perception.scroll import (
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.state import CaptureSource, ScreenState, classify
 from aliexpress_coins.perception.templates import TemplateStore
+from aliexpress_coins.runner.errors import RunInterrupted
+from aliexpress_coins.runner.safety import RunAborted
 from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks.catalogue import AllowedTaskSpec, TaskCategory
 from aliexpress_coins.tasks.discovery import BoostList, DiscoveryRoute, RosterEntry, open_boost_list
@@ -749,6 +751,8 @@ def return_to_coins_page(
     for attempt in range(1, attempts + 1):
         try:
             navigate(route)
+        except RunAborted, RunInterrupted:
+            raise
         except Exception as exc:  # the return is a guarantee; record and retry
             error = f'{type(exc).__name__}: {exc}'
             _warn(log, 'return_navigation_failed', attempt=attempt, detail=error)
@@ -1346,6 +1350,8 @@ def run_browse_task(
             stop=stop,
             logger=log,
         )
+    except RunAborted, RunInterrupted:
+        raise
     except Exception:
         # A popup the corpus cannot close, or a navigation that raised, must not
         # leave the app on a shopping page. The original exception still wins.
@@ -1976,6 +1982,8 @@ def _return_quietly(
             sleep=sleep,
             logger=logger,
         )
+    except RunAborted, RunInterrupted:
+        raise
     except Exception as exc:
         _warn(logger, 'return_failed', detail=f'{type(exc).__name__}: {exc}')
         return None

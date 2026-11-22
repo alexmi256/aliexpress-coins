@@ -48,6 +48,8 @@ from aliexpress_coins.perception.scroll import SCROLL_START_FRACTION, SCROLL_VIE
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.state import CaptureSource, ScreenState, classify
 from aliexpress_coins.perception.templates import TemplateStore
+from aliexpress_coins.runner.errors import RunInterrupted
+from aliexpress_coins.runner.safety import RunAborted
 from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks.browse import ReturnResult, find_task_row, return_to_coins_page
 from aliexpress_coins.tasks.catalogue import AllowedTaskSpec, TaskCategory
@@ -1104,6 +1106,8 @@ def run_surprise_task(
             stop=stop,
             logger=log,
         )
+    except RunAborted, RunInterrupted:
+        raise
     except Exception:
         _return_quietly(
             controller,
@@ -2133,6 +2137,8 @@ def _return_quietly(
             sleep=sleep,
             logger=logger,
         )
+    except RunAborted, RunInterrupted:
+        raise
     except Exception as exc:
         logger.warning(
             '%s',
