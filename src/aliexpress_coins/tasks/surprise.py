@@ -1162,7 +1162,7 @@ def _run_round(
     scrolls = 0
     scroll_stable = False
     items: list[str] = []
-    pending_item = ''
+    pending_item: str | None = None
     stop: str | None = None
     detail = 'the round counter advanced to its target'
 
@@ -1261,7 +1261,6 @@ def _run_round(
             detail = 'the reward interstitial appeared before the detail page returned'
             break
 
-        pending_item = tile.label
         if arrived:
             if not _go_back(controller, current, back, keys=keys, taps=taps):
                 detail = 'the product detail page was open but no BACK control was available'
@@ -1307,14 +1306,18 @@ def _run_round(
 
         after = read_surprise_counter(current)
         if after is not None and (before is None or after.completed > before):
+            delta = after.completed - (before if before is not None else 0)
+            if delta == 1 and pending_item is not None:
+                items.append(pending_item)
+            pending_item = None
             before = after.completed
-            items.append(pending_item)
             inert = 0
             if after.complete:
                 detail = 'the round counter advanced to its target'
                 break
             continue
 
+        pending_item = None
         inert += 1
         if inert >= MAX_INERT_TAPS:
             if mode == RULE_PATH_REUSE and not reset_used:

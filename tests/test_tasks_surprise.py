@@ -2411,7 +2411,7 @@ def test_surprise_sweep_does_not_close_the_boost_list_it_was_opened_from(
     from aliexpress_coins.tasks.surprise import _sweep
 
     launch = _load(DATA / 'popups' / 'launch_welcome_gifts.png', engine)
-    boost = _boost_frame(progress='0/2')
+    boost = _load(DATA / 'flows' / 'surprise_items_entry_row.png', engine)
     world = _World(
         {'popup': (launch,), 'boost': (boost,)},
         {},
@@ -2433,6 +2433,7 @@ def test_surprise_sweep_does_not_close_the_boost_list_it_was_opened_from(
     assert report is not None
     assert stop is None
     assert world.current == 'boost'
+    assert len(world.taps) == 1
     assert not any('coins_boost_sheet' in family for family in report.closed)
 
 
@@ -2455,3 +2456,50 @@ def test_read_surprise_counter_returns_none_when_the_crop_ocr_fails() -> None:
     frame = _snapshot(_box(SURPRISE_TITLE, 270, 200, 930, 270))
 
     assert read_surprise_counter(frame, ocr=_FailingOcr()) is None  # type: ignore[arg-type]
+
+
+def test_run_surprise_task_does_not_attribute_a_multi_credit_jump_to_one_tile(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    pending: dict[str, str] = {}
+
+    def on_tap(screen: str, label: str | None, _count: int) -> str | None:
+        if screen == 'grid0' and label == 'Product A':
+            pending['return'] = 'after_a'
+            return 'detail'
+        if screen == 'after_a' and label == 'Product B':
+            pending['return'] = 'grid2'
+            return 'detail'
+        if screen == 'grid2' and label == 'Product C':
+            pending['return'] = 'grid3'
+            return 'detail'
+        return None
+
+    def on_key(screen: str, _key: str, _count: int) -> str | None:
+        if screen == 'detail':
+            return pending.pop('return')
+        return None
+
+    world = _World(
+        series={
+            'boost': (_boost_frame(progress='1/2'),),
+            'grid0': (_grid_frame(0),),
+            'after_a': (_grid_frame(None),),
+            'grid2': (_grid_frame(2),),
+            'grid3': (_grid_frame(3),),
+            'detail': (_detail_frame(),),
+            'coins': (_coins_frame(),),
+        },
+        transitions={('boost', 'GO'): 'grid0'},
+        on_tap=on_tap,
+        on_key=on_key,
+    )
+
+    result = _run(world, catalogue, corpus, _state(tmp_path), max_rounds=1)
+
+    assert result.outcome is SurpriseOutcome.COMPLETED
+    assert result.round_records[0].counter_change == '0/3 -> 3/3'
+    assert result.round_records[0].items == ('Product C',)
+    assert 'Product B' not in result.round_records[0].items
