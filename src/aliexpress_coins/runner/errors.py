@@ -47,7 +47,14 @@ class NotificationError(RunnerError):
 
     Delivery is best-effort by contract: the caller records this error and
     exits on the run's own status. It never turns a good night into a failure.
+    ``status`` keeps an HTTP status when the transport supplied one, so the
+    report can distinguish a 503 from a DNS failure without recording the
+    exception's message.
     """
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 class DeviceError(RunnerError):

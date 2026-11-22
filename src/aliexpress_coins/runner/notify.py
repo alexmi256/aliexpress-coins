@@ -85,7 +85,10 @@ def _post(opener: Opener, request: Request, timeout: float, name: str) -> None:
         # the transport exposes one, the HTTP status.
         status = getattr(exc, 'code', None)
         suffix = f' (HTTP {status})' if isinstance(status, int) else ''
-        raise NotificationError(f'{name} delivery failed: {type(exc).__name__}{suffix}') from exc
+        raise NotificationError(
+            f'{name} delivery failed: {type(exc).__name__}{suffix}',
+            status=status if isinstance(status, int) else None,
+        ) from exc
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,14 +170,15 @@ class CompositeSink:
         return '+'.join(sink.name for sink in self.sinks)
 
     def send(self, notification: Notification) -> None:
-        failures: list[str] = []
+        failures: list[NotificationError] = []
         for sink in self.sinks:
             try:
                 sink.send(notification)
             except NotificationError as exc:
-                failures.append(str(exc))
+                failures.append(exc)
         if failures:
-            raise NotificationError('; '.join(failures))
+            status = next((failure.status for failure in failures if failure.status is not None), None)
+            raise NotificationError('; '.join(str(failure) for failure in failures), status=status)
 
 
 def build_notifier(config: RunConfig) -> NotificationSink | None:

@@ -891,13 +891,7 @@ def run_quiz_task(
         if verify_dismiss is not None:
             dismissals.append(verify_dismiss)
         if verify_return is not None:
-            return_state = replace(
-                verify_return,
-                attempts=return_state.attempts + verify_return.attempts,
-                navigations=return_state.navigations + verify_return.navigations,
-                history=return_state.history + verify_return.history,
-                elapsed=return_state.elapsed + verify_return.elapsed,
-            )
+            return_state = return_state.merged(verify_return)
             if not return_state.returned:
                 return _result(
                     spec,

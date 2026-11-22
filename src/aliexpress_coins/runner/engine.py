@@ -1006,6 +1006,8 @@ def _delivery_error(exc: Exception) -> str:
     enough to diagnose delivery without ever copying that text into artifacts.
     """
     status = getattr(exc, 'code', None)
+    if not isinstance(status, int):
+        status = getattr(exc, 'status', None)
     suffix = f' (HTTP {status})' if isinstance(status, int) else ''
     return f'{type(exc).__name__}{suffix}'
 

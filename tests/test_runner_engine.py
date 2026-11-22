@@ -14,8 +14,10 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from enum import StrEnum
+from http.client import HTTPMessage
 from pathlib import Path
 from typing import Any, cast
+from urllib.error import HTTPError
 
 import pytest
 from PIL import Image
@@ -1848,6 +1850,49 @@ def test_a_webhook_password_never_reaches_the_report_or_the_log(
     assert secret not in report.event_log_path.read_text(encoding='utf-8')
 
 
+def test_a_notification_http_status_reaches_the_report_without_its_message(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _boost_header_frame()
+    _surface(monkeypatch, replace(full_roster, entries=()), frame)
+    secret = 'do-not-record-this'
+
+    def broken(request: Any, *, timeout: float) -> Any:
+        del request, timeout
+        raise HTTPError(
+            f'https://hooks.example/{secret}',
+            503,
+            f'Service Unavailable {secret}',
+            HTTPMessage(),
+            None,
+        )
+
+    notifier = WebhookSink('https://hooks.example/coins', opener=broken)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+        notifier=notifier,
+        notify_on_empty=True,
+    )
+
+    report = engine.run_once(context)
+
+    assert report.notification is not None
+    assert report.notification['error'] == 'NotificationError (HTTP 503)'
+    assert '**Notification:** failed via webhook: NotificationError (HTTP 503)' in report.summary_path.read_text(
+        encoding='utf-8',
+    )
+    assert secret not in report.summary_path.read_text(encoding='utf-8')
+    assert secret not in report.json_path.read_text(encoding='utf-8')
+    assert secret not in report.event_log_path.read_text(encoding='utf-8')
+
+
 def test_rotation_is_restored_before_the_notification_is_delivered(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2054,10 +2099,16 @@ def test_dismissals_are_collected_from_every_executor_payload_shape(tmp_path: Pa
             'streak': {'dismiss': {'closed': ['launch_modal', 'bundle_badge']}},
             'dismissals': [{'closed': ['launch_modal']}, {'closed': 'not-a-list'}, 'ignored'],
             'nested': [{'dismiss': {'closed': ['promo']}}],
+            'return': {'dismissals': [{'closed': ['return_modal']}]},
         },
     )
 
-    assert report.popups_closed == {'launch_modal': 2, 'bundle_badge': 1, 'promo': 1}
+    assert report.popups_closed == {
+        'launch_modal': 2,
+        'bundle_badge': 1,
+        'promo': 1,
+        'return_modal': 1,
+    }
 
 
 def test_notification_content_and_selection_cover_failed_and_completed_runs(tmp_path: Path) -> None:

@@ -25,7 +25,7 @@ from PIL import Image
 
 from aliexpress_coins.control.controller import Controller
 from aliexpress_coins.control.errors import PopupUnclosable
-from aliexpress_coins.control.popups import DismissReport, PopupCorpus, load_popup_corpus
+from aliexpress_coins.control.popups import DismissReport, DismissStop, PopupCorpus, load_popup_corpus
 from aliexpress_coins.perception.geometry import DeviceGeometry
 from aliexpress_coins.perception.matching import normalize
 from aliexpress_coins.perception.ocr import RapidOcrEngine
@@ -1588,6 +1588,49 @@ def test_arrival_and_return_result_render_their_evidence() -> None:
     assert arrival.as_dict()['arrived'] is True
     assert returned.as_dict()['navigations'] == ['shortcut']
     assert skipped.as_dict()['status'] == 'absent'
+
+
+def test_merged_return_keeps_the_earlier_sweeps_dismissals() -> None:
+    def dismissal(family: str) -> DismissReport:
+        return DismissReport(
+            closed=(family,),
+            attempts=(),
+            frames=(),
+            remaining=False,
+            stop=DismissStop.CLEAR,
+        )
+
+    first = ReturnResult(
+        returned=False,
+        reentered=True,
+        attempts=1,
+        route=SurfaceRoute.SHORTCUT,
+        elapsed=1.0,
+        navigations=(SurfaceRoute.SHORTCUT,),
+        history=('popup',),
+        dismissals=(dismissal('launch_modal'),),
+    )
+    later = ReturnResult(
+        returned=True,
+        reentered=True,
+        attempts=2,
+        route=SurfaceRoute.SHORTCUT,
+        elapsed=2.0,
+        snapshot=_coin_frame(),
+        navigations=(SurfaceRoute.WIDGET,),
+        history=('page', 'page'),
+        dismissals=(dismissal('promo_modal'),),
+    )
+
+    merged = first.merged(later)
+
+    assert merged.returned is True
+    assert merged.snapshot == later.snapshot
+    assert merged.attempts == 3
+    assert merged.navigations == (SurfaceRoute.SHORTCUT, SurfaceRoute.WIDGET)
+    assert merged.history == ('popup', 'page', 'page')
+    assert merged.elapsed == 3.0
+    assert [report.closed for report in merged.dismissals] == [('launch_modal',), ('promo_modal',)]
 
 
 def test_chip_reading_without_a_box_has_no_target_fields() -> None:

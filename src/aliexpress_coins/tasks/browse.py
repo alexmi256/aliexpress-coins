@@ -378,6 +378,17 @@ class ReturnResult:
         object.__setattr__(self, 'history', tuple(self.history))
         object.__setattr__(self, 'dismissals', tuple(self.dismissals))
 
+    def merged(self, later: ReturnResult) -> ReturnResult:
+        """Combine this return sweep with a later verification return."""
+        return replace(
+            later,
+            attempts=self.attempts + later.attempts,
+            navigations=self.navigations + later.navigations,
+            history=self.history + later.history,
+            elapsed=self.elapsed + later.elapsed,
+            dismissals=self.dismissals + later.dismissals,
+        )
+
     def as_dict(self) -> dict[str, object]:
         """Render the return evidence for the run report."""
         return {
@@ -1190,15 +1201,8 @@ def run_browse_task(
         if verify_sweep is not None:
             dismissals.append(verify_sweep)
         if verify_return is not None:
-            verify_return = replace(
-                verify_return,
-                attempts=return_state.attempts + verify_return.attempts,
-                navigations=return_state.navigations + verify_return.navigations,
-                history=return_state.history + verify_return.history,
-                elapsed=return_state.elapsed + verify_return.elapsed,
-            )
-            return_state = verify_return
-            if not verify_return.returned:
+            return_state = return_state.merged(verify_return)
+            if not return_state.returned:
                 return _result(
                     spec,
                     entry.title,
