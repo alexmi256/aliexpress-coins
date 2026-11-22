@@ -53,11 +53,17 @@ from aliexpress_coins.perception.matching import (
     similarity,
 )
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
-from aliexpress_coins.perception.state import CaptureSource
+from aliexpress_coins.perception.state import TASK_TITLES, CaptureSource, ScreenState, classify
 from aliexpress_coins.perception.templates import TemplateStore
 from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks.discovery import DiscoveryRoute, open_boost_list
-from aliexpress_coins.tasks.surface import BOOST_MARKER, REDEEM_MARKER, contains_text, has_task_rows, is_boost_page
+from aliexpress_coins.tasks.surface import (
+    BOOST_MARKER,
+    COIN_PAGE_MARKERS,
+    REDEEM_MARKER,
+    contains_text,
+    is_boost_page,
+)
 
 __all__ = [
     'BALANCE_BOTTOM_FRACTION',
@@ -126,6 +132,14 @@ frame, not stored pixels, so the rule ports to another geometry.
 """
 
 _BARE_NUMBER = re.compile(r'^\s*(\d{1,3}(?:,\d{3})*|\d+)\s*$')
+
+_STREAK_CARD_HEIGHT_RATIO = 5.0
+"""How far below the marker row the streak card may reach, in row heights.
+
+The measured card ends about 4.5 marker-row heights below the marker, and the
+first task row starts about 5.8 below it. Scaling by the marker row's own
+height keeps the band tied to the frame's text size rather than a pixel offset.
+"""
 
 
 class SigninOutcome(StrEnum):
@@ -361,7 +375,30 @@ def claim_streak(
     if interval <= 0:
         raise ValueError(f'interval must be positive, got {interval!r}')
 
-    frame = _frame(capture, snapshot)
+    frame, ready = _prepare_entry(
+        controller,
+        capture,
+        corpus,
+        _frame(capture, snapshot),
+        templates=templates,
+        timeout=timeout,
+        interval=interval,
+        settle=settle,
+        clock=clock,
+        sleep=sleep,
+        logger=log,
+    )
+    if not ready:
+        result = ClaimResult(
+            key=STREAK_KEY,
+            outcome=SigninOutcome.UNAVAILABLE,
+            detail='the coin page did not reach a settled state; no claim control was tapped',
+            verification='not_settled',
+            balance_before=read_coin_balance(frame),
+        )
+        _log_result(log, result)
+        return result
+
     control = find_streak_control(frame)
     if control is None:
         result = ClaimResult(
@@ -393,7 +430,7 @@ def claim_streak(
     if interstitial == REDEEM_INTERSTITIAL:
         # The coins were taken before the overlay appeared. The corpus marks it
         # unclosable, so record the claim and stop cleanly instead of raising.
-        state.record(STREAK_KEY, balance=before)
+        state.record(STREAK_KEY)
         result = ClaimResult(
             key=STREAK_KEY,
             outcome=SigninOutcome.COMPLETED,
@@ -419,17 +456,24 @@ def claim_streak(
     )
     if verdict is not None:
         verification, after = verdict
-        state.record(STREAK_KEY, balance=after if after is not None else before)
+        interstitial = REDEEM_INTERSTITIAL if verification == 'interstitial' else None
+        if interstitial is None:
+            state.record(STREAK_KEY, balance=after if after is not None else before)
+            detail = f'streak claim verified by {verification.replace("_", " ")}'
+        else:
+            state.record(STREAK_KEY)
+            detail = 'streak claimed; the reward interstitial appeared during verification, so the run stops here'
         result = ClaimResult(
             key=STREAK_KEY,
             outcome=SigninOutcome.COMPLETED,
-            detail=f'streak claim verified by {verification.replace("_", " ")}',
+            detail=detail,
             verification=verification,
             balance_before=before,
             balance_after=after,
             control=control,
             tap=tap,
             dismiss=dismiss,
+            interstitial=interstitial,
             recorded=True,
         )
         _log_result(log, result)
@@ -480,7 +524,30 @@ def claim_boost_checkin(
     if interval <= 0:
         raise ValueError(f'interval must be positive, got {interval!r}')
 
-    frame = _frame(capture, snapshot)
+    frame, ready = _prepare_entry(
+        controller,
+        capture,
+        corpus,
+        _frame(capture, snapshot),
+        templates=templates,
+        timeout=timeout,
+        interval=interval,
+        settle=settle,
+        clock=clock,
+        sleep=sleep,
+        logger=log,
+    )
+    if not ready:
+        result = ClaimResult(
+            key=BOOST_KEY,
+            outcome=SigninOutcome.UNAVAILABLE,
+            detail='the boost page did not reach a settled state; no claim action was tapped',
+            verification='not_settled',
+            balance_before=read_coin_balance(frame),
+        )
+        _log_result(log, result)
+        return result
+
     row, action = find_boost_control(frame)
     if row is None or action is None:
         result = ClaimResult(
@@ -510,7 +577,7 @@ def claim_boost_checkin(
         logger=log,
     )
     if interstitial == REDEEM_INTERSTITIAL:
-        state.record(BOOST_KEY, balance=before)
+        state.record(BOOST_KEY)
         result = ClaimResult(
             key=BOOST_KEY,
             outcome=SigninOutcome.COMPLETED,
@@ -536,17 +603,24 @@ def claim_boost_checkin(
     )
     if verdict is not None:
         verification, after = verdict
-        state.record(BOOST_KEY, balance=after if after is not None else before)
+        interstitial = REDEEM_INTERSTITIAL if verification == 'interstitial' else None
+        if interstitial is None:
+            state.record(BOOST_KEY, balance=after if after is not None else before)
+            detail = f'boost check-in verified by {verification.replace("_", " ")}'
+        else:
+            state.record(BOOST_KEY)
+            detail = 'check-in claimed; the reward interstitial appeared during verification, so the run stops here'
         result = ClaimResult(
             key=BOOST_KEY,
             outcome=SigninOutcome.COMPLETED,
-            detail=f'boost check-in verified by {verification.replace("_", " ")}',
+            detail=detail,
             verification=verification,
             balance_before=before,
             balance_after=after,
             control=action,
             tap=tap,
             dismiss=dismiss,
+            interstitial=interstitial,
             recorded=True,
         )
         _log_result(log, result)
@@ -618,18 +692,31 @@ def claim_daily_signins(
     if state.done_today(BOOST_KEY):
         boost = _already_done(BOOST_KEY, BOOST_ROW_LABELS[0])
     else:
-        opened = open_boost_list(
-            controller,
-            capture,
-            corpus,
-            templates=templates,
-            timeout=timeout,
-            interval=interval,
-            settle=settle,
-            clock=clock,
-            sleep=sleep,
-            logger=log,
-        )
+        try:
+            opened = open_boost_list(
+                controller,
+                capture,
+                corpus,
+                templates=templates,
+                timeout=timeout,
+                interval=interval,
+                settle=settle,
+                clock=clock,
+                sleep=sleep,
+                logger=log,
+            )
+        except PopupUnclosable:
+            frame = _capture(capture)
+            if not contains_text(frame, REDEEM_MARKER):
+                raise
+            before = _first_balance(streak)
+            latest = _latest_balance(streak)
+            return SigninReport(
+                streak=streak,
+                balance_before=before,
+                balance_after=before if latest is None else latest,
+                stop=REDEEM_INTERSTITIAL,
+            )
         route = opened.route
         boost = claim_boost_checkin(
             controller,
@@ -646,7 +733,7 @@ def claim_daily_signins(
             logger=log,
         )
 
-    before = streak.balance_before
+    before = _first_balance(streak, boost)
     latest = _latest_balance(streak, boost)
     after = before if latest is None else latest
     stop = REDEEM_INTERSTITIAL if boost.interstitial == REDEEM_INTERSTITIAL else None
@@ -664,15 +751,77 @@ def claim_daily_signins(
 claim_signins = claim_daily_signins
 
 
+def _prepare_entry(
+    controller: Controller,
+    capture: CaptureSource,
+    corpus: PopupCorpus,
+    frame: Snapshot,
+    *,
+    templates: TemplateStore | None,
+    timeout: float,
+    interval: float,
+    settle: float,
+    clock: Callable[[], float],
+    sleep: Callable[[float], None],
+    logger: logging.Logger,
+) -> tuple[Snapshot, bool]:
+    """Resolve a loading page or popup before looking for a claim control.
+
+    A popup is swept through the same dismissal loop. A loading frame is polled
+    at the caller's interval. Both are bounded by ``timeout``; if the frame is
+    still not settled the caller must not tap it. Returns the last frame and
+    whether it reached a settled state.
+    """
+    deadline = clock() + timeout
+    classification = classify(frame)
+    while classification.state in (ScreenState.LOADING, ScreenState.POPUP):
+        now = clock()
+        if now >= deadline:
+            return frame, False
+        if classification.state is ScreenState.POPUP:
+            report = dismiss_after(
+                controller,
+                capture,
+                corpus,
+                templates=templates,
+                settle=settle,
+                clock=clock,
+                sleep=sleep,
+                logger=logger,
+            )
+            frame = report.frames[-1].snapshot
+        else:
+            sleep(min(interval, max(0.0, deadline - now)))
+            frame = _capture(capture)
+        classification = classify(frame)
+    return frame, True
+
+
 def _streak_rows(snapshot: Snapshot) -> tuple[Row, ...]:
-    """Rows in the section headed by ``Daily coins``, in reading order."""
+    """Rows in the streak card headed by ``Daily coins``, in reading order.
+
+    The next task row starts a new section, so the card never absorbs the task
+    list below it. A marker-relative band is the second bound: it keeps a later
+    row that happens to read ``Claimed`` from proving a claim it did not make.
+    """
     rows = group_rows(snapshot.boxes, snapshot.geometry)
-    for section in group_sections(rows, header_labels=(STREAK_MARKER,)):
-        if section.header is None:
+    for section in group_sections(rows, header_labels=(STREAK_MARKER, *TASK_TITLES)):
+        header = section.header
+        if header is None or not _row_has(header, (STREAK_MARKER,)):
             continue
-        if _row_has(section.header, (STREAK_MARKER,)):
-            return section.rows
+        limit = header.top + header.height * _STREAK_CARD_HEIGHT_RATIO
+        card: list[Row] = []
+        for row in section.rows:
+            if row.center_y > limit or _is_task_row(row):
+                break
+            card.append(row)
+        return tuple(card)
     return ()
+
+
+def _is_task_row(row: Row) -> bool:
+    """Whether a row belongs to the task list rather than the streak card."""
+    return _row_has(row, TASK_TITLES) or find_action_in_row(row) is not None
 
 
 def _verify_streak_until(
@@ -689,6 +838,8 @@ def _verify_streak_until(
     while True:
         frame = _capture(capture)
         after = read_coin_balance(frame)
+        if contains_text(frame, REDEEM_MARKER):
+            return 'interstitial', after
         rows = _streak_rows(frame)
         if rows:
             control = find_streak_control(frame)
@@ -718,11 +869,13 @@ def _verify_boost_until(
     while True:
         frame = _capture(capture)
         after = read_coin_balance(frame)
+        if contains_text(frame, REDEEM_MARKER):
+            return 'interstitial', after
         row, action = find_boost_control(frame)
         if row is None:
-            # The row normally disappears; the page itself staying loaded is
-            # what makes the absence meaningful rather than a stray capture.
-            if is_boost_page(frame) or has_task_rows(frame):
+            # A still-loaded boost page, or the coin page whose inline row is
+            # now gone, is proof the row was claimed. Any other page is not.
+            if is_boost_page(frame) or all(contains_text(frame, marker) for marker in COIN_PAGE_MARKERS):
                 return 'absent_boost_row', after
         elif action is None or _row_has(row, BOOST_CLAIMED_LABELS):
             return 'claimed_marker', after
@@ -797,6 +950,13 @@ def _capture(source: CaptureSource) -> Snapshot:
     if callable(source):
         return source()
     return source.capture()
+
+
+def _first_balance(*results: ClaimResult) -> float | None:
+    for result in results:
+        if result.balance_before is not None:
+            return result.balance_before
+    return None
 
 
 def _latest_balance(*results: ClaimResult) -> float | None:

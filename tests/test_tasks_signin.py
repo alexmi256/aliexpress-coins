@@ -219,6 +219,8 @@ def frames(engine: RapidOcrEngine) -> dict[str, Snapshot]:
         'coins': _load(STATES / 'coins.png', engine),
         'state_boost': _load(STATES / 'boost.png', engine),
         'boost': _load(DATA / 'boost.png', engine),
+        'launch': _load(DATA / 'popups' / 'launch_welcome_gifts.png', engine),
+        'skeleton': _load(STATES / 'skeleton.png', engine),
     }
 
 
@@ -252,6 +254,20 @@ def test_find_streak_control_returns_the_measured_collect(frames: dict[str, Snap
 
 def test_find_streak_control_is_none_without_the_section_marker(frames: dict[str, Snapshot]) -> None:
     assert find_streak_control(frames['boost']) is None
+
+
+def test_find_streak_control_does_not_reach_a_task_row_below_the_card(frames: dict[str, Snapshot]) -> None:
+    frame = _streak_frame(frames['coins'], collect=False)
+    snapshot = _rebox(
+        frame,
+        (
+            *frame.boxes,
+            _box('Mystery task', 181, 1600, 432, 1643),
+            _box('Collect', 854, 1640, 1041, 1692),
+        ),
+    )
+
+    assert find_streak_control(snapshot) is None
 
 
 def test_find_boost_control_reads_the_rows_own_action(frames: dict[str, Snapshot]) -> None:
@@ -466,6 +482,110 @@ def test_claim_streak_unverified_when_the_streak_section_vanishes(
     assert state.done_today(STREAK_KEY) is False
 
 
+def test_claim_streak_does_not_verify_from_a_claimed_task_row_below_the_card(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    before = _streak_frame(frames['coins'])
+    after = _rebox(
+        before,
+        (
+            *before.boxes,
+            _box('Mystery task', 181, 1600, 432, 1643),
+            _box('Claimed', 800, 1600, 1000, 1643),
+            _box('GO', 978, 1610, 1060, 1660),
+        ),
+    )
+    state = _state(tmp_path)
+
+    result = claim_streak(
+        _controller(_RecordingDevice(), before),
+        _Capture([before, after]),
+        corpus,
+        state,
+        timeout=2.0,
+        interval=1.0,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is SigninOutcome.UNVERIFIED
+    assert result.recorded is False
+    assert state.done_today(STREAK_KEY) is False
+
+
+def test_claim_streak_sweeps_a_popup_before_looking_for_the_control(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    before = _streak_frame(frames['coins'])
+    after = _streak_frame(frames['coins'], collect=False, tomorrow=True)
+    device = _RecordingDevice()
+
+    result = claim_streak(
+        _controller(device, frames['launch']),
+        _Capture([frames['launch'], frames['launch'], before, after]),
+        corpus,
+        _state(tmp_path),
+        timeout=2.0,
+        interval=1.0,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.completed is True
+    assert len(device.taps) == 2
+
+
+def test_claim_streak_waits_for_a_loading_frame_to_settle(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    before = _streak_frame(frames['coins'])
+    after = _streak_frame(frames['coins'], collect=False, tomorrow=True)
+
+    result = claim_streak(
+        _controller(_RecordingDevice(), frames['skeleton']),
+        _Capture([frames['skeleton'], before, after]),
+        corpus,
+        _state(tmp_path),
+        timeout=2.0,
+        interval=1.0,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.completed is True
+
+
+def test_claim_streak_is_unavailable_when_the_entry_never_settles(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    device = _RecordingDevice()
+    state = _state(tmp_path)
+
+    result = claim_streak(
+        _controller(device, frames['skeleton']),
+        _Capture([frames['skeleton']]),
+        corpus,
+        state,
+        timeout=1.0,
+        interval=1.0,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is SigninOutcome.UNAVAILABLE
+    assert result.verification == 'not_settled'
+    assert device.taps == []
+    assert state.done_today(STREAK_KEY) is False
+
+
 def test_claim_streak_skips_from_state_before_any_capture(
     frames: dict[str, Snapshot],
     corpus: PopupCorpus,
@@ -544,6 +664,34 @@ def test_claim_streak_records_the_redeem_interstitial_as_a_clean_completion(
     assert result.verification == 'interstitial'
     assert result.interstitial == REDEEM_INTERSTITIAL
     assert result.dismiss is None
+    assert state.done_today(STREAK_KEY)
+
+
+def test_claim_streak_records_redeem_that_arrives_during_verification(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    before = _streak_frame(frames['coins'])
+    clear = _streak_frame(frames['coins'], collect=False, tomorrow=True)
+    redeem = _redeem(clear)
+    state = _state(tmp_path)
+
+    result = claim_streak(
+        _controller(_RecordingDevice(), before),
+        _Capture([before, clear, redeem]),
+        corpus,
+        state,
+        timeout=2.0,
+        interval=1.0,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is SigninOutcome.COMPLETED
+    assert result.verification == 'interstitial'
+    assert result.interstitial == REDEEM_INTERSTITIAL
+    assert result.recorded is True
     assert state.done_today(STREAK_KEY)
 
 
@@ -740,6 +888,110 @@ def test_claim_boost_checkin_unverified_on_a_non_boost_page_is_not_recorded(
     assert result.outcome is SigninOutcome.UNVERIFIED
     assert result.recorded is False
     assert state.done_today(BOOST_KEY) is False
+
+
+def test_claim_boost_checkin_does_not_accept_another_task_page_as_proof(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    before = frames['boost']
+    task_page = _snapshot(
+        _box('Take the coins quiz', 250, 600, 650, 650),
+        _box('GO', 965, 650, 1050, 700),
+    )
+    state = _state(tmp_path)
+
+    result = claim_boost_checkin(
+        _controller(_RecordingDevice(), before),
+        _Capture([before, task_page]),
+        corpus,
+        state,
+        timeout=2.0,
+        interval=1.0,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is SigninOutcome.UNVERIFIED
+    assert result.recorded is False
+    assert state.done_today(BOOST_KEY) is False
+
+
+def test_claim_boost_checkin_completes_when_the_inline_row_leaves_the_coin_page(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    before = frames['coins']
+    after = _streak_frame(frames['coins'], collect=False, tomorrow=True)
+
+    result = claim_boost_checkin(
+        _controller(_RecordingDevice(), before),
+        _Capture([before, after]),
+        corpus,
+        _state(tmp_path),
+        timeout=2.0,
+        interval=1.0,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is SigninOutcome.COMPLETED
+    assert result.verification == 'absent_boost_row'
+
+
+def test_claim_boost_checkin_is_unavailable_when_the_entry_never_settles(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    device = _RecordingDevice()
+    state = _state(tmp_path)
+
+    result = claim_boost_checkin(
+        _controller(device, frames['skeleton']),
+        _Capture([frames['skeleton']]),
+        corpus,
+        state,
+        timeout=1.0,
+        interval=1.0,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is SigninOutcome.UNAVAILABLE
+    assert result.verification == 'not_settled'
+    assert device.taps == []
+    assert state.done_today(BOOST_KEY) is False
+
+
+def test_claim_boost_checkin_records_redeem_that_arrives_during_verification(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    before = frames['boost']
+    clear = _boost_without_row(before)
+    redeem = _redeem(clear)
+    state = _state(tmp_path)
+
+    result = claim_boost_checkin(
+        _controller(_RecordingDevice(), before),
+        _Capture([before, clear, redeem]),
+        corpus,
+        state,
+        timeout=2.0,
+        interval=1.0,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is SigninOutcome.COMPLETED
+    assert result.verification == 'interstitial'
+    assert result.interstitial == REDEEM_INTERSTITIAL
+    assert result.recorded is True
+    assert state.done_today(BOOST_KEY)
 
 
 def test_claim_boost_checkin_skips_from_state_before_any_capture(
@@ -956,6 +1208,62 @@ def test_claim_daily_signins_stops_cleanly_on_redeem_after_the_streak(
     assert report.as_dict()['stop'] == REDEEM_INTERSTITIAL
 
 
+def test_claim_daily_signins_stops_when_redeem_blocks_opening_the_boost_list(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    before = _streak_frame(frames['coins'])
+    clear = _streak_frame(frames['coins'], collect=False, tomorrow=True)
+    redeem = _redeem(clear)
+    device = _RecordingDevice()
+    state = _state(tmp_path)
+
+    report = claim_daily_signins(
+        _controller(device, before),
+        _Capture([before, clear, clear, redeem]),
+        corpus,
+        state,
+        timeout=5.0,
+        interval=1.0,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert report.streak.completed is True
+    assert report.boost is None
+    assert report.stop == REDEEM_INTERSTITIAL
+    assert report.stopped_by_redeem is True
+    assert len(device.taps) == 1
+    assert state.done_today(STREAK_KEY)
+    assert state.done_today(BOOST_KEY) is False
+
+
+def test_claim_daily_signins_re_raises_a_non_redeem_popup_while_opening_the_boost_list(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    before = _streak_frame(frames['coins'])
+    clear = _streak_frame(frames['coins'], collect=False, tomorrow=True)
+    popup = _unmatched_popup(clear)
+    state = _state(tmp_path)
+
+    with pytest.raises(PopupUnclosable):
+        claim_daily_signins(
+            _controller(_RecordingDevice(), before),
+            _Capture([before, clear, clear, popup]),
+            corpus,
+            state,
+            timeout=5.0,
+            interval=1.0,
+            clock=_SteppingClock(),
+            sleep=_SteppingClock().sleep,
+        )
+
+    assert state.done_today(STREAK_KEY)
+
+
 def test_claim_daily_signins_skips_a_done_boost_without_opening_the_list(
     frames: dict[str, Snapshot],
     corpus: PopupCorpus,
@@ -991,8 +1299,8 @@ def test_claim_daily_signins_claims_only_the_open_boost_when_the_streak_is_done(
     tmp_path: Path,
 ) -> None:
     coin_page = _streak_frame(frames['coins'], collect=False, tomorrow=True)
-    boost = frames['boost']
-    boost_after = _boost_without_row(boost)
+    boost = _with_box(frames['boost'], _box('40', 200, 120, 300, 180))
+    boost_after = _with_box(_boost_without_row(frames['boost']), _box('41', 200, 120, 300, 180))
     state = _state(tmp_path)
     state.record(STREAK_KEY)
     device = _RecordingDevice()
@@ -1012,6 +1320,8 @@ def test_claim_daily_signins_claims_only_the_open_boost_when_the_streak_is_done(
     assert report.boost is not None
     assert report.boost.completed is True
     assert report.route is DiscoveryRoute.BOOST
+    assert report.balance_before == 40.0
+    assert report.balance_after == 41.0
     assert len(device.taps) == 2
     assert state.done_today(BOOST_KEY)
 
