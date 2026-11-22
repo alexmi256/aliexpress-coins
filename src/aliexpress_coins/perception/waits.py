@@ -39,7 +39,7 @@ import numpy as np
 from numpy.typing import NDArray
 from PIL import Image
 
-from aliexpress_coins.perception.matching import DEFAULT_MIN_OCR_SCORE, normalize
+from aliexpress_coins.perception.matching import DEFAULT_MIN_OCR_SCORE
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.state import CaptureSource
 
@@ -104,9 +104,6 @@ repainted label without calling a real page transition stable.
 
 _COUNTDOWN_TEXT = re.compile(r'^\s*(?P<seconds>\d{1,3})\s*s\s*$', re.IGNORECASE)
 """OCR reads the running chip as ``12s``; case and inner spaces are ignored."""
-
-_CHECK_TOKENS = frozenset({'check'})
-"""``✓`` and ``✔`` normalise to this token in the matching layer."""
 
 
 class WaitStatus(StrEnum):
@@ -376,34 +373,30 @@ def signature_difference(first: NDArray[np.float32], second: NDArray[np.float32]
 
 
 def read_countdown(snapshot: Snapshot) -> CountdownReading | None:
-    """Read ``Ns`` or a check glyph from any box in the frame.
+    """Read running ``Ns`` digits from any box in the frame.
 
-    This is the generic reader used when a caller does not have a measured chip
-    band. The browse executor passes its own right-edge reader, which also
-    ignores the status bar. A running reading wins over a check; among running
-    readings the rightmost box wins, matching the chip's measured position.
+    The check state is deliberately not inferred here. A lone check glyph can
+    appear anywhere on an ordinary shopping page, and the matching layer maps a
+    product size ``S`` to the same token as ``✓``; treating either as the chip
+    would end a dwell before it started. The browse executor supplies its own
+    measured right-edge reader, which reads the check inside the chip band.
     """
     running: tuple[TextBox, int] | None = None
-    checked: TextBox | None = None
     for box in snapshot.boxes:
         if box.score < DEFAULT_MIN_OCR_SCORE:
             continue
         text = unicodedata.normalize('NFKC', box.text)
         match = _COUNTDOWN_TEXT.match(text)
-        if match is not None:
-            candidate = int(match.group('seconds'))
-            if running is None or box.bbox[2] > running[0].bbox[2]:
-                running = (box, candidate)
+        if match is None:
             continue
-        if normalize(text) in _CHECK_TOKENS and (checked is None or box.bbox[2] > checked.bbox[2]):
-            checked = box
+        candidate = int(match.group('seconds'))
+        if running is None or box.bbox[2] > running[0].bbox[2]:
+            running = (box, candidate)
 
-    if running is not None:
-        box, seconds = running
-        return CountdownReading(text=box.text, seconds=seconds, box=box)
-    if checked is not None:
-        return CountdownReading(text=checked.text, seconds=None, checked=True, box=checked)
-    return None
+    if running is None:
+        return None
+    box, seconds = running
+    return CountdownReading(text=box.text, seconds=seconds, box=box)
 
 
 def wait_for_text[T](
@@ -582,7 +575,7 @@ def wait_for_countdown(
     first = frame
     observations: list[CountdownObservation] = []
     attempts = 0
-    seen_running = False
+    seen_positive = False
     arithmetic_done = False
     ending: CountdownEnding | None = None
     last_seconds: int | None = None
@@ -596,10 +589,47 @@ def wait_for_countdown(
         observations.append(CountdownObservation(elapsed=elapsed, reading=reading))
 
         if reading is not None and reading.running:
-            seen_running = True
+            seen_positive = True
             last_seconds = reading.seconds
-        elif seen_running:
-            # The chip was running and is now gone (or replaced by its check).
+        elif reading is not None and reading.clear:
+            # The check is the chip's own positive "dwell met" state. Keep
+            # checking it after a failed verification: the completion row can
+            # render a moment later without any chip on the frame.
+            seen_positive = True
+            ending = CountdownEnding.FRAME
+            if verify is None:
+                return _countdown_result(
+                    CountdownStatus.CLEARED,
+                    frame,
+                    first,
+                    max(0.0, clock() - started),
+                    attempts,
+                    timeout,
+                    observations,
+                    ended_by=ending,
+                    expected_seconds=expected_seconds,
+                    detail='the countdown chip already showed its cleared state',
+                )
+            if verify(frame):
+                return _countdown_result(
+                    CountdownStatus.VERIFIED,
+                    frame,
+                    first,
+                    max(0.0, clock() - started),
+                    attempts,
+                    timeout,
+                    observations,
+                    ended_by=ending,
+                    expected_seconds=expected_seconds,
+                    verified=True,
+                    detail='the countdown chip was cleared and verification passed',
+                )
+            detail = 'the countdown chip was cleared but verification did not pass yet'
+        elif seen_positive:
+            # A positive chip was seen and is now gone. This covers both the
+            # running digits with no verifier and a cleared check whose
+            # verification has not passed yet; the latter must keep polling so
+            # the completion row gets its turn.
             ending = CountdownEnding.FRAME
             if verify is None:
                 return _countdown_result(
@@ -631,37 +661,6 @@ def wait_for_countdown(
                     detail='the countdown chip disappeared and verification passed',
                 )
             detail = 'the countdown chip disappeared but verification did not pass yet'
-        elif reading is not None and reading.clear:
-            # The green check is the chip's own positive "dwell met" state.
-            ending = CountdownEnding.FRAME
-            if verify is None:
-                return _countdown_result(
-                    CountdownStatus.CLEARED,
-                    frame,
-                    first,
-                    max(0.0, clock() - started),
-                    attempts,
-                    timeout,
-                    observations,
-                    ended_by=ending,
-                    expected_seconds=expected_seconds,
-                    detail='the countdown chip already showed its cleared state',
-                )
-            if verify(frame):
-                return _countdown_result(
-                    CountdownStatus.VERIFIED,
-                    frame,
-                    first,
-                    max(0.0, clock() - started),
-                    attempts,
-                    timeout,
-                    observations,
-                    ended_by=ending,
-                    expected_seconds=expected_seconds,
-                    verified=True,
-                    detail='the countdown chip was cleared and verification passed',
-                )
-            detail = 'the countdown chip was cleared but verification did not pass yet'
         elif expected_seconds is None or verify is None:
             return _countdown_result(
                 CountdownStatus.ABSENT,

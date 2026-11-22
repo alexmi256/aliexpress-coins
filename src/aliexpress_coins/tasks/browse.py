@@ -616,18 +616,37 @@ def wait_for_timer_chip(
         return ChipWait(status=ChipStatus.NOT_WAITED, bound=0.0)
 
     frame = initial if initial is not None else _capture(capture)
-    if is_destination is not None and not is_destination(frame):
-        return ChipWait(status=ChipStatus.NOT_ARRIVED, bound=timeout)
+    read_frame: Callable[[Snapshot], CountdownReading | None] = _read_chip
+    started: float | None = None
+    if is_destination is not None:
+        destination = is_destination
+        started = clock()
 
-    wait = wait_for_countdown(
-        capture,
-        timeout=timeout,
-        interval=interval,
-        initial=frame,
-        read=_read_chip,
-        clock=clock,
-        sleep=sleep,
-    )
+        def _read_destination(snapshot: Snapshot) -> CountdownReading | None:
+            if not destination(snapshot):
+                raise _NotDestination
+            return _read_chip(snapshot)
+
+        read_frame = _read_destination
+
+    try:
+        wait = wait_for_countdown(
+            capture,
+            timeout=timeout,
+            interval=interval,
+            initial=frame,
+            read=read_frame,
+            clock=clock,
+            sleep=sleep,
+        )
+    except _NotDestination:
+        # The old per-poll contract: a frame that stops being the destination
+        # ends the wait at the first poll that sees it, not at the chip deadline.
+        return ChipWait(
+            status=ChipStatus.NOT_ARRIVED,
+            elapsed=max(0.0, clock() - started) if started is not None else 0.0,
+            bound=timeout,
+        )
     observations = tuple(
         ChipObservation(
             elapsed=item.elapsed,
@@ -653,6 +672,15 @@ def wait_for_timer_chip(
         verified=wait.verified,
         detail=wait.detail,
     )
+
+
+class _NotDestination(Exception):
+    """Internal signal: the frame stopped being the expected destination.
+
+    Raised from the countdown reader so the shared wait can stop on the frame
+    that bounced, rather than waiting for a chip that will never return. It is
+    caught inside :func:`wait_for_timer_chip` and never escapes the module.
+    """
 
 
 def _read_chip(snapshot: Snapshot) -> CountdownReading | None:

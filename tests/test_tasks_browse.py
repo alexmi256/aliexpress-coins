@@ -590,6 +590,23 @@ def test_wait_for_timer_chip_times_out_while_the_digits_remain() -> None:
     assert wait.elapsed >= 2.0
 
 
+def test_wait_for_timer_chip_stops_when_the_destination_bounces() -> None:
+    clock = _SteppingClock(step=0.5)
+    capture = _QueueCapture([_destination(chip='9s'), _wrong_page(), _wrong_page()])
+
+    wait = wait_for_timer_chip(
+        capture,
+        timeout=5.0,
+        interval=0.5,
+        is_destination=lambda frame: frame.has('Bundle Deals'),
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert wait.status is ChipStatus.NOT_ARRIVED
+    assert wait.elapsed < 5.0
+
+
 def test_wait_for_timer_chip_zero_timeout_does_not_capture() -> None:
     capture = _ForbiddenCapture()
 

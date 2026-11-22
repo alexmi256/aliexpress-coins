@@ -440,15 +440,33 @@ def test_read_countdown_prefers_a_running_rightmost_pill() -> None:
     assert reading.as_dict()['seconds'] == 12
 
 
-def test_read_countdown_reads_the_cleared_check_and_ignores_low_confidence() -> None:
-    cleared = read_countdown(_snapshot(_box('\u2713', 1100, 1000, 1160, 1040)))
-    assert cleared is not None
-    assert cleared.clear is True
-    assert cleared.running is False
-    assert cleared.seconds is None
+def test_read_countdown_ignores_ambiguous_check_tokens_and_low_confidence() -> None:
+    # A lone check glyph, OCR's "S" for the same glyph, and the word "Check"
+    # can all appear on an ordinary product page. None of them is the chip.
+    for label in ('\u2713', 'S', 'Check'):
+        assert read_countdown(_snapshot(_box(label, 1100, 1000, 1160, 1040))) is None
 
     assert read_countdown(_snapshot(_box('12s', 1100, 1000, 1160, 1040, score=0.2))) is None
     assert read_countdown(_snapshot(_box('Wireless Earbuds', 60, 400, 500, 450))) is None
+
+
+def test_read_countdown_ignores_a_size_label_beside_a_real_pill() -> None:
+    frame = _snapshot(
+        _box('S', 100, 700, 140, 740),
+        _box('12s', 1100, 1000, 1160, 1040),
+    )
+
+    reading = read_countdown(frame)
+
+    assert reading is not None
+    assert reading.running is True
+    assert reading.seconds == 12
+    assert reading.clear is False
+
+
+def _cleared_reader(_frame: Snapshot) -> CountdownReading | None:
+    """A reader that reports the chip's cleared state, independent of OCR."""
+    return CountdownReading(text='\u2713', seconds=None, checked=True)
 
 
 def test_wait_for_countdown_is_ended_by_the_chip_disappearing() -> None:
@@ -474,6 +492,7 @@ def test_wait_for_countdown_accepts_an_already_cleared_chip() -> None:
     wait = wait_for_countdown(
         _QueueCapture([_countdown_frame('\u2713')]),
         timeout=15.0,
+        read=_cleared_reader,
         clock=clock,
         sleep=clock.sleep,
     )
@@ -488,6 +507,7 @@ def test_wait_for_countdown_verifies_an_already_cleared_chip() -> None:
     wait = wait_for_countdown(
         _QueueCapture([_countdown_frame('\u2713')]),
         timeout=5.0,
+        read=_cleared_reader,
         verify=lambda _frame: True,
         clock=_Clock(),
         sleep=_Clock().sleep,
@@ -503,6 +523,7 @@ def test_wait_for_countdown_cleared_chip_without_verification_times_out() -> Non
         _QueueCapture([_countdown_frame('\u2713')]),
         timeout=1.0,
         interval=0.5,
+        read=_cleared_reader,
         verify=lambda _frame: False,
         clock=_Clock(),
         sleep=_Clock().sleep,
@@ -510,6 +531,65 @@ def test_wait_for_countdown_cleared_chip_without_verification_times_out() -> Non
 
     assert wait.status is CountdownStatus.TIMED_OUT
     assert 'cleared but verification did not pass' in wait.detail
+
+
+def test_wait_for_countdown_keeps_verifying_after_a_cleared_check_gone() -> None:
+    clock = _Clock()
+    cleared = _countdown_frame('\u2713')
+    completed = _countdown_frame('Row completed')
+    capture = _QueueCapture([cleared, completed])
+
+    def read(frame: Snapshot) -> CountdownReading | None:
+        return _cleared_reader(frame) if frame is cleared else None
+
+    wait = wait_for_countdown(
+        capture,
+        timeout=5.0,
+        interval=0.5,
+        read=read,
+        verify=lambda frame: frame.has('Row completed'),
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert wait.status is CountdownStatus.VERIFIED
+    assert wait.verified is True
+    assert wait.ended_by is CountdownEnding.FRAME
+    assert wait.frame is completed
+    assert wait.history == (None, None)
+    assert wait.attempts == 2
+
+
+def test_wait_for_countdown_keeps_verifying_after_running_then_cleared_then_gone() -> None:
+    clock = _Clock()
+    running = _countdown_frame('3s')
+    cleared = _countdown_frame('\u2713')
+    completed = _countdown_frame('Row completed')
+    capture = _QueueCapture([running, cleared, completed])
+
+    def read(frame: Snapshot) -> CountdownReading | None:
+        if frame is running:
+            return CountdownReading(text='3s', seconds=3)
+        if frame is cleared:
+            return _cleared_reader(frame)
+        return None
+
+    wait = wait_for_countdown(
+        capture,
+        timeout=5.0,
+        interval=0.5,
+        read=read,
+        verify=lambda frame: frame.has('Row completed'),
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert wait.status is CountdownStatus.VERIFIED
+    assert wait.verified is True
+    assert wait.ended_by is CountdownEnding.FRAME
+    assert wait.frame is completed
+    assert wait.history == (3, None, None)
+    assert wait.attempts == 3
 
 
 def test_wait_for_countdown_absent_is_a_finding_not_a_long_sleep() -> None:
