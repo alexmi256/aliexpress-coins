@@ -17,7 +17,7 @@ from typing import Protocol
 
 from PIL import Image, UnidentifiedImageError
 
-from aliexpress_coins.perception.errors import SnapshotError
+from aliexpress_coins.perception.errors import FrameDecodeError, SnapshotError
 from aliexpress_coins.perception.geometry import (
     DeviceGeometry,
     parse_geometry,
@@ -74,13 +74,13 @@ def _preview(data: bytes) -> str:
 
 def _decode_png(data: bytes) -> Image.Image:
     if not data.startswith(PNG_MAGIC):
-        raise SnapshotError(f'screencap did not return a PNG: {_preview(data)}')
+        raise FrameDecodeError(f'screencap did not return a PNG: {_preview(data)}')
     try:
         with Image.open(BytesIO(data)) as opened:
             opened.load()
             return opened.convert('RGB')
     except (OSError, SyntaxError, ValueError, UnidentifiedImageError) as exc:
-        raise SnapshotError(
+        raise FrameDecodeError(
             f'screencap returned an undecodable PNG ({type(exc).__name__}: {exc}): {_preview(data)}',
         ) from exc
 

@@ -27,6 +27,7 @@ from typing import Any
 
 from aliexpress_coins.perception.artifacts import atomic_write_bytes
 from aliexpress_coins.runner.errors import ReportError
+from aliexpress_coins.runner.failures import Failure
 
 __all__ = [
     'RUN_REPORT_SCHEMA',
@@ -38,8 +39,8 @@ __all__ = [
     'prune_runs',
 ]
 
-RUN_REPORT_SCHEMA = 2
-"""The on-disk schema this module reads or writes."""
+RUN_REPORT_SCHEMA = 3
+"""The on-disk schema this module reads or writes; 3 adds the failure taxonomy."""
 
 _RUN_ID_PATTERN = re.compile(r'^\d{8}T\d{6}Z$')
 """The only directory names retention may delete."""
@@ -68,6 +69,15 @@ class TaskRecord:
     duration_seconds: float
     completed: bool
     result: dict[str, Any]
+    failure: dict[str, Any] | None = None
+
+    @property
+    def code(self) -> str | None:
+        """The stable failure code, or ``None`` for a completed/skipped task."""
+        if self.failure is None:
+            return None
+        code = self.failure.get('code')
+        return str(code) if code is not None else None
 
     def as_dict(self) -> dict[str, object]:
         """Render the task for ``run.json`` without dropping the evidence."""
@@ -75,12 +85,14 @@ class TaskRecord:
             'title': self.title,
             'key': self.key,
             'category': self.category,
+            'code': self.code,
             'outcome': self.outcome,
             'verification': self.verification,
             'detail': self.detail,
             'duration_seconds': self.duration_seconds,
             'completed': self.completed,
             'result': self.result,
+            'failure': self.failure,
         }
 
 
@@ -145,6 +157,7 @@ class RunReport:
         self.returned_to_coins_page: bool | None = None
         self.return_error: str | None = None
         self.error: str | None = None
+        self.failure: dict[str, Any] | None = None
         self.popups_closed: dict[str, int] = {}
         self.shots: dict[str, str] = {}
         self.notification: dict[str, Any] | None = None
@@ -229,6 +242,18 @@ class RunReport:
         """Keep a best-effort artifact failure visible without failing the run."""
         self.artifact_errors.append(detail)
 
+    def record_failure(self, failure: Failure) -> None:
+        """Name the run-level failure once; the code is the report contract."""
+        self.failure = failure.as_dict()
+
+    @property
+    def failure_code(self) -> str | None:
+        """The stable run-level code, if this run failed or hit a budget."""
+        if self.failure is None:
+            return None
+        code = self.failure.get('code')
+        return str(code) if code is not None else None
+
     def record_task(
         self,
         *,
@@ -241,8 +266,9 @@ class RunReport:
         duration_seconds: float,
         completed: bool,
         result: dict[str, Any],
+        failure: Failure | None = None,
     ) -> TaskRecord:
-        """Append one dispatched task."""
+        """Append one dispatched task, with its class when it did not verify."""
         record = TaskRecord(
             title=title,
             key=key,
@@ -253,6 +279,7 @@ class RunReport:
             duration_seconds=duration_seconds,
             completed=completed,
             result=result,
+            failure=None if failure is None else failure.as_dict(),
         )
         self.tasks.append(record)
         return record
@@ -317,6 +344,7 @@ class RunReport:
             'artifact_errors': list(self.artifact_errors),
             'returned_to_coins_page': self.returned_to_coins_page,
             'return_error': self.return_error,
+            'failure': self.failure,
             'error': self.error,
             'tasks': [task.as_dict() for task in self.tasks],
             'skipped': [skip.as_dict() for skip in self.skipped],
@@ -362,6 +390,8 @@ class RunReport:
             lines.append(f'- **Detail:** {self.detail}')
         if self.route_error:
             lines.append(f'- **Route fallback:** {self.route_error}')
+        if self.failure is not None:
+            lines.append(f'- **Failure:** {_failure_summary(self.failure)}')
         if self.error:
             lines.append(f'- **Run error:** {self.error}')
         if self.artifact_errors:
@@ -372,14 +402,15 @@ class RunReport:
         if self.tasks:
             lines.extend(
                 (
-                    '| # | task | key | outcome | evidence | seconds | detail |',
-                    '|---|---|---|---|---|---|---|',
+                    '| # | task | key | code | outcome | evidence | seconds | detail |',
+                    '|---|---|---|---|---|---|---|---|',
                 ),
             )
             for index, task in enumerate(self.tasks, start=1):
                 lines.append(
-                    f'| {index} | {_cell(task.title)} | {_cell(task.key)} | {_cell(task.outcome)} | '
-                    f'{_cell(task.verification)} | {task.duration_seconds:.1f} | {_cell(task.detail)} |',
+                    f'| {index} | {_cell(task.title)} | {_cell(task.key)} | {_cell(task.code or "")} | '
+                    f'{_cell(task.outcome)} | {_cell(task.verification)} | {task.duration_seconds:.1f} | '
+                    f'{_cell(task.detail)} |',
                 )
         else:
             lines.append('No task was dispatched.')
@@ -517,6 +548,14 @@ def _popup_summary(closed: dict[str, int]) -> str:
     return ', '.join(f'{family}: {count}' for family, count in sorted(closed.items()))
 
 
+def _failure_summary(failure: dict[str, Any]) -> str:
+    code = failure.get('code', 'unknown')
+    sentence = failure.get('sentence', '')
+    detail = failure.get('detail') or failure.get('error')
+    text = f'{code} — {sentence}' if sentence else str(code)
+    return text if not detail else f'{text} ({detail})'
+
+
 def _route_summary(roster: dict[str, Any] | None) -> str:
     if not roster:
         return 'not read'
@@ -537,7 +576,9 @@ def _notification_summary(notification: dict[str, Any]) -> str:
 def _device_summary(hygiene: dict[str, Any] | None) -> str:
     if not hygiene:
         return 'not prepared'
-    return f'{hygiene.get("serial", "?")} ({hygiene.get("state", "?")})'
+    sleep = '; was asleep' if hygiene.get('was_asleep') else ''
+    awake = '; kept awake' if hygiene.get('kept_awake') else ''
+    return f'{hygiene.get("serial", "?")} ({hygiene.get("state", "?")}{sleep}{awake})'
 
 
 def _geometry_summary(geometry: dict[str, Any] | None) -> str:

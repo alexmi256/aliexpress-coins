@@ -61,6 +61,53 @@ class DeviceError(RunnerError):
     """The device could not be reached or prepared for a run."""
 
 
+class DeviceUnavailable(DeviceError):
+    """adb cannot see the configured serial (the network went away)."""
+
+
+class DeviceSleeping(DeviceError):
+    """The serial answers but the screen did not wake when asked."""
+
+
+class DeviceLocked(DeviceError):
+    """The screen woke but a PIN or biometric keyguard still holds it.
+
+    The brief assumes the tablet is left unlocked (Q2). When that assumption is
+    false the collector must stop: it cannot enter a PIN and must never guess at
+    one, so this is a run-level failure reported for a human to fix.
+    """
+
+
+class AppNotInstalled(DeviceError):
+    """The configured package is absent from the device."""
+
+
+class AppLaunchFailed(DeviceError):
+    """The package exists but its launch activity did not start.
+
+    A transient activity-manager failure after a reboot is retryable, unlike an
+    absent package. Keeping the two apart stops the report telling an operator to
+    reinstall an app that is already installed.
+    """
+
+
+class UnsupportedGeometry(DeviceError):
+    """The frame does not match the measured coordinate/template profile.
+
+    This is a deliberate refusal, not a transport failure: the device may be
+    answering perfectly while running a screen the build does not support yet.
+    """
+
+
+class AppLoggedOut(DeviceError):
+    """The app shows a sign-in prompt instead of the signed-in account.
+
+    No task can be collected until a human signs in. The engine stops at the
+    first detection rather than recording every task as failed, which would
+    waste the night and misreport the cause.
+    """
+
+
 class RunInterrupted(RunnerError):
     """The run was asked to stop before it finished its walk.
 

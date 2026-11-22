@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from aliexpress_coins.runner.errors import ReportError
+from aliexpress_coins.runner.failures import FailureCode, failure
 from aliexpress_coins.runner.report import RunEventLog, RunReport, RunStatus, prune_runs
 
 STARTED = datetime(2026, 11, 22, 3, 30, tzinfo=UTC)
@@ -31,7 +32,7 @@ def test_for_run_uses_the_utc_clock_for_the_directory_name(tmp_path: Path) -> No
 
 def test_a_full_report_round_trips_through_json_and_markdown(tmp_path: Path) -> None:
     report = _report(tmp_path)
-    report.hygiene = {'serial': '192.168.8.65:5555', 'state': 'device'}
+    report.hygiene = {'serial': '192.168.8.65:5555', 'state': 'device', 'was_asleep': True, 'kept_awake': True}
     report.geometry = {'width': 1200, 'height': 2000, 'density': 240, 'sdk': 35}
     report.surface = 'boost_page'
     report.roster = {
@@ -88,7 +89,7 @@ def test_a_full_report_round_trips_through_json_and_markdown(tmp_path: Path) -> 
     payload = json.loads(report.json_path.read_text(encoding='utf-8'))
     summary = report.summary_path.read_text(encoding='utf-8')
 
-    assert payload['schema'] == 2
+    assert payload['schema'] == 3
     assert payload['run_id'] == '20261122T033000Z'
     assert payload['status'] == 'budget'
     assert payload['budget'] == {'seconds': 2700.0, 'used_seconds': 60.0}
@@ -103,7 +104,8 @@ def test_a_full_report_round_trips_through_json_and_markdown(tmp_path: Path) -> 
     assert 'payout \\| read once' in summary
     assert 'run budget' in summary
     assert '**Route fallback:** route fallback was used' in summary
-    assert '1200x2000 @ 240 dpi' in summary
+    assert '**Device:** 192.168.8.65:5555 (device; was asleep; kept awake)' in summary
+    assert '**Geometry:** 1200x2000 @ 240 dpi' in summary
     assert '**Balance:** 1240 -> 1246 (+6)' in summary
     assert '**Popups closed:** bundle_badge: 1, launch_modal: 2' in summary
     assert '**Notification:** failed via webhook: HTTPError: 500' in summary
@@ -320,3 +322,58 @@ def test_retention_reports_a_directory_that_cannot_be_removed(
     monkeypatch.setattr('aliexpress_coins.runner.report.shutil.rmtree', broken_rmtree)
     with pytest.raises(ReportError, match='could not prune every old run'):
         prune_runs(tmp_path, keep=1, current_run_id='20260102T000000Z')
+
+
+def test_a_named_failure_and_a_task_code_reach_both_report_files(tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    report.record_failure(
+        failure(FailureCode.APP_LOGGED_OUT, detail='a sign-in prompt replaced the account surface'),
+    )
+    report.record_task(
+        title='Take the coins quiz',
+        key='coins_quiz',
+        category='quiz',
+        outcome='failed',
+        verification='no_change',
+        detail='the row did not move',
+        duration_seconds=2.0,
+        completed=False,
+        result={},
+        failure=failure(FailureCode.TASK_UNVERIFIED, detail='the row did not move'),
+    )
+    report.finish(RunStatus.FAILED, detail='stopped', budget_used_seconds=2.0, finished_at=FINISHED)
+    report.write()
+
+    payload = json.loads(report.json_path.read_text(encoding='utf-8'))
+    summary = report.summary_path.read_text(encoding='utf-8')
+
+    assert payload['failure']['code'] == 'app_logged_out'
+    assert payload['failure']['stage'] == 'account'
+    assert payload['failure']['abort_run'] is True
+    assert payload['tasks'][0]['code'] == 'task_unverified'
+    assert payload['tasks'][0]['failure']['retryable'] is True
+    assert '**Failure:** app_logged_out — The AliExpress account is signed out' in summary
+    assert '| Take the coins quiz | coins_quiz | task_unverified |' in summary
+    assert report.failure_code == 'app_logged_out'
+
+
+def test_a_completed_task_has_no_code_and_a_run_without_a_failure_has_none(tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    record = report.record_task(
+        title='Take the coins quiz',
+        key='coins_quiz',
+        category='quiz',
+        outcome='completed',
+        verification='result_reward',
+        detail='paid',
+        duration_seconds=1.0,
+        completed=True,
+        result={},
+    )
+
+    assert record.code is None
+    assert report.failure_code is None
+    report.write()
+    payload = json.loads(report.json_path.read_text(encoding='utf-8'))
+    assert payload['failure'] is None
+    assert payload['tasks'][0]['code'] is None

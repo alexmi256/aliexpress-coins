@@ -438,9 +438,10 @@ def test_claim_streak_unverified_is_not_recorded(
 ) -> None:
     frame = _streak_frame(frames['coins'])
     state = _state(tmp_path)
+    device = _RecordingDevice()
 
     result = claim_streak(
-        _controller(_RecordingDevice(), frame),
+        _controller(device, frame),
         _Capture([frame, frame]),
         corpus,
         state,
@@ -454,6 +455,7 @@ def test_claim_streak_unverified_is_not_recorded(
     assert result.unverified is True
     assert result.verification == 'no_evidence'
     assert result.recorded is False
+    assert len(device.taps) == 1
     assert state.done_today(STREAK_KEY) is False
 
 

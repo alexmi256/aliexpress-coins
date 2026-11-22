@@ -34,14 +34,23 @@ from aliexpress_coins.control.errors import PopupUnclosable
 from aliexpress_coins.control.popups import DismissReport, PopupCorpus, load_popup_corpus
 from aliexpress_coins.perception.artifacts import ArtifactStore
 from aliexpress_coins.perception.capture import AdbSnapshotter
-from aliexpress_coins.perception.errors import StateTimeout
+from aliexpress_coins.perception.errors import FrameDecodeError, SnapshotError, StateTimeout
 from aliexpress_coins.perception.ocr import RapidOcrEngine
 from aliexpress_coins.perception.snapshot import Snapshot
 from aliexpress_coins.perception.state import CaptureSource
 from aliexpress_coins.perception.templates import TemplateStore, load_templates
 from aliexpress_coins.runner.config import RunConfig
 from aliexpress_coins.runner.device import AdbDevice, HygieneDevice
-from aliexpress_coins.runner.errors import ConfigError, DeviceError, RunInterrupted
+from aliexpress_coins.runner.errors import AppLoggedOut, ConfigError, RunInterrupted, UnsupportedGeometry
+from aliexpress_coins.runner.failures import (
+    Failure,
+    FailureCode,
+    RetryScope,
+    classify_exception,
+    failure,
+    retry_delay,
+    task_failure,
+)
 from aliexpress_coins.runner.notify import Notification, NotificationSink, build_notifier
 from aliexpress_coins.runner.report import RunEventLog, RunReport, RunStatus, prune_runs
 from aliexpress_coins.runner.state import DailyStateStore
@@ -66,10 +75,12 @@ from aliexpress_coins.tasks.signin import claim_daily_signins, read_coin_balance
 from aliexpress_coins.tasks.surface import (
     COIN_PAGE_MARKERS,
     RouteFirer,
+    Surface,
     SurfaceRoute,
     classify_surface,
     contains_text,
     is_boost_page,
+    is_logged_out,
 )
 from aliexpress_coins.tasks.surprise import run_surprise_task
 
@@ -147,6 +158,8 @@ class EngineResult:
     detail: str
     completed: bool
     payload: dict[str, Any]
+    failure: Failure | None = None
+    acted: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         """Render the normalised result for the report."""
@@ -156,6 +169,8 @@ class EngineResult:
             'detail': self.detail,
             'completed': self.completed,
             'payload': self.payload,
+            'failure': None if self.failure is None else self.failure.as_dict(),
+            'acted': self.acted,
         }
 
 
@@ -229,11 +244,16 @@ def make_live_context(
         ocr=RapidOcrEngine(),
         clock=wall_clock,
     )
-    capture = _guarded_call(snapshotter.capture, stop)
     device = AdbDevice(
         config.device,
         app_settle_seconds=config.app_settle_seconds,
         settle=sleep,
+    )
+    capture = _retrying_capture(
+        _guarded_call(snapshotter.capture, stop),
+        sleep=sleep,
+        logger=log,
+        check_connected=device.check_connected,
     )
     navigate = _guarded_call(device.navigate, stop)
     corpus = load_popup_corpus(config.corpus_path)
@@ -285,7 +305,9 @@ def run_once(
     ``budget_seconds`` and ``max_tasks`` default to the configuration. The
     returned report's :attr:`~aliexpress_coins.runner.report.RunReport.ok` is
     true for a completed or budget-ended run; a hygiene, route or report failure
-    is a run-level failure.
+    is a run-level failure. Every run-level failure is named by
+    :mod:`aliexpress_coins.runner.failures` and recorded in ``run.json`` under
+    ``failure``; a task that did not verify carries its own code in the task row.
     """
     log = context.logger if context.logger is not None else LOG
     budget = context.config.budget_seconds if budget_seconds is None else budget_seconds
@@ -325,9 +347,10 @@ def run_once(
 
     try:
         report.write()
-        hygiene = context.hygiene.prepare()
+        hygiene = _retry_stage(context, 'hygiene', context.hygiene.prepare)
         report.hygiene = hygiene.as_dict()
         frame = _capture(context.capture)
+        _guard_signed_in(context, frame)
         report.geometry = _geometry(frame)
         _require_supported_geometry(frame)
         log.info('%s', _event('run_hygiene', **hygiene.as_dict()))
@@ -344,6 +367,11 @@ def run_once(
         )
         roster, route_error = _discover_or_fallback(context, controller, on_dismiss=record_dismissal)
         report.route_error = route_error
+        if roster.empty and roster.surface_variant is Surface.UNKNOWN:
+            # An empty roster is a load fault when the signed-out screen is
+            # underneath it. Detect the account once and stop the whole night:
+            # no task can be collected until a human signs in.
+            _guard_signed_in(context, _capture(context.capture))
         report.roster = roster.as_dict()
         report.surface = roster.surface_variant.value if roster.surface_variant is not None else None
         report.write()
@@ -365,10 +393,12 @@ def run_once(
             if elapsed >= budget:
                 status = RunStatus.BUDGET
                 detail = f'wall-clock budget of {budget:g}s exhausted'
+                report.record_failure(failure(FailureCode.BUDGET_EXHAUSTED, detail=detail))
                 break
             if len(report.tasks) >= task_limit:
                 status = RunStatus.BUDGET
                 detail = f'task budget of {task_limit} dispatch(es) exhausted'
+                report.record_failure(failure(FailureCode.BUDGET_EXHAUSTED, detail=detail))
                 break
 
             current = observer.roster if observer.roster is not None else roster
@@ -384,18 +414,7 @@ def run_once(
                 continue
             identity = _identity(entry)
             task_started = context.clock()
-            try:
-                result = _dispatch_entry(context, controller, entry)
-            except RunInterrupted:
-                raise
-            except Exception as exc:
-                result = EngineResult(
-                    outcome='failed',
-                    verification='error',
-                    detail=f'{type(exc).__name__}: {exc}',
-                    completed=False,
-                    payload={'error': f'{type(exc).__name__}: {exc}'},
-                )
+            result = _dispatch_with_retry(context, controller, entry)
             duration = max(0.0, context.clock() - task_started)
             attempted.add(identity)
             _record_dismissals(report, result.as_dict())
@@ -409,6 +428,7 @@ def run_once(
                 duration_seconds=duration,
                 completed=result.completed,
                 result=result.as_dict(),
+                failure=result.failure,
             )
             log.info(
                 '%s',
@@ -419,6 +439,7 @@ def run_once(
                     outcome=result.outcome,
                     verification=result.verification,
                     completed=result.completed,
+                    code=None if result.failure is None else result.failure.code.value,
                     seconds=round(duration, 3),
                 ),
             )
@@ -445,11 +466,15 @@ def run_once(
         log.warning('%s', _event('run_stopped', detail=detail))
     except Exception as exc:
         status = RunStatus.FAILED
-        detail = f'{type(exc).__name__}: {exc}'
-        report.error = detail
+        named = classify_exception(exc, default=FailureCode.INTERNAL_ERROR)
+        if named is None:  # pragma: no cover - RunInterrupted is handled above
+            raise
+        report.record_failure(named)
+        detail = named.describe()
+        report.error = f'{type(exc).__name__}: {exc}'
         log.exception('%s', _event('run_failed', detail=detail))
     finally:
-        if controller is not None:
+        if controller is not None and report.failure_code != FailureCode.APP_LOGGED_OUT.value:
             _finish_on_coins_page(
                 context,
                 controller,
@@ -538,10 +563,18 @@ def _discover_or_fallback(
         )
     except RunInterrupted:
         raise
-    except (StateTimeout, PopupUnclosable) as exc:
+    except PopupUnclosable:
+        # A modal that cannot be dismissed safely fails the run loudly; falling
+        # back to the surface underneath it would be the blind tap the brief
+        # forbids (FR-2).
+        raise
+    except AppLoggedOut:
+        raise
+    except StateTimeout as exc:
         detail = f'{type(exc).__name__}: {exc}'
         log.warning('%s', _event('route_fallback', detail=detail))
         frame = _capture(context.capture)
+        _guard_signed_in(context, frame)
         surface = classify_surface(frame)
         roster = replace(
             enumerate_roster(frame, context.catalogue, route=DiscoveryRoute.INLINE),
@@ -584,6 +617,168 @@ def _dispatch_entry(context: RunContext, controller: Controller, entry: RosterEn
             run_notifications_task(controller, context.capture, context.corpus, context.state, entry, **common),
         )
     raise ValueError(f'{category.value!r} has no executor')
+
+
+def _dispatch_with_retry(
+    context: RunContext,
+    controller: Controller,
+    entry: RosterEntry,
+) -> EngineResult:
+    """Dispatch one row, spending the task retry only when no action was taken.
+
+    A transport failure is not retried here: the capture seam already spent the
+    stage retry. A result that records a tap, key or page press is never re-run,
+    because the first attempt may already have changed the account (FR-5's
+    "never re-press a claimed card"). Only an unverified result with no action
+    evidence is safe to repeat. A run-level class is re-raised so the top-level
+    catch names it and stops the night.
+    """
+    log = context.logger if context.logger is not None else LOG
+    result = _attempt_dispatch(context, controller, entry)
+    if not result.completed:
+        # A failed task is the first place a session that expired mid-walk is
+        # visible. Detect it before spending the retry, so a signed-out app
+        # stops the run instead of producing more task failures.
+        _guard_signed_in(context, _capture(context.capture))
+    named = result.failure
+    if named is None or not named.retryable or named.retry is not RetryScope.TASK or result.acted:
+        return result
+
+    delay = retry_delay(0)
+    log.warning(
+        '%s',
+        _event(
+            'failure_retry',
+            code=named.code.value,
+            scope=named.retry.value,
+            stage='task',
+            key=entry.key,
+            delay_seconds=delay,
+        ),
+    )
+    context.sleep(delay)
+    return _attempt_dispatch(context, controller, entry)
+
+
+def _attempt_dispatch(
+    context: RunContext,
+    controller: Controller,
+    entry: RosterEntry,
+) -> EngineResult:
+    try:
+        return _dispatch_entry(context, controller, entry)
+    except RunInterrupted:
+        raise
+    except Exception as exc:
+        named = _task_exception(exc)
+        if named.abort_run:
+            raise
+        detail = f'{type(exc).__name__}: {exc}'
+        return EngineResult(
+            outcome='failed',
+            verification='error',
+            detail=detail,
+            completed=False,
+            payload={'error': detail},
+            failure=named,
+            acted=True,
+        )
+
+
+def _task_exception(exc: BaseException) -> Failure:
+    """Name an executor exception without turning a task timeout into a night out."""
+    named = classify_exception(exc, default=FailureCode.TASK_UNVERIFIED)
+    if named is None:  # pragma: no cover - RunInterrupted is re-raised by the caller
+        raise exc
+    if named.code is FailureCode.NAVIGATION_FAILED:
+        # A page that did not open inside a task is that task's failure; the
+        # run-level route has its own retry and fallback in _discover_or_fallback.
+        return task_failure(exc)
+    return named
+
+
+def _retry_stage(context: RunContext, stage: str, action: Callable[[], Any]) -> Any:
+    """Run one stage, spending at most its policy's retry after an exponential pause."""
+    log = context.logger if context.logger is not None else LOG
+    try:
+        return action()
+    except RunInterrupted:
+        raise
+    except Exception as exc:
+        named = classify_exception(exc, default=FailureCode.INTERNAL_ERROR)
+        if named is None or not named.retryable or named.retry is not RetryScope.STAGE:
+            raise
+        delay = retry_delay(0)
+        log.warning(
+            '%s',
+            _event(
+                'failure_retry',
+                code=named.code.value,
+                scope=named.retry.value,
+                stage=stage,
+                delay_seconds=delay,
+            ),
+        )
+        context.sleep(delay)
+        return action()
+
+
+def _guard_signed_in(context: RunContext, snapshot: Snapshot) -> None:
+    """Stop the whole night at the first signed-out screen."""
+    if not is_logged_out(snapshot):
+        return
+    log = context.logger if context.logger is not None else LOG
+    log.warning('%s', _event('app_logged_out', detail='a sign-in prompt replaced the account surface'))
+    raise AppLoggedOut('the app shows a sign-in prompt instead of the signed-in account')
+
+
+def _retrying_capture(
+    source: CaptureSource | Callable[[], Snapshot],
+    *,
+    sleep: Callable[[float], None],
+    logger: logging.Logger | None = None,
+    check_connected: Callable[[], None] | None = None,
+) -> Callable[[], Snapshot]:
+    """Wrap one capture seam with the taxonomy's single stage retry.
+
+    A failed ``screencap`` is the mid-run network failure the issue names. The
+    retry proves whether a blip recovered; when it does not, ``check_connected``
+    asks adb for the serial's state so the failure is named ``device_offline``
+    rather than an anonymous decode error.
+    """
+    log = logger if logger is not None else LOG
+
+    def capture() -> Snapshot:
+        try:
+            return _capture(source)
+        except FrameDecodeError:
+            # The device answered; retrying the same undecodable frame helps
+            # nobody and would only blur the cause.
+            raise
+        except SnapshotError as exc:
+            delay = retry_delay(0)
+            log.warning(
+                '%s',
+                _event(
+                    'failure_retry',
+                    code=FailureCode.DEVICE_OFFLINE.value,
+                    scope=RetryScope.STAGE.value,
+                    stage='capture',
+                    delay_seconds=delay,
+                    detail=f'{type(exc).__name__}: {exc}',
+                ),
+            )
+            sleep(delay)
+            try:
+                return _capture(source)
+            except FrameDecodeError:
+                raise
+            except SnapshotError:
+                if check_connected is not None:
+                    check_connected()
+                raise
+
+    return capture
 
 
 def _run_signin(
@@ -639,17 +834,46 @@ def _run_signin(
         detail=detail,
         completed=completed,
         payload=result.as_dict(),
+        failure=failure(FailureCode.TASK_UNVERIFIED, detail=detail) if outcome == 'failed' else None,
+        acted=any(claim.tapped for claim in claims),
     )
 
 
 def _from_executor(result: ExecutorResult) -> EngineResult:
+    payload = result.as_dict()
+    named = failure(FailureCode.TASK_UNVERIFIED, detail=result.detail) if result.outcome.value == 'failed' else None
     return EngineResult(
         outcome=result.outcome.value,
         verification=result.verification,
         detail=result.detail,
         completed=result.completed,
-        payload=result.as_dict(),
+        payload=payload,
+        failure=named,
+        acted=_payload_acted(payload),
     )
+
+
+def _payload_acted(payload: dict[str, Any]) -> bool:
+    """Whether an executor result records any tap, key or entry press.
+
+    An unproven task is only safe to re-run when it has not acted yet. The
+    executors already record every tap in ``taps`` (and the browse executor its
+    page presses), so this reads evidence that exists rather than guessing from
+    the outcome string.
+    """
+    taps = payload.get('taps')
+    if isinstance(taps, (list, tuple)) and taps:
+        return True
+    keys = payload.get('keys')
+    if isinstance(keys, (list, tuple)) and keys:
+        return True
+    swipes = payload.get('swipes')
+    if isinstance(swipes, (list, tuple)) and swipes:
+        return True
+    if payload.get('collect') is not None:
+        return True
+    presses = payload.get('presses')
+    return isinstance(presses, int) and presses > 0
 
 
 def _observer(
@@ -699,6 +923,7 @@ def _observe(
             logger=log,
             on_dismiss=on_dismiss,
         )
+        _guard_signed_in(context, opened.snapshot)
         return observer.observe(
             opened.snapshot,
             route=opened.route if route is None else route,
@@ -706,11 +931,17 @@ def _observe(
         )
     except RunInterrupted:
         raise
+    except AppLoggedOut:
+        raise
     except Exception as exc:
         log.warning('%s', _event('roster_observe_failed', detail=f'{type(exc).__name__}: {exc}'))
         try:
-            return observer.observe(_capture(context.capture), route=route, timestamp=context.wall_clock())
+            frame = _capture(context.capture)
+            _guard_signed_in(context, frame)
+            return observer.observe(frame, route=route, timestamp=context.wall_clock())
         except RunInterrupted:
+            raise
+        except AppLoggedOut:
             raise
         except Exception as inner:
             log.warning('%s', _event('roster_observe_failed', detail=f'{type(inner).__name__}: {inner}'))
@@ -845,10 +1076,14 @@ def _record_balance_before(
         )
     except RunInterrupted:
         raise
+    except AppLoggedOut:
+        raise
     except Exception as exc:
         report.balance_note = f'coins page not proven before the first task: {type(exc).__name__}: {exc}'
         log.warning('%s', _event('balance_before_unavailable', detail=report.balance_note))
         return
+    if result.snapshot is not None:
+        _guard_signed_in(context, result.snapshot)
     if not result.returned or result.snapshot is None or not _on_coin_page(result.snapshot):
         report.balance_note = 'coins page not proven before the first task; balance before is unknown'
         log.warning('%s', _event('balance_before_unavailable', detail=report.balance_note))
@@ -979,6 +1214,8 @@ def _should_notify(report: RunReport, *, notify_on_empty: bool) -> bool:
 
 def _notification(report: RunReport) -> Notification:
     lines = [f'status: {report.status.value}']
+    if report.failure is not None:
+        lines.append(f'failure: {_failure_line(report.failure)}')
     if report.error:
         lines.append(f'error: {report.error}')
     elif report.detail:
@@ -989,13 +1226,24 @@ def _notification(report: RunReport) -> Notification:
     completed = sum(1 for task in report.tasks if task.completed)
     lines.append(f'tasks: {completed}/{len(report.tasks)} completed')
     lines.append(f'report: {report.summary_path}')
+    tags: tuple[str, ...] = ('coins', report.status.value)
+    if report.failure_code:
+        tags = (*tags, report.failure_code)
     return Notification(
         title=f'aliexpress-coins {report.status.value} {report.run_id}',
         body='\n'.join(lines),
         run_id=report.run_id,
         status=report.status.value,
-        tags=('coins', report.status.value),
+        tags=tags,
     )
+
+
+def _failure_line(failure_dict: dict[str, Any]) -> str:
+    code = failure_dict.get('code', 'unknown')
+    sentence = failure_dict.get('sentence', '')
+    detail = failure_dict.get('detail')
+    text = f'{code}: {sentence}' if sentence else str(code)
+    return text if not detail else f'{text} ({detail})'
 
 
 def _delivery_error(exc: Exception) -> str:
@@ -1059,7 +1307,7 @@ def _require_supported_geometry(frame: Snapshot) -> None:
     """
     geometry = frame.geometry
     if (geometry.width, geometry.height, geometry.density) != (1200, 2000, 240):
-        raise DeviceError(
+        raise UnsupportedGeometry(
             f'unsupported screen geometry: observed {geometry.width}x{geometry.height} '
             f'@ {geometry.density} dpi (profile {geometry.profile_id}); '
             'this build supports 1200x2000 @ 240 dpi',

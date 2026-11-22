@@ -37,6 +37,15 @@ REDEEM_MARKER = 'YOU CAN NOW REDEEM!'
 COIN_PAGE_MARKERS = ('Daily coins', 'Coins credits to redeem')
 """The two labels that identify the coin page rather than the Account card."""
 
+SIGN_IN_MARKERS = ('Sign in', 'Log in', 'Sign in / Sign up', 'Log in / Sign up')
+"""The wording a signed-out app shows instead of the account nickname.
+
+Checked only when no coin/boost marker is present, because ``Sign in`` is also
+a legitimate control label on the signed-in streak card. The measured signed-in
+coin page never carries one of these prompts, so the absence of both page and
+prompt stays ``UNKNOWN`` rather than becoming a false ``app_logged_out``.
+"""
+
 SHORTCUT_DEEP_LINK = 'aliexpress://goto?url=https%3A%2F%2Fm.aliexpress.com%2Fp%2Fcoin-index%2Findex.html'
 """The app's own coins route (docs/06 §1).
 
@@ -151,6 +160,19 @@ def contains_text(snapshot: Snapshot, label: str) -> bool:
     return any(needle in normalize(box.text) for box in snapshot.boxes if box.score >= DEFAULT_MIN_OCR_SCORE)
 
 
+def is_logged_out(snapshot: Snapshot) -> bool:
+    """Whether the frame is a signed-out surface, not a coin/task page.
+
+    A sign-in prompt is ordinary on the home feed before the account is reached,
+    so detection is deliberately conditional: the coin page and the boost page
+    are both trusted signed-in surfaces, and only their absence plus a prompt is
+    evidence. A frame with neither is ``UNKNOWN``, never an accusation.
+    """
+    if _is_coin_page(snapshot) or is_boost_page(snapshot):
+        return False
+    return any(contains_text(snapshot, marker) for marker in SIGN_IN_MARKERS)
+
+
 def _is_coin_page(snapshot: Snapshot) -> bool:
     return all(contains_text(snapshot, marker) for marker in COIN_PAGE_MARKERS)
 
@@ -161,6 +183,7 @@ __all__ = [
     'EMPTY_BOOST_MARKER',
     'REDEEM_MARKER',
     'SHORTCUT_DEEP_LINK',
+    'SIGN_IN_MARKERS',
     'SURFACE_REFRESH_LIMIT',
     'RouteFirer',
     'Surface',
@@ -170,4 +193,5 @@ __all__ = [
     'has_task_rows',
     'is_boost_page',
     'is_empty_boost',
+    'is_logged_out',
 ]
