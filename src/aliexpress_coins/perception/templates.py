@@ -61,6 +61,16 @@ frame.
 SCALE_SEARCH_STEPS = 9
 """Number of scales in the bounded range (odd, so the nominal scale is included)."""
 
+ASPECT_SEARCH_STEPS = 7
+"""Vertical scales tried only when the isotropic pass finds nothing.
+
+A width ratio cannot explain a frame whose aspect ratio changed as well: at
+1080x1920 the launch glyph is 0.9x wide but 0.96x tall. The fallback searches
+the same bounded range vertically (derived from the nominal width scale) and
+re-runs the coarse/refine path, so a non-uniform geometry still matches without
+a stored pixel size or a second template crop.
+"""
+
 COARSE_SEARCH_FACTOR = 0.5
 """The frame and template are first searched at half linear size.
 
@@ -196,6 +206,7 @@ class TemplateMatch:
     scale: float
     scales_tried: tuple[float, ...]
     size: tuple[int, int]
+    scale_y: float = 1.0
 
     @property
     def box(self) -> tuple[int, int, int, int]:
@@ -342,15 +353,14 @@ def match_template(
         return None
 
     candidates = _scale_candidates(resolved, int(gray.shape[1]), scale_radius, scale_steps, scales)
-    coarse = _coarse_search(gray, resolved, candidates)
-    if coarse is None:
-        hit = _search(gray, resolved.image, candidates)
-    elif coarse.score < min_score - COARSE_SCORE_ALLOWANCE:
-        return None
-    else:
-        hit = _refine(gray, resolved, candidates, coarse)
-        if hit is None:
-            hit = _search(gray, resolved.image, candidates)
+    hit = _find(gray, resolved, candidates, min_score)
+    # A changed aspect ratio scales the glyph differently on each axis. Only pay
+    # for the extra search when the normal width-derived pass failed.
+    if (hit is None or hit.score < min_score) and scales is None and scale_radius > 0.0 and ASPECT_SEARCH_STEPS > 1:
+        aspects = _aspect_candidates(scale_radius, ASPECT_SEARCH_STEPS)
+        fallback = _find(gray, resolved, candidates, min_score, vertical=aspects)
+        if fallback is not None and (hit is None or fallback.score > hit.score):
+            hit = fallback
 
     if hit is None or hit.score < min_score:
         return None
@@ -361,7 +371,28 @@ def match_template(
         scale=hit.scale,
         scales_tried=hit.tried,
         size=hit.size,
+        scale_y=hit.scale_y,
     )
+
+
+def _find(
+    gray: NDArray[np.uint8],
+    template: Template,
+    candidates: tuple[float, ...],
+    min_score: float,
+    *,
+    vertical: Sequence[float] = (1.0,),
+) -> _Hit | None:
+    """Run the coarse/refine/full-resolution ladder at the given scales."""
+    coarse = _coarse_search(gray, template, candidates, vertical=vertical)
+    if coarse is None:
+        return _search(gray, template.image, candidates, vertical=vertical)
+    if coarse.score < min_score - COARSE_SCORE_ALLOWANCE:
+        return None
+    hit = _refine(gray, template, candidates, coarse, vertical=vertical)
+    if hit is None:
+        hit = _search(gray, template.image, candidates, vertical=vertical)
+    return hit
 
 
 @dataclass(frozen=True, slots=True)
@@ -373,12 +404,15 @@ class _Hit:
     scale: float
     size: tuple[int, int]
     tried: tuple[float, ...]
+    scale_y: float = 1.0
 
 
 def _coarse_search(
     gray: NDArray[np.uint8],
     template: Template,
     candidates: tuple[float, ...],
+    *,
+    vertical: Sequence[float] = (1.0,),
 ) -> _Hit | None:
     factor = COARSE_SEARCH_FACTOR
     frame_height, frame_width = gray.shape
@@ -394,7 +428,7 @@ def _coarse_search(
         ),
         dtype=np.uint8,
     )
-    return _search(coarse, template.image, candidates, factor=factor)
+    return _search(coarse, template.image, candidates, factor=factor, vertical=vertical)
 
 
 def _refine(
@@ -402,11 +436,13 @@ def _refine(
     template: Template,
     candidates: tuple[float, ...],
     coarse: _Hit,
+    *,
+    vertical: Sequence[float] = (1.0,),
 ) -> _Hit | None:
     """Verify ``coarse`` at full resolution in a template-sized local window."""
     scale = coarse.scale
     width = max(1, round(template.width * scale))
-    height = max(1, round(template.height * scale))
+    height = max(1, round(template.height * coarse.scale_y))
     frame_height, frame_width = gray.shape
     predicted_left = round(coarse.location[0] / COARSE_SEARCH_FACTOR)
     predicted_top = round(coarse.location[1] / COARSE_SEARCH_FACTOR)
@@ -420,7 +456,7 @@ def _refine(
 
     # Re-run every scale in the small local window: a coarse winner one or two
     # steps from the true scale must not decide the final scale.
-    hit = _search(gray[top:bottom, left:right], template.image, candidates)
+    hit = _search(gray[top:bottom, left:right], template.image, candidates, vertical=vertical)
     if hit is None:
         return None
     return _Hit(
@@ -429,6 +465,7 @@ def _refine(
         scale=hit.scale,
         size=hit.size,
         tried=tuple(dict.fromkeys((*coarse.tried, *hit.tried))),
+        scale_y=hit.scale_y,
     )
 
 
@@ -438,6 +475,7 @@ def _search(
     candidates: Sequence[float],
     *,
     factor: float = 1.0,
+    vertical: Sequence[float] = (1.0,),
 ) -> _Hit | None:
     """Search one resolution level and return its best non-flat hit."""
     frame = gray.astype(np.float32)
@@ -450,38 +488,46 @@ def _search(
     tried: list[float] = []
     seen_sizes: set[tuple[int, int]] = set()
     for scale in candidates:
-        width = max(1, round(template_width * scale * factor))
-        height = max(1, round(template_height * scale * factor))
-        if width > frame_width or height > frame_height:
-            continue
-        if (width, height) in seen_sizes:
-            continue
-        seen_sizes.add((width, height))
+        for vertical_scale in vertical:
+            width = max(1, round(template_width * scale * factor))
+            height = max(1, round(template_height * scale * vertical_scale * factor))
+            if width > frame_width or height > frame_height:
+                continue
+            if (width, height) in seen_sizes:
+                continue
+            seen_sizes.add((width, height))
 
-        interpolation = cv2.INTER_AREA if scale * factor < 1.0 else cv2.INTER_LINEAR
-        scaled = np.asarray(
-            cv2.resize(template_image, (width, height), interpolation=interpolation),
-            dtype=np.uint8,
-        )
-        if _is_flat(scaled):
-            continue
+            shrinking = min(scale, scale * vertical_scale) * factor < 1.0
+            interpolation = cv2.INTER_AREA if shrinking else cv2.INTER_LINEAR
+            scaled = np.asarray(
+                cv2.resize(template_image, (width, height), interpolation=interpolation),
+                dtype=np.uint8,
+            )
+            if _is_flat(scaled):
+                continue
 
-        tried.append(scale)
-        scores = cv2.matchTemplate(gray, scaled, cv2.TM_CCOEFF_NORMED)
-        scores = np.where(_window_variance(integral, integral_squared, height, width) > ZERO_VARIANCE, scores, -np.inf)
-        scores = np.where(np.isfinite(scores), scores, -np.inf)
-        index = int(np.argmax(scores))
-        score = float(scores.flat[index])
-        if best is not None and score <= best.score:
-            continue
-        top, left = np.unravel_index(index, scores.shape)
-        best = _Hit(
-            score=score,
-            location=(int(left), int(top)),
-            scale=scale,
-            size=(width, height),
-            tried=tuple(tried),
-        )
+            if scale not in tried:
+                tried.append(scale)
+            scores = cv2.matchTemplate(gray, scaled, cv2.TM_CCOEFF_NORMED)
+            scores = np.where(
+                _window_variance(integral, integral_squared, height, width) > ZERO_VARIANCE,
+                scores,
+                -np.inf,
+            )
+            scores = np.where(np.isfinite(scores), scores, -np.inf)
+            index = int(np.argmax(scores))
+            score = float(scores.flat[index])
+            if best is not None and score <= best.score:
+                continue
+            top, left = np.unravel_index(index, scores.shape)
+            best = _Hit(
+                score=score,
+                location=(int(left), int(top)),
+                scale=scale,
+                size=(width, height),
+                tried=tuple(tried),
+                scale_y=vertical_scale,
+            )
 
     if best is None:
         return None
@@ -491,7 +537,15 @@ def _search(
         scale=best.scale,
         size=best.size,
         tried=tuple(tried),
+        scale_y=best.scale_y,
     )
+
+
+def _aspect_candidates(scale_radius: float, steps: int) -> tuple[float, ...]:
+    """Vertical multipliers around the nominal width scale."""
+    lower = max(1.0 - scale_radius, np.finfo(np.float64).tiny)
+    upper = 1.0 + scale_radius
+    return tuple(float(value) for value in np.linspace(lower, upper, steps))
 
 
 def _resolve_template(

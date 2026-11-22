@@ -2,15 +2,22 @@
 #
 # Every family discovered on the coins surface has one row here. `close`
 # attempts are tried in policy order: an OCR label, then a template crop, then
-# a frame-fraction coordinate. A row with none of those, or with an explicit
+# a per-device calibrated offset. A row with none of those, or with an explicit
 # `fail`, is an unclosable popup: the runner must stop with the named error
 # rather than tap a guessed coordinate.
 #
-# Fractions are fractions of the frame (x / width, y / height), never pixels.
+# There is no global coordinate constant. A fallback is measured against the
+# bright modal panel and stored under the profile id printed by `doctor`
+# (`DeviceGeometry.profile_id`). A device with no row in `calibration` has no
+# fallback for that family; the sweep reports `popup_unclosable` instead of
+# tapping a remembered point. Offsets are fractions of the modal panel, never
+# of the screen, so an aspect-ratio change moves the panel and the control
+# together.
+#
 # Templates are glyph-only controls cropped tight to the control at the
 # reference device's scale. `source_width` is the width of the frame the crop
 # came from; the matcher derives its search scale from the current frame width
-# and that source width.
+# and that source width, with an aspect fallback for a changed height.
 
 version: 1
 
@@ -27,17 +34,26 @@ policy:
   on_exhausted: fail
   error: popup_unclosable
   note: >-
-    An OCR label is preferred, then a template match, then the configured
-    frame fraction. Label-first matches docs/01-recon-findings.md §4 and #18:
-    text is scale-independent, while a template crop is tied to one rendering.
-    The template-first wording in the #11 body is superseded. Every row has an
-    anchor, and a fraction is only used after that anchor matched, so it is
-    never a blind tap on an unidentified screen. A matched template or text box
+    An OCR label is preferred, then a template match, then the profile's
+    calibrated modal offset. Label-first matches docs/01-recon-findings.md §4
+    and #18: text is scale-independent, while a template crop is tied to one
+    rendering. The template-first wording in the #11 body is superseded. Every
+    row has an anchor, and a calibrated offset is only used after that anchor
+    matched, so it is never a blind tap on an unidentified screen. A matched
+    template or text box
     is its own hit area: the controller clamps a box tap inside the box rather
     than moving it into the generic safe inset. If every attempt fails, or the
     row has no executable attempt, raise popup_unclosable and end the run.
     Never tap a guessed coordinate: a blind tap on a sale overlay is how a
     collector buys something.
+
+calibration:
+  # Reference profile: 1200x2000 @ 240 dpi, sdk 35, portrait. `doctor` prints
+  # this id; a different device gets its own row only after the modal is
+  # measured there. The offset is (x, y) inside the detected modal panel.
+  c9b8f88670e295b5:
+    promo_coupon_unlocked:
+      modal_offset: [0.499, 0.946]
 
 families:
 # Rows are ordered topmost-first: the system dialog is a separate window
@@ -76,13 +92,14 @@ families:
     close:
       template: assets/templates/launch_welcome_gifts.png
       source_width: 1200
-      fraction: [0.499, 0.833]
     notes: >-
       The close control is a drawn white ✕ in a circle; OCR returns no text for
       it. The crop includes the feed artwork visible through the ring, so a new
       Welcome gifts campaign with different artwork may not match. The template
-      is matched at the frame's scale (#15); the fraction remains the configured
-      fallback when the glyph crop does not match. The recording is from the
+      is matched at the frame's scale (#15), including a changed aspect ratio.
+      The reference profile has no modal-panel fallback for this family because
+      the full-screen artwork has no measurable panel; a failed glyph match is
+      reported unclosable rather than tapped. The recording is from the
       reviewed launch-modal frame; the modal did not re-trigger during the
       corpus session (seven cold starts).
 
@@ -98,7 +115,6 @@ families:
     close:
       template: assets/templates/promo_coupon_unlocked.png
       source_width: 1200
-      fraction: [0.499, 0.793]
     notes: >-
       The close control is a pale ✕ with no OCR text. The recording is from the
       reviewed promo frame; the campaign did not re-trigger during the corpus
@@ -158,7 +174,6 @@ families:
     close:
       template: assets/templates/coins_boost_sheet.png
       source_width: 1200
-      fraction: [0.941, 0.090]
     notes: >-
       The sheet is a page-level overlay with a drawn ✕ at the top right; the
       header back arrow also leaves it, but the ✕ is the glyph-only control

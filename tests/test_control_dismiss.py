@@ -121,6 +121,30 @@ def _with_boxes(base: Snapshot, *boxes: TextBox) -> Snapshot:
     )
 
 
+def _scaled(base: Snapshot, size: tuple[int, int]) -> Snapshot:
+    """Replay a recorded frame at another geometry, boxes included."""
+    width, height = size
+    scale_x, scale_y = width / base.width, height / base.height
+
+    def _point(point: tuple[float, float]) -> tuple[float, float]:
+        return point[0] * scale_x, point[1] * scale_y
+
+    boxes = tuple(
+        TextBox(
+            text=box.text,
+            box=(_point(box.box[0]), _point(box.box[1]), _point(box.box[2]), _point(box.box[3])),
+            score=box.score,
+        )
+        for box in base.boxes
+    )
+    return Snapshot(
+        image=base.image.resize(size, Image.Resampling.LANCZOS),
+        boxes=boxes,
+        captured_at=base.captured_at,
+        geometry=DeviceGeometry.from_frame(width, height, density=320, sdk=35),
+    )
+
+
 def _controller(device: _RecordingDevice, frame: Snapshot, *, dry_run: bool = False) -> Controller:
     return Controller.from_frame(
         device,
@@ -149,6 +173,25 @@ def page(engine: RapidOcrEngine) -> Snapshot:
 @pytest.fixture(scope='module')
 def popup_frames(engine: RapidOcrEngine) -> dict[str, Snapshot]:
     return {name: _snapshot(POPUP_FIXTURES / name, engine) for name, _, _ in _FIXTURES}
+
+
+def test_the_launch_modal_is_dismissed_at_a_second_geometry(
+    corpus: PopupCorpus,
+    page: Snapshot,
+    popup_frames: dict[str, Snapshot],
+) -> None:
+    launch = _scaled(popup_frames['launch_welcome_gifts.png'], (1080, 1920))
+    scaled_page = _scaled(page, (1080, 1920))
+    device = _RecordingDevice()
+    controller = _controller(device, launch)
+
+    report = dismiss(controller, _Capture((launch, scaled_page)), corpus)
+
+    assert report.closed == ('launch_welcome_gifts',)
+    assert report.final_state is ScreenState.PAGE
+    assert len(device.taps) == 1
+    assert report.taps[0].kind is CloseKind.TEMPLATE
+    assert launch.profile_id != page.profile_id
 
 
 @pytest.mark.parametrize(('name', 'family', 'kind'), _FIXTURES)
@@ -292,26 +335,32 @@ def test_a_small_close_label_is_tapped_inside_its_own_box(
     assert 1500 <= device.taps[0][1] <= 1540
 
 
-def test_a_fraction_is_a_last_resort_after_the_anchor_matched(
+def test_a_calibrated_fraction_is_used_inside_the_measured_modal(
     corpus: PopupCorpus,
     page: Snapshot,
     popup_frames: dict[str, Snapshot],
 ) -> None:
-    launch = popup_frames['launch_welcome_gifts.png']
+    promo = popup_frames['promo_coupon_unlocked.png']
     family = replace(
-        corpus.by_family('launch_welcome_gifts'),
-        close=(CloseAttempt(kind=CloseKind.FRACTION, fraction=(0.499, 0.833)),),
+        corpus.by_family('promo_coupon_unlocked'),
+        close=(
+            CloseAttempt(
+                kind=CloseKind.FRACTION,
+                fraction=(0.499, 0.946),
+                profile_id='c9b8f88670e295b5',
+            ),
+        ),
     )
     custom = replace(corpus, families=(family,))
     device = _RecordingDevice()
-    controller = _controller(device, launch)
+    controller = _controller(device, promo)
 
-    report = dismiss(controller, _Capture((launch, page)), custom)
+    report = dismiss(controller, _Capture((promo, page)), custom)
 
-    assert report.closed == ('launch_welcome_gifts',)
+    assert report.closed == ('promo_coupon_unlocked',)
     assert len(device.taps) == 1
     assert report.taps[0].kind is CloseKind.FRACTION
-    assert report.taps[0].target == (599, 1666)
+    assert report.taps[0].target == (599, 1586)
 
 
 def test_a_fraction_is_not_used_on_a_frame_that_is_not_a_popup(
@@ -321,7 +370,13 @@ def test_a_fraction_is_not_used_on_a_frame_that_is_not_a_popup(
     sheet = popup_frames['coins_boost_sheet.png']
     family = replace(
         corpus.by_family('coins_boost_sheet'),
-        close=(CloseAttempt(kind=CloseKind.FRACTION, fraction=(0.941, 0.090)),),
+        close=(
+            CloseAttempt(
+                kind=CloseKind.FRACTION,
+                fraction=(0.941, 0.090),
+                profile_id='c9b8f88670e295b5',
+            ),
+        ),
     )
     custom = replace(corpus, families=(family,))
     device = _RecordingDevice()
@@ -336,25 +391,54 @@ def test_a_fraction_is_not_used_on_a_frame_that_is_not_a_popup(
     assert report.attempts[0].outcome is DismissOutcome.NOT_APPLICABLE
 
 
-def test_a_fraction_can_close_an_unmodelled_overlay_after_its_anchor_matches(
+def test_a_fraction_without_a_calibration_for_this_profile_is_unclosable(
     corpus: PopupCorpus,
-    page: Snapshot,
     popup_frames: dict[str, Snapshot],
 ) -> None:
-    prompt = popup_frames['push_permission_prompt.png']
+    launch = popup_frames['launch_welcome_gifts.png']
     family = replace(
-        corpus.by_family('push_permission_prompt'),
-        close=(CloseAttempt(kind=CloseKind.FRACTION, fraction=(0.95, 0.12)),),
+        corpus.by_family('launch_welcome_gifts'),
+        close=(
+            CloseAttempt(
+                kind=CloseKind.FRACTION,
+                fraction=(0.5, 0.915),
+                profile_id='0000000000000000',
+            ),
+        ),
     )
     custom = replace(corpus, families=(family,))
     device = _RecordingDevice()
-    controller = _controller(device, prompt)
+    controller = _controller(device, launch)
 
-    report = dismiss(controller, _Capture((prompt, page)), custom)
+    with pytest.raises(PopupUnclosable, match='popup_unclosable'):
+        dismiss(controller, _Capture((launch,)), custom)
 
-    assert report.closed == ('push_permission_prompt',)
-    assert report.taps[0].kind is CloseKind.FRACTION
-    assert len(device.taps) == 1
+    assert device.taps == []
+
+
+def test_a_calibrated_fraction_without_a_measurable_modal_is_unclosable(
+    corpus: PopupCorpus,
+    popup_frames: dict[str, Snapshot],
+) -> None:
+    launch = popup_frames['launch_welcome_gifts.png']
+    family = replace(
+        corpus.by_family('launch_welcome_gifts'),
+        close=(
+            CloseAttempt(
+                kind=CloseKind.FRACTION,
+                fraction=(0.5, 0.915),
+                profile_id='c9b8f88670e295b5',
+            ),
+        ),
+    )
+    custom = replace(corpus, families=(family,))
+    device = _RecordingDevice()
+    controller = _controller(device, launch)
+
+    with pytest.raises(PopupUnclosable, match='popup_unclosable'):
+        dismiss(controller, _Capture((launch,)), custom)
+
+    assert device.taps == []
 
 
 def test_a_declared_fail_attempt_stops_the_run_without_a_tap(

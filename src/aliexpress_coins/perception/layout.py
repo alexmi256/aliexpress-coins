@@ -5,12 +5,13 @@ so a remembered ``GO`` position is a tap on the wrong task. This module recovers
 the rows from the current frame instead.
 
 A row is a vertical cluster of boxes. The cluster tolerance is **derived from
-the frame**: twice the median box height (capped at a fraction of the frame
-height), never a stored pixel offset. The measured numbers that justify the
-ratio are recorded in `docs/01-recon-findings.md` §7b, not here. In short, the
-ratio keeps a task row's title, subtitle, progress, action and reward together
-while leaving adjacent task rows apart; it also groups the inline coins rows,
-where the title-to-``GO`` offset is a fraction of a text-box height.
+the frame**: 2.25 times the median box height (capped at a fraction of the
+frame height), never a stored pixel offset. The measured numbers that justify
+the ratio are recorded in `docs/01-recon-findings.md` §7b and in issue #42, not
+here. In short, 2.25 box heights covers the measured title-to-``GO`` gaps at
+both the tablet and phone geometries (≈100 px and ≈68-70 px on 48 px and ≈43 px
+text), while staying below the ~190 px gap between adjacent task rows and below
+the 106 px gap that separates the coin-page card from its first task row.
 
 Nearest-neighbour clustering can chain across a bridging box, so a cluster with
 several action labels is split at the midpoints between those actions. That is
@@ -41,12 +42,19 @@ from aliexpress_coins.perception.matching import (
 )
 from aliexpress_coins.perception.snapshot import TextBox
 
-ROW_CENTER_TOLERANCE_HEIGHT_RATIO = 2.0
+ROW_CENTER_TOLERANCE_HEIGHT_RATIO = 2.25
 """How far apart two box centres may be and still share a row.
 
-Expressed as a multiple of the frame's median text-box height. The measured
-reward sits below the action at under twice the median height, while adjacent
-task rows are more than three median heights apart.
+Expressed as a multiple of the frame's median text-box height. Measured on the
+committed boost and coin fixtures: median box heights are 48 px and 45 px; the
+largest within-row centre gap is 86.5 px and the title-to-``GO`` gap is ≈100 px;
+the coin-page card sits 106 px above its first task row and adjacent task rows
+are ~190 px apart. A 3x tolerance merged the card into the first task row, which
+is why the ratio is 2.25 rather than the 3x suggestion in the issue. That gives
+108 px on the boost frame and 101 px on the coin frame: enough for both measured
+within-row gaps, not enough to bridge the 106 px card gap. At 1080x1920 the
+median is ≈43 px and the measured title-to-``GO`` gap is 68-70 px, so the same
+rule covers the phone geometry with ≈97 px.
 """
 
 MAX_ROW_TOLERANCE_FRAME_FRACTION = 0.1

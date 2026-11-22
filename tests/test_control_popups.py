@@ -18,7 +18,9 @@ from PIL import Image
 
 from aliexpress_coins.control.errors import PopupSpecError
 from aliexpress_coins.control.popups import (
+    CloseAttempt,
     CloseKind,
+    PopupCalibration,
     PopupStatus,
     load_popup_corpus,
 )
@@ -133,6 +135,11 @@ def test_the_committed_corpus_loads_and_names_every_discovered_family() -> None:
     assert corpus.reference.sdk == 35
     assert corpus.note is not None
     assert 'popup_unclosable' in corpus.note
+    assert [calibration.family for calibration in corpus.calibrations] == ['promo_coupon_unlocked']
+    calibration = corpus.calibration_for('c9b8f88670e295b5', 'promo_coupon_unlocked')
+    assert calibration is not None
+    assert calibration.modal_offset == (0.499, 0.946)
+    assert corpus.calibration_for('0000000000000000', 'promo_coupon_unlocked') is None
 
 
 def test_every_family_has_an_executable_attempt_in_policy_order() -> None:
@@ -228,8 +235,12 @@ def test_glyph_only_families_use_a_template_and_text_families_use_a_label() -> N
     corpus = load_popup_corpus(CORPUS_PATH)
 
     launch = corpus.by_family('launch_welcome_gifts')
-    assert [attempt.kind for attempt in launch.close] == [CloseKind.TEMPLATE, CloseKind.FRACTION]
-    assert launch.close[1].fraction == (0.499, 0.833)
+    assert [attempt.kind for attempt in launch.close] == [CloseKind.TEMPLATE]
+
+    promo = corpus.by_family('promo_coupon_unlocked')
+    assert [attempt.kind for attempt in promo.close] == [CloseKind.TEMPLATE, CloseKind.FRACTION]
+    assert promo.close[1].fraction == (0.499, 0.946)
+    assert promo.close[1].profile_id == 'c9b8f88670e295b5'
 
     system = corpus.by_family('system_notification_permission')
     assert [attempt.kind for attempt in system.close] == [CloseKind.LABEL]
@@ -432,20 +443,13 @@ def test_document_level_errors_are_rejected(tmp_path: Path, overrides: dict[str,
 @pytest.mark.parametrize(
     ('close', 'message'),
     [
-        ({}, 'must contain template, label, fraction or fail'),
+        ({}, 'must contain template, label or fail'),
         ({'strategy': 'teleport'}, 'unknown keys'),
+        ({'fraction': [0.5, 0.5]}, 'unknown keys'),
         ({'source_width': 1200}, 'source_width requires a template'),
         ({'template': 'assets/templates/demo.png'}, 'source_width must be an integer'),
         ({'template': 'assets/templates/demo.png', 'source_width': True}, 'source_width must be an integer'),
         ({'template': 'assets/templates/demo.png', 'source_width': 1200, 'label': '  '}, 'must not be empty'),
-        ({'template': 'assets/templates/demo.png', 'source_width': 1200, 'fraction': [0.5]}, 'exactly two'),
-        ({'template': 'assets/templates/demo.png', 'source_width': 1200, 'fraction': [0.5, 1.5]}, 'between 0 and 1'),
-        ({'template': 'assets/templates/demo.png', 'source_width': 1200, 'fraction': ['x', 0.5]}, 'must be a number'),
-        ({'template': 'assets/templates/demo.png', 'source_width': 1200, 'fraction': [True, 0.5]}, 'must be a number'),
-        (
-            {'template': 'assets/templates/demo.png', 'source_width': 1200, 'fraction': [float('nan'), 0.5]},
-            'between 0 and 1',
-        ),
         ({'fail': '  '}, 'must not be empty'),
         ({'fail': 'a reason', 'label': 'Close'}, 'must be the only key'),
         ('not a mapping', 'must be a mapping'),
@@ -454,6 +458,66 @@ def test_document_level_errors_are_rejected(tmp_path: Path, overrides: dict[str,
 def test_close_errors_are_rejected(tmp_path: Path, close: object, message: str) -> None:
     _template(tmp_path)
     path = _write_object(tmp_path, _document(families=[_row(close=close)]))
+
+    with pytest.raises(PopupSpecError, match=message):
+        load_popup_corpus(path)
+
+
+def test_a_fraction_attempt_must_name_its_calibration_profile() -> None:
+    with pytest.raises(PopupSpecError, match='must carry a modal offset and the profile'):
+        CloseAttempt(kind=CloseKind.FRACTION, fraction=(0.5, 0.5))
+    with pytest.raises(PopupSpecError, match='cannot name a calibration profile'):
+        CloseAttempt(kind=CloseKind.LABEL, label='Close', profile_id='c9b8f88670e295b5')
+
+
+def test_a_calibration_rejects_an_invalid_profile_family_or_offset() -> None:
+    with pytest.raises(PopupSpecError, match='16 lowercase hex'):
+        PopupCalibration(profile_id='NOT-A-PROFILE', family='demo', modal_offset=(0.5, 0.5))
+    with pytest.raises(PopupSpecError, match='snake_case'):
+        PopupCalibration(profile_id='c9b8f88670e295b5', family='Bad Family', modal_offset=(0.5, 0.5))
+    with pytest.raises(PopupSpecError, match='between 0 and 1'):
+        PopupCalibration(profile_id='c9b8f88670e295b5', family='demo', modal_offset=(float('nan'), 0.5))
+
+
+def test_a_profile_calibration_becomes_one_fraction_attempt(tmp_path: Path) -> None:
+    profile = '0123456789abcdef'
+    path = _write_object(
+        tmp_path,
+        _document(
+            calibration={profile: {'demo': {'modal_offset': [0.5, 0.75]}}},
+        ),
+    )
+
+    corpus = load_popup_corpus(path)
+
+    attempt = corpus.by_family('demo').close[-1]
+    assert attempt.kind is CloseKind.FRACTION
+    assert attempt.fraction == (0.5, 0.75)
+    assert attempt.profile_id == profile
+    assert corpus.calibration_for(profile, 'demo') is not None
+
+
+@pytest.mark.parametrize(
+    ('calibration', 'message'),
+    [
+        ([], 'calibration must be a mapping'),
+        ({'NOT-A-PROFILE': {'demo': {'modal_offset': [0.5, 0.5]}}}, '16-character lowercase hex'),
+        ({'0123456789abcdef': {'missing': {'modal_offset': [0.5, 0.5]}}}, 'unknown popup family'),
+        ({'0123456789abcdef': {'Bad Family': {'modal_offset': [0.5, 0.5]}}}, 'snake_case'),
+        ({'0123456789abcdef': {'demo': []}}, 'must be a mapping'),
+        ({'0123456789abcdef': {'demo': {}}}, 'must declare modal_offset'),
+        ({'0123456789abcdef': {'demo': {'modal_offset': [0.5, 0.5], 'extra': 1}}}, 'unknown keys'),
+        ({'0123456789abcdef': {'demo': {'modal_offset': [0.5]}}}, 'exactly two'),
+        ({'0123456789abcdef': {'demo': {'modal_offset': ['x', 0.5]}}}, 'must be a number'),
+        ({'0123456789abcdef': {'demo': {'modal_offset': [0.5, 1.5]}}}, 'between 0 and 1'),
+    ],
+)
+def test_calibration_errors_are_rejected(
+    tmp_path: Path,
+    calibration: object,
+    message: str,
+) -> None:
+    path = _write_object(tmp_path, _document(calibration=calibration))
 
     with pytest.raises(PopupSpecError, match=message):
         load_popup_corpus(path)

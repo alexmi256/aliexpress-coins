@@ -343,6 +343,26 @@ def classify_state(snapshot: Snapshot) -> ScreenState:
     return classify(snapshot).state
 
 
+def modal_bounds(snapshot: Snapshot) -> tuple[float, float, float, float] | None:
+    """Measure the bright modal panel as ``(left, top, right, bottom)`` pixels.
+
+    Calibration offsets are fractions of this measured region, never of the
+    screen: an aspect-ratio change moves the panel relative to the frame while
+    the control keeps its position inside the modal. A frame with no measurable
+    panel returns ``None``, and a caller with no measured region must report the
+    popup unclosable rather than fall back to a screen coordinate.
+    """
+    panel = _analyse(snapshot).panel
+    if panel is None:
+        return None
+    return (
+        panel.left * snapshot.width,
+        panel.top * snapshot.height,
+        panel.right * snapshot.width,
+        panel.bottom * snapshot.height,
+    )
+
+
 def wait_for_state(
     capture: CaptureSource,
     target: ScreenState | Iterable[ScreenState],

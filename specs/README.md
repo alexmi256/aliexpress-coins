@@ -3,8 +3,11 @@
 `popups.yaml` is the popup corpus from issue #11: one row per family, the OCR
 anchor that identifies it, the ordered close attempts, and the geometry the
 crop was measured at. The policy order is declared in the file and read by the
-loader; the committed corpus is **label → template → fraction**, because a text
-label is scale-independent while a template crop is tied to one rendering. The
+loader; the committed corpus is **label → template → calibrated modal offset**,
+because a text label is scale-independent while a template crop is tied to one
+rendering and a fallback is only safe on the profile it was measured on. The
+`calibration` section is keyed by the profile id `doctor` prints; a device with
+no row there has no fallback and the popup is reported `popup_unclosable`. The
 comments in the file are the policy; the loader that enforces the schema is
 [`src/aliexpress_coins/control/popups.py`](../src/aliexpress_coins/control/popups.py)
 and its tests are
@@ -64,5 +67,9 @@ To add a popup family:
    the tool records the source frame width. See that directory's README.
 3. Add the YAML row. A row with no executable close strategy is rejected; an
    unclosable popup uses an explicit `fail` reason so the runner stops loudly.
+   A fallback is not a global coordinate: measure the close control inside the
+   detected modal panel and add it under `calibration.<profile-id>` using the
+   offset fraction. Do not add one for a frame whose panel cannot be measured.
 4. Add a fixture-backed assertion only for facts the loader cannot know (for
-   example, the two layouts of a family).
+   example, the two layouts of a family, or a template match at a second
+   geometry).

@@ -175,12 +175,13 @@ _ANCHOR_GROUP_GAP_RATIO = 4.0
 _POSITION_BUCKET_FRACTION = 0.05
 """A fallback tile identity is a 5%-of-height band plus its column."""
 
-_SCROLL_START_FRACTION = 0.78
-_SCROLL_END_FRACTION = 0.40
-"""Scroll up by a fraction of the frame, then re-capture and look again.
+_SCROLL_START_FRACTION = 0.75
+_SCROLL_END_FRACTION = 0.20
+"""Scroll up by 0.55 of the frame, then re-capture and look again.
 
 The distance is a frame fraction rather than a measured swipe so the same
-gesture ports to another geometry (docs/02, geometry independence).
+gesture ports to another geometry (docs/02, issue #42). It sits in the measured
+0.5-0.6 search range shared with ``perception.scroll``.
 """
 
 _PRICE = re.compile(r'(?:C\$|US\s*\$|CS|\$)\s*\d', re.IGNORECASE)

@@ -24,6 +24,7 @@ from aliexpress_coins.perception.state import (
     ScreenState,
     classify,
     classify_state,
+    modal_bounds,
     wait_for_state,
 )
 
@@ -115,6 +116,19 @@ def test_popup_evidence_distinguishes_a_headline_from_a_panel(frames: dict[str, 
     assert overlay.state is ScreenState.POPUP
     assert overlay.evidence[0].signal == 'popup_panel'
     assert 'area=' in overlay.evidence[0].detail
+
+
+def test_modal_bounds_are_measured_from_the_panel_not_the_screen(frames: dict[str, Snapshot]) -> None:
+    bounds = modal_bounds(frames['popup_over_page.png'])
+
+    assert bounds is not None
+    left, top, right, bottom = bounds
+    assert left == pytest.approx(121.7, abs=0.1)
+    assert top == pytest.approx(640.0, abs=0.1)
+    assert right == pytest.approx(1078.3, abs=0.1)
+    assert bottom == pytest.approx(1640.0, abs=0.1)
+    assert modal_bounds(frames['launch_modal.png']) is None
+    assert modal_bounds(frames['coins.png']) is None
 
 
 def test_loading_and_blank_evidence_carry_frame_statistics(frames: dict[str, Snapshot]) -> None:
