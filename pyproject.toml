@@ -75,14 +75,15 @@ addopts = [
 # capture module landed (measured 98.45%), then to 98.8 when the daily state
 # store landed (measured 98.87%), then to 99.0 when the daily sign-in executor
 # landed (measured 99.01%), then to 99.1 when the browse-and-wait executor
-# landed (measured 99.11%).
+# landed (measured 99.11%), then to 99.15 when the notifications executor
+# landed (measured 99.20%).
 # See "Quality gate" in README.md.
 [tool.coverage.run]
 branch = true
 source = ["aliexpress_coins"]
 
 [tool.coverage.report]
-fail_under = 99.1
+fail_under = 99.15
 precision = 2
 show_missing = true
 skip_covered = true
