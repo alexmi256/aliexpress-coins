@@ -61,6 +61,7 @@ def _valid_payload() -> dict[str, Any]:
         'last_balance': 120.0,
         'run_count': 1,
         'last_run_at': NOW.isoformat(),
+        'completed_night': False,
     }
 
 
@@ -101,6 +102,7 @@ def test_a_missing_day_starts_empty_and_creates_the_directory(tmp_path: Path) ->
         'last_balance': None,
         'run_count': 0,
         'last_run_at': None,
+        'completed_night': False,
     }
     assert store.count('daily_checkin') == 0
     assert store.done_today('daily_checkin') is False
@@ -123,6 +125,7 @@ def test_record_counts_a_task_and_writes_plain_json(tmp_path: Path) -> None:
         'last_balance': None,
         'run_count': 0,
         'last_run_at': None,
+        'completed_night': False,
     }
     assert store.path.read_text(encoding='utf-8').endswith('\n')
     assert [item.name for item in tmp_path.iterdir()] == ['daily-2026-11-21.json']
@@ -164,6 +167,27 @@ def test_begin_run_counts_runs_and_stamps_the_start(tmp_path: Path) -> None:
     assert _store(tmp_path, clock=clock).snapshot().last_run_at == later
 
 
+def test_complete_night_is_the_schedulers_skip_flag_and_survives_a_restart(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.begin_run(at=NOW)
+    assert store.snapshot().completed_night is False
+
+    store.complete_night()
+
+    assert store.snapshot().completed_night is True
+    assert _store(tmp_path).snapshot().completed_night is True
+
+
+def test_an_old_state_file_without_the_night_flag_still_loads(tmp_path: Path) -> None:
+    payload = _valid_payload()
+    payload.pop('completed_night')
+    _write_json(_path(tmp_path), payload)
+
+    snapshot = _store(tmp_path).snapshot()
+
+    assert snapshot.completed_night is False
+
+
 def test_record_carries_the_last_balance_without_clobbering_it(tmp_path: Path) -> None:
     store = _store(tmp_path)
 
@@ -194,6 +218,7 @@ def test_snapshot_gives_the_report_the_whole_day(tmp_path: Path) -> None:
         'last_balance': 120.0,
         'run_count': 1,
         'last_run_at': NOW.isoformat(),
+        'completed_night': False,
     }
 
 
@@ -319,6 +344,7 @@ def test_a_corrupt_file_is_quarantined_and_the_day_starts_fresh(
         (lambda payload: payload.pop('last_run_at'), "missing field 'last_run_at'"),
         (lambda payload: payload.__setitem__('last_run_at', 5), 'ISO timestamp or null'),
         (lambda payload: payload.__setitem__('last_run_at', 'yesterday'), 'is not an ISO timestamp'),
+        (lambda payload: payload.__setitem__('completed_night', 'yes'), 'must be a boolean'),
     ],
 )
 def test_a_malformed_state_file_resets_without_raising(

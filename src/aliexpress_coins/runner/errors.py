@@ -32,3 +32,24 @@ class StateWriteError(StateError):
     The in-memory state is left unchanged: a caller that sees this error knows
     the previous state is still the one on disk.
     """
+
+
+class ConfigError(RunnerError):
+    """The runner configuration is missing or invalid."""
+
+
+class ReportError(RunnerError):
+    """A run report could not be written."""
+
+
+class DeviceError(RunnerError):
+    """The device could not be reached or prepared for a run."""
+
+
+class RunInterrupted(RunnerError):
+    """The run was asked to stop before it finished its walk.
+
+    This is raised from the injected sleep/capture seams when the scheduler has
+    received SIGTERM, so an executor's own broad ``except Exception`` cannot
+    swallow the stop and keep tapping.
+    """

@@ -18,7 +18,8 @@ mistaken for today's and stays on disk for the report.
       "completions": {"daily_checkin": 1, "sponsored_items": 3},
       "last_balance": 1240.0,
       "run_count": 2,
-      "last_run_at": "2026-11-21T03:42:11+00:00"
+      "last_run_at": "2026-11-21T03:42:11+00:00",
+      "completed_night": true
     }
 
 Every update is staged in the same directory, fsynced, then renamed over the
@@ -86,6 +87,7 @@ class DailySnapshot:
     last_balance: float | None = None
     run_count: int = 0
     last_run_at: datetime | None = None
+    completed_night: bool = False
 
     def __post_init__(self) -> None:
         # A snapshot is a value: callers must not mutate the store through it.
@@ -100,6 +102,7 @@ class DailySnapshot:
             'last_balance': self.last_balance,
             'run_count': self.run_count,
             'last_run_at': None if self.last_run_at is None else self.last_run_at.isoformat(),
+            'completed_night': self.completed_night,
         }
 
 
@@ -177,6 +180,16 @@ class DailyStateStore:
         run_count = current.run_count + 1
         self._commit(replace(current, run_count=run_count, last_run_at=run_at))
         return run_count
+
+    def complete_night(self) -> None:
+        """Mark the night as finished, which is what the scheduler skips on.
+
+        ``begin_run`` counts every attempt, including a manual run stopped by its
+        budget. Only a run that walked the roster to the end calls this, so a
+        small manual run cannot swallow the nightly window.
+        """
+        current = self._loaded()
+        self._commit(replace(current, completed_night=True))
 
     def observe_balance(self, balance: float) -> None:
         """Store the last balance seen, without recording a task completion."""
@@ -304,12 +317,17 @@ def _parse(raw: bytes, day: date) -> DailySnapshot:
     else:
         raise _CorruptState("'last_run_at' must be an ISO timestamp or null")
 
+    completed_night = data.get('completed_night', False)
+    if not isinstance(completed_night, bool):
+        raise _CorruptState("'completed_night' must be a boolean")
+
     return DailySnapshot(
         day=day,
         completions=completions,
         last_balance=last_balance,
         run_count=run_count,
         last_run_at=last_run_at,
+        completed_night=completed_night,
     )
 
 

@@ -16,9 +16,17 @@ runs
 state
 recon
 docs
-tests
+# The popup corpus validates its reviewed fixture paths at load time. Only that
+# dedicated, account-data-masked directory is needed at runtime; the rest of
+# the test tree stays out of the image.
+tests/*
+!tests/data
+tests/data/*
+!tests/data/popups
+!tests/data/popups/*.png
 tools
 .env
 .env.*
 *.png
 *.jpg
+!assets/templates/*.png

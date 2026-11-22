@@ -29,6 +29,11 @@ RUN python -m pip install --no-cache-dir --only-binary=:all: --requirement requi
 
 COPY pyproject.toml README.md ./
 COPY src ./src
+COPY specs ./specs
+COPY assets ./assets
+# The popup corpus validates every reviewed fixture path when it loads. These
+# are masked, account-data-free frames; keeping them makes the image self-check.
+COPY tests/data/popups ./tests/data/popups
 RUN python -m pip install --no-cache-dir --no-deps . \
     && rm -rf /app/build /app/src/*.egg-info
 
@@ -46,4 +51,4 @@ ENV AECOINS_RUNS_DIR=/app/runs \
 
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["/usr/bin/tini", "--"]
-CMD ["python", "-m", "aliexpress_coins", "idle"]
+CMD ["python", "-m", "aliexpress_coins", "run", "--schedule"]

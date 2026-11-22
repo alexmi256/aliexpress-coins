@@ -4,9 +4,9 @@ Planning repository for an unattended collector of the AliExpress in-app **coins
 daily sign-in, the easy browse-and-wait tasks, the quiz, the surprise-items task — and a
 refusal of everything that costs money, costs minutes, or leaves a review.
 
-**Status: scaffold and perception capture in place.** This repository holds the brief, the device
-recon that constrains the design, the issue plan the build is broken into, and the toolchain every
-later issue is built on. No end-to-end product behaviour exists yet; the issues are the work items.
+**Status: scaffold, perception, task executors and the nightly runner in place.** This repository
+holds the brief, the device recon that constrains the design, the issue plan the build is broken
+into, the toolchain every issue is built on, and the `run --once` / `run --schedule` engine.
 
 ## Quick start
 
@@ -50,9 +50,24 @@ docker compose run --rm collector python -m aliexpress_coins doctor
 A container runs its own adb server, so its connection to a wireless device does not
 inherit the host's; `doctor` connects a `host:port` serial itself. `doctor` is
 read-only: it checks adb, the device named by `AECOINS_DEVICE` (skipped when unset)
-and the OCR models, and never taps or launches anything. `docker compose up -d`
-starts an idle instance that stops promptly on SIGTERM; the scheduler that replaces
-it lands in #29.
+and the OCR models, and never taps or launches anything.
+
+`docker compose up -d` starts the nightly daemon (`run --schedule`). Its local start
+time, timezone, jitter and wall-clock budget come from `AECOINS_SCHEDULE_TIME`,
+`AECOINS_TIMEZONE`, `AECOINS_SCHEDULE_JITTER_SECONDS` and
+`AECOINS_RUN_BUDGET_SECONDS` (see `.env.example`); a night that finished its roster
+walk marks the day complete and is skipped on a retry, while a manual run stopped by
+its budget leaves the nightly window open. Compose retries a failed daemon a bounded
+number of times rather than looping forever on a configuration error. Run one night
+manually with:
+
+```sh
+docker compose run --rm collector python -m aliexpress_coins run --once
+```
+
+Each night writes `runs/<UTC timestamp>/summary.md`, `run.json` and `roster.jsonl`
+into the `runs` volume. A stop signal ends the daemon within the compose grace
+period and still leaves the report written atomically.
 
 ### Quality gate
 
@@ -65,8 +80,8 @@ Coverage is a **ratchet** with a starting floor of **85%**, raised to **98%** wh
 capture module landed (measured 98.45%), to **98.8%** when the daily state store landed
 (measured 98.87%), to **99.0%** when the daily sign-in executor landed (measured 99.01%), to
 **99.1%** when the browse-and-wait executor landed (measured 99.11%), to **99.15%** when the
-notifications executor landed (measured 99.20%), and to **99.2%** when the roster observation log
-landed (measured 99.25%).
+notifications executor landed (measured 99.20%), to **99.2%** when the roster observation log
+landed (measured 99.25%), and to **99.25%** when the nightly runner landed (measured 99.31%).
 The scaffold is fully covered, but a one-statement package makes that 100% an artefact of the
 stub, so the floor starts below the maximum. As real modules land, raise the floor toward the
 measured number; never lower it to make a change pass. The gate fails the build when coverage
