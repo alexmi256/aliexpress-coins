@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -39,6 +40,9 @@ __all__ = [
 
 RUN_REPORT_SCHEMA = 2
 """The on-disk schema this module reads or writes."""
+
+_RUN_ID_PATTERN = re.compile(r'^\d{8}T\d{6}Z$')
+"""The only directory names retention may delete."""
 
 
 class RunStatus(StrEnum):
@@ -137,6 +141,7 @@ class RunReport:
         self.observations = 0
         self.balance_before: float | None = None
         self.balance_after: float | None = None
+        self.balance_note: str | None = None
         self.returned_to_coins_page: bool | None = None
         self.return_error: str | None = None
         self.error: str | None = None
@@ -305,6 +310,7 @@ class RunReport:
             'balance_before': self.balance_before,
             'balance_after': self.balance_after,
             'balance_delta': self.balance_delta,
+            'balance_note': self.balance_note,
             'popups_closed': dict(self.popups_closed),
             'shots': dict(self.shots),
             'notification': self.notification,
@@ -350,6 +356,8 @@ class RunReport:
             f'- **Popups closed:** {_popup_summary(self.popups_closed)}',
             f'- **Back on coins page:** {_returned(self.returned_to_coins_page, self.return_error)}',
         ]
+        if self.balance_note:
+            lines.append(f'- **Balance note:** {self.balance_note}')
         if self.detail:
             lines.append(f'- **Detail:** {self.detail}')
         if self.route_error:
@@ -428,25 +436,48 @@ class RunEventLog(logging.Handler):
             stream.write(line + '\n')
 
 
-def prune_runs(runs_dir: str | Path, *, keep: int, current_run_id: str) -> tuple[Path, ...]:
+def prune_runs(
+    runs_dir: str | Path,
+    *,
+    keep: int,
+    current_run_id: str,
+    logger: logging.Logger | None = None,
+) -> tuple[Path, ...]:
     """Delete the oldest run directories so ``keep`` remain, including this run.
 
     The current run is excluded before pruning, so it is never a candidate even
-    when its id sorts before an existing directory. Names are UTC timestamps, so
-    lexical order is chronological order. A non-directory or symlink in the runs
-    root is left alone.
+    when its id sorts before an existing directory. Only directory names in the
+    UTC run-id shape are candidates; files, symlinks and operator directories
+    such as ``manual`` are left alone and logged as skipped.
     """
     if keep < 1:
         raise ValueError(f'keep must be positive, got {keep!r}')
     root = Path(runs_dir)
+    directories: list[Path] = []
+    skipped: list[str] = []
     try:
-        directories = [
-            path for path in root.iterdir() if path.is_dir() and not path.is_symlink() and path.name != current_run_id
-        ]
+        for path in root.iterdir():
+            if path.name == current_run_id:
+                continue
+            if path.is_dir() and not path.is_symlink() and _RUN_ID_PATTERN.fullmatch(path.name):
+                directories.append(path)
+            else:
+                skipped.append(path.name)
     except FileNotFoundError:
         return ()
     except OSError as exc:
         raise ReportError(f'could not list run directories in {root}: {exc}') from exc
+
+    log = logger if logger is not None else logging.getLogger(__name__)
+    if skipped:
+        log.info(
+            '%s',
+            json.dumps(
+                {'event': 'runs_not_pruned', 'names': sorted(skipped)},
+                separators=(',', ':'),
+                sort_keys=True,
+            ),
+        )
 
     directories.sort(key=lambda path: path.name)
     excess = len(directories) - (keep - 1)

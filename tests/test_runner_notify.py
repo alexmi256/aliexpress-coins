@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from http.client import HTTPMessage
 from typing import Any
+from urllib.error import HTTPError
 
 import pytest
 
@@ -90,15 +92,25 @@ def test_ntfy_posts_the_body_with_title_and_priority_headers() -> None:
     assert request.get_header('Tags') == 'coins,failed'
 
 
-def test_a_failed_delivery_is_a_typed_notification_error() -> None:
-    opener = _Opener(error=OSError('connection refused'))
-    with pytest.raises(NotificationError, match='webhook delivery failed: OSError: connection refused'):
-        WebhookSink('https://hooks.example/coins', opener=opener).send(MESSAGE)
+def test_a_failed_delivery_records_the_class_but_not_the_message_or_url() -> None:
+    secret = 'correct-horse'
+    opener = _Opener(error=OSError(f'connection refused for https://alice:{secret}@hooks.example/coins'))
+    with pytest.raises(NotificationError) as raised:
+        WebhookSink(f'https://alice:{secret}@hooks.example/coins', opener=opener).send(MESSAGE)
+
+    assert str(raised.value) == 'webhook delivery failed: OSError'
+    assert secret not in str(raised.value)
 
 
-def test_an_already_typed_notification_error_is_re_raised_unchanged() -> None:
-    opener = _Opener(error=NotificationError('already typed'))
-    with pytest.raises(NotificationError, match='already typed'):
+def test_a_failed_delivery_keeps_the_http_status_when_available() -> None:
+    error = HTTPError('https://hooks.example/coins', 503, 'Service Unavailable', HTTPMessage(), None)
+    with pytest.raises(NotificationError, match=r'webhook delivery failed: HTTPError \(HTTP 503\)'):
+        WebhookSink('https://hooks.example/coins', opener=_Opener(error=error)).send(MESSAGE)
+
+
+def test_an_already_typed_notification_error_is_also_sanitised() -> None:
+    opener = _Opener(error=NotificationError('already typed with https://alice:secret@host'))
+    with pytest.raises(NotificationError, match='webhook delivery failed: NotificationError'):
         WebhookSink('https://hooks.example/coins', opener=opener).send(MESSAGE)
 
 
@@ -142,8 +154,7 @@ def test_a_composite_sink_tries_every_sink_then_reports_all_failures() -> None:
     with pytest.raises(NotificationError) as raised:
         sink.send(MESSAGE)
 
-    assert 'first down' in str(raised.value)
-    assert 'second down' in str(raised.value)
+    assert str(raised.value) == 'webhook delivery failed: OSError; ntfy delivery failed: OSError'
     assert len(first.requests) == 1
     assert len(second.requests) == 1
 

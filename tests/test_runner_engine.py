@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -20,7 +21,7 @@ import pytest
 from PIL import Image
 
 from aliexpress_coins.control.controller import Controller
-from aliexpress_coins.control.popups import PopupCorpus, load_popup_corpus
+from aliexpress_coins.control.popups import DismissReport, DismissStop, PopupCorpus, load_popup_corpus
 from aliexpress_coins.perception.artifacts import ArtifactStore
 from aliexpress_coins.perception.errors import StateTimeout
 from aliexpress_coins.perception.geometry import DeviceGeometry
@@ -30,7 +31,7 @@ from aliexpress_coins.runner.config import RunConfig
 from aliexpress_coins.runner.device import HygieneReport
 from aliexpress_coins.runner.engine import EngineResult, RunContext
 from aliexpress_coins.runner.errors import DeviceError, ReportError, RunInterrupted
-from aliexpress_coins.runner.notify import Notification
+from aliexpress_coins.runner.notify import Notification, NotificationSink, WebhookSink
 from aliexpress_coins.runner.report import RunEventLog, RunReport, RunStatus
 from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks.browse import ReturnResult
@@ -88,12 +89,20 @@ class _Stop:
 class _Notifier:
     name = 'webhook'
 
-    def __init__(self, *, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        error: Exception | None = None,
+        on_send: Callable[[], None] | None = None,
+    ) -> None:
         self.error = error
+        self.on_send = on_send
         self.messages: list[Notification] = []
 
     def send(self, notification: Notification) -> None:
         self.messages.append(notification)
+        if self.on_send is not None:
+            self.on_send()
         if self.error is not None:
             raise self.error
 
@@ -211,6 +220,20 @@ def _coin_frame(balance: str = '1,240') -> Snapshot:
     )
 
 
+def _home_frame() -> Snapshot:
+    return _snapshot(_box('For you', 100, 200, 400, 260), _box('Search', 100, 300, 300, 360))
+
+
+def _dismiss(*families: str) -> DismissReport:
+    return DismissReport(
+        closed=families,
+        attempts=(),
+        frames=(),
+        remaining=False,
+        stop=DismissStop.CLEAR,
+    )
+
+
 @pytest.fixture(scope='module')
 def corpus() -> PopupCorpus:
     return load_popup_corpus(ROOT / 'specs' / 'popups.yaml')
@@ -253,7 +276,7 @@ def _context(
     budget: float = 60.0,
     max_tasks: int = 12,
     hygiene: _Hygiene | None = None,
-    notifier: _Notifier | None = None,
+    notifier: NotificationSink | None = None,
     notify_on_empty: bool = False,
 ) -> RunContext:
     config = replace(
@@ -1531,6 +1554,160 @@ def test_the_balance_in_the_summary_is_read_back_from_the_recorded_shots(
     assert payload['shots'] == report.shots
 
 
+def test_a_cold_start_does_not_read_the_balance_from_the_home_feed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _boost_header_frame()
+    _surface(monkeypatch, replace(full_roster, entries=()), frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(_home_frame(), _coin_frame('1,240'), _coin_frame('1,246')),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+
+    report = engine.run_once(context)
+
+    assert report.balance_before == 1240.0
+    assert report.balance_after == 1246.0
+    assert report.balance_delta == 6.0
+    assert '1240 -> 1246 (+6)' in report.summary_path.read_text(encoding='utf-8')
+    store = ArtifactStore(report.runs_dir, report.run_id)
+    assert read_coin_balance(store.load('balance-before')) == 1240.0
+
+
+def test_an_unproven_coin_page_leaves_the_balance_unknown_and_says_why(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _boost_header_frame()
+    _surface(monkeypatch, replace(full_roster, entries=()), frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    monkeypatch.setattr(
+        engine,
+        'return_to_coins_page',
+        lambda *args, **kwargs: ReturnResult(
+            returned=False,
+            reentered=True,
+            attempts=2,
+            route=SurfaceRoute.SHORTCUT,
+            elapsed=1.0,
+            error='no coin markers',
+        ),
+    )
+
+    report = engine.run_once(context)
+
+    assert report.balance_before is None
+    assert report.balance_delta is None
+    assert report.balance_note is not None
+    assert 'not proven' in report.balance_note
+    assert 'balance-before' not in report.shots
+    summary = report.summary_path.read_text(encoding='utf-8')
+    assert '**Balance:** unknown -> 1240' in summary
+    assert '**Balance note:** coins page not proven before the first task' in summary
+
+
+def test_a_balance_capture_route_error_is_named_without_failing_the_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _boost_header_frame()
+    _surface(monkeypatch, replace(full_roster, entries=()), frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    monkeypatch.setattr(
+        engine,
+        'return_to_coins_page',
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError('route died')),
+    )
+
+    report = engine.run_once(context)
+
+    assert report.ok is True
+    assert report.balance_before is None
+    assert report.balance_note is not None
+    assert 'route died' in report.balance_note
+    assert '**Balance note:** coins page not proven before the first task: RuntimeError: route died' in (
+        report.summary_path.read_text(encoding='utf-8')
+    )
+
+
+def test_popups_closed_during_discovery_observation_and_cleanup_are_counted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    roster = replace(full_roster, entries=())
+
+    def fake_discover(*args: Any, **kwargs: Any) -> Roster:
+        on_dismiss = kwargs.get('on_dismiss')
+        if on_dismiss is not None:
+            on_dismiss(_dismiss('launch_modal'))
+        return roster
+
+    def fake_open(*args: Any, **kwargs: Any) -> BoostList:
+        on_dismiss = kwargs.get('on_dismiss')
+        if on_dismiss is not None:
+            on_dismiss(_dismiss('observation_modal'))
+        return BoostList(snapshot=_boost_header_frame(), route=DiscoveryRoute.BOOST, detail='test')
+
+    def fake_return(*args: Any, **kwargs: Any) -> ReturnResult:
+        on_dismiss = kwargs.get('on_dismiss')
+        if on_dismiss is not None:
+            on_dismiss(_dismiss('cleanup_modal'))
+        return ReturnResult(
+            returned=True,
+            reentered=True,
+            attempts=1,
+            route=SurfaceRoute.SHORTCUT,
+            elapsed=1.0,
+            snapshot=_coin_frame(),
+        )
+
+    monkeypatch.setattr(engine, 'discover_roster', fake_discover)
+    monkeypatch.setattr(engine, 'open_boost_list', fake_open)
+    monkeypatch.setattr(engine, 'return_to_coins_page', fake_return)
+    context = _context(
+        tmp_path,
+        capture=_Capture(_home_frame(), _boost_header_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+
+    report = engine.run_once(context)
+
+    assert report.popups_closed == {
+        'launch_modal': 1,
+        'observation_modal': 1,
+        'cleanup_modal': 2,
+    }
+    assert '**Popups closed:** cleanup_modal: 2, launch_modal: 1, observation_modal: 1' in (
+        report.summary_path.read_text(encoding='utf-8')
+    )
+
+
 def test_a_broken_webhook_is_logged_after_the_run_and_keeps_the_night_successful(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1573,6 +1750,72 @@ def test_a_broken_webhook_is_logged_after_the_run_and_keeps_the_night_successful
     assert '**Notification:** failed via webhook: RuntimeError: webhook down' in report.summary_path.read_text(
         encoding='utf-8',
     )
+
+
+def test_a_webhook_password_never_reaches_the_report_or_the_log(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    frame = _boost_header_frame()
+    _surface(monkeypatch, replace(full_roster, entries=()), frame)
+    secret = 'correct-horse-battery-staple'
+
+    def broken(request: Any, *, timeout: float) -> Any:
+        del request, timeout
+        raise RuntimeError(f"nonnumeric port: '{secret}@example.invalid'")
+
+    notifier = WebhookSink(f'https://alice:{secret}@example.invalid/hook', opener=broken)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+        notifier=notifier,
+        notify_on_empty=True,
+    )
+
+    with caplog.at_level(logging.WARNING, logger='test.engine'):
+        report = engine.run_once(context)
+
+    assert report.notification is not None
+    assert report.notification['error'] == 'NotificationError: webhook delivery failed: RuntimeError'
+    assert secret not in caplog.text
+    assert secret not in report.summary_path.read_text(encoding='utf-8')
+    assert secret not in report.json_path.read_text(encoding='utf-8')
+    assert secret not in report.event_log_path.read_text(encoding='utf-8')
+
+
+def test_rotation_is_restored_before_the_notification_is_delivered(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _boost_header_frame()
+    _surface(monkeypatch, replace(full_roster, entries=()), frame)
+    hygiene = _Hygiene()
+    restored_when_sent: list[int] = []
+    notifier = _Notifier(on_send=lambda: restored_when_sent.append(hygiene.restored))
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+        hygiene=hygiene,
+        notifier=notifier,
+        notify_on_empty=True,
+    )
+
+    report = engine.run_once(context)
+
+    assert report.ok is True
+    assert hygiene.restored == 1
+    assert restored_when_sent == [1]
 
 
 def test_a_night_that_claims_nothing_notifies_only_when_configured(
@@ -1632,13 +1875,16 @@ def test_retention_prunes_old_runs_after_the_current_report_is_written(
     context.config = replace(context.config, keep_runs=2)
     for name in ('20260101T000000Z', '20260102T000000Z'):
         (context.config.runs_dir / name).mkdir(parents=True)
+    (context.config.runs_dir / 'manual').mkdir()
+    (context.config.runs_dir / 'stray.txt').write_text('keep me', encoding='utf-8')
 
     report = engine.run_once(context)
 
     kept = sorted(path.name for path in context.config.runs_dir.iterdir())
-    assert kept == ['20260102T000000Z', report.run_id]
+    assert kept == ['20260102T000000Z', report.run_id, 'manual', 'stray.txt']
     assert report.summary_path.is_file()
     assert report.event_log_path.is_file()
+    assert 'runs_not_pruned' in report.event_log_path.read_text(encoding='utf-8')
 
 
 def test_a_run_log_start_failure_does_not_stop_the_report(

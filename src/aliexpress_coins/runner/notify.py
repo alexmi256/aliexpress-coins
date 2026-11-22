@@ -79,10 +79,13 @@ def _post(opener: Opener, request: Request, timeout: float, name: str) -> None:
     try:
         with opener(request, timeout=timeout) as response:
             response.read()
-    except NotificationError:
-        raise
     except Exception as exc:
-        raise NotificationError(f'{name} delivery failed: {type(exc).__name__}: {exc}') from exc
+        # A webhook URL may carry userinfo, so neither the URL nor the raw
+        # exception message is safe to record. Keep only the class and, when
+        # the transport exposes one, the HTTP status.
+        status = getattr(exc, 'code', None)
+        suffix = f' (HTTP {status})' if isinstance(status, int) else ''
+        raise NotificationError(f'{name} delivery failed: {type(exc).__name__}{suffix}') from exc
 
 
 @dataclass(frozen=True, slots=True)

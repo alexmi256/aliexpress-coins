@@ -25,7 +25,7 @@ from PIL import Image
 
 from aliexpress_coins.control.controller import Controller
 from aliexpress_coins.control.errors import PopupUnclosable
-from aliexpress_coins.control.popups import PopupCorpus, load_popup_corpus
+from aliexpress_coins.control.popups import DismissReport, PopupCorpus, load_popup_corpus
 from aliexpress_coins.perception.geometry import DeviceGeometry
 from aliexpress_coins.perception.matching import normalize
 from aliexpress_coins.perception.ocr import RapidOcrEngine
@@ -711,6 +711,7 @@ def test_return_to_coins_page_sweeps_a_popup_on_arrival(
     def navigate(_route: SurfaceRoute) -> None:
         world.go('popup')
 
+    dismissals: list[DismissReport] = []
     result = return_to_coins_page(
         _controller(world, world.frame),
         world.capture,
@@ -721,10 +722,12 @@ def test_return_to_coins_page_sweeps_a_popup_on_arrival(
         interval=0.5,
         clock=_SteppingClock(step=0.5),
         sleep=_SteppingClock().sleep,
+        on_dismiss=dismissals.append,
     )
 
     assert result.returned is True
     assert world.current == 'coins'
+    assert [report.closed for report in dismissals] == [('launch_welcome_gifts',)]
 
 
 def test_return_to_coins_page_accepts_the_redeem_interstitial_as_arrival(corpus: PopupCorpus) -> None:

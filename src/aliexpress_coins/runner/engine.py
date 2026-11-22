@@ -31,7 +31,7 @@ from typing import Any, Protocol
 from aliexpress_coins.control.controller import Controller
 from aliexpress_coins.control.device import AdbInputDevice
 from aliexpress_coins.control.errors import PopupUnclosable
-from aliexpress_coins.control.popups import PopupCorpus, load_popup_corpus
+from aliexpress_coins.control.popups import DismissReport, PopupCorpus, load_popup_corpus
 from aliexpress_coins.perception.artifacts import ArtifactStore
 from aliexpress_coins.perception.capture import AdbSnapshotter
 from aliexpress_coins.perception.errors import StateTimeout
@@ -313,6 +313,7 @@ def run_once(
     attempted: set[str] = set()
     blocked: set[str] = set()
     artifacts = ArtifactStore(report.runs_dir, report.run_id)
+    record_dismissal = _popup_recorder(report)
     event_log = RunEventLog(report.event_log_path)
     log.addHandler(event_log)
     try:
@@ -329,12 +330,19 @@ def run_once(
         frame = _capture(context.capture)
         report.geometry = _geometry(frame)
         _require_supported_geometry(frame)
-        recorded = _record_frame(report, artifacts, frame, 'balance-before', log)
-        report.balance_before = read_coin_balance(recorded)
         log.info('%s', _event('run_hygiene', **hygiene.as_dict()))
 
         controller = controller if controller is not None else _controller(context, frame)
-        roster, route_error = _discover_or_fallback(context, controller)
+        _record_balance_before(
+            context,
+            controller,
+            report,
+            artifacts,
+            frame,
+            log,
+            record_dismissal,
+        )
+        roster, route_error = _discover_or_fallback(context, controller, on_dismiss=record_dismissal)
         report.route_error = route_error
         report.roster = roster.as_dict()
         report.surface = roster.surface_variant.value if roster.surface_variant is not None else None
@@ -343,7 +351,7 @@ def run_once(
         observer = (
             observer if observer is not None else _observer(context, report, roster, max_observations=task_limit + 2)
         )
-        _observe(context, controller, observer, route=roster.route)
+        _observe(context, controller, observer, route=roster.route, on_dismiss=record_dismissal)
         _record_policy_skips(report, roster)
         report.observations = observer.sequence
         report.write()
@@ -415,7 +423,7 @@ def run_once(
                 ),
             )
             if result.completed:
-                _observe(context, controller, observer, route=None)
+                _observe(context, controller, observer, route=None, on_dismiss=record_dismissal)
                 _record_policy_skips(report, observer.roster or roster)
                 report.observations = observer.sequence
             else:
@@ -442,7 +450,14 @@ def run_once(
         log.exception('%s', _event('run_failed', detail=detail))
     finally:
         if controller is not None:
-            _finish_on_coins_page(context, controller, report, artifacts, log)
+            _finish_on_coins_page(
+                context,
+                controller,
+                report,
+                artifacts,
+                log,
+                on_dismiss=record_dismissal,
+            )
         if status is RunStatus.FAILED:
             _record_failure_frame(context, report, artifacts, log)
         if status is RunStatus.COMPLETED and not context.config.dry_run:
@@ -450,10 +465,12 @@ def run_once(
                 context.state.complete_night()
             except Exception as exc:
                 log.warning('%s', _event('state_complete_failed', detail=f'{type(exc).__name__}: {exc}'))
+        finalized = False
         try:
             used = max(0.0, context.clock() - started)
             report.finish(status, detail=detail, budget_used_seconds=used, finished_at=context.wall_clock())
             report.write()
+            finalized = True
             log.info(
                 '%s',
                 _event(
@@ -465,23 +482,31 @@ def run_once(
                     skipped=len(report.skipped),
                 ),
             )
-            _notify(context, report, log)
-            _prune(context, report, log)
         finally:
-            # The report is final before cleanup touches adb. The restore is
-            # bounded in the device layer, so it still fits inside the stop
-            # grace and a failed report write does not leave the device locked.
+            # The report is final before cleanup touches adb. Restore comes
+            # before delivery or retention so a slow webhook cannot outlive the
+            # container's stop grace and leave rotation pinned.
             try:
                 context.hygiene.restore()
             except Exception as exc:
                 log.warning('%s', _event('hygiene_restore_failed', detail=f'{type(exc).__name__}: {exc}'))
             finally:
-                log.removeHandler(event_log)
-                event_log.close()
+                try:
+                    if finalized:
+                        _notify(context, report, log)
+                        _prune(context, report, log)
+                finally:
+                    log.removeHandler(event_log)
+                    event_log.close()
     return report
 
 
-def _discover_or_fallback(context: RunContext, controller: Controller) -> tuple[Roster, str | None]:
+def _discover_or_fallback(
+    context: RunContext,
+    controller: Controller,
+    *,
+    on_dismiss: Callable[[DismissReport], None] | None = None,
+) -> tuple[Roster, str | None]:
     """Open the best task surface, or enumerate what the current frame shows.
 
     The measured boost route occasionally ignores the first ``Earn more`` tap;
@@ -507,6 +532,7 @@ def _discover_or_fallback(context: RunContext, controller: Controller) -> tuple[
                 clock=context.clock,
                 sleep=context.sleep,
                 logger=log,
+                on_dismiss=on_dismiss,
             ),
             None,
         )
@@ -650,6 +676,7 @@ def _observe(
     observer: RosterObserver,
     *,
     route: DiscoveryRoute | None,
+    on_dismiss: Callable[[DismissReport], None] | None = None,
 ) -> RosterObservation | None:
     """Re-open the task surface and log one fresh observation.
 
@@ -670,6 +697,7 @@ def _observe(
             clock=context.clock,
             sleep=context.sleep,
             logger=log,
+            on_dismiss=on_dismiss,
         )
         return observer.observe(
             opened.snapshot,
@@ -778,12 +806,67 @@ def _next_entry(roster: Roster, state: DailyStateStore, blocked: set[str]) -> Ro
     return None
 
 
+def _popup_recorder(report: RunReport) -> Callable[[DismissReport], None]:
+    def record(dismissal: DismissReport) -> None:
+        report.record_popups(dismissal.closed)
+
+    return record
+
+
+def _record_balance_before(
+    context: RunContext,
+    controller: Controller,
+    report: RunReport,
+    artifacts: ArtifactStore,
+    frame: Snapshot,
+    log: logging.Logger,
+    on_dismiss: Callable[[DismissReport], None] | None = None,
+) -> None:
+    """Prove the coin page before recording the balance the run started from.
+
+    A cold start lands on the home feed. A number read there is not a coin
+    balance, so the run leaves ``balance_before`` unknown (and says why) rather
+    than computing a delta from the wrong screen.
+    """
+    try:
+        result = return_to_coins_page(
+            controller,
+            context.capture,
+            context.corpus,
+            context.navigate,
+            snapshot=frame,
+            templates=context.templates,
+            route=SurfaceRoute.SHORTCUT,
+            settle=context.config.settle_seconds,
+            clock=context.clock,
+            sleep=context.sleep,
+            logger=log,
+            on_dismiss=on_dismiss,
+        )
+    except RunInterrupted:
+        raise
+    except Exception as exc:
+        report.balance_note = f'coins page not proven before the first task: {type(exc).__name__}: {exc}'
+        log.warning('%s', _event('balance_before_unavailable', detail=report.balance_note))
+        return
+    if not result.returned or result.snapshot is None or not _on_coin_page(result.snapshot):
+        report.balance_note = 'coins page not proven before the first task; balance before is unknown'
+        log.warning('%s', _event('balance_before_unavailable', detail=report.balance_note))
+        return
+    recorded = _record_frame(report, artifacts, result.snapshot, 'balance-before', log)
+    report.balance_before = read_coin_balance(recorded)
+    if report.balance_before is None:
+        report.balance_note = 'the coins page did not render a readable balance before the first task'
+
+
 def _finish_on_coins_page(
     context: RunContext,
     controller: Controller,
     report: RunReport,
     artifacts: ArtifactStore,
     log: logging.Logger,
+    *,
+    on_dismiss: Callable[[DismissReport], None] | None = None,
 ) -> None:
     try:
         frame = _capture(context.capture)
@@ -804,6 +887,7 @@ def _finish_on_coins_page(
             clock=context.clock,
             sleep=context.sleep,
             logger=log,
+            on_dismiss=on_dismiss,
         )
         report.returned_to_coins_page = result.returned
         report.return_error = result.error
@@ -943,6 +1027,7 @@ def _prune(context: RunContext, report: RunReport, log: logging.Logger) -> None:
             report.runs_dir,
             keep=context.config.keep_runs,
             current_run_id=report.run_id,
+            logger=log,
         )
     except Exception as exc:
         log.warning('%s', _event('run_prune_failed', detail=f'{type(exc).__name__}: {exc}'))

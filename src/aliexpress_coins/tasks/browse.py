@@ -687,6 +687,7 @@ def return_to_coins_page(
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     logger: logging.Logger | None = None,
+    on_dismiss: Callable[[DismissReport], None] | None = None,
 ) -> ReturnResult:
     """Re-enter the coins page through the shortcut route and prove it arrived.
 
@@ -759,6 +760,8 @@ def return_to_coins_page(
                         sleep=sleep,
                         logger=log,
                     )
+                    if on_dismiss is not None:
+                        on_dismiss(report)
                 except PopupUnclosable:
                     if contains_text(frame, REDEEM_MARKER):
                         return ReturnResult(

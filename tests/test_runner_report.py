@@ -271,6 +271,26 @@ def test_retention_does_not_touch_files_or_links(tmp_path: Path) -> None:
     assert (tmp_path / 'not-a-run.txt').is_file()
 
 
+def test_retention_leaves_operator_directories_alone_and_logs_them(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    (tmp_path / '20260101T000000Z').mkdir()
+    (tmp_path / '20260102T000000Z').mkdir()
+    (tmp_path / 'manual').mkdir()
+    (tmp_path / 'stray.txt').write_text('keep me', encoding='utf-8')
+
+    with caplog.at_level(logging.INFO, logger='aliexpress_coins.runner.report'):
+        pruned = prune_runs(tmp_path, keep=1, current_run_id='20260102T000000Z')
+
+    assert pruned == (tmp_path / '20260101T000000Z',)
+    assert (tmp_path / 'manual').is_dir()
+    assert (tmp_path / 'stray.txt').is_file()
+    assert 'runs_not_pruned' in caplog.text
+    assert 'manual' in caplog.text
+    assert 'stray.txt' in caplog.text
+
+
 def test_retention_requires_a_positive_keep(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match='keep must be positive'):
         prune_runs(tmp_path, keep=0, current_run_id='run')
