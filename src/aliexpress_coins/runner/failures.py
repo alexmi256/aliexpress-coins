@@ -24,7 +24,7 @@ navigation_failed     route       none        the route's own warm re-entry; fal
 popup_unclosable      control     none        abort the run immediately (never tap a guess)
 task_unverified       task        task x1     retry only when no action was taken; else report
 unexpected_screen     safety      none        fail a task on the third sighting; abort only if recovery fails
-dangerous_control     safety      none        abort on buy/order/cart/redeem while a task is running
+dangerous_control     safety      none        abort on a short buy/checkout/cart/redeem caption while a task is running
 balance_decreased     safety      none        abort: something spent coins without policy approval
 budget_exhausted      run         none        stop the walk cleanly and report it
 internal_error        run         none        abort the run and report the class
@@ -235,7 +235,8 @@ FAILURE_TABLE: dict[FailureCode, FailureSpec] = {
         RetryScope.NONE,
         0,
         True,
-        'A buy, order, cart or redeem control appeared while a task was running; the run stopped before it could be tapped.',
+        'A short buy/checkout/cart/redeem action caption appeared while a task was running; '
+        'the run stopped before it could be tapped.',
     ),
     FailureCode.BALANCE_DECREASED: FailureSpec(
         FailureCode.BALANCE_DECREASED,

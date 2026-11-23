@@ -17,6 +17,7 @@ from PIL import Image
 from aliexpress_coins.perception.geometry import DeviceGeometry
 from aliexpress_coins.perception.ocr import RapidOcrEngine
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
+from aliexpress_coins.perception.state import ScreenState, classify
 from aliexpress_coins.runner.failures import FailureCode
 from aliexpress_coins.runner.safety import (
     AbortCode,
@@ -69,6 +70,32 @@ def _danger(label: str = 'Buy now') -> Snapshot:
     return _snapshot(
         _box('Wireless Earbuds', 60, 300, 600, 350),
         _box(label, 400, 1800, 700, 1860),
+    )
+
+
+def _quiz_with_offer_copy() -> Snapshot:
+    """The 2026-11-23 quiz frame that tripped the guard (issue #92).
+
+    The labels are the recorded ``abort.screen.labels`` from run
+    ``20261123T182244Z``; their boxes follow the measured geometry of the
+    reviewed four-option quiz fixture. The offer sentence spans a full answer
+    line, which is exactly what the old substring match mistook for a control.
+    """
+    return _snapshot(
+        _box('1:23', 19, 5, 71, 34),
+        _box('Coins quiz', 55, 329, 433, 424),
+        _box('Answer quiz questions for', 60, 436, 608, 487),
+        _box('more coins!', 60, 490, 309, 533),
+        _box('Q : Which statements about coins credits', 70, 783, 1130, 846),
+        _box('are correct?', 441, 855, 757, 910),
+        _box('Coins credits are an extra benefit', 193, 979, 1006, 1048),
+        _box('during the Black Friday event', 170, 1041, 1031, 1103),
+        _box('Can be applied directly at Checkout', 197, 1165, 1004, 1218),
+        _box('with no minimum spend', 202, 1219, 997, 1283),
+        _box('Can be combined with other', 236, 1344, 964, 1398),
+        _box('discounts and coins', 419, 1403, 780, 1462),
+        _box('All of the above', 420, 1552, 779, 1605),
+        _box('23', 370, 1935, 414, 1980),
     )
 
 
@@ -310,6 +337,36 @@ def test_the_recovery_window_suspends_the_unexpected_streak() -> None:
     assert raised.value.code is AbortCode.UNEXPECTED_SCREEN
 
 
+def test_the_quiz_offer_copy_is_not_a_dangerous_control() -> None:
+    guard = _guard()
+    frame = _quiz_with_offer_copy()
+
+    assert classify(frame).state is ScreenState.PAGE
+    with guard.task('Take the coins quiz'):
+        guard.inspect(frame)
+        guard.inspect(frame)
+        guard.inspect(frame)
+
+    assert guard.streak == 0
+    assert find_dangerous_controls(frame) == ()
+
+
+@pytest.mark.parametrize(
+    'copy',
+    [
+        'Can be applied directly at Checkout',
+        'Coins credits can only be used on orders over C$10',
+        'Redeemed coins credits have an expiration date',
+        'Each order grants you rewards',
+        'Checkout with no minimum spend',
+    ],
+)
+def test_promotional_copy_mentioning_checkout_is_not_a_control(copy: str) -> None:
+    frame = _snapshot(_box(copy, 100, 1000, 1100, 1060))
+
+    assert find_dangerous_controls(frame) == ()
+
+
 def test_a_dangerous_control_is_only_fatal_while_a_task_is_running() -> None:
     guard = _guard()
     frame = _danger()
@@ -335,6 +392,34 @@ def test_each_spending_control_aborts_during_a_task(label: str) -> None:
     assert label in raised.value.reason
 
 
+@pytest.mark.parametrize(
+    'label',
+    ['Buy now C$12.99', 'Place order · C$12.99', 'Add to cart (2)', 'Checkout US $0.01'],
+)
+def test_a_control_with_a_price_or_count_suffix_still_aborts(label: str) -> None:
+    guard = _guard()
+
+    with pytest.raises(RunAborted) as raised, guard.task('browse'):
+        guard.inspect(_danger(label))
+
+    assert raised.value.code is AbortCode.DANGEROUS_CONTROL
+    assert label in raised.value.reason
+
+
+def test_a_two_line_spending_caption_still_aborts() -> None:
+    guard = _guard()
+    page = _snapshot(
+        _box('Wireless Earbuds', 60, 300, 600, 350),
+        _box('Place', 400, 1760, 700, 1810),
+        _box('Order', 420, 1810, 680, 1860),
+    )
+
+    with pytest.raises(RunAborted) as raised, guard.task('browse'):
+        guard.inspect(page)
+
+    assert raised.value.code is AbortCode.DANGEROUS_CONTROL
+
+
 def test_the_coin_pages_own_redeem_entry_is_not_a_live_control_during_a_task() -> None:
     guard = _guard()
     page = _snapshot(
@@ -348,17 +433,40 @@ def test_the_coin_pages_own_redeem_entry_is_not_a_live_control_during_a_task() -
     with guard.task('Daily coins'):
         guard.inspect(page)
 
+    assert find_dangerous_controls(page) == ()
+    assert [box.text for box in find_dangerous_controls(_snapshot(_box('Redeem', 940, 340, 1100, 380)))] == ['Redeem']
+
+
+def test_a_lone_redeem_row_on_the_coin_page_is_still_exempt() -> None:
+    guard = _guard()
+    page = _snapshot(
+        _box('Coins', 100, 220, 300, 280),
+        _box('52', 100, 400, 260, 460),
+        _box('Coins credits to redeem >', 100, 330, 700, 380),
+        _box('Redeem', 940, 700, 1100, 760),
+        _box('Daily coins', 100, 900, 500, 950),
+    )
+
+    with guard.task('Daily coins'):
+        guard.inspect(page)
+
+    assert find_dangerous_controls(page) == ()
+
 
 def test_a_refused_task_row_on_the_list_is_not_a_live_purchase_control() -> None:
     guard = _guard()
     boost_list = _snapshot(
         _box('Coins boost', 100, 100, 500, 150),
-        _box('Place an order on this page', 100, 260, 900, 300),
+        _box('Buy now', 100, 260, 900, 300),
         _box('GO', 980, 280, 1040, 320),
-        _box('Add 5 items to your cart', 100, 460, 900, 500),
+        _box('Place an order on this page', 100, 460, 900, 500),
         _box('GO', 980, 480, 1040, 520),
+        _box('Add 5 items to your cart', 100, 660, 900, 700),
+        _box('GO', 980, 680, 1040, 720),
     )
 
+    # The short title would be live without the catalogue; the denied row is exempt.
+    assert [box.text for box in find_dangerous_controls(boost_list)] == ['Buy now']
     with guard.task('Take the coins quiz'):
         guard.inspect(boost_list)
 
@@ -422,6 +530,21 @@ def test_the_known_surprise_product_detail_does_not_abort_for_its_two_buttons() 
         guard.inspect(detail)
 
     assert guard.task_running is False
+
+
+def test_the_product_detail_suffixed_purchase_captions_are_exempt() -> None:
+    guard = _guard()
+    detail = _snapshot(
+        _box('Item 1/3', 500, 120, 700, 170),
+        _box('Wireless Earbuds', 60, 300, 600, 350),
+        _box('Add to cart C$12.99', 60, 1800, 400, 1860),
+        _box('Buy now C$12.99', 500, 1800, 900, 1860),
+    )
+
+    with guard.task('Browse surprise items'):
+        guard.inspect(detail)
+
+    assert find_dangerous_controls(detail) == ()
 
 
 def test_a_real_spending_control_on_a_product_detail_still_aborts() -> None:
@@ -509,6 +632,52 @@ def test_low_confidence_ocr_is_not_a_dangerous_control() -> None:
     assert find_dangerous_controls(_snapshot(_box('Wireless Earbuds', 60, 300, 600, 350), low)) == ()
 
 
+def test_empty_or_zero_height_text_is_not_a_control() -> None:
+    zero_height = TextBox(
+        text='Buy now',
+        box=((400, 500), (700, 500), (700, 500), (400, 500)),
+        score=0.99,
+    )
+
+    frame = _snapshot(_box('Wireless Earbuds', 60, 300, 600, 350), _box('', 60, 400, 600, 450), zero_height)
+
+    assert find_dangerous_controls(frame) == ()
+
+
+def test_a_display_headline_is_not_a_caption_sized_control() -> None:
+    frame = _snapshot(
+        _box('Item one', 60, 300, 600, 350),
+        _box('Item two', 60, 360, 600, 410),
+        _box('Item three', 60, 420, 600, 470),
+        _box('Item four', 60, 480, 600, 530),
+        _box('Buy now', 100, 900, 1100, 1400),
+    )
+
+    assert find_dangerous_controls(frame) == ()
+
+
+def test_a_prominent_caption_on_small_body_text_is_still_a_control() -> None:
+    frame = _snapshot(
+        _box('Item one', 60, 300, 600, 320),
+        _box('Item two', 60, 360, 600, 380),
+        _box('Item three', 60, 420, 600, 440),
+        _box('Item four', 60, 480, 600, 500),
+        _box('Buy now', 100, 1000, 1100, 1100),
+    )
+
+    assert [box.text for box in find_dangerous_controls(frame)] == ['Buy now']
+
+
+def test_the_product_detail_split_add_to_cart_caption_is_exempt() -> None:
+    detail = _snapshot(
+        _box('Item 1/3', 500, 120, 700, 170),
+        _box('Add to', 60, 1800, 300, 1850),
+        _box('Cart', 60, 1850, 300, 1900),
+    )
+
+    assert find_dangerous_controls(detail) == ()
+
+
 def test_the_guard_rejects_a_non_positive_limit() -> None:
     with pytest.raises(ValueError, match='limit must be positive'):
         SafetyGuard(limit=0)
@@ -532,10 +701,11 @@ def test_the_abort_record_is_report_safe() -> None:
     assert failure['code'] == 'unexpected_screen'
 
 
-def test_find_dangerous_controls_ignores_the_two_redeem_destination_labels() -> None:
+def test_redeem_destination_copy_is_not_a_control_but_a_bare_redeem_is() -> None:
     frame = _snapshot(
         _box('Coins credits to redeem', 100, 330, 700, 380),
         _box('YOU CAN NOW REDEEM!', 100, 700, 1100, 780),
     )
 
     assert find_dangerous_controls(frame) == ()
+    assert [box.text for box in find_dangerous_controls(_snapshot(_box('Redeem', 940, 340, 1100, 380)))] == ['Redeem']
