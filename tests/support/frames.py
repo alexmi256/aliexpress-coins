@@ -106,7 +106,7 @@ class ScriptedSnapshotter:
         """Replay every matching frame, sorted by name.
 
         ``repeat=2`` plays each frame twice for a stability wait. When the
-        directory has a ``manifest.json`` from ``tools/capture_frames.py``, its
+        directory has a ``manifest.json`` from ``aliexpress_coins.tools.capture_frames``, its
         density and SDK win over the defaults, so a replay is keyed by the
         geometry the frames were captured at rather than this machine's guess.
         """
