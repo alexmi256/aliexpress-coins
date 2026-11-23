@@ -78,7 +78,7 @@ thumbnails. A page swap measured 0.19–0.40; a stale-coordinate tap on the feed
 Threshold ≈ 0.02 separates them cleanly, and it makes "did anything happen?" a logged number rather
 than an assumption.
 
-Screen markers and the full graph: `docs/06-navigation-map.md`.
+Screen markers and the full graph: `docs/07-navigation-map.md`.
 """,
     21: """**Full task list observed 2026-11-20**, which lets the deny rules be written against reality rather
 than the brief. Eleven rows on the `Coins boost` page:
@@ -107,7 +107,7 @@ Two implications for the policy:
    "Each order grants you rewards" and "Water your tree in Prize Land" are clearer deny signals than
    the short titles.
 """,
-    16: """**Markers measured for the classifier (2026-11-20).** `docs/06-navigation-map.md` §3 has the full
+    16: """**Markers measured for the classifier (2026-11-20).** `docs/07-navigation-map.md` §3 has the full
 table; the ones this issue needs:
 
 | screen | assert on | trap |

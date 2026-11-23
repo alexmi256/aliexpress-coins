@@ -6,7 +6,7 @@ thin: taps still go through :class:`~aliexpress_coins.control.controller.Control
 captures still go through ``AdbSnapshotter``, and tests inject a runner seam so
 nothing here spawns a process.
 
-The order is measured, not cosmetic (docs/06 §1): the shortcut intent is a
+The order is measured, not cosmetic (docs/07 §1): the shortcut intent is a
 *navigation* command, not a launch command. Firing it at a cold app produces the
 empty boost page, so ``prepare`` starts ``FirstActivity`` first, lets the caller's
 clock settle, and only then does :meth:`AdbDevice.navigate` fire the route.

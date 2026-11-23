@@ -126,7 +126,9 @@ after the modal there is usually a second, in-page promo ("Bundle deals" with it
 ### UI route — ✅ works
 
 `Account` tab → `Coins` card (`Collect` / `Get more coins`). Two taps from the cold-start
-home feed, plus popup handling on both sides. This is the default route (`flows/coins.py`).
+home feed, plus popup handling on both sides. This is the **fallback** route, not the plan: the
+promo card rotates between a coins card and a coupon card, and the implemented runner uses only the
+shortcut deep link below. The older `flows/coins.py` path named in earlier drafts was never built.
 
 ### Deep link — ❌ does not reach the native page
 
@@ -176,8 +178,9 @@ manifest          -> com.android.launcher.permission.INSTALL_SHORTCUT (granted)
 ```
 
 So the widget is real, is 2×2, and renders the sign-in state (`signed` / `unsign`) itself.
-Two paths remain open, both tracked as issues: reverse the widget/shortcut intent (what
-`AdcActivity` URL it fires) and/or let the app install the widget and read the widget state.
+Both intents were captured in session 2 (§7): the shortcut replay is the implemented route, while
+the widget route is still not implemented (#27). The widget visit remains useful evidence because
+it is the only entry that produced a `Collect` button and the task rows in that session.
 
 The launcher database is readable via adb after `adb root` (the default shell is `uid=2000`),
 which makes "is the widget installed" a cheap assertion:
@@ -214,7 +217,7 @@ check-in and the quiz end to end, and disproved one assumption in the original b
 | Account-page route | unreliable — the promo card rotates between a coins card and a **coupon** card ⚠️ |
 | daily check-in | `Collect` in the streak row; balance +2 coins; no dialog ✅ |
 | quiz | one True/False question; result page prints **`Correct answer: X`**; `+6` on a correct answer ✅ |
-| "Earn more" | opens a **`Coins boost`** page, empty every time — it is *not* the full task list ❌ |
+| "Earn more" | opens the **`Coins boost`** page, which is the fuller task list; the empty state observed in this session was a cold-cache load fault, corrected in §7/05 §4b ✅ |
 | task rows | **conditional**: absent on some page loads, present after a widget visit ⚠️ |
 | post-task interstitial | `YOU CAN NOW REDEEM!` — no OCR-visible close; BACK exits it (a second BACK exits the app) ⚠️ |
 
@@ -235,6 +238,13 @@ balance or account data. These are the numbers the layout tolerance is derived f
 | largest within-row box-centre gap | 86.5 px |
 | smallest gap between adjacent task rows | ~190 px |
 | inline coins title → `GO` offset | ~31 px (see §3) |
+
+**Profile id (#42).** `doctor` derives a profile id from the captured frame — width × height,
+density, SDK and orientation — rather than from a stored device name. On the reference tablet at
+1200×2000 @ 240 dpi, sdk 35, portrait it is `c9b8f88670e295b5`. Last-resort popup calibration is
+keyed by that id; no calibration for the measured profile reports `popup_unclosable` instead of
+tapping a guessed coordinate. The id is stable for the same geometry and changes when any input to
+it changes.
 
 The within-row spacing is less than half the gap to the next task, so a row tolerance derived
 from the median box height keeps a row together without merging its neighbour. A cluster that

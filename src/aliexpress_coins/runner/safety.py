@@ -12,7 +12,7 @@ whole run:
 * ``dangerous_control`` — a buy / order / cart / redeem control is visible while
   a task is running. The one exception is the measured surprise-item product
   detail page, whose unavoidable ``Add to cart`` / ``Buy now`` buttons are
-  documented as never tapped (docs/06 §product detail); the guard still aborts on
+  documented as never tapped (docs/07 §product detail); the guard still aborts on
   any other spending or redeem control there.
 * ``balance_decreased`` — a readable coin-page balance is lower than the baseline
   recorded before the first task. Coins only go up in an authorised run, so a

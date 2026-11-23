@@ -4,9 +4,10 @@ Planning repository for an unattended collector of the AliExpress in-app **coins
 daily sign-in, the easy browse-and-wait tasks, the quiz, the surprise-items task — and a
 refusal of everything that costs money, costs minutes, or leaves a review.
 
-**Status: scaffold, perception, task executors and the nightly runner in place.** This repository
-holds the brief, the device recon that constrains the design, the issue plan the build is broken
-into, the toolchain every issue is built on, and the `run --once` / `run --schedule` engine.
+**Status: scaffold, perception, task executors, the nightly runner and the operator runbook in
+place.** This repository holds the brief, the device recon that constrains the design, the issue
+plan the build is broken into, the toolchain every issue is built on, the `run --once` /
+`run --schedule` engine, and the runbook an operator follows from a clean clone.
 
 ## Quick start
 
@@ -142,8 +143,8 @@ Recorded frames live under `tests/data/` and are gitignored by set; the regenera
 `just check` remains the gate and runs every test with the coverage ratchet. `just check-fast` is
 the diagnostic loop: it excludes tests marked `slow` (full-frame OCR, template scans and the long
 engine retry walks) and does not enforce coverage. Measured on 2026-11-22: the full suite is
-**1580 passed in 184 s** (203 tests marked slow, coverage 99.40%); `just check-fast` is
-**1377 passed in 43 s** (44 s with lint, format and type checks). The fast lane is dominated by
+**1584 passed in 186 s** (203 tests marked slow, coverage 99.40%); `just check-fast` is
+**1381 passed in 44 s** (45 s with lint, format and type checks). The fast lane is dominated by
 the remaining sub-200 ms frame and parser tests plus collection, not by any single fixture.
 
 ## What was learned before writing any requirements
@@ -171,8 +172,9 @@ Full evidence, with the commands that produced it:
 | [`docs/03-conventions.md`](docs/03-conventions.md) | engineering conventions the build must follow |
 | [`docs/04-delivery-plan.md`](docs/04-delivery-plan.md) | milestones, issue map, dependency order |
 | [`docs/05-app-knowledge.md`](docs/05-app-knowledge.md) | how the app actually works: entry points, pages, tasks, rewards |
-| [`docs/06-navigation-map.md`](docs/06-navigation-map.md) | the screen graph: entry points, markers per screen, stuck states and recovery |
-| [`docs/adr/`](docs/adr/) | decisions with their trade-offs (UI-first, OCR-first) |
+| [`docs/06-runbook.md`](docs/06-runbook.md) | the operator's quickstart, reports, failure codes and daily-reset caveat |
+| [`docs/07-navigation-map.md`](docs/07-navigation-map.md) | the screen graph: entry points, markers per screen, stuck states and recovery |
+| [`docs/adr/README.md`](docs/adr/README.md) | the ADR index: every decision with a one-line summary |
 
 ## How the work is organised
 

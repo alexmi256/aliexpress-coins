@@ -1,0 +1,604 @@
+# 06 — Runbook
+
+The operator's document: how to prove the collector can run, how to run one night, where the report
+lands, how to read it, and what to check when a night fails. It is written to be followed from a
+clean clone, not from a prepared working tree.
+
+Companion documents: [`04-delivery-plan.md`](04-delivery-plan.md) for the build order,
+[`05-app-knowledge.md`](05-app-knowledge.md) for the app's behaviour,
+[`07-navigation-map.md`](07-navigation-map.md) for the screen graph, and
+[`adr/`](adr/README.md) for the decisions behind the architecture.
+
+Legend: ✅ executed for this revision · ❓ still unknown · ⚠️ operator action required.
+
+---
+
+## 1. Before the first run
+
+### 1.1 On the machine
+
+| need | why |
+|---|---|
+| `git` | to clone the repository |
+| [`just`](https://github.com/casey/just) | the one command entry point (`just setup`, `just check`) |
+| Python **3.14** plus `venv` and `pip` | the local path; `just setup` creates `.venv` with plain `python3 -m venv` |
+| `adb` on `PATH` | the local path talks to the tablet directly |
+| Docker + Docker Compose | the unattended path; the image already carries `adb`, Python and the OCR runtime |
+
+Do not use uv, poetry, hatch or pdm. The recipes assume none of them, and the image is built from
+the pinned `requirements.txt`.
+
+Keep the checkout path free of `{` and `}`: setuptools reads braces as format fields during an
+editable install. The worktree supervisor creates brace-free paths.
+
+### 1.2 On the tablet
+
+The reference device is a T3_US tablet running Android 15 and AliExpress `8.180.1`, reached over
+wireless adb at `192.168.8.65:5555`. The address is **configuration, not a constant**: both the IP
+and the wireless-debugging port move when the tablet reconnects. Verify it every time:
+
+```console
+$ adb devices
+List of devices attached
+192.168.8.65:5555	device
+```
+
+If the serial is absent, enable wireless debugging on the tablet and connect once. A container runs
+its own adb server, so it does not inherit the host's connection; `doctor` connects a `host:port`
+serial itself.
+
+The run also needs:
+
+- the AliExpress app installed and **signed in**;
+- the tablet **unlocked**, with no PIN or biometric lock (Q2 in
+  [`00-brief.md`](00-brief.md) §9 — the collector cannot enter one);
+- the charger attached, because a night may take tens of minutes;
+- the app allowed to stay foregrounded long enough to finish; a human using the tablet can interrupt
+  any run.
+
+### 1.3 The timezone fact ⚠️
+
+`AECOINS_TIMEZONE` **must be the device's own timezone**, not the host's, not UTC by habit. Read it
+from the tablet:
+
+```console
+$ adb -s 192.168.8.65:5555 shell getprop persist.sys.timezone
+America/Toronto
+```
+
+Set the same value in the environment (local run) or in `.env` (Compose):
+
+```sh
+export AECOINS_TIMEZONE=America/Toronto
+```
+
+Why it matters: the nightly start (`AECOINS_SCHEDULE_TIME`, default `03:30`) and the daily state
+store's day boundary both follow `AECOINS_TIMEZONE`. If the collector's timezone is ahead of the
+tablet's, it fires **before the device's day has rolled**. Today's coins are already claimed, the
+fresh-day path is never exercised, and the run reports success while earning nothing. The `.env`
+example ships `AECOINS_TIMEZONE=UTC`; on this tablet that is the wrong value.
+
+The **daily reset hour is still unmeasured** ❓ ([`05-app-knowledge.md`](05-app-knowledge.md) §8).
+The operator recalls rewards resetting around 03:00 local, but that is not confirmed for coins. The
+schedule is 03:30 plus up to three minutes of jitter, which is *probably* after the roll — not
+proven. See §9 for what to check when a night claims nothing.
+
+---
+
+## 2. Quickstart from a clean clone
+
+These are the commands that were executed for this revision, in a fresh clone with no `runs/`,
+`state/` or `.venv/` copied in ✅.
+
+```console
+$ git clone git@github.com:alexmi256/aliexpress-coins.git
+Cloning into 'aliexpress-coins'...
+remote: Enumerating objects: ...
+$ cd aliexpress-coins
+$ just setup
+...
+Successfully installed aliexpress-coins-0.1.0
+$ just check
+...
+Required test coverage of 99.39% reached. Total coverage: 99.40%
+======================= 1584 passed in 185.94s (0:03:05) =======================
+All quality gates passed.
+```
+
+`just check` is the gate: ruff lint, ruff format check, mypy strict over `src/` and `tests/`, then
+pytest with the coverage ratchet. A green test run without the lint, format and type checks is not
+a green gate. Measured on 2026-11-22: **1584 passed**, coverage **99.40%** against a **99.39%**
+floor.
+
+The clean clone has no device configuration yet. For a local run, export the two values that name
+the device and its timezone:
+
+```sh
+export AECOINS_DEVICE=192.168.8.65:5555
+export AECOINS_TIMEZONE=America/Toronto
+```
+
+For the Compose path, create `.env` from the example and edit the same two values:
+
+```console
+$ cp .env.example .env
+```
+
+Then set these lines in `.env` (the checked-in example ships `UTC`, which is the wrong zone for the
+reference tablet):
+
+```dotenv
+AECOINS_DEVICE=192.168.8.65:5555
+AECOINS_TIMEZONE=America/Toronto
+```
+
+`.env` is gitignored because it names a device on your network. Compose reads it automatically;
+the local Python process does **not**, which is why the local path exports the variables instead.
+
+---
+
+## 3. `doctor` — prove the machine, device and OCR
+
+Local path:
+
+```console
+$ AECOINS_DEVICE=192.168.8.65:5555 AECOINS_TIMEZONE=America/Toronto \
+    .venv/bin/python -m aliexpress_coins doctor
+[ok] adb: Android Debug Bridge version 1.0.41 (/usr/bin/adb)
+[ok] device: 192.168.8.65:5555 (device)
+[ok] geometry: 192.168.8.65:5555: 1200x2000 @ 240 dpi, sdk 35, portrait, profile c9b8f88670e295b5
+[ok] ocr: RapidOCR loaded and read 'COINS' from its probe image
+```
+
+Exit status is `0` when every check is `ok` or `skipped`, and `1` when any check is `fail`.
+`doctor` is deliberately **read-only**: it may connect the network serial and start the container's
+own adb server, but it never taps, launches, installs or changes the app.
+
+What a healthy output means:
+
+- **adb** — the executable exists and runs.
+- **device** — the serial named by `AECOINS_DEVICE` answers `adb get-state`. With
+  `AECOINS_DEVICE` unset this line is `[skipped]`, which is not a failure.
+- **geometry** — the frame the run will actually see, plus the profile id used to key last-resort
+  popup calibration. On the reference tablet this is `1200×2000 @ 240 dpi, sdk 35, portrait,
+  profile c9b8f88670e295b5`. The profile is a hash of those four facts, not a stored model name.
+- **ocr** — RapidOCR loads every bundled model and reads a generated probe image. No network and
+  no device are used.
+
+The container path is the same check inside the image ✅ (built from the same clean clone):
+
+```console
+$ docker compose build
+...
+Successfully tagged aliexpress-coins-collector:local
+$ docker compose run --rm collector python -m aliexpress_coins doctor
+[ok] adb: Android Debug Bridge version 1.0.41 (/usr/bin/adb)
+[ok] device: 192.168.8.65:5555 (device)
+[ok] geometry: 192.168.8.65:5555: 1200x2000 @ 240 dpi, sdk 35, portrait, profile c9b8f88670e295b5
+[ok] ocr: RapidOCR loaded and read 'COINS' from its probe image
+```
+
+If any check fails, stop here. A failure has a troubleshooting row in §10.
+
+---
+
+## 4. `snapshot` — look at the screen without touching it
+
+This build has **no `aliexpress-coins snapshot` subcommand**; the CLI exposes `version`, `doctor`,
+`idle` and `run`. Use the read-only adb capture for an operator snapshot ✅:
+
+```console
+$ adb -s 192.168.8.65:5555 exec-out screencap -p > /tmp/aecoins-screen.png
+$ file /tmp/aecoins-screen.png
+/tmp/aecoins-screen.png: PNG image data, 1200 x 2000, 8-bit/color RGBA, non-interlaced
+```
+
+The PNG is exactly the frame the collector will read. Its size is the geometry `doctor` reports
+(1200×2000 portrait on the reference tablet), not the panel's natural `wm size` (2000×1200).
+
+Screenshots contain the account nickname, cart and order information. Keep them out of git. If one
+has to be shared in an issue or document, mask the account areas first; the repository's
+`.gitignore` excludes `runs/` for this reason.
+
+Fixture capture is a developer tool, not an operator step:
+
+```console
+$ .venv/bin/python -m aliexpress_coins.tools.capture_frames --list
+states: 10 frames
+  coins.png
+  account.png
+  ...
+```
+
+It writes under `tests/data/` only when explicitly asked to capture a set, and never taps the app.
+
+---
+
+## 5. `run --once --dry-run` — plan the night without tapping
+
+A dry run starts the app normally, may fire the shortcut navigation once (an `am start`, not an
+in-app tap), enumerates the visible roster and applies the same deny list as a live run. It sends
+**no in-app taps** (`taps_issued: 0`) and still writes a report.
+
+```console
+$ AECOINS_DEVICE=192.168.8.65:5555 AECOINS_TIMEZONE=America/Toronto \
+    .venv/bin/python -m aliexpress_coins run --once --dry-run
+2026-11-22 20:54:16,491 INFO {"category":"sign_in","decision":"allow","event":"policy_decision","key":"daily_checkin","label":"Daily coins","reason":null,"rule":"daily_checkin","subtitle":"Earn more > Today Day 3 Day 5 Collect Worth C$0.01 Daily check-in","surface":"rows_present"}
+2026-11-22 20:54:16,491 WARNING {"code":"unrecognised","event":"policy_refusal","label":"Search for what you love","matched_field":null,"matched_pattern":null,"reason":"unrecognised","rule":null,"subtitle":"Q","surface":"rows_present"}
+2026-11-22 20:54:16,491 WARNING {"category":null,"detail":"unrecognised: unrecognised","event":"task_skipped","key":null,"reason":"policy","title":"Search for what you love"}
+2026-11-22 20:54:16,492 WARNING {"code":"spending_order","event":"policy_refusal","label":"Place an order on this page","matched_field":"title","matched_pattern":"Place an order on this page","reason":"spending: placing an order or buying anything is refused","rule":"spending_order","subtitle":null,"surface":"rows_present"}
+2026-11-22 20:54:16,492 WARNING {"category":null,"detail":"spending_order: spending: placing an order or buying anything is refused","event":"task_skipped","key":null,"reason":"policy","title":"Place an order on this page"}
+run 20261123T015402Z: planned
+detail: dry run: 1 task(s) planned, 2 refusal(s); no tap was issued
+plan: dry run: 1 task(s) planned, 2 refusal(s); no tap was issued
+  1. Daily coins [daily_checkin] category=sign_in rule=daily_checkin
+  refused: Search for what you love code=unrecognised rule=None reason=unrecognised
+  refused: Place an order on this page code=spending_order rule=spending_order reason=spending: placing an order or buying anything is refused
+  taps issued: 0
+summary: runs/20261123T015402Z/summary.md
+run.json: runs/20261123T015402Z/run.json
+```
+
+Read it like this:
+
+- **`surface`** is the screen the planner understood: `rows_present`, `boost_page`, `coin_page`, or
+  `unknown`. A plan built from `unknown` is not evidence about the day.
+- **steps** are the rows that would be dispatched, in order, with the catalogue key and executor
+  category. `Daily coins` is the streak sign-in; it is allowed but not a boost row.
+- **refusals** are the deny-list decisions. `unrecognised` is default-deny: the row is not in
+  `specs/tasks.yaml`, so the collector skips it. `spending_order` is an explicit refusal. A refusal
+  is a safety feature, not a failure.
+- **`taps_issued: 0`** is the proof that the dry run did not touch the app.
+
+A dry run exits `0` when it produced a plan, even an empty one. **An empty plan can be a timing
+bug, not an empty day.** On 2026-11-22 the same command returned `surface: "unknown"` and
+`0 task(s)` on repeats when it captured the hybrid page immediately after navigating, while a
+capture a second later showed a populated coin page. This is tracked as
+[issue #76](https://github.com/alexmi256/aliexpress-coins/issues/76): the command is safe, but
+treat `surface: unknown` plus zero steps as "retry or inspect", never as "the day is done". The
+`Coins boost` empty page has the same shape and is also a load fault
+([`05-app-knowledge.md`](05-app-knowledge.md) §4b).
+
+---
+
+## 6. `run --once` — one real night
+
+Once `doctor` and a dry run agree, run one night:
+
+```console
+$ AECOINS_DEVICE=192.168.8.65:5555 AECOINS_TIMEZONE=America/Toronto \
+    .venv/bin/python -m aliexpress_coins run --once
+```
+
+The command exits when the night ends:
+
+| exit | meaning |
+|---|---|
+| `0` | the run completed, ended on its budget, or produced a dry-run plan |
+| `1` | the run failed or was aborted (the report still exists) |
+| `2` | configuration error before the device was touched |
+
+A real run claims the daily sign-in, walks the allowed rows, and writes the same report shape as a
+dry run plus screenshots and the roster log. It is safe to start manually while the nightly daemon
+exists: a night already marked complete is skipped, and a manual run stopped by its budget leaves
+the nightly window open.
+
+Do **not** run a real `--once` just to test the installation. It may claim coins and it may be
+impossible to undo. Use `--dry-run` unless you are deliberately taking the night.
+
+### Where the run directory lands
+
+Local runs write under the current directory:
+
+```text
+runs/<UTC timestamp>/          # e.g. runs/20261123T015402Z/
+├── summary.md                 # the human report
+├── run.json                   # the machine-readable twin (schema 4)
+├── run.jsonl                  # structured process log, one JSON object per line
+├── roster.jsonl               # every roster observation and its diff
+└── shots/
+    ├── balance-before.png     # the frame the starting balance was read from
+    ├── balance-before.json    # its OCR boxes and geometry sidecar
+    ├── balance-after.png
+    ├── balance-after.json
+    └── failure.png            # best-effort, failed runs only
+```
+
+`AECOINS_RUNS_DIR` overrides the root. In the container it is `/app/runs`, backed by the named
+volume `aliexpress-coins_runs`; `AECOINS_STATE_DIR` is `/app/state`, backed by
+`aliexpress-coins_state`. Read a report from a finished container run without starting another:
+
+```console
+$ docker compose run --rm collector cat /app/runs/20261122T131125Z/summary.md
+# Run 20261122T131125Z
+...
+```
+
+The timestamp is **UTC**, even though the schedule and the daily state use the device's local
+timezone. That is deliberate: run ids sort correctly across DST changes.
+
+---
+
+## 7. `run --schedule` — the nightly daemon
+
+Container (the normal unattended path):
+
+```console
+$ docker compose up -d
+$ docker compose ps
+$ docker compose logs -f collector
+```
+
+Local foreground equivalent:
+
+```sh
+AECOINS_DEVICE=192.168.8.65:5555 AECOINS_TIMEZONE=America/Toronto \
+  .venv/bin/python -m aliexpress_coins run --schedule
+```
+
+The daemon waits for `AECOINS_SCHEDULE_TIME` (default `03:30` local) plus jitter from
+`AECOINS_SCHEDULE_JITTER_SECONDS` (default 180 seconds), runs one night synchronously, then asks
+the trigger for the next fire time. A night already marked complete in the daily state is skipped;
+a night that failed is not silently treated as complete, so the next day's fire tries again.
+A real schedule wait looks like this ✅:
+
+```console
+$ docker compose logs --tail 5 collector
+collector-1  | 2026-11-23 00:54:29,746 INFO {"event":"schedule_wait","next_fire":"2026-11-23T03:32:06.380161-05:00","seconds":27456.634}
+```
+
+`03:32:06-05:00` is 03:30 Toronto plus about two minutes of jitter. `seconds` is the remaining wait,
+not a second delay.
+
+Stopping: `docker compose stop` sends SIGTERM; the image's `tini` forwards it, the run raises
+`RunInterrupted` at its next seam, the report is written atomically, and Compose waits up to
+`stop_grace_period: 5s`. `restart: on-failure:5` retries a failed daemon a bounded number of times
+rather than looping forever on a configuration error. **Do not run two schedulers against the same
+state directory**: the completed-night marker is the only coordination, and two starts at the same
+instant can both see it unset.
+
+---
+
+## 8. Reading `summary.md` and `run.json`
+
+`summary.md` is the morning read. The header is one bullet per fact:
+
+| line | what it tells you |
+|---|---|
+| **Status** | `completed`, `budget`, `stopped`, `planned`, `aborted` or `failed` |
+| **Budget** | seconds used of the wall-clock budget |
+| **Device** | serial, adb state, whether the device was asleep and whether stay-awake was set |
+| **Geometry** | frame size, density, SDK, orientation and calibration profile id |
+| **Surface** | the screen family the roster was read from (`rows_present`, `boost_page`, ...) |
+| **Route** | the route used and the routes tried, including a warm re-entry |
+| **Roster** | row count, allowed count and refused count, with the read status |
+| **Observations** | how many roster diffs were logged in `roster.jsonl` |
+| **Balance** | before and after, with the delta when both frames were readable |
+| **Popups closed** | verified dismissals by family, or `none` |
+| **Back on coins page** | whether the cleanup route proved the coin page |
+| **Detail / Failure / Abort / Run error** | the terminal sentence and the named failure, when present |
+
+### A good night
+
+A good night looks like:
+
+- `Status: completed`;
+- `Roster: available; N row(s), M allowed, K refused` with `N` greater than zero;
+- at least one task row with `completed` and an evidence value that names what proved it (a balance
+  move, a progress badge, a row gone from a complete surface, or a recorded state transition);
+- `Balance: <before> -> <after> (<delta>)` with a non-negative delta, or `unknown` when a frame was
+  unreadable — never a guessed number;
+- `Back on coins page: yes`;
+- no `Failure`, `Abort` or `Run error`;
+- `Notification: delivered via apprise` when notifications are configured (delivery failure is
+  recorded but does not change the run's status).
+
+The task table in `summary.md` has one row per dispatched task:
+
+```text
+| # | task | key | code | outcome | evidence | seconds | detail |
+```
+
+`key` is the catalogue key, `code` is the failure code for a task that did not verify, and
+`evidence` is the executor's own proof. `Skipped` lists rows that were never dispatched and groups
+them by `reason`: `policy` (deny list), `no executor`, `no action`, `daily limit`, `run budget`,
+`stopped` or `not selected`.
+
+### A budget-exhausted night
+
+A budget stop is a **clean end**, not an error:
+
+- `Status: budget`;
+- `Failure: budget_exhausted — The run used its whole time or task budget; the remaining rows wait
+  for tomorrow.`;
+- `Detail` names either `wall-clock budget of ...s exhausted` or `task budget of N dispatch(es)
+  exhausted`;
+- remaining rows appear under `Skipped` with reason `run budget`;
+- the process exits `0`, and the nightly daemon treats the night as finished for scheduling
+  purposes only if the walk reached `completed`. A manual budget stop does **not** mark the day
+  complete, so it does not swallow the nightly window.
+
+If the budget is routinely exhausted, look at the wall-clock budget
+(`AECOINS_RUN_BUDGET_SECONDS`, default 2700 s), the task cap
+(`AECOINS_MAX_TASKS_PER_RUN`, default 12) and the per-task time in the table. Raise a limit only
+deliberately; a larger budget is not a fix for a slow network or a stuck screen.
+
+### `run.json`
+
+`run.json` is the same report plus every field a script may need. Schema `4`. The important keys:
+
+| key | meaning |
+|---|---|
+| `schema` | report schema; `4` is this build |
+| `run_id`, `status`, `detail` | identity and terminal sentence |
+| `started_at`, `finished_at`, `budget` | wall-clock evidence |
+| `hygiene`, `geometry` | what the device said before the first capture |
+| `surface`, `roster`, `route_error`, `observations` | what the roster looked like |
+| `balance_before`, `balance_after`, `balance_delta`, `balance_note` | the two recorded frames, or why one is unknown |
+| `popups_closed`, `shots`, `artifact_errors` | artifacts and best-effort write failures |
+| `notification` | attempted, sink, ok and a class-plus-status error |
+| `plan`, `plan_note` | the dry-run plan, when there was one |
+| `abort` | safety code, reason and the screen that triggered it |
+| `failure` | code, stage, retry scope, retries, `abort_run`, sentence and detail |
+| `error` | the raw exception for a failed run, in addition to the named failure |
+| `tasks[]`, `skipped[]` | the task and skip tables in structured form |
+
+**Balance provenance.** The engine writes the `balance-before` frame, then **reloads the PNG and
+its OCR sidecar from `shots/`** and reads the balance from that copy. It does the same for
+`balance-after`. The summary's delta is therefore recomputed from the shipped frames, not from a
+number that only existed in memory. If a frame cannot be written or read, `artifact_errors` records
+it and the balance is left `unknown` rather than guessed. To audit a night, open the two PNGs and
+their `.json` sidecars; the balance is the bare number in the top quarter of the coin page.
+
+### `run.jsonl` and `roster.jsonl`
+
+`run.jsonl` is the process log. Every line is a JSON object; the useful `event` values are
+`run_started`, `run_hygiene`, `policy_refusal`, `task_skipped`, `task_outcome`, `failure_retry`,
+`roster_observe_failed`, `run_aborted`, `run_failed`, `notification_sent` / `notification_failed`,
+`runs_pruned` and `run_finished`. The level is on every line, so a pipeline can filter
+`level=ERROR` without parsing prose.
+
+`roster.jsonl` is the observed task list over time: each observation, what appeared, what
+disappeared and the route used. It is the record that answers "was the row ever offered?" without
+replaying the phone.
+
+---
+
+## 9. When a night claims nothing
+
+The daily reset hour is **❓ unmeasured**. The operator recalls rewards resetting around 03:00 EST,
+but that is not confirmed for coins ([`05-app-knowledge.md`](05-app-knowledge.md) §8). The task day
+is decided server-side; changing the tablet's timezone did not clear completed task rows in the
+2026-11-22 session. Treat a run before the roll as a successful, empty night: it can report
+`completed` with a zero delta.
+
+The schedule is **03:30 plus up to 180 s of jitter**. That is probably after a ~03:00 roll, but
+"probably" is not a measurement. Do not move the schedule earlier to "catch" the reset without
+first running the two-dry-run measurement in #63 (around 02:50 and 03:10 local, with no claims) and
+reading the nightly `roster.jsonl`.
+
+If a night claims nothing, check in this order:
+
+1. **Status.** `budget` means the walk ran out of time or tasks; `completed` with zero completed
+   tasks means the roster was read but nothing was dispatchable; `aborted` or `failed` means read
+   the code in §10 first.
+2. **Balance delta.** If it is `unknown`, the balance frames were not readable; inspect
+   `balance_note` and `artifact_errors`. If it is `0`, the app was already claimed or no allowed
+   row was available. If it is negative, the run should have aborted with `balance_decreased`.
+3. **Roster.** `Roster: nothing available` or a `Surface: unknown` with zero rows is a load/route
+   problem, not an empty day. Re-read §4b of `05-app-knowledge.md` and try a warm start: start the
+   app normally, wait for the home feed, then send the shortcut intent.
+4. **Skipped reasons.** `policy` rows are refusals and are expected; `no executor` means the row is
+   in the catalogue but this build has no executor for its category; `daily limit` means the state
+   file already counts the task today; `run budget` means the cap stopped the walk.
+5. **Timezone.** Confirm `AECOINS_TIMEZONE` equals
+   `adb shell getprop persist.sys.timezone`. A mismatch is the classic "successful, empty night".
+6. **The device's day.** Open the app and look at the task rows. If they carry the drawn check or
+   are absent because the server has already credited them, the day is claimed. Wait for the next
+   reset; do not re-press a claimed card.
+7. **State.** Read `state/daily-<YYYY-MM-DD>.json`. A file that fails validation is moved aside as
+   `.corrupt-<timestamp>` and the day starts empty with a warning; that is deliberate, but it means
+   a resumed run may repeat a task.
+
+A night that finds the signed-out screen stops at the first detection with `app_logged_out`; it
+does not report every remaining task as separately failed.
+
+---
+
+## 10. Troubleshooting by failure code
+
+Every class in `src/aliexpress_coins/runner/failures.py` has one row below. The **Retry** column is
+the taxonomy's own value (`stage ×1`, `task ×1` or `none`); `tests/test_docs.py` fails `just check`
+if a code is missing or the retry column disagrees with the table. A **stage** retry repeats a read
+or navigation; a **task** retry repeats a row dispatch only when the executor recorded no tap, key,
+swipe or page press. A result that may already have acted is reported, never repeated.
+
+| code | what it means | what the operator should check | Retry |
+|---|---|---|---|
+| `device_offline` | The serial stopped answering adb, even after one re-read. | `adb devices`; `adb connect <host:port>`; same LAN; the wireless port may have moved. In Docker the container has its own adb server: `docker compose exec collector adb devices`. | stage ×1 |
+| `device_sleeping` | The screen stayed dark after `KEYCODE_WAKEUP`. | Charger and battery; wake the tablet by hand; `adb shell dumpsys power` for `mWakefulness`; check `settings get global stay_on_while_plugged_in`. | stage ×1 |
+| `device_locked` | The keyguard still showed after wake and swipe. A PIN or biometric lock cannot be driven. | Unlock the tablet; remove the lock or leave it unlocked (Q2); `adb shell dumpsys window` and look for a keyguard. | none |
+| `app_not_installed` | `pm path com.alibaba.aliexpresshd` returned no package. | `adb shell pm path com.alibaba.aliexpresshd`; install or update AliExpress; confirm the right Android user/profile. | none |
+| `app_launch_failed` | The package exists but `FirstActivity` did not start. | `adb shell am start -n com.alibaba.aliexpresshd/com.aliexpress.app.FirstActivity`; `adb shell am force-stop com.alibaba.aliexpresshd` then retry; check for an app update or a disabled activity. | stage ×1 |
+| `unsupported_geometry` | The captured frame has no measured profile or calibration. | `doctor`; `adb shell wm size`, `wm density`, `getprop ro.build.version.sdk`; compare [`02-architecture.md`](02-architecture.md) and #42; add calibration rather than forcing a different size. | none |
+| `frame_undecodable` | A screencap arrived but could not be decoded. | `adb -s <serial> exec-out screencap -p > /tmp/frame.png`; `file /tmp/frame.png`; check free disk, the USB/network path and the screen. A truncated frame is not retried because the device did answer. | none |
+| `app_logged_out` | The app shows a sign-in prompt instead of the account surface. | Sign in on the tablet; confirm the Account tab loads; `adb shell dumpsys window` for the focused app; run again. The run stops at the first detection. | none |
+| `navigation_failed` | The route did not reach the screen it promised; the run records a fallback and may continue from the inline surface. | Read `Route fallback` and `route_error`; start the app normally, settle ~10 s, then send the shortcut intent; check for the empty `Coins boost` page and an app update that changed labels. | none |
+| `popup_unclosable` | A popup had no safe dismissal: no known label, no template match and no calibration for this profile. | Open the failure frame in `shots/`; note the app version and the `doctor` profile id; update the popup corpus (#11) or the profile calibration (#42). Never tap a guessed coordinate. | none |
+| `task_unverified` | The task did not prove completion on screen. | Read the task row's `code`, `outcome`, `evidence` and `detail`; inspect `run.jsonl`; check whether `acted` is true. A task that acted is not retried, so verify by hand before the next night. | task ×1 |
+| `unexpected_screen` | The same unrecognised or dead screen was seen three times in a row. | Read `abort.screen` labels and fingerprint, and the `failure` frame; check for an app update, a new popup or a hybrid page that did not render; capture a fixture for #11. | none |
+| `dangerous_control` | A buy, order, cart or redeem control appeared while a task was running; the run aborted before tapping it. | Read `abort.screen`; do not tap it; confirm no purchase or redemption happened; check whether the app changed a row or layout; file an issue with the redacted frame and the label that triggered it. | none |
+| `balance_decreased` | The coin balance is lower than the baseline recorded before the first task. | Compare `shots/balance-before.*` and `shots/balance-after.*`; check account activity and orders; something acted outside the policy or a human used the tablet. Do not rerun until the cause is known. | none |
+| `budget_exhausted` | The wall-clock or task budget ended the walk; the remaining rows wait for tomorrow. | Read `budget.seconds` / `used_seconds`, the number of tasks, and the per-task seconds; check network and OCR speed; raise `AECOINS_RUN_BUDGET_SECONDS` or `AECOINS_MAX_TASKS_PER_RUN` only deliberately. | none |
+| `internal_error` | An unexpected exception escaped; the report was still written. | Read `error` and the last events in `run.jsonl`; reproduce with `--dry-run`; file an issue with the run id, the traceback and the report. Do not edit the run directory to hide it. | none |
+
+### Run-level statuses that are not failures
+
+| status | meaning | operator action |
+|---|---|---|
+| `planned` | a dry run wrote its plan | read §5; `unknown` plus zero steps is #76, not a claim about the day |
+| `completed` | the walk ended normally | read §8; verify the delta and the task evidence |
+| `budget` | the budget stopped the walk cleanly | read §8; the remaining rows are in `Skipped` |
+| `stopped` | SIGTERM/SIGINT ended the run between tasks | the report is valid; restart the daemon if it was not an operator stop |
+
+---
+
+## 11. Notifications
+
+Notifications are optional and go through an Apprise API server. Set `AECOINS_APPRISE_URL` (and
+optionally `AECOINS_APPRISE_KEY` and `AECOINS_APPRISE_TAG`) in `.env` or the environment. With
+Apprise configured, every run sends one message; without it, only a failed run or a run that
+claimed nothing (when `AECOINS_NOTIFY_ON_EMPTY=true`) is sent through the legacy webhook/ntfy
+transports.
+
+The message contains the run status, the failure code and sentence when there is one, counts by
+task outcome, the skip counts and the report path. It never contains the account name, an absolute
+balance or order details. `AECOINS_NOTIFY_BALANCE_DELTA=true` adds the balance *delta* only.
+Delivery failure is logged with the exception class and an HTTP status, recorded in `run.json`
+under `notification`, and **never changes the run's exit status**.
+
+Configure one transport. If `AECOINS_APPRISE_URL` is set, Apprise is used; a webhook and an ntfy
+topic are legacy alternatives, and setting all of them sends more than one message.
+
+---
+
+## 12. Retention and cleanup
+
+`AECOINS_KEEP_RUNS` (default 30) keeps the newest run directories **including the current one**.
+Retention only deletes directories whose names match `YYYYMMDDTHHMMSSZ`; files, symlinks and
+operator directories such as `runs/manual` are left alone and logged as `runs_not_pruned`.
+Pruning runs after the report is final and after the device settings are restored, so a slow
+notifier cannot leave rotation pinned.
+
+State files are one per local day: `state/daily-<YYYY-MM-DD>.json`. Keep at least the days you want
+to audit; the store does not prune them itself. Do not hand-edit a state file while a run is using
+it. A corrupt file is quarantined, not silently reused.
+
+---
+
+## 13. What was executed for this revision
+
+Everything below was run on 2026-11-22 from a clean clone of `origin/main` at `10b23d5`; the
+device was `192.168.8.65:5555`, app `8.180.1`, timezone `America/Toronto` ✅.
+
+| command | result |
+|---|---|
+| `git clone git@github.com:alexmi256/aliexpress-coins.git` | fresh clone, no `runs/`, `state/` or `.venv/` |
+| `just setup` | `.venv` created, package installed |
+| `just check` | 1584 passed in 185.94 s, coverage 99.40% |
+| `python -m aliexpress_coins doctor` (local and container) | four `[ok]` lines, exit 0 |
+| `adb ... exec-out screencap -p` | 1200×2000 PNG |
+| `python -m aliexpress_coins.tools.capture_frames --list` | three fixture sets listed |
+| `python -m aliexpress_coins run --once --dry-run` | `planned`, report written, `taps_issued: 0`; one run hit #76 with `surface: unknown` |
+| `docker compose build` | image built and tagged |
+| `docker compose run --rm collector cat /app/runs/<id>/summary.md` | report read from the named volume |
+| `docker compose logs --tail 5 collector` | `schedule_wait` for 03:32:06-05:00 |
+
+Deliberately **not** executed here:
+
+- `run --once` without `--dry-run`: the day may already be claimed, and a real run would tap the
+  shared tablet. The dry-run transcript is the safe proof.
+- `run --schedule` as a new process, and `docker compose up -d`: a nightly daemon was already
+  running; starting a second one against the same state could race it. The schedule output above
+  was read from the running daemon's logs.
+- `docker compose stop` / `down`: stopping the running nightly daemon was forbidden for this task.

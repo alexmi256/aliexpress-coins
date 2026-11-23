@@ -56,7 +56,7 @@ DEFAULT_MAX_TASKS = 12
 """The default number of task dispatches one run may make."""
 
 DEFAULT_APP_SETTLE_SECONDS = 10.0
-"""The measured warm-up after starting the app normally (docs/06 §1)."""
+"""The measured warm-up after starting the app normally (docs/07 §1)."""
 
 DEFAULT_SETTLE_SECONDS = 1.0
 """How long a live navigation waits for the UI to react."""

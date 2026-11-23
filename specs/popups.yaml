@@ -165,7 +165,7 @@ families:
     notes: >-
       #18 can make this row closable by adding an explicit back-key strategy;
       until then it must raise popup_unclosable. The known behaviour is recorded
-      in docs/05-app-knowledge.md §6 and docs/06-navigation-map.md §2.
+      in docs/05-app-knowledge.md §6 and docs/07-navigation-map.md §2.
 
   - family: coins_boost_sheet
     when: Tapping `Earn more >` on the coin page opens the Coins boost sheet over the page.
