@@ -111,7 +111,8 @@ and cleanup handlers landed (measured 99.36%), and to **99.37%** when the inside
 band was narrowed (measured 99.38%), then to **99.39%** when the wait primitives landed (measured
 99.40%), then to **99.42%** when the timezone refusal and stability ledger landed (measured
 99.43%), then to **99.44%** when the dry-run settle wait landed (measured 99.44%), then to
-**99.45%** when the quiz question bank landed (measured 99.45%).
+**99.45%** when the quiz question bank landed (measured 99.45%), then to **99.46%** when the
+coin-store surface and task-scoped recovery landed (measured 99.47%).
 The scaffold is fully covered, but a one-statement package makes that 100% an artefact of the
 stub, so the floor starts below the maximum. As real modules land, raise the floor toward the
 measured number; never lower it to make a change pass. The gate fails the build when coverage

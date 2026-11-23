@@ -32,6 +32,7 @@ from aliexpress_coins.perception.matching import normalize
 from aliexpress_coins.perception.ocr import RapidOcrEngine
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.waits import CountdownEnding
+from aliexpress_coins.runner.safety import SafetyGuard
 from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks.browse import (
     MAX_PRESSES,
@@ -1083,6 +1084,7 @@ def test_run_browse_task_dwells_on_the_recorded_coin_store_and_returns(
     coin_store: Snapshot,
 ) -> None:
     cleared = _without_timer(coin_store)
+    guard = SafetyGuard(catalogue=catalogue, logger=logging.getLogger('test.browse.safety'))
     world = _World(
         series={
             'boost': (_boost_frame(),),
@@ -1096,22 +1098,25 @@ def test_run_browse_task_dwells_on_the_recorded_coin_store_and_returns(
         },
     )
 
-    result = run_browse_task(
-        _controller(world, world.frame),
-        world.capture,
-        corpus,
-        _state(tmp_path),
-        _entry(catalogue),
-        navigate=world.navigate,
-        arrival_timeout=1.0,
-        load_timeout=1.0,
-        chip_interval=0.5,
-        return_timeout=2.0,
-        return_interval=0.5,
-        clock=_SteppingClock(),
-        sleep=_SteppingClock().sleep,
-    )
+    with guard.task(TITLE):
+        result = run_browse_task(
+            _controller(world, world.frame),
+            guard.wrap(world.capture),
+            corpus,
+            _state(tmp_path),
+            _entry(catalogue),
+            navigate=world.navigate,
+            arrival_timeout=1.0,
+            load_timeout=1.0,
+            chip_interval=0.5,
+            return_timeout=2.0,
+            return_interval=0.5,
+            clock=_SteppingClock(),
+            sleep=_SteppingClock().sleep,
+        )
 
+    assert guard.frames > 0
+    assert guard.task_running is False
     assert result.outcome is BrowseOutcome.COMPLETED
     assert result.verification == 'progress_advanced'
     assert result.presses == 1

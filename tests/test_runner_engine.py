@@ -449,6 +449,14 @@ def _report_payload(tmp_path: Path) -> dict[str, Any]:
     return cast(dict[str, Any], json.loads((directories[-1] / 'run.json').read_text(encoding='utf-8')))
 
 
+def _events(report: RunReport) -> list[dict[str, Any]]:
+    return [
+        cast(dict[str, Any], json.loads(line))
+        for line in report.event_log_path.read_text(encoding='utf-8').splitlines()
+        if line.strip()
+    ]
+
+
 def test_the_dispatch_table_covers_every_implemented_category(catalogue: TaskCatalogue) -> None:
     assert set(engine.DISPATCH_TABLE) == {
         TaskCategory.SIGN_IN,
@@ -1509,6 +1517,9 @@ def test_one_tasks_unknown_screen_fails_the_task_and_the_run_continues(
     summary = report.summary_path.read_text(encoding='utf-8')
     assert 'task_unverified' in summary
     assert '**Abort:**' not in summary
+    assert not [
+        event for event in _events(report) if event.get('event') == 'run_aborted' and event.get('level') == 'error'
+    ]
 
 
 @pytest.mark.slow
@@ -1569,6 +1580,7 @@ def test_a_run_still_aborts_when_recovery_cannot_reach_the_coins_page(
     assert report.failure_code == FailureCode.UNEXPECTED_SCREEN.value
     assert engine.TASK_RECOVERY_ATTEMPTS in recovery_attempts
     assert report.tasks == []
+    assert any(event.get('event') == 'run_aborted' and event.get('level') == 'error' for event in _events(report))
 
 
 @pytest.mark.slow

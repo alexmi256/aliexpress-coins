@@ -28,7 +28,6 @@ it. The engine reports both and still runs its return-to-coins-page path.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import unicodedata
@@ -301,20 +300,6 @@ class SafetyGuard:
 
     def _abort(self, code: AbortCode, reason: str, screen: ScreenReport) -> None:
         self.failure = failure(FailureCode(code.value), detail=f'{reason}; screen={screen.summary}')
-        self._logger.error(
-            '%s',
-            json.dumps(
-                {
-                    'event': 'run_aborted',
-                    'code': code.value,
-                    'reason': reason,
-                    'screen': screen.as_dict(),
-                },
-                separators=(',', ':'),
-                sort_keys=True,
-                default=str,
-            ),
-        )
         raise RunAborted(code=code, reason=reason, screen=screen)
 
     def _reset_streak(self) -> None:
