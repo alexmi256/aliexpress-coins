@@ -29,6 +29,7 @@ from aliexpress_coins.perception.artifacts import ArtifactStore
 from aliexpress_coins.perception.errors import SnapshotError, StateTimeout
 from aliexpress_coins.perception.geometry import DeviceGeometry
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
+from aliexpress_coins.perception.state import ScreenState, classify
 from aliexpress_coins.runner import engine
 from aliexpress_coins.runner.config import RunConfig
 from aliexpress_coins.runner.device import AdbDevice, DeviceCommandResult, HygieneDevice, HygieneReport
@@ -1152,6 +1153,46 @@ def test_a_dry_run_keeps_rows_read_from_an_unverified_surface(
     assert report.detail is not None
     assert report.detail.startswith('surface_unverified')
     assert 'rows: Take the coins quiz' in report.detail
+    assert report.plan is not None
+    assert report.plan['surface'] == 'unknown'
+    assert [step['key'] for step in report.plan['steps']] == ['coins_quiz']
+    assert report.plan['taps_issued'] == 0
+    assert report.roster is not None
+    assert report.roster['count'] == 1
+    assert context.controller.tap_count == 0
+    assert device.taps == []
+
+
+def test_a_dry_run_keeps_post_route_rows_that_never_leave_loading(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    loading = _snapshot(
+        _box('Take the coins quiz', 180, 1269, 700, 1305),
+        _box('GO', 982, 1273, 1040, 1310),
+    )
+    assert classify(loading).state is ScreenState.LOADING
+    context = _context(
+        tmp_path,
+        capture=_Capture(_home_frame(), loading),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+    device = _RecordingDevice()
+    context.controller = Controller.from_frame(device, _home_frame(), rng=random.Random(0))
+    assert isinstance(context.navigate, _Navigate)
+
+    report = engine.run_once(context)
+
+    assert context.navigate.routes == [SurfaceRoute.SHORTCUT]
+    assert report.status is RunStatus.FAILED
+    assert report.failure_code == FailureCode.NAVIGATION_FAILED.value
+    assert report.detail is not None
+    assert report.detail.startswith('surface_unverified')
+    assert 'rows: Take the coins quiz' in report.detail
+    assert 'states=loading' in report.detail
     assert report.plan is not None
     assert report.plan['surface'] == 'unknown'
     assert [step['key'] for step in report.plan['steps']] == ['coins_quiz']
