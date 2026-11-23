@@ -261,6 +261,27 @@ def test_disarm_stops_all_inspection_after_an_abort() -> None:
     assert guard.streak == 0
 
 
+def test_the_recovery_window_suspends_the_unexpected_streak() -> None:
+    guard = _guard()
+    unknown = _unknown()
+
+    with guard.recovering():
+        guard.inspect(unknown)
+        guard.inspect(unknown)
+        guard.inspect(unknown)
+
+    assert guard.streak == 0
+
+    def inspect_three() -> None:
+        for _ in range(3):
+            guard.inspect(unknown)
+
+    with pytest.raises(RunAborted) as raised:
+        inspect_three()
+
+    assert raised.value.code is AbortCode.UNEXPECTED_SCREEN
+
+
 def test_a_dangerous_control_is_only_fatal_while_a_task_is_running() -> None:
     guard = _guard()
     frame = _danger()

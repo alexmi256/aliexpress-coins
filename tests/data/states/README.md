@@ -1,6 +1,6 @@
 # Screen-state fixtures
 
-Twelve recorded frames from the reference tablet, used by the screen-state classifier tests
+Thirteen recorded frames from the reference tablet, used by the screen-state classifier tests
 (`tests/test_perception_state.py`) and the #84 discovery/sign-in tests. They are **full 1200×2000
 frames**, exactly the shape `AdbSnapshotter.capture()`
 returns: the status-bar clock and the Android taskbar glyphs are retained. The classifier
@@ -28,6 +28,7 @@ reviewed the same way.
 | `ambiguous_feed.png` | full home feed with no modelled coins/collection marker | search bar and notification badge/bell masked; the lower `Bundle deals` feed section is not a top product-collection header |
 | `boost_daily_checkin.png` | full `Coins boost` page from the failed 2026-11-23 nightly run, first row `Daily check-in` (#84) | balance chip and hero, coin-credit chip, notification badge and status-bar clock masked; `Coins boost` and all task rows remain |
 | `coins_merged_card.png` | full coin page from the same run, where the daily card and the first task row share one OCR band (#84) | coin balance, worth, coin-credit and credits-to-use amounts, notification badge and status-bar clock masked; `Daily coins`, `Earn more`, `Collect` and `Daily check-in` remain |
+| `coin_store.png` | full `Use coins for discounts` sponsored product list opened by `Explore sponsored items`, with its right-edge `13s` dwell chip, `Disc:` prices and `Applied` labels (#83) | no account data; product titles, prices, the system clock and taskbar are kept, and the header/`Disc:`/`Applied` labels remain for the classifier regression |
 
 `error_404.png` was dropped as an extra fixture: the bare advertised coin URL is recorded in
 `docs/01-recon-findings.md` as landing on a blank WebView, while the capture session saw a 404

@@ -54,7 +54,7 @@ flowchart TD
     quiz[Coins quiz<br/>question]
     qres[Quiz result<br/>'Correct answer: X']
     red[[YOU CAN NOW REDEEM!]]
-    coll[Product collection<br/>Bundle Deals]
+    coll[Product collection / coin store<br/>'Use coins for discounts']
     coupon[Coupon page<br/>'Sale coupons']
 
     icon --> home
@@ -108,6 +108,7 @@ flowchart TD
 | quiz result | `Correct answer:` + `Your answer:` | — |
 | redeem interstitial | `YOU CAN NOW REDEEM!` | — |
 | product collection | `Bundle Deals` / `Hot picks for you` + prices | any product page looks like this |
+| coin store / sponsored list | `Use coins for discounts` + `Disc:`/`Applied` price tiles + the right-edge dwell chip | a feed tile can say `discount`; only the whole-page header names this surface (#83) |
 | surprise grid | `Browse surprise items` + `Tap 3 items on this page` + `N /3` | the boost row carries the same title and subtitle; the grid adds the counter |
 | product detail (surprise) | `Add to cart` + `Buy now` + `Item 1/n` in the toolbar | every product page looks like this — BACK, never tap a purchase control |
 | mission overlay | `Mission Completed` + coin artwork over a dimmed grid | — |

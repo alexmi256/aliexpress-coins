@@ -1435,6 +1435,143 @@ def test_an_aborted_run_reports_the_screen_and_returns_to_the_coins_page(
 
 
 @pytest.mark.slow
+def test_one_tasks_unknown_screen_fails_the_task_and_the_run_continues(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    # The three rows from night 2026-11-23, in the order the roster showed them.
+    keys = ('boost_checkin', 'sponsored_items', 'surprise_items')
+    frame_rows = ('daily_checkin', 'sponsored_items', 'surprise_items')
+    roster = replace(
+        full_roster,
+        entries=tuple(_entry(full_roster, key) for key in keys),
+        surface_variant=Surface.ROWS_PRESENT,
+    )
+    frame = _boost_frame(*frame_rows)
+    _surface(monkeypatch, roster, frame)
+    unknown = _home_frame()
+    context = _context(
+        tmp_path,
+        capture=_Capture(_coin_frame(), unknown, unknown, unknown, _coin_frame(), _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+        max_tasks=3,
+    )
+    order: list[str] = []
+    recovery_attempts: list[int | None] = []
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        order.append(entry.key or '')
+        if entry.key == 'sponsored_items':
+            # Three identical unknown captures inside the task trip the real guard.
+            for _ in range(3):
+                engine._capture(_context.capture)
+            raise AssertionError('the unexpected-screen guard did not trip')
+        if entry.key is not None:
+            _context.state.record(entry.key)
+        return EngineResult('completed', 'fake', 'done', True, {'key': entry.key})
+
+    def recover(*_args: Any, **kwargs: Any) -> ReturnResult:
+        recovery_attempts.append(kwargs.get('attempts'))
+        return ReturnResult(
+            returned=True,
+            reentered=True,
+            attempts=kwargs.get('attempts', 1),
+            route=SurfaceRoute.SHORTCUT,
+            elapsed=0.1,
+            snapshot=_coin_frame(),
+        )
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+    monkeypatch.setattr(engine, 'return_to_coins_page', recover)
+
+    report = engine.run_once(context)
+
+    assert order == list(keys)
+    assert report.status is RunStatus.BUDGET
+    assert report.abort is None
+    assert report.failure_code == FailureCode.BUDGET_EXHAUSTED.value
+    assert [task.key for task in report.tasks] == list(keys)
+    failed = report.tasks[1]
+    assert failed.outcome == 'failed'
+    assert failed.code == FailureCode.TASK_UNVERIFIED.value
+    assert failed.verification == 'unexpected_screen'
+    assert failed.result['payload']['screen']['labels'] == ['For you', 'Search']
+    assert failed.result['payload']['recovery']['returned'] is True
+    assert engine.TASK_RECOVERY_ATTEMPTS in recovery_attempts
+    assert context.state.count('sponsored_items') == 0
+    assert context.state.count('boost_checkin') == 1
+    assert context.state.count('surprise_items') == 1
+    assert report.returned_to_coins_page is True
+    summary = report.summary_path.read_text(encoding='utf-8')
+    assert 'task_unverified' in summary
+    assert '**Abort:**' not in summary
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('returned', [False, True])
+def test_a_run_still_aborts_when_recovery_cannot_reach_the_coins_page(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    returned: bool,
+) -> None:
+    roster = replace(
+        full_roster,
+        entries=(_entry(full_roster, 'sponsored_items'),),
+        surface_variant=Surface.ROWS_PRESENT,
+    )
+    _surface(monkeypatch, roster, _boost_frame('sponsored_items'))
+    unknown = _home_frame()
+    context = _context(
+        tmp_path,
+        capture=_Capture(_coin_frame(), unknown, unknown, unknown, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    recovery_attempts: list[int | None] = []
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        assert entry.key == 'sponsored_items'
+        for _ in range(3):
+            engine._capture(_context.capture)
+        raise AssertionError('the unexpected-screen guard did not trip')
+
+    def recover(*_args: Any, **kwargs: Any) -> ReturnResult:
+        recovery_attempts.append(kwargs.get('attempts'))
+        return ReturnResult(
+            returned=returned,
+            reentered=returned,
+            attempts=kwargs.get('attempts', 1),
+            route=SurfaceRoute.SHORTCUT,
+            elapsed=1.0,
+            # ``returned=True`` with an unknown frame is the second failed-recovery
+            # case: the route fired but the page it proved is not drivable.
+            snapshot=None if not returned else unknown,
+            error=None if returned else 'the shortcut route never proved the coin page',
+        )
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+    monkeypatch.setattr(engine, 'return_to_coins_page', recover)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.ABORTED
+    assert report.ok is False
+    assert report.abort is not None
+    assert report.abort['code'] == 'unexpected_screen'
+    assert report.abort['screen']['labels'] == ['For you', 'Search']
+    assert report.failure_code == FailureCode.UNEXPECTED_SCREEN.value
+    assert engine.TASK_RECOVERY_ATTEMPTS in recovery_attempts
+    assert report.tasks == []
+
+
+@pytest.mark.slow
 def test_a_phone_geometry_runs_and_records_its_profile(
     tmp_path: Path,
     catalogue: TaskCatalogue,

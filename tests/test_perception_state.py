@@ -43,6 +43,7 @@ _EXPECTED: dict[str, ScreenState] = {
     'surprise_grid.png': ScreenState.PAGE,
     'popup_over_page.png': ScreenState.POPUP,
     'ambiguous_feed.png': ScreenState.UNKNOWN,
+    'coin_store.png': ScreenState.PAGE,
 }
 
 
@@ -189,6 +190,15 @@ def test_an_unmodelled_page_is_unknown_not_a_guess(frames: dict[str, Snapshot]) 
     assert classification.score == 0.0
     assert classification.evidence[0].signal == 'no_signal'
     assert 'no known marker' in classification.evidence[0].detail
+
+
+def test_the_coin_store_list_is_a_named_page(frames: dict[str, Snapshot]) -> None:
+    classification = classify(frames['coin_store.png'])
+
+    assert classification.state is ScreenState.PAGE
+    assert classification.evidence[0].signal == 'page_marker'
+    assert 'coin store' in classification.evidence[0].detail
+    assert 'Use coins for discounts' in classification.evidence[0].detail
 
 
 @pytest.mark.parametrize('colour', ['white', 'black'])

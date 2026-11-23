@@ -23,7 +23,7 @@ app_logged_out        account     none        abort the run immediately, at firs
 navigation_failed     route       none        the route's own warm re-entry; fall back and report
 popup_unclosable      control     none        abort the run immediately (never tap a guess)
 task_unverified       task        task x1     retry only when no action was taken; else report
-unexpected_screen     safety      none        abort after the same unknown screen is seen three times
+unexpected_screen     safety      none        fail a task on the third sighting; abort only if recovery fails
 dangerous_control     safety      none        abort on buy/order/cart/redeem while a task is running
 balance_decreased     safety      none        abort: something spent coins without policy approval
 budget_exhausted      run         none        stop the walk cleanly and report it
@@ -227,7 +227,7 @@ FAILURE_TABLE: dict[FailureCode, FailureSpec] = {
         RetryScope.NONE,
         0,
         True,
-        'The same screen was not understood three times in a row; the run stopped rather than guessing.',
+        'The same screen was not understood three times in a row and could not be recovered; the run stopped rather than guessing.',
     ),
     FailureCode.DANGEROUS_CONTROL: FailureSpec(
         FailureCode.DANGEROUS_CONTROL,
