@@ -71,6 +71,16 @@ Corollary, learned three times over (#23 streak scoping, #24 row-gone, the #23 i
 `completed` is worse than `unverified`.** `unverified` costs one night and retries tomorrow; a false
 `completed` is recorded in daily state and silently skips the task for the rest of the day.
 
+### No effect observed is not the same as effect unknown
+
+The rule above forbids repeating an action whose effect is unknown. It does **not** forbid repeating an action
+whose effect the screen proves did not happen: a tap followed by an unchanged, settled frame is evidence that
+nothing occurred, which is the `unverified_pre_action` case, not `unverified_post_action`.
+
+So a swallowed tap may be retried — bounded (two attempts), with the frame difference recorded as the evidence,
+and a log line naming why the retry was safe. Without that distinction, a device that intermittently ignores the
+first tap fails a task that a single re-tap would have completed, and the retry rule gets blamed for it.
+
 ## Retries: never repeat an unknown action
 
 A retry may re-read the screen, re-navigate, or re-open a page. It must **never** repeat an action whose effect
