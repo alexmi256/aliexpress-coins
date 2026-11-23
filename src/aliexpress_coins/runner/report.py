@@ -314,7 +314,7 @@ class RunReport:
             title=pending.title,
             key=pending.key,
             category=pending.category,
-            state=_task_state(outcome, completed),
+            state=outcome,
             outcome=outcome,
             verification=verification,
             detail=detail,
@@ -345,7 +345,7 @@ class RunReport:
             title=title,
             key=key,
             category=category,
-            state=_task_state(outcome, completed),
+            state=outcome,
             outcome=outcome,
             verification=verification,
             detail=detail,
@@ -658,15 +658,6 @@ def prune_runs(
     if failures:
         raise ReportError(f'could not prune every old run: {"; ".join(failures)}')
     return tuple(pruned)
-
-
-def _task_state(outcome: str, completed: bool) -> str:
-    """The terminal state for one executor outcome."""
-    if completed:
-        return TaskState.COMPLETED.value
-    if outcome in (TaskState.SKIPPED.value, TaskState.FAILED.value):
-        return outcome
-    return TaskState.FAILED.value
 
 
 def _screen_summary(screen: dict[str, Any]) -> str:

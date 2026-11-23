@@ -182,23 +182,25 @@ def test_a_task_aborted_in_flight_keeps_its_row_and_the_screen(tmp_path: Path) -
     assert 'Can be applied directly at Checkout' in summary
 
 
-def test_finishing_a_task_maps_its_outcome_and_abort_leaves_terminal_rows_alone(tmp_path: Path) -> None:
+def test_finishing_a_task_keeps_its_precise_outcome_and_abort_leaves_terminal_rows_alone(
+    tmp_path: Path,
+) -> None:
     report = _report(tmp_path)
     assert report.abort_in_flight(code='dangerous_control', reason='nothing was running') is False
 
     index = report.begin_task(title='Turn on notifications', key='notifications', category='notification')
     terminal = report.finish_task(
         index,
-        outcome='unavailable',
-        verification='state',
-        detail='the notification prompt was already answered',
+        outcome='already_done',
+        verification='already_done',
+        detail='the notification row was already claimed today',
         duration_seconds=2.0,
         completed=False,
         result={'key': 'notifications'},
     )
 
-    assert terminal.state == 'failed'
-    assert terminal.outcome == 'unavailable'
+    assert terminal.state == 'already_done'
+    assert terminal.outcome == 'already_done'
     assert report.abort_in_flight(code='dangerous_control', reason='too late') is False
     assert report.tasks == [terminal]
 

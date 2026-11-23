@@ -520,6 +520,44 @@ def test_a_full_walk_dispatches_in_reading_order_and_reports_the_task_budget(
     assert _report_payload(tmp_path)['status'] == 'budget'
 
 
+@pytest.mark.slow
+def test_a_task_is_written_in_flight_before_its_executor_finishes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    frame = _boost_frame('coins_quiz')
+    _surface(monkeypatch, roster, frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    report = RunReport(context.config.runs_dir, 'in-flight-write', budget_seconds=60.0, started_at=CAPTURED_AT)
+    observed: list[str] = []
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        payload = json.loads(report.json_path.read_text(encoding='utf-8'))
+        summary = report.summary_path.read_text(encoding='utf-8')
+        observed.append(payload['tasks'][0]['state'])
+        assert 'Take the coins quiz' in summary
+        assert 'No task was dispatched.' not in summary
+        if entry.key is not None:
+            _context.state.record(entry.key)
+        return EngineResult('completed', 'fake', 'done', True, {'key': entry.key})
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    engine.run_once(context, report=report)
+
+    assert observed == ['in_flight']
+    assert report.tasks[0].state == 'completed'
+
+
 def test_policy_and_missing_executor_are_reported_as_skips(
     tmp_path: Path,
     full_roster: Roster,
