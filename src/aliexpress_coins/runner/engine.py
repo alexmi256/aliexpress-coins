@@ -39,6 +39,7 @@ from aliexpress_coins.perception.ocr import RapidOcrEngine
 from aliexpress_coins.perception.snapshot import Snapshot
 from aliexpress_coins.perception.state import CaptureSource
 from aliexpress_coins.perception.templates import TemplateStore, load_templates
+from aliexpress_coins.perception.waits import wait_for_text
 from aliexpress_coins.runner.config import RunConfig
 from aliexpress_coins.runner.device import AdbDevice, HygieneDevice
 from aliexpress_coins.runner.errors import AppLoggedOut, ConfigError, RunInterrupted
@@ -61,6 +62,7 @@ from aliexpress_coins.tasks.catalogue import AllowedTaskSpec, TaskCatalogue, Tas
 from aliexpress_coins.tasks.discovery import (
     DEFAULT_BOOST_INTERVAL,
     DEFAULT_BOOST_TIMEOUT,
+    CoinPageWait,
     DiscoveryRoute,
     Roster,
     RosterEntry,
@@ -70,6 +72,7 @@ from aliexpress_coins.tasks.discovery import (
     discover_roster,
     enumerate_roster,
     open_boost_list,
+    wait_for_coin_page,
 )
 from aliexpress_coins.tasks.dispatch import (
     DispatchGate,
@@ -81,11 +84,13 @@ from aliexpress_coins.tasks.quiz import run_quiz_task
 from aliexpress_coins.tasks.signin import claim_daily_signins, read_coin_balance
 from aliexpress_coins.tasks.surface import (
     COIN_PAGE_MARKERS,
+    SURFACE_REFRESH_LIMIT,
     RouteFirer,
     Surface,
     SurfaceRoute,
     classify_surface,
     contains_text,
+    has_task_rows,
     is_boost_page,
     is_logged_out,
 )
@@ -583,34 +588,103 @@ def _plan_dry_run(
     max_tasks: int,
     budget_seconds: float,
 ) -> None:
-    """Plan the night from the visible surface without tapping or dispatching.
+    """Plan the night from the settled visible surface without tapping.
 
-    The route may be fired once to reach the coins page (an ``am start``, not an
-    in-app tap), then the roster is enumerated and every row goes through the
-    same :class:`DispatchGate` used by a live run. Allowed rows that have an
-    executor, an action and daily budget left become ordered steps; refusals
-    carry the gate's code, rule and reason. No executor runs and the controller
-    is never asked for a tap.
+    The route may be fired to reach the coins page (an ``am start``, not an
+    in-app tap), then the same :func:`wait_for_coin_page` a live run uses must
+    see the page stop loading before the roster is enumerated. That wait is the
+    #19 primitive behind #76: classifying the skeleton once and calling the
+    resulting zero a plan is the "absence is not evidence" failure in the
+    planning path.
+
+    The #38 route budget still applies: a readable surface with no usable rows
+    gets the same warm re-entry a live run gets, which is what resets the
+    documented empty-``Coins boost`` load fault. Every row goes through the same
+    :class:`DispatchGate`; allowed rows that have an executor, an action and
+    daily budget left become ordered steps, and refusals carry the gate's code,
+    rule and reason. No executor runs and the controller is never asked for a
+    tap.
+
+    A surface that never becomes readable is not a clean zero. It is reported
+    as a ``navigation_failed`` dry run with ``surface_unknown`` in the detail,
+    so the CLI exits non-zero instead of telling the operator the day is empty.
     """
     surface = classify_surface(frame)
-    navigated = False
-    if surface is Surface.UNKNOWN and not _on_coin_page(frame):
+    routes: list[SurfaceRoute] = []
+    waits: list[CoinPageWait] = []
+    content_waits: list[dict[str, object]] = []
+    settle_note: str | None = None
+    route_failed = False
+
+    def fire_route() -> bool:
+        nonlocal settle_note, route_failed
         try:
             context.navigate(SurfaceRoute.SHORTCUT)
         except RunAborted, RunInterrupted:
             raise
         except Exception as exc:
-            report.plan_note = f'could not read the coins page: {type(exc).__name__}: {exc}'
-        else:
-            navigated = True
-            frame = _capture(context.capture)
+            settle_note = f'could not read the coins page: {type(exc).__name__}: {exc}'
+            report.plan_note = settle_note
+            route_failed = True
+            return False
+        routes.append(SurfaceRoute.SHORTCUT)
+        return True
+
+    def settle() -> None:
+        nonlocal frame, surface
+        arrival = wait_for_coin_page(
+            context.capture,
+            timeout=DEFAULT_BOOST_TIMEOUT,
+            interval=DEFAULT_BOOST_INTERVAL,
+            clock=context.clock,
+            sleep=context.sleep,
+        )
+        waits.append(arrival)
+        frame = arrival.snapshot
+        surface = classify_surface(frame)
+        if surface is Surface.ROWS_ABSENT:
+            # The coin-page markers can render before their task rows. The live
+            # path waits for the boost list here; a dry run must not tap "Earn
+            # more", so it waits on the same #19 text primitive for the inline
+            # rows that are the only surface it may read. A timeout leaves the
+            # last frame in place: a genuinely empty inline page is still
+            # positively identified, not an unreadable one.
+            content = wait_for_text(
+                context.capture,
+                has_task_rows,
+                timeout=DEFAULT_BOOST_TIMEOUT,
+                interval=DEFAULT_BOOST_INTERVAL,
+                initial=frame,
+                clock=context.clock,
+                sleep=context.sleep,
+            )
+            content_waits.append(content.as_dict())
+            frame = content.frame
             surface = classify_surface(frame)
 
-    roster = replace(
-        enumerate_roster(frame, context.catalogue, route=DiscoveryRoute.INLINE),
-        surface_variant=surface,
-        routes_taken=(SurfaceRoute.SHORTCUT,) if navigated else (),
-    )
+    def read_roster() -> Roster:
+        return replace(
+            enumerate_roster(frame, context.catalogue, route=DiscoveryRoute.INLINE),
+            surface_variant=surface,
+            routes_taken=tuple(routes),
+            refresh_attempted=len(routes) > 1,
+        )
+
+    if surface is Surface.UNKNOWN and not _on_coin_page(frame) and fire_route():
+        settle()
+
+    roster = read_roster()
+    while (
+        not route_failed
+        and roster.empty
+        and surface is not Surface.REDEEM_INTERSTITIAL
+        and len(routes) < SURFACE_REFRESH_LIMIT + 1
+    ):
+        if not fire_route():
+            break
+        settle()
+        roster = read_roster()
+
     report.geometry = _geometry(frame)
     report.roster = roster.as_dict()
     report.surface = surface.value
@@ -699,7 +773,17 @@ def _plan_dry_run(
             },
         )
 
-    detail = f'dry run: {len(steps)} task(s) planned, {len(refusals)} refusal(s); no tap was issued'
+    unreadable = _unreadable_plan_reason(roster, surface, waits, settle_note)
+    if unreadable is not None:
+        report.status = RunStatus.FAILED
+        report.detail = unreadable
+        report.record_failure(failure(FailureCode.NAVIGATION_FAILED, detail=unreadable))
+        plan_detail = f'dry run: {unreadable}; no tap was issued'
+    else:
+        report.status = RunStatus.PLANNED
+        report.detail = f'dry run: {len(steps)} task(s) planned, {len(refusals)} refusal(s); no tap was issued'
+        plan_detail = report.detail
+
     report.plan = {
         'dry_run': True,
         'surface': surface.value,
@@ -708,11 +792,12 @@ def _plan_dry_run(
         'steps': steps,
         'refusals': refusals,
         'taps_issued': 0,
-        'detail': detail,
+        'waits': [wait.as_dict() for wait in waits],
+        'content_waits': content_waits,
+        'detail': plan_detail,
     }
-    report.status = RunStatus.PLANNED
-    report.detail = detail
-    log.info(
+    log.log(
+        logging.ERROR if unreadable is not None else logging.INFO,
         '%s',
         _event(
             'dry_run_plan',
@@ -720,9 +805,44 @@ def _plan_dry_run(
             steps=[step['label'] for step in steps],
             refusals=[refusal['label'] for refusal in refusals],
             taps_issued=0,
+            unreadable=unreadable,
         ),
     )
     report.write()
+
+
+def _unreadable_plan_reason(
+    roster: Roster,
+    surface: Surface,
+    waits: list[CoinPageWait],
+    settle_note: str | None,
+) -> str | None:
+    """Name why an empty plan is not evidence about the day, or return ``None``.
+
+    ``ROWS_ABSENT`` is the coin page positively identified with no rows: that is
+    the honest empty day the #38 policy reports as ``nothing available``. A
+    frame that never stopped loading, never produced a page marker, or stayed on
+    the documented empty-boost fault is different: nothing was read, so the plan
+    must fail rather than report a clean zero.
+    """
+    if not roster.empty:
+        return None
+    if surface not in (Surface.UNKNOWN, Surface.EMPTY_BOOST):
+        return None
+
+    if surface is Surface.EMPTY_BOOST:
+        reason = 'surface_empty_boost: the Coins boost page was still the documented load fault after the warm re-entry'
+    else:
+        reason = 'surface_unknown: the coin page did not render'
+    if waits:
+        last = waits[-1]
+        history = ' -> '.join(state.value for state in last.history)
+        reason = f'{reason} (states={history}; settled={last.settled})'
+    else:
+        reason = f'{reason} (no settle wait was possible)'
+    if settle_note is not None:
+        reason = f'{reason}; {settle_note}'
+    return reason
 
 
 def _discover_or_fallback(

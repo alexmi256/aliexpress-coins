@@ -221,6 +221,41 @@ def test_a_failed_night_returns_non_zero(
     )
 
 
+def test_an_unreadable_dry_run_prints_the_named_reason_and_returns_non_zero(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    report = _report(tmp_path, RunStatus.FAILED)
+    report.detail = 'surface_unknown: the coin page did not render (states=loading)'
+    report.plan = {
+        'surface': 'unknown',
+        'steps': [],
+        'refusals': [],
+        'taps_issued': 0,
+        'detail': 'dry run: surface_unknown: the coin page did not render; no tap was issued',
+    }
+    monkeypatch.setattr(cli, 'make_live_context', lambda config, stop: object())
+    monkeypatch.setattr(cli, 'run_once', lambda context: report)
+    monkeypatch.setattr(cli, '_install_stop_handlers', lambda stop: None)
+    monkeypatch.setattr(cli, '_restore_stop_handlers', lambda: None)
+
+    assert (
+        cli.run_once_command(
+            {'AECOINS_DEVICE': 'tablet', 'TZ': 'UTC'},
+            dry_run=True,
+            root=str(tmp_path),
+            device_timezone=lambda _serial: 'UTC',
+        )
+        == 1
+    )
+    output = capsys.readouterr().out
+    assert 'run run-1: failed' in output
+    assert 'surface_unknown: the coin page did not render' in output
+    assert 'plan: dry run: surface_unknown' in output
+    assert 'taps issued: 0' in output
+
+
 def test_a_runner_error_is_reported_and_returns_non_zero(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

@@ -53,6 +53,7 @@ from aliexpress_coins.tasks.discovery import (
     observe_roster,
     open_boost_list,
     read_roster_log,
+    wait_for_coin_page,
 )
 from aliexpress_coins.tasks.errors import RosterLogError
 from aliexpress_coins.tasks.surface import Surface
@@ -558,6 +559,82 @@ def test_open_boost_list_sweeps_a_popup_over_an_already_populated_list(
     assert ScreenState.POPUP in opened.history
     assert len(device.taps) == 2
     assert enumerate_roster(opened.snapshot, catalogue).count == 4
+
+
+def test_wait_for_coin_page_reads_through_the_skeleton_to_the_page(
+    frames: dict[str, Snapshot],
+) -> None:
+    clock = _SteppingClock(step=0.5)
+    capture = _Capture((frames['skeleton'], frames['coins']))
+
+    arrival = wait_for_coin_page(
+        capture,
+        timeout=5,
+        interval=0.5,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert arrival.settled is True
+    assert arrival.timed_out is False
+    assert arrival.classification.state is ScreenState.PAGE
+    assert arrival.history[0] is ScreenState.LOADING
+    assert arrival.history[-1] is ScreenState.PAGE
+
+
+def test_wait_for_coin_page_names_a_skeleton_that_never_renders(
+    frames: dict[str, Snapshot],
+) -> None:
+    clock = _SteppingClock(step=0.5)
+    capture = _Capture((frames['skeleton'],))
+
+    arrival = wait_for_coin_page(
+        capture,
+        timeout=2,
+        interval=0.5,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert arrival.settled is False
+    assert arrival.timed_out is True
+    assert arrival.classification.state is ScreenState.LOADING
+    assert set(arrival.history) == {ScreenState.LOADING}
+
+
+def test_wait_for_coin_page_returns_a_popup_without_dismissing_it_for_a_dry_run(
+    frames: dict[str, Snapshot],
+) -> None:
+    overlay = _rebox(frames['launch'], (*frames['coins'].boxes, *frames['launch'].boxes))
+    clock = _SteppingClock()
+    capture = _Capture((overlay, frames['coins']))
+
+    arrival = wait_for_coin_page(
+        capture,
+        timeout=5,
+        interval=1,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert arrival.settled is False
+    assert arrival.timed_out is False
+    assert arrival.classification.state is ScreenState.POPUP
+    assert arrival.history == (ScreenState.POPUP,)
+
+
+@pytest.mark.parametrize(('timeout', 'interval'), [(0, 1), (1, 0)])
+def test_wait_for_coin_page_rejects_a_non_positive_poll_budget(
+    frames: dict[str, Snapshot],
+    timeout: float,
+    interval: float,
+) -> None:
+    with pytest.raises(ValueError, match='positive'):
+        wait_for_coin_page(
+            _Capture((frames['coins'],)),
+            timeout=timeout,
+            interval=interval,
+        )
 
 
 def test_open_boost_list_retries_a_loading_coin_page_before_choosing_inline(

@@ -90,13 +90,14 @@ markers = [
 # 99.36%), then to 99.37 when the inside-task countdown band was narrowed
 # (measured 99.38%), then to 99.39 when the wait primitives landed (measured
 # 99.40%), then to 99.42 when the timezone refusal and stability ledger landed
-# (measured 99.43%). See "Quality gate" in README.md.
+# (measured 99.43%), then to 99.44 when the dry-run settle wait landed (measured
+# 99.45%). See "Quality gate" in README.md.
 [tool.coverage.run]
 branch = true
 source = ["aliexpress_coins"]
 
 [tool.coverage.report]
-fail_under = 99.42
+fail_under = 99.44
 precision = 2
 show_missing = true
 skip_covered = true

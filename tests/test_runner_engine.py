@@ -47,7 +47,7 @@ from aliexpress_coins.runner.errors import (
 from aliexpress_coins.runner.failures import FailureCode, failure
 from aliexpress_coins.runner.notify import AppriseSink, Notification, NotificationSink, WebhookSink
 from aliexpress_coins.runner.report import RunEventLog, RunReport, RunStatus
-from aliexpress_coins.runner.safety import AbortCode, RunAborted, ScreenReport
+from aliexpress_coins.runner.safety import AbortCode, RunAborted, SafetyGuard, ScreenReport
 from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks import notifications as notifications_module
 from aliexpress_coins.tasks.browse import ReturnResult
@@ -61,7 +61,7 @@ from aliexpress_coins.tasks.discovery import (
 )
 from aliexpress_coins.tasks.dispatch import DispatchGate
 from aliexpress_coins.tasks.signin import ClaimResult, SigninOutcome, SigninReport, read_coin_balance
-from aliexpress_coins.tasks.surface import SHORTCUT_DEEP_LINK, Surface, SurfaceRoute
+from aliexpress_coins.tasks.surface import EMPTY_BOOST_MARKER, SHORTCUT_DEEP_LINK, Surface, SurfaceRoute
 from tests.support.adb import ScriptedAdbRunner, ok
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -255,6 +255,13 @@ def _boost_header_frame() -> Snapshot:
     return _snapshot(_box('Coins boost', 100, 100, 500, 150))
 
 
+def _empty_boost_frame() -> Snapshot:
+    return _snapshot(
+        _box('Coins boost', 100, 100, 500, 150),
+        _box(EMPTY_BOOST_MARKER, 100, 600, 1100, 650),
+    )
+
+
 def _boost_frame(*keys: str) -> Snapshot:
     selected = _ROWS if not keys else tuple(row for row in _ROWS if row[0] in keys)
     boxes: list[TextBox] = [_box('Coins boost', 100, 100, 500, 150)]
@@ -290,6 +297,18 @@ def _coin_task_frame() -> Snapshot:
 
 def _home_frame() -> Snapshot:
     return _snapshot(_box('For you', 100, 200, 400, 260), _box('Search', 100, 300, 300, 360))
+
+
+def _skeleton_frame() -> Snapshot:
+    """The measured loading skeleton, with no OCR boxes to classify a page."""
+    with Image.open(ROOT / 'tests' / 'data' / 'states' / 'skeleton.png') as opened:
+        image = opened.convert('RGB')
+    return Snapshot(
+        image=image,
+        boxes=(),
+        captured_at=CAPTURED_AT,
+        geometry=DeviceGeometry.from_frame(image.width, image.height, density=240, sdk=35),
+    )
 
 
 def _logged_out_frame() -> Snapshot:
@@ -839,7 +858,7 @@ def test_a_dry_run_may_fire_the_shortcut_route_but_still_taps_nothing(
     assert device.taps == []
 
 
-def test_a_dry_run_that_cannot_read_the_coins_page_records_the_note(
+def test_a_dry_run_that_cannot_read_the_coins_page_fails_with_a_named_reason(
     tmp_path: Path,
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -851,6 +870,8 @@ def test_a_dry_run_that_cannot_read_the_coins_page_records_the_note(
         corpus=corpus,
     )
     context.config = replace(context.config, dry_run=True)
+    device = _RecordingDevice()
+    context.controller = Controller.from_frame(device, _home_frame(), rng=random.Random(0))
 
     def fail(_route: SurfaceRoute) -> None:
         raise DeviceUnavailable('shortcut route unavailable')
@@ -859,10 +880,216 @@ def test_a_dry_run_that_cannot_read_the_coins_page_records_the_note(
 
     report = engine.run_once(context)
 
-    assert report.status is RunStatus.PLANNED
+    assert report.status is RunStatus.FAILED
+    assert report.ok is False
+    assert report.failure_code == FailureCode.NAVIGATION_FAILED.value
     assert report.plan_note == 'could not read the coins page: DeviceUnavailable: shortcut route unavailable'
+    assert report.detail is not None
+    assert 'surface_unknown' in report.detail
     assert report.plan is not None
     assert report.plan['steps'] == []
+    assert report.plan['taps_issued'] == 0
+    assert context.controller.tap_count == 0
+    assert device.taps == []
+
+
+def test_a_dry_run_waits_out_the_skeleton_before_planning_the_rendered_roster(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    skeleton = _skeleton_frame()
+    content = _coin_task_frame()
+    context = _context(
+        tmp_path,
+        capture=_Capture(skeleton, skeleton, content, content),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+    device = _RecordingDevice()
+    context.controller = Controller.from_frame(device, skeleton, rng=random.Random(0))
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.PLANNED
+    assert report.ok is True
+    assert report.plan is not None
+    assert [step['key'] for step in report.plan['steps']] == ['coins_quiz']
+    assert [refusal['code'] for refusal in report.plan['refusals']] == ['game_play_and_earn']
+    assert report.plan['taps_issued'] == 0
+    waits = report.plan['waits']
+    assert isinstance(waits, list)
+    assert waits[-1]['state'] == 'page'
+    assert waits[-1]['history'][0] == 'loading'
+    assert context.controller.tap_count == 0
+    assert device.taps == []
+
+
+def test_a_dry_run_waits_for_the_inline_rows_after_the_coin_page_markers(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    context = _context(
+        tmp_path,
+        capture=_Capture(_home_frame(), _coin_frame(), _coin_task_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+    device = _RecordingDevice()
+    context.controller = Controller.from_frame(device, _home_frame(), rng=random.Random(0))
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.PLANNED
+    assert report.plan is not None
+    assert [step['key'] for step in report.plan['steps']] == ['coins_quiz']
+    assert [refusal['code'] for refusal in report.plan['refusals']] == ['game_play_and_earn']
+    assert report.plan['taps_issued'] == 0
+    content_waits = report.plan['content_waits']
+    assert isinstance(content_waits, list)
+    assert content_waits[-1]['status'] == 'satisfied'
+    assert content_waits[-1]['history'][0] is False
+    assert context.controller.tap_count == 0
+    assert device.taps == []
+
+
+def test_a_dry_run_that_never_renders_fails_instead_of_planning_nothing(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    skeleton = _skeleton_frame()
+    context = _context(
+        tmp_path,
+        capture=_Capture(skeleton),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+    device = _RecordingDevice()
+    context.controller = Controller.from_frame(device, skeleton, rng=random.Random(0))
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.FAILED
+    assert report.ok is False
+    assert report.failure_code == FailureCode.NAVIGATION_FAILED.value
+    assert report.detail is not None
+    assert report.detail.startswith('surface_unknown: the coin page did not render')
+    assert 'states=loading' in report.detail
+    assert report.plan is not None
+    assert report.plan['surface'] == 'unknown'
+    assert report.plan['steps'] == []
+    assert report.plan['taps_issued'] == 0
+    assert context.controller.tap_count == 0
+    assert device.taps == []
+
+
+def test_a_dry_run_warm_re_entry_resets_the_empty_boost_load_fault(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    empty = _empty_boost_frame()
+    content = _coin_task_frame()
+    context = _context(
+        tmp_path,
+        capture=_Capture(empty, content),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+    device = _RecordingDevice()
+    context.controller = Controller.from_frame(device, empty, rng=random.Random(0))
+    assert isinstance(context.navigate, _Navigate)
+    assert context.navigate.routes == []
+
+    report = engine.run_once(context)
+
+    assert context.navigate.routes == [SurfaceRoute.SHORTCUT]
+    assert report.status is RunStatus.PLANNED
+    assert report.ok is True
+    assert report.plan is not None
+    assert [step['key'] for step in report.plan['steps']] == ['coins_quiz']
+    assert report.plan['taps_issued'] == 0
+    assert context.controller.tap_count == 0
+    assert device.taps == []
+
+
+def test_a_dry_run_that_stays_on_the_empty_boost_page_fails_with_its_own_reason(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    empty = _empty_boost_frame()
+    context = _context(
+        tmp_path,
+        capture=_Capture(empty),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+    device = _RecordingDevice()
+    context.controller = Controller.from_frame(device, empty, rng=random.Random(0))
+    # Keep the safety guard's unexpected-screen streak out of the way: this test
+    # names the planner's own empty-boost outcome, while the default three-frame
+    # guard has its own test and aborts first on an unchanged ERROR screen.
+    guard = SafetyGuard(catalogue=catalogue, logger=_logger(), limit=100)
+    context.safety = guard
+    context.capture = guard.wrap(context.capture)
+    assert isinstance(context.navigate, _Navigate)
+
+    report = engine.run_once(context)
+
+    assert context.navigate.routes == [SurfaceRoute.SHORTCUT, SurfaceRoute.SHORTCUT]
+    assert report.status is RunStatus.FAILED
+    assert report.ok is False
+    assert report.failure_code == FailureCode.NAVIGATION_FAILED.value
+    assert report.detail is not None
+    assert report.detail.startswith('surface_empty_boost')
+    assert report.plan is not None
+    assert report.plan['surface'] == 'empty_boost'
+    assert report.plan['steps'] == []
+    assert report.plan['taps_issued'] == 0
+    assert context.controller.tap_count == 0
+    assert device.taps == []
+
+
+def test_a_dry_run_route_failure_on_a_readable_empty_page_is_recorded(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _coin_frame()
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+    device = _RecordingDevice()
+    context.controller = Controller.from_frame(device, frame, rng=random.Random(0))
+
+    def fail(_route: SurfaceRoute) -> None:
+        raise DeviceUnavailable('warm re-entry unavailable')
+
+    context.navigate = cast(Any, fail)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.PLANNED
+    assert report.ok is True
+    assert report.plan_note == 'could not read the coins page: DeviceUnavailable: warm re-entry unavailable'
+    assert report.plan is not None
+    assert report.plan['surface'] == 'rows_absent'
+    assert report.plan['steps'] == []
+    assert report.plan['taps_issued'] == 0
+    assert context.controller.tap_count == 0
+    assert device.taps == []
 
 
 def test_a_dry_run_without_a_readable_balance_says_so(

@@ -110,7 +110,7 @@ abort conditions landed (measured 99.33%), to **99.35%** when abort propagation 
 and cleanup handlers landed (measured 99.36%), and to **99.37%** when the inside-task countdown
 band was narrowed (measured 99.38%), then to **99.39%** when the wait primitives landed (measured
 99.40%), then to **99.42%** when the timezone refusal and stability ledger landed (measured
-99.43%).
+99.43%), then to **99.44%** when the dry-run settle wait landed (measured 99.45%).
 The scaffold is fully covered, but a one-statement package makes that 100% an artefact of the
 stub, so the floor starts below the maximum. As real modules land, raise the floor toward the
 measured number; never lower it to make a change pass. The gate fails the build when coverage
@@ -146,7 +146,7 @@ Recorded frames live under `tests/data/` and are gitignored by set; the regenera
 `just check` remains the gate and runs every test with the coverage ratchet. `just check-fast` is
 the diagnostic loop: it excludes tests marked `slow` (full-frame OCR, template scans and the long
 engine retry walks) and does not enforce coverage. Measured on 2026-11-23: the full suite is
-**1615 passed in 184 s** (203 tests marked slow, coverage 99.43%); `just check-fast` is
+**1627 passed in 192 s** (203 tests marked slow, coverage 99.45%); `just check-fast` is
 the same fast lane, dominated by the remaining sub-200 ms frame and parser tests plus collection,
 not by any single fixture.
 
