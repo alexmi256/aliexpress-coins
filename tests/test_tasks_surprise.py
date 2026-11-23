@@ -1404,6 +1404,32 @@ def test_surprise_surface_settle_times_out_on_loading_and_popup(
     assert settled is False or dismiss is not None
 
 
+def test_surprise_surface_settle_times_out_inside_the_loading_wait(corpus: PopupCorpus) -> None:
+    from aliexpress_coins.tasks.surprise import _settle_surface
+
+    loading = _snapshot(_box('Loading', 100, 100, 300, 150))
+    world = _World({'frames': (loading,), 'boost': (_boost_frame(),)}, {}, start='frames')
+    clock = _SteppingClock(step=0.25)
+
+    frame, settled, dismiss = _settle_surface(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        world.frame,
+        templates=None,
+        timeout=1.0,
+        interval=0.5,
+        settle=0.0,
+        clock=clock,
+        sleep=clock.sleep,
+        logger=_logger(),
+    )
+
+    assert settled is False
+    assert dismiss is None
+    assert frame is loading
+
+
 def test_surprise_surface_settle_returns_the_popup_report_on_timeout(
     corpus: PopupCorpus,
     engine: RapidOcrEngine,

@@ -78,6 +78,14 @@ from aliexpress_coins.perception.scroll import (
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.state import CaptureSource, ScreenState, classify
 from aliexpress_coins.perception.templates import TemplateStore
+from aliexpress_coins.perception.waits import (
+    CountdownEnding,
+    CountdownReading,
+    CountdownStatus,
+    wait_for_countdown,
+    wait_for_text_gone,
+    wait_until_stable,
+)
 from aliexpress_coins.runner.errors import RunInterrupted
 from aliexpress_coins.runner.safety import RunAborted
 from aliexpress_coins.runner.state import DailyStateStore
@@ -279,6 +287,9 @@ class ChipWait:
     bound: float = 0.0
     initial: ChipReading | None = None
     final: ChipReading | None = None
+    ended_by: CountdownEnding | None = None
+    verified: bool = False
+    detail: str = ''
 
     def __post_init__(self) -> None:
         object.__setattr__(self, 'observations', tuple(self.observations))
@@ -297,6 +308,9 @@ class ChipWait:
         """Render the poll for ``run.json``."""
         return {
             'status': self.status.value,
+            'ended_by': None if self.ended_by is None else self.ended_by.value,
+            'verified': self.verified,
+            'detail': self.detail,
             'seen': self.seen,
             'ready': self.ready,
             'elapsed': self.elapsed,
@@ -582,11 +596,14 @@ def wait_for_timer_chip(
 ) -> ChipWait:
     """Poll the timer chip until its digits vanish, bounded by ``timeout``.
 
-    The first observation may be supplied as ``initial`` so the frame that proved
-    the destination arrived is not captured twice. If that frame has no chip the
-    poll returns ``absent`` immediately: a chip that never appears is a finding,
-    not a reason to keep sleeping. ``is_destination`` lets the caller stop before
-    a chip could exist (the tap never left the task list).
+    The poll is the shared :func:`~aliexpress_coins.perception.waits.wait_for_countdown`
+    primitive: the chip read is the evidence, and the result is translated back
+    into the executor's report shape. The first observation may be supplied as
+    ``initial`` so the frame that proved the destination arrived is not captured
+    twice. If that frame has no chip the poll returns ``absent`` immediately: a
+    chip that never appears is a finding, not a reason to keep sleeping.
+    ``is_destination`` lets the caller stop before a chip could exist (the tap
+    never left the task list).
 
     The wait is ended by a *read*, not by a sleep: every iteration captures,
     classifies the chip and only then sleeps at most ``interval``.
@@ -598,60 +615,94 @@ def wait_for_timer_chip(
     if timeout == 0:
         return ChipWait(status=ChipStatus.NOT_WAITED, bound=0.0)
 
-    started = clock()
-    deadline = started + timeout
-    observations: list[ChipObservation] = []
-    first: ChipReading | None = None
-    final: ChipReading | None = None
-    status = ChipStatus.ABSENT
-    seen_running = False
     frame = initial if initial is not None else _capture(capture)
+    read_frame: Callable[[Snapshot], CountdownReading | None] = _read_chip
+    started: float | None = None
+    if is_destination is not None:
+        destination = is_destination
+        started = clock()
 
-    while True:
-        now = clock()
-        elapsed = max(0.0, now - started)
-        if is_destination is not None and not is_destination(frame):
-            return ChipWait(
-                status=ChipStatus.NOT_ARRIVED,
-                observations=tuple(observations),
-                elapsed=elapsed,
-                bound=timeout,
-                initial=first,
-                final=final,
-            )
+        def _read_destination(snapshot: Snapshot) -> CountdownReading | None:
+            if not destination(snapshot):
+                raise _NotDestination
+            return _read_chip(snapshot)
 
-        reading = find_timer_chip(frame)
-        observations.append(ChipObservation(elapsed=elapsed, reading=reading))
-        if first is None:
-            first = reading
-        final = reading
+        read_frame = _read_destination
 
-        if reading is not None and reading.running:
-            seen_running = True
-        elif seen_running:
-            status = ChipStatus.CLEARED
-            break
-        elif reading is not None and reading.checked:
-            status = ChipStatus.ALREADY_CLEAR
-            break
-        else:
-            status = ChipStatus.ABSENT
-            break
-
-        if now >= deadline:
-            status = ChipStatus.TIMED_OUT
-            break
-
-        sleep(min(interval, max(0.0, deadline - now)))
-        frame = _capture(capture)
+    try:
+        wait = wait_for_countdown(
+            capture,
+            timeout=timeout,
+            interval=interval,
+            initial=frame,
+            read=read_frame,
+            clock=clock,
+            sleep=sleep,
+        )
+    except _NotDestination:
+        # The old per-poll contract: a frame that stops being the destination
+        # ends the wait at the first poll that sees it, not at the chip deadline.
+        return ChipWait(
+            status=ChipStatus.NOT_ARRIVED,
+            elapsed=max(0.0, clock() - started) if started is not None else 0.0,
+            bound=timeout,
+        )
+    observations = tuple(
+        ChipObservation(
+            elapsed=item.elapsed,
+            reading=None if item.reading is None else _chip_from_countdown(item.reading),
+        )
+        for item in wait.observations
+    )
+    if wait.status in (CountdownStatus.CLEARED, CountdownStatus.VERIFIED):
+        status = ChipStatus.CLEARED if wait.seen else ChipStatus.ALREADY_CLEAR
+    elif wait.status is CountdownStatus.TIMED_OUT:
+        status = ChipStatus.TIMED_OUT
+    else:
+        status = ChipStatus.ABSENT
 
     return ChipWait(
         status=status,
-        observations=tuple(observations),
-        elapsed=max(0.0, clock() - started),
+        observations=observations,
+        elapsed=wait.elapsed,
         bound=timeout,
-        initial=first,
-        final=final,
+        initial=observations[0].reading if observations else None,
+        final=observations[-1].reading if observations else None,
+        ended_by=wait.ended_by,
+        verified=wait.verified,
+        detail=wait.detail,
+    )
+
+
+class _NotDestination(Exception):
+    """Internal signal: the frame stopped being the expected destination.
+
+    Raised from the countdown reader so the shared wait can stop on the frame
+    that bounced, rather than waiting for a chip that will never return. It is
+    caught inside :func:`wait_for_timer_chip` and never escapes the module.
+    """
+
+
+def _read_chip(snapshot: Snapshot) -> CountdownReading | None:
+    """Adapt the measured chip reader to the generic countdown seam."""
+    reading = find_timer_chip(snapshot)
+    if reading is None:
+        return None
+    return CountdownReading(
+        text=reading.text,
+        seconds=reading.countdown,
+        checked=reading.checked,
+        box=reading.box,
+    )
+
+
+def _chip_from_countdown(reading: CountdownReading) -> ChipReading:
+    """Translate one primitive reading back into the executor's report shape."""
+    return ChipReading(
+        text=reading.text,
+        countdown=reading.seconds,
+        checked=reading.checked,
+        box=reading.box,
     )
 
 
@@ -822,7 +873,19 @@ def return_to_coins_page(
                 break
             sleep(min(interval, max(0.0, deadline - now)))
         if settle:
-            sleep(settle)
+            # The settle after a failed attempt means "let the page stop
+            # rendering before trying the route again". Poll for actual
+            # stability instead of spending the whole budget on a blind sleep;
+            # an unstable page still ends at the same bound.
+            wait_until_stable(
+                capture,
+                timeout=settle,
+                interval=min(interval, settle),
+                hold=0.0,
+                initial=frame,
+                clock=clock,
+                sleep=sleep,
+            )
 
     return ReturnResult(
         returned=False,
@@ -1549,11 +1612,21 @@ def _settle_surface(
     while True:
         state = classify(frame).state
         if state is ScreenState.LOADING:
-            now = clock()
-            if now >= deadline:
+            remaining = deadline - clock()
+            if remaining <= 0:
                 return frame, False, dismiss
-            sleep(min(interval, max(0.0, deadline - now)))
-            frame = _capture(capture)
+            waiting = wait_for_text_gone(
+                capture,
+                _is_loading,
+                timeout=remaining,
+                interval=interval,
+                initial=frame,
+                clock=clock,
+                sleep=sleep,
+            )
+            frame = waiting.frame
+            if waiting.timed_out:
+                return frame, False, dismiss
             continue
         if state is ScreenState.POPUP:
             now = clock()
@@ -1872,6 +1945,11 @@ def _trusted_surface(opened: BoostList) -> bool:
 def _is_task_surface(snapshot: Snapshot) -> bool:
     """Whether a frame is the task list the roster was read from."""
     return is_boost_page(snapshot) or _is_coin_page(snapshot)
+
+
+def _is_loading(snapshot: Snapshot) -> bool:
+    """The predicate the settle wait polls: the frame is still rendering."""
+    return classify(snapshot).state is ScreenState.LOADING
 
 
 def _is_coin_page(snapshot: Snapshot) -> bool:

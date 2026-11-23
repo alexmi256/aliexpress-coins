@@ -48,6 +48,7 @@ from aliexpress_coins.perception.scroll import SCROLL_START_FRACTION, SCROLL_VIE
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.state import CaptureSource, ScreenState, classify
 from aliexpress_coins.perception.templates import TemplateStore
+from aliexpress_coins.perception.waits import wait_for_text_gone
 from aliexpress_coins.runner.errors import RunInterrupted
 from aliexpress_coins.runner.safety import RunAborted
 from aliexpress_coins.runner.state import DailyStateStore
@@ -1614,11 +1615,21 @@ def _settle_surface(
             return frame, True, dismiss
         state = classify(frame).state
         if state is ScreenState.LOADING:
-            now = clock()
-            if now >= deadline:
+            remaining = deadline - clock()
+            if remaining <= 0:
                 return frame, False, dismiss
-            sleep(min(interval, max(0.0, deadline - now)))
-            frame = _capture(capture)
+            waiting = wait_for_text_gone(
+                capture,
+                _is_loading,
+                timeout=remaining,
+                interval=interval,
+                initial=frame,
+                clock=clock,
+                sleep=sleep,
+            )
+            frame = waiting.frame
+            if waiting.timed_out:
+                return frame, False, dismiss
             continue
         if state is ScreenState.POPUP:
             now = clock()
@@ -1699,6 +1710,11 @@ def _is_task_surface(snapshot: Snapshot) -> bool:
 
 def _is_coin_page(snapshot: Snapshot) -> bool:
     return all(contains_text(snapshot, marker) for marker in COIN_PAGE_MARKERS)
+
+
+def _is_loading(snapshot: Snapshot) -> bool:
+    """The predicate the settle wait polls: the frame is still rendering."""
+    return classify(snapshot).state is ScreenState.LOADING
 
 
 def _is_grid_surface(snapshot: Snapshot) -> bool:
