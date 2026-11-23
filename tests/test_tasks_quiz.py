@@ -843,6 +843,66 @@ def test_run_quiz_task_does_not_tap_a_partial_result_page_as_a_question(
     assert [tap.label for tap in result.taps] == ['GO', 'True', 'Go back']
 
 
+@pytest.mark.slow
+def test_run_quiz_task_uses_the_payout_when_a_partial_result_has_no_go_back(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """A one-marker result without Go back is still not a question."""
+
+    def on_tap(screen: str, label: str | None, _count: int) -> str | None:
+        if screen == 'result' and label == 'Go back':
+            return 'partial'
+        return None
+
+    partial = _snapshot(
+        _box('Coins quiz', 60, 90, 400, 150),
+        _box('Answer quiz questions for more coins!', 60, 170, 600, 210),
+        _box('Q : Which statements about coins credits are correct?', 80, 400, 1100, 450),
+        _box('Correct answer: All of the above', 60, 1100, 1100, 1150),
+        _box('You got +6', 60, 1450, 500, 1510),
+    )
+    world = _World(
+        series={
+            'boost': (_quiz_boost_frame(),),
+            'question': (_question_frame(),),
+            'result': (_result_frame(),),
+            'partial': (partial,),
+            'coins': (_coins_frame(),),
+            'boost_after': (_boost_after_frame(with_row=True, action='GO'),),
+        },
+        transitions={
+            ('boost', 'GO'): 'question',
+            ('question', 'True'): 'result',
+            ('question', 'False'): 'result',
+            ('coins', 'Earn more >'): 'boost_after',
+        },
+        on_tap=on_tap,
+    )
+
+    result = run_quiz_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        exit_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+        rng=random.Random(3),
+    )
+
+    assert is_question_state(partial) is False
+    assert result.outcome is QuizOutcome.COMPLETED
+    assert result.verification == 'result_page'
+    assert [tap.label for tap in result.taps] == ['GO', 'True', 'Go back']
+
+
 @pytest.mark.parametrize(
     'question',
     [

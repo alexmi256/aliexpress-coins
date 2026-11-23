@@ -1667,7 +1667,10 @@ def _is_question_page(snapshot: Snapshot) -> bool:
     # it prints the learned answer. Without this veto the exit wait mistakes the
     # result page for a second question and then reports that question never
     # arrived after it was already answered (issue #98).
-    partial_result = find_go_back(snapshot) is not None and (
+    # A single marker can also be option or question copy. The payout or the
+    # Go back control is what makes a one-marker frame a result page.
+    result_control = find_go_back(snapshot) is not None or read_payout(snapshot) is not None
+    partial_result = result_control and (
         _has_result_marker(snapshot, _CORRECT_ANSWER) or _has_result_marker(snapshot, _YOUR_ANSWER)
     )
     return (
