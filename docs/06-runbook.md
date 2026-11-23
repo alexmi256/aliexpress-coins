@@ -4,7 +4,8 @@ The operator's document: how to prove the collector can run, how to run one nigh
 lands, how to read it, and what to check when a night fails. It is written to be followed from a
 clean clone, not from a prepared working tree.
 
-Companion documents: [`04-delivery-plan.md`](04-delivery-plan.md) for the build order,
+Companion documents: [`00-brief.md`](00-brief.md) for the requirements of record,
+[`02-architecture.md`](02-architecture.md) for the module architecture,
 [`05-app-knowledge.md`](05-app-knowledge.md) for the app's behaviour,
 [`07-navigation-map.md`](07-navigation-map.md) for the screen graph,
 [`08-stability.md`](08-stability.md) for the nightly outcomes ledger, and
@@ -55,7 +56,7 @@ The run also needs:
 
 - the AliExpress app installed and **signed in**;
 - the tablet **unlocked**, with no PIN or biometric lock (Q2 in
-  [`00-brief.md`](00-brief.md) §9 — the collector cannot enter one);
+  [`00-brief.md`](00-brief.md) §6 — the collector cannot enter one);
 - the charger attached, because a night may take tens of minutes;
 - the app allowed to stay foregrounded long enough to finish; a human using the tablet can interrupt
   any run.
@@ -110,11 +111,8 @@ proven. See §9 for what to check when a night claims nothing.
 
 ## 2. Quickstart from a clean clone
 
-The documented commands were run from two clean trees on 2026-11-22. Neither had `runs/`, `state/`
-or `.venv/` copied in.
-
-The **base tree**, `origin/main` at `10b23d5` (the commit this issue starts from), does not yet
-contain `tests/test_docs.py`, so its suite is 1580 tests:
+Verified from a clean clone on 2026-11-23 with no `runs/`, `state/` or `.venv/` copied in (full
+command table in §13; timed onboarding path in §2.1):
 
 ```console
 $ git clone git@github.com:alexmi256/aliexpress-coins.git
@@ -125,19 +123,14 @@ $ just setup
 Successfully installed aliexpress-coins-0.1.0
 $ just check
 ...
-Required test coverage of 99.39% reached. Total coverage: 99.40%
-======================= 1580 passed in 211.75s (0:03:31) =======================
+Required test coverage of 99.47% reached. Total coverage: 99.48%
+======================= 1778 passed in 213.31s (0:03:33) =======================
 All quality gates passed.
 ```
 
-The **branch tree** adds the timezone refusal, its tests, the stability log and the runbook
-additions, so the suite is 1615 tests. The exact clean-clone transcript and the commit it came
-from are in §13; the timed onboarding path is in §2.1.
-
 `just check` is the gate: ruff lint, ruff format check, mypy strict over `src/` and `tests/`, then
-pytest with the coverage ratchet. A green test run without the lint, format and type checks is not
-a green gate. The base tree reached coverage **99.40%** against its **99.39%** floor; this branch
-reaches **99.43%** against the raised **99.42%** floor.
+pytest with the coverage ratchet (current floor in `pyproject.toml`). A green test run without the
+lint, format and type checks is not a green gate.
 
 The clean clone has no device configuration yet. For a local run, export the two values that name
 the device and its timezone:
@@ -166,7 +159,7 @@ the local Python process does **not**, which is why the local path exports the v
 
 ### 2.1 Measured onboarding time
 
-Measured on 2026-11-22/23 from a fresh clone of this branch (`issue-79`) on the build box, with
+Measured on 2026-11-22/23 from a fresh clone on the build box, with
 docker and the tablet reachable. The timed path was: clone → `just setup` → copy and edit `.env` →
 local `doctor` → `docker compose build` → container `doctor` → container `run --once --dry-run`
 (the safe first run; no live night was taken while the daemon was running). It used a separate
@@ -273,7 +266,7 @@ Fixture capture is a developer tool, not an operator step:
 
 ```console
 $ .venv/bin/python -m aliexpress_coins.tools.capture_frames --list
-states: 10 frames
+states: 11 frames
   coins.png
   account.png
   ...
@@ -681,74 +674,29 @@ state file while a run is using it. A corrupt file is quarantined, not silently 
 
 ## 13. What was executed for this revision
 
-All commands were run on 2026-11-22 against device `192.168.8.65:5555`, app `8.180.1`, timezone
-`America/Toronto`. Two clean trees were used.
-
-### Base tree: `origin/main` at `10b23d5`
-
-This is the reproduction the issue asked for. It does not contain `tests/test_docs.py`, so its
-suite is 1580 tests.
-
-```console
-$ git clone git@github.com:alexmi256/aliexpress-coins.git
-Cloning into 'aliexpress-coins'...
-$ cd aliexpress-coins
-$ just setup
-...
-Successfully installed aliexpress-coins-0.1.0
-$ just check
-...
-Required test coverage of 99.39% reached. Total coverage: 99.40%
-======================= 1580 passed in 211.75s (0:03:31) =======================
-All quality gates passed.
-```
-
-`doctor` and `--dry-run` were also run on this tree. The dry run returned `planned` with
-`surface: unknown` and zero steps because of #76; that is the timing defect, not an empty day.
-
-### Branch tree: `issue-79` (code revision before this documentation commit)
-
-This tree adds the startup timezone refusal and its tests, the stability log and these runbook
-additions. The timed onboarding path from the same code commit is in §2.1.
-
-```console
-$ git clone --branch issue-79 git@github.com:alexmi256/aliexpress-coins.git
-Cloning into 'aliexpress-coins'...
-$ cd aliexpress-coins
-$ just setup
-...
-Successfully installed aliexpress-coins-0.1.0
-$ just check
-...
-Required test coverage of 99.42% reached. Total coverage: 99.43%
-======================= 1615 passed in 184.23s (0:03:04) =======================
-All quality gates passed.
-```
-
-The command table below records the remaining commands from the base tree; the branch adds the
-startup timezone check, which its unit tests walk in both directions without a device tap.
+Executed on **2026-11-23** against device `192.168.8.65:5555`, app `8.180.1`, timezone
+`America/Toronto`, from a clean clone (with an isolated Compose project name so the running nightly
+daemon container and its volumes stayed untouched):
 
 | command | result |
 |---|---|
-| `git clone git@github.com:alexmi256/aliexpress-coins.git` | fresh base clone, no `runs/`, `state/` or `.venv/` |
-| `just setup` | `.venv` created, package installed |
-| `python -m aliexpress_coins doctor` (local and container) | five `[ok]` lines including both timezones, exit 0 |
-| `adb ... exec-out screencap -p` | 1200×2000 PNG |
-| `python -m aliexpress_coins.tools.capture_frames --list` | three fixture sets listed |
-| `python -m aliexpress_coins run --once --dry-run` | `planned`, report written, `taps_issued: 0`; one run hit #76 with `surface: unknown` |
-| `docker compose build` | image built and tagged |
-| `docker compose run --rm collector cat /app/runs/<id>/summary.md` | report read from the named volume |
-| `docker compose logs --tail 5 collector` | `schedule_wait` for 03:32:06-05:00 |
+| `git clone git@github.com:alexmi256/aliexpress-coins.git` | fresh clone, no `runs/`, `state/` or `.venv/` |
+| `cp .env.example .env` + set `AECOINS_DEVICE=192.168.8.65:5555` | `.env` created from example |
+| `docker compose build` | image built and tagged `aliexpress-coins-collector:local` |
+| `docker compose run --rm collector python -m aliexpress_coins doctor` *(with default `UTC`)* | `[fail] timezone: configured timezone UTC; device timezone America/Toronto ...`, exit `1` |
+| `docker compose run --rm collector python -m aliexpress_coins doctor` *(with `America/Toronto`)* | all five checks `[ok]` (`adb`, `device`, `geometry` `c9b8f88670e295b5`, `timezone`, `ocr`), exit `0` |
+| `docker compose run --rm collector python -m aliexpress_coins run --once --dry-run` | `run 20261123T170916Z: planned`, `surface: rows_present`, 2 planned / 1 refused, `taps issued: 0`, exit `0` |
+| `docker compose run --rm collector cat /app/runs/20261123T170916Z/summary.md` | report read cleanly from the `runs` volume |
+| `docker logs --tail 5 aliexpress-coins-collector-1` *(live daemon)* | `schedule_wait` for `2026-11-24T03:31:31.431469-05:00` |
+| `just setup && just check` | ruff, format check, mypy strict, **1778 passed**, coverage **99.48%** (floor **99.47%**) |
+| `.venv/bin/python -m aliexpress_coins.tools.capture_frames --list` | `states: 11 frames`, `flows: 14 frames`, `popups: 7 frames` |
 
 Deliberately **not** executed here:
 
-- `run --once` without `--dry-run`: the day may already be claimed, and a real run would tap the
-  shared tablet. The dry-run transcript is the safe proof.
-- `run --schedule` as a new process, and `docker compose up -d`: a nightly daemon was already
-  running; starting a second one against the same state would have raced it under the pre-#78
-  code. The run lock now serialises them, but the schedule output above was read from the
-  running daemon's logs rather than starting a second one.
-- `docker compose stop` / `down`: stopping the running nightly daemon was forbidden for this task.
+- `run --once` without `--dry-run`: a real run taps and may claim coins on the shared tablet; the
+  dry-run transcript is the safe proof.
+- `docker compose up -d` / `stop` / `down`: a live nightly daemon container was already running on
+  the build box and must not be stopped or recreated; the schedule log above was read from it.
 
 ---
 
@@ -777,8 +725,9 @@ A user on their own phone must do these in order, with the daemon **not** runnin
    capture refusal. It is an unmeasured profile whose popup calibration is absent.
 2. `run --once --dry-run` — read the plan. `taps_issued: 0` is required. The plan shows what the
    new frame can read before a real night; a popup with no calibration for the new profile will
-   report `popup_unclosable` instead of tapping. A `surface: unknown` with zero steps is a
-   load/timing fault (#76), not an empty day; retry or inspect the screen.
+   report `popup_unclosable` instead of tapping. An unreadable surface (`surface: unknown` or
+   `surface_incomplete`) exits non-zero rather than `planned`; treat it as a load/timing fault and
+   retry or inspect the screen, not as an empty day.
 3. One supervised `run --once` — take one real night by hand, well away from the scheduled fire
    time, and read `summary.md`, the task evidence and the balance delta. Do not start the
    scheduler until this night is understood.
