@@ -336,7 +336,6 @@ class _ResultEvidence:
     answer_correct: bool | None
     payout: str | None
     answer_source: str | None
-    rounds: int
 
 
 def find_answer_options(snapshot: Snapshot) -> tuple[AnswerOption, ...]:
@@ -593,7 +592,8 @@ def run_quiz_task(
         answer_correct = last_result.answer_correct
         payout = last_result.payout
         answer_source = last_result.answer_source
-        rounds = last_result.rounds
+        # ``rounds`` stays monotonic: restoring it would reset MAX_ROUNDS and
+        # let a page that keeps re-showing questions bypass the bound.
         return True
 
     try:
@@ -794,7 +794,6 @@ def run_quiz_task(
                     answer_correct=answer_correct,
                     payout=payout,
                     answer_source=answer_source,
-                    rounds=rounds,
                 )
             else:
                 # A recognised result page with no readable value must not
@@ -1669,7 +1668,8 @@ def _is_question_page(snapshot: Snapshot) -> bool:
     # result page for a second question and then reports that question never
     # arrived after it was already answered (issue #98).
     return (
-        not _is_result_page(snapshot)
+        not _has_result_marker(snapshot, _CORRECT_ANSWER)
+        and not _has_result_marker(snapshot, _YOUR_ANSWER)
         and _question_box(snapshot) is not None
         and contains_text(snapshot, 'Coins quiz')
         and contains_text(snapshot, 'Answer quiz questions for')
