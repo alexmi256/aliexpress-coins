@@ -1206,7 +1206,11 @@ def _run_signin(
         logger=common['logger'],
     )
     claims = result.results
-    completed = bool(result.completed)
+    # A completed claim must not hide an unverified one: the streak and the
+    # boost check-in are independent, and the empty boost page makes the boost
+    # claim unverified while the streak succeeds. Reporting ``completed`` from
+    # the streak alone would swallow the miss (#84).
+    completed = bool(result.completed) and not any(claim.unverified for claim in claims)
     if completed:
         outcome = 'completed'
     elif claims and all(claim.already_done for claim in claims):

@@ -1,7 +1,8 @@
 # Screen-state fixtures
 
-Ten recorded frames from the reference tablet, used by `tests/test_perception_state.py`
-(issue #16). They are **full 1200×2000 frames**, exactly the shape `AdbSnapshotter.capture()`
+Twelve recorded frames from the reference tablet, used by the screen-state classifier tests
+(`tests/test_perception_state.py`) and the #84 discovery/sign-in tests. They are **full 1200×2000
+frames**, exactly the shape `AdbSnapshotter.capture()`
 returns: the status-bar clock and the Android taskbar glyphs are retained. The classifier
 ignores those system-UI bands with frame-relative fractions; a cropped 1200×1700 fixture would
 test a frame no run ever sees.
@@ -25,6 +26,8 @@ reviewed the same way.
 | `surprise_grid.png` | full `Browse surprise items` page | product images and prices only; no account data |
 | `popup_over_page.png` | full promo modal (`Extra Coupon unlocked`) over the home feed | search bar and notification badge/bell masked |
 | `ambiguous_feed.png` | full home feed with no modelled coins/collection marker | search bar and notification badge/bell masked; the lower `Bundle deals` feed section is not a top product-collection header |
+| `boost_daily_checkin.png` | full `Coins boost` page from the failed 2026-11-23 nightly run, first row `Daily check-in` (#84) | balance chip and hero, coin-credit chip, notification badge and status-bar clock masked; `Coins boost` and all task rows remain |
+| `coins_merged_card.png` | full coin page from the same run, where the daily card and the first task row share one OCR band (#84) | coin balance, worth, coin-credit and credits-to-use amounts, notification badge and status-bar clock masked; `Daily coins`, `Earn more`, `Collect` and `Daily check-in` remain |
 
 `error_404.png` was dropped as an extra fixture: the bare advertised coin URL is recorded in
 `docs/01-recon-findings.md` as landing on a blank WebView, while the capture session saw a 404
@@ -35,6 +38,10 @@ The existing `tests/data/boost.png` remains the cropped layout fixture for issue
 suite uses `states/boost.png`, a full frame, so the state classifier is always tested on pipeline
 input.
 
-Every PNG is under the ~300 KB fixture budget. `.gitignore` has one negation for
+Every PNG is under the **550 KB** fixture budget, raised from ~300 KB on 2026-11-23. Fixtures
+must stay full 1200×2000 captures — downscaling would test a frame no run ever sees (#42/#36) —
+and the two dense gradient/photo frames added for #84 are 363 KB and 503 KB after a lossless
+`optimize=True, compress_level=9` pass (pixels unchanged, so OCR is unchanged). 550 KB is the new
+ceiling; anything larger needs a recorded reason. `.gitignore` has one negation for
 `tests/data/states/*.png`; that exception exists only because this directory is reviewed as a
 whole. It is not permission to drop arbitrary screenshots anywhere else in the tree.

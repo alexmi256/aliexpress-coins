@@ -24,7 +24,7 @@ from aliexpress_coins.perception.ocr import RapidOcrEngine
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks.catalogue import DispatchAuthorization, load_task_catalogue
-from aliexpress_coins.tasks.discovery import DiscoveryRoute, enumerate_roster
+from aliexpress_coins.tasks.discovery import EMPTY_BOOST_MARKER, DiscoveryRoute, enumerate_roster
 from aliexpress_coins.tasks.dispatch import DispatchGate
 from aliexpress_coins.tasks.signin import (
     BOOST_KEY,
@@ -32,6 +32,7 @@ from aliexpress_coins.tasks.signin import (
     STREAK_KEY,
     ClaimOutcome,
     SigninOutcome,
+    _claim_balance,
     claim_boost_checkin,
     claim_daily_signins,
     claim_signins,
@@ -193,6 +194,16 @@ def _boost_without_row(base: Snapshot) -> Snapshot:
     return _rebox(base, boxes)
 
 
+def _empty_boost(base: Snapshot) -> Snapshot:
+    return _rebox(
+        base,
+        (
+            _box('Coins boost', 50, 470, 421, 541),
+            _box(EMPTY_BOOST_MARKER, 100, 1400, 1100, 1460),
+        ),
+    )
+
+
 def _boost_without_action(base: Snapshot) -> Snapshot:
     boxes = tuple(box for box in base.boxes if not (box.text == 'GO' and box.bbox[1] < 450))
     return _rebox(base, boxes)
@@ -233,6 +244,8 @@ def frames(engine: RapidOcrEngine) -> dict[str, Snapshot]:
     return {
         'coins': _load(STATES / 'coins.png', engine),
         'state_boost': _load(STATES / 'boost.png', engine),
+        'real_boost': _load(STATES / 'boost_daily_checkin.png', engine),
+        'merged_card': _load(STATES / 'coins_merged_card.png', engine),
         'boost': _load(DATA / 'boost.png', engine),
         'launch': _load(DATA / 'popups' / 'launch_welcome_gifts.png', engine),
         'skeleton': _load(STATES / 'skeleton.png', engine),
@@ -266,6 +279,25 @@ def test_find_streak_control_returns_the_measured_collect(frames: dict[str, Snap
 
     assert control is not None
     assert control.text == 'Collect'
+
+
+@pytest.mark.slow
+def test_find_streak_control_reads_a_collect_in_the_merged_card_band(
+    frames: dict[str, Snapshot],
+) -> None:
+    """The 2026-11-23 coin page: the card and the first task row share one band.
+
+    ``Daily coins``, the day chips, ``Collect``, ``Worth C$0.01`` and the
+    ``Daily check-in`` row all chain into one OCR cluster on this frame. The
+    control is in that header band, so a search that only looked below the
+    header found nothing and left the daily check-in unclaimed (#84).
+    """
+    control = find_streak_control(frames['merged_card'])
+
+    assert control is not None
+    assert control.text == 'Collect'
+    # The measured Collect button, not the Daily check-in GO below it.
+    assert control.center == pytest.approx((946.0, 1092.5), abs=2.0)
 
 
 def test_find_streak_control_is_none_without_the_section_marker(frames: dict[str, Snapshot]) -> None:
@@ -428,6 +460,97 @@ def test_claim_streak_without_a_control_is_unavailable_and_taps_nothing(
     assert result.tapped is False
     assert device.taps == []
     assert state.done_today(STREAK_KEY) is False
+
+
+@pytest.mark.slow
+def test_claim_streak_claims_a_collect_in_the_merged_card_band(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """The live coin page's Collect is claimable and verified by its absence."""
+    before = frames['merged_card']
+    after = _rebox(before, tuple(box for box in before.boxes if box.text != 'Collect'))
+    device = _RecordingDevice()
+    state = _state(tmp_path)
+
+    result = claim_streak(
+        _controller(device, before),
+        _Capture([before, after, after, after]),
+        corpus,
+        state,
+        authorization=_signin_authorization(),
+        timeout=2.0,
+        interval=1.0,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.completed is True
+    assert result.verification == 'absent_control'
+    assert result.control is not None
+    assert result.control.text == 'Collect'
+    assert len(device.taps) == 1
+    assert state.done_today(STREAK_KEY)
+
+
+@pytest.mark.slow
+def test_claim_streak_waits_for_the_streak_surface_after_the_boost_page(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """A shortcut that has not landed yet is not an absent Collect control.
+
+    The runner fires the shortcut and calls this executor immediately. When the
+    capture still shows the boost page, the executor waits for the coin page
+    instead of reporting ``unavailable`` from the wrong surface (#84).
+    """
+    before = frames['merged_card']
+    after = _rebox(before, tuple(box for box in before.boxes if box.text != 'Collect'))
+    device = _RecordingDevice()
+    state = _state(tmp_path)
+
+    result = claim_streak(
+        _controller(device, before),
+        _Capture([frames['real_boost'], before, after, after, after]),
+        corpus,
+        state,
+        authorization=_signin_authorization(),
+        timeout=3.0,
+        interval=1.0,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.completed is True
+    assert len(device.taps) == 1
+    assert state.done_today(STREAK_KEY)
+
+
+def test_claim_streak_reports_a_streak_surface_that_never_appears(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    device = _RecordingDevice()
+
+    result = claim_streak(
+        _controller(device, frames['real_boost']),
+        _Capture([frames['real_boost']]),
+        corpus,
+        _state(tmp_path),
+        authorization=_signin_authorization(),
+        timeout=1.0,
+        interval=1.0,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is SigninOutcome.UNAVAILABLE
+    assert result.verification == 'not_found'
+    assert 'did not appear' in result.detail
+    assert device.taps == []
 
 
 def test_claim_streak_accepts_a_callable_capture_seam(
@@ -802,6 +925,80 @@ def test_claim_boost_checkin_completed_when_the_row_disappears(
     assert result.control.text == 'GO'
     assert len(device.taps) == 1
     assert state.done_today(BOOST_KEY)
+
+
+def test_claim_boost_checkin_keeps_the_recorded_frame_from_poisoning_the_balance(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """The recorded boost frame carries no readable balance; recording keeps the prior one.
+
+    The real 2026-11-23 post-claim frame's top quarter was a non-coin surface.
+    Its balance is redacted here, so ``read_coin_balance`` returns ``None``: the
+    claim must leave ``last_balance`` alone rather than write a number from a
+    surface the coin-page rule does not describe.
+    """
+    before = frames['real_boost']
+    after = _boost_without_row(before)
+    state = _state(tmp_path)
+    state.observe_balance(54.0)
+
+    assert read_coin_balance(before) is None
+    assert read_coin_balance(after) is None
+
+    result = claim_boost_checkin(
+        _controller(_RecordingDevice(), before),
+        _Capture([before, after, after, after]),
+        corpus,
+        state,
+        authorization=_signin_authorization(),
+        timeout=2.0,
+        interval=1.0,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.completed is True
+    assert result.verification == 'absent_boost_row'
+    assert result.balance_before is None
+    assert result.balance_after is None
+    assert state.snapshot().last_balance == 54.0
+
+
+def test_claim_balance_never_records_a_post_claim_drop() -> None:
+    assert _claim_balance(54.0, 0.0) == 54.0
+    assert _claim_balance(54.0, 55.0) == 55.0
+    assert _claim_balance(54.0, None) == 54.0
+    assert _claim_balance(None, 0.0) == 0.0
+
+
+def test_claim_streak_clamps_a_post_claim_balance_drop(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    before = _streak_frame(frames['coins'], balance='40')
+    after = _streak_frame(frames['coins'], balance='0', collect=False, tomorrow=True)
+    state = _state(tmp_path)
+
+    result = claim_streak(
+        _controller(_RecordingDevice(), before),
+        _Capture([before, after, after, after]),
+        corpus,
+        state,
+        authorization=_signin_authorization(),
+        timeout=2.0,
+        interval=1.0,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.completed is True
+    assert result.verification == 'absent_control'
+    assert result.balance_before == 40.0
+    assert result.balance_after == 40.0
+    assert state.snapshot().last_balance == 40.0
 
 
 def test_claim_boost_checkin_completed_by_a_claimed_row_marker(
@@ -1386,6 +1583,40 @@ def test_claim_daily_signins_claims_only_the_open_boost_when_the_streak_is_done(
     assert state.done_today(BOOST_KEY)
 
 
+def test_claim_daily_signins_fails_named_on_the_empty_boost_page(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """The measured cold-start empty page is a load fault, not an absent row."""
+    coin_page = _streak_frame(frames['coins'], collect=False, tomorrow=True)
+    state = _state(tmp_path)
+    state.record(STREAK_KEY)
+    device = _RecordingDevice()
+
+    report = claim_daily_signins(
+        _controller(device, coin_page),
+        _Capture([coin_page, _empty_boost(frames['real_boost'])]),
+        corpus,
+        state,
+        authorization=_signin_authorization(),
+        timeout=2.0,
+        interval=1.0,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert report.streak.already_done is True
+    assert report.boost is not None
+    assert report.boost.unverified is True
+    assert report.boost.verification == 'empty_boost'
+    assert 'empty' in report.boost.detail
+    assert report.boost.tapped is False
+    assert report.route is DiscoveryRoute.BOOST
+    assert state.done_today(BOOST_KEY) is False
+    assert len(device.taps) == 1
+
+
 @pytest.mark.slow
 def test_claim_daily_signins_falls_back_to_the_before_balance(
     frames: dict[str, Snapshot],
@@ -1415,3 +1646,53 @@ def test_claim_daily_signins_falls_back_to_the_before_balance(
 def test_claim_signins_alias_and_outcome_alias_are_the_same_objects() -> None:
     assert claim_signins is claim_daily_signins
     assert ClaimOutcome is SigninOutcome
+
+
+def test_claim_daily_signins_opens_the_boost_list_with_its_own_budget(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Navigation and claim verification must not share one 8 s deadline (#84)."""
+    observed: dict[str, object] = {}
+
+    def _open(*_args: object, **kwargs: object) -> object:
+        observed.update(kwargs)
+        raise RuntimeError('navigation sentinel')
+
+    monkeypatch.setattr('aliexpress_coins.tasks.signin.open_boost_list', _open)
+    state = _state(tmp_path)
+    state.record(STREAK_KEY)
+
+    with pytest.raises(RuntimeError, match='navigation sentinel'):
+        claim_daily_signins(
+            _controller(_RecordingDevice(), frames['merged_card']),
+            _Capture([frames['merged_card']]),
+            corpus,
+            state,
+            authorization=_signin_authorization(),
+            timeout=2.0,
+            open_timeout=7.5,
+            interval=1.0,
+            clock=_SteppingClock(),
+            sleep=_SteppingClock().sleep,
+        )
+
+    assert observed['timeout'] == 7.5
+
+
+def test_claim_daily_signins_rejects_a_non_positive_open_timeout(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match='open_timeout'):
+        claim_daily_signins(
+            _controller(_RecordingDevice(), frames['coins']),
+            _Capture([frames['coins']]),
+            corpus,
+            _state(tmp_path),
+            authorization=_signin_authorization(),
+            open_timeout=0,
+        )
