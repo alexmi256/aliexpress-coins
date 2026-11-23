@@ -28,6 +28,7 @@ from typing import Any
 from aliexpress_coins.perception.artifacts import atomic_write_bytes
 from aliexpress_coins.runner.errors import ReportError
 from aliexpress_coins.runner.failures import Failure
+from aliexpress_coins.runner.state import NightOutcome
 
 __all__ = [
     'RUN_REPORT_SCHEMA',
@@ -39,8 +40,8 @@ __all__ = [
     'prune_runs',
 ]
 
-RUN_REPORT_SCHEMA = 4
-"""The on-disk schema this module reads or writes; 4 adds plan and abort records."""
+RUN_REPORT_SCHEMA = 5
+"""The on-disk schema this module reads or writes; 5 adds the night completion record."""
 
 _RUN_ID_PATTERN = re.compile(r'^\d{8}T\d{6}Z$')
 """The only directory names retention may delete."""
@@ -166,6 +167,7 @@ class RunReport:
         self.plan: dict[str, Any] | None = None
         self.plan_note: str | None = None
         self.abort: dict[str, Any] | None = None
+        self.night: dict[str, Any] | None = None
         self.artifact_errors: list[str] = []
         self.tasks: list[TaskRecord] = []
         self.skipped: list[SkippedRecord] = []
@@ -354,6 +356,7 @@ class RunReport:
             'plan': self.plan,
             'plan_note': self.plan_note,
             'abort': self.abort,
+            'night': self.night,
             'artifact_errors': list(self.artifact_errors),
             'returned_to_coins_page': self.returned_to_coins_page,
             'return_error': self.return_error,
@@ -401,6 +404,8 @@ class RunReport:
             lines.append(f'- **Balance note:** {self.balance_note}')
         if self.detail:
             lines.append(f'- **Detail:** {self.detail}')
+        if self.night is not None:
+            lines.append(f'- **Night:** {_night_summary(self.night)}')
         if self.route_error:
             lines.append(f'- **Route fallback:** {self.route_error}')
         if self.plan is not None:
@@ -597,6 +602,23 @@ def _plan_summary(plan: dict[str, Any]) -> str:
     refusals = plan.get('refusals') or []
     detail = plan.get('detail') or 'no plan was produced'
     return f'{detail} (surface: {plan.get("surface", "unknown")}, {len(steps)} step(s), {len(refusals)} refusal(s))'
+
+
+def _night_summary(night: dict[str, Any]) -> str:
+    """The one line that explains whether the day is complete and why."""
+    outcome = night.get('outcome', 'unknown')
+    dispatched = night.get('dispatched', 0)
+    completed = night.get('completed', 0)
+    retryable = night.get('retryable_failures', 0)
+    if outcome == NightOutcome.EXHAUSTED.value:
+        return (
+            'complete — the roster was walked and nothing dispatched is worth retrying '
+            f'({completed}/{dispatched} task(s) completed)'
+        )
+    return (
+        f'open — {retryable} retryable task failure(s) of {dispatched} dispatch(es) remain; '
+        'the day is not complete and a later run may retry'
+    )
 
 
 def _abort_summary(abort: dict[str, Any]) -> str:

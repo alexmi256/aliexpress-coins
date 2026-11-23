@@ -89,7 +89,7 @@ def test_a_full_report_round_trips_through_json_and_markdown(tmp_path: Path) -> 
     payload = json.loads(report.json_path.read_text(encoding='utf-8'))
     summary = report.summary_path.read_text(encoding='utf-8')
 
-    assert payload['schema'] == 4
+    assert payload['schema'] == 5
     assert payload['run_id'] == '20261122T033000Z'
     assert payload['status'] == 'budget'
     assert payload['budget'] == {'seconds': 2700.0, 'used_seconds': 60.0}
@@ -157,6 +157,24 @@ def test_a_completed_run_with_no_rows_still_writes_a_report(tmp_path: Path) -> N
     assert '**Roster:** not read' in summary
     assert '**Back on coins page:** not attempted' in summary
     assert report.ok is True
+
+
+def test_the_report_prints_the_night_decision_in_one_line(tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    report.night = {
+        'outcome': 'retryable_failures',
+        'dispatched': 3,
+        'completed': 0,
+        'retryable_failures': 3,
+    }
+    report.finish(RunStatus.COMPLETED, budget_used_seconds=1.0, finished_at=FINISHED)
+    report.write()
+
+    summary = report.summary_path.read_text(encoding='utf-8')
+    payload = json.loads(report.json_path.read_text(encoding='utf-8'))
+    assert payload['night']['outcome'] == 'retryable_failures'
+    assert '**Night:** open — 3 retryable task failure(s) of 3 dispatch(es) remain' in summary
+    assert 'the day is not complete and a later run may retry' in summary
 
 
 def test_a_failed_run_reports_the_error_and_is_not_ok(tmp_path: Path) -> None:

@@ -19,8 +19,21 @@ mistaken for today's and stays on disk for the report.
       "last_balance": 1240.0,
       "run_count": 2,
       "last_run_at": "2026-11-21T03:42:11+00:00",
-      "completed_night": true
+      "completed_night": true,
+      "last_night": {
+        "outcome": "exhausted",
+        "dispatched": 4,
+        "completed": 1,
+        "retryable_failures": 0
+      }
     }
+
+``completed_night`` is not "the walk finished". It is "the walk finished and
+nothing dispatched is worth retrying" (issue #97): every dispatched row either
+completed, was skipped/refused, or failed with a taxonomy entry that spends no
+retry. ``last_night`` records that decision so a later run and the report can
+explain it. A run with a retryable failure leaves the day open even when another
+row completed, because the retryable row is still unclaimed work.
 
 Every update is staged in the same directory, fsynced, then renamed over the
 target (:func:`aliexpress_coins.perception.artifacts.atomic_write_bytes`), so a
@@ -46,6 +59,7 @@ import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from datetime import date, datetime
+from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, cast
@@ -60,6 +74,8 @@ __all__ = [
     'RUN_LOCK_FILENAME',
     'DailySnapshot',
     'DailyStateStore',
+    'NightOutcome',
+    'NightRecord',
     'RunLock',
     'RunLockHeld',
     'StateError',
@@ -91,6 +107,40 @@ def _fresh(day: date) -> DailySnapshot:
     return DailySnapshot(day=day, completions={})
 
 
+class NightOutcome(StrEnum):
+    """Why a completed roster walk did or did not finish the day (#97)."""
+
+    EXHAUSTED = 'exhausted'
+    """The roster was walked and nothing dispatched is worth retrying."""
+
+    RETRYABLE_FAILURES = 'retryable_failures'
+    """At least one dispatched task failed with a taxonomy row that spends a retry."""
+
+
+@dataclass(frozen=True, slots=True)
+class NightRecord:
+    """The completion decision a finished walk left for the rest of the day."""
+
+    outcome: NightOutcome
+    dispatched: int = 0
+    completed: int = 0
+    retryable_failures: int = 0
+
+    @property
+    def complete(self) -> bool:
+        """Whether this night leaves nothing worth retrying."""
+        return self.outcome is NightOutcome.EXHAUSTED
+
+    def as_dict(self) -> dict[str, Any]:
+        """Render the decision for the daily state and the run report."""
+        return {
+            'outcome': self.outcome.value,
+            'dispatched': self.dispatched,
+            'completed': self.completed,
+            'retryable_failures': self.retryable_failures,
+        }
+
+
 @dataclass(frozen=True, slots=True)
 class DailySnapshot:
     """The whole day at once, for the run report (#31) and for diagnostics."""
@@ -101,6 +151,7 @@ class DailySnapshot:
     run_count: int = 0
     last_run_at: datetime | None = None
     completed_night: bool = False
+    last_night: NightRecord | None = None
 
     def __post_init__(self) -> None:
         # A snapshot is a value: callers must not mutate the store through it.
@@ -116,6 +167,7 @@ class DailySnapshot:
             'run_count': self.run_count,
             'last_run_at': None if self.last_run_at is None else self.last_run_at.isoformat(),
             'completed_night': self.completed_night,
+            'last_night': None if self.last_night is None else self.last_night.as_dict(),
         }
 
 
@@ -217,15 +269,21 @@ class DailyStateStore:
         self._commit(replace(current, run_count=run_count, last_run_at=run_at))
         return run_count
 
-    def complete_night(self) -> None:
-        """Mark the night as finished, which is what the scheduler skips on.
+    def record_night(self, night: NightRecord) -> None:
+        """Record a finished walk's decision and complete the day only when exhausted.
 
         ``begin_run`` counts every attempt, including a manual run stopped by its
-        budget. Only a run that walked the roster to the end calls this, so a
-        small manual run cannot swallow the nightly window.
+        budget. Only a run that walked the roster to the end calls this, and the
+        day becomes skippable only when that walk left nothing worth retrying.
+        A retryable failure therefore keeps ``completed_night`` false so a later
+        run in the same day can try the row again.
+
+        The latest finished walk owns the flag: a later run that finds retryable
+        work reopens a day an earlier run had completed, so the state and the
+        report always describe the same decision.
         """
         current = self._loaded()
-        self._commit(replace(current, completed_night=True))
+        self._commit(replace(current, completed_night=night.complete, last_night=night))
 
     def observe_balance(self, balance: float) -> None:
         """Store the last balance seen, without recording a task completion."""
@@ -369,6 +427,8 @@ def _parse(raw: bytes, day: date) -> DailySnapshot:
     if not isinstance(completed_night, bool):
         raise _CorruptState("'completed_night' must be a boolean")
 
+    last_night = _parse_night(data.get('last_night'))
+
     return DailySnapshot(
         day=day,
         completions=completions,
@@ -376,7 +436,38 @@ def _parse(raw: bytes, day: date) -> DailySnapshot:
         run_count=run_count,
         last_run_at=last_run_at,
         completed_night=completed_night,
+        last_night=last_night,
     )
+
+
+def _parse_night(raw: Any) -> NightRecord | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise _CorruptState("'last_night' must be a JSON object or null")
+    data = cast(dict[str, Any], raw)
+
+    outcome_raw = _field(data, 'outcome')
+    if not isinstance(outcome_raw, str):
+        raise _CorruptState("'last_night.outcome' must be a string")
+    try:
+        outcome = NightOutcome(outcome_raw)
+    except ValueError as exc:
+        raise _CorruptState(f"'last_night.outcome' is not a known outcome: {outcome_raw!r}") from exc
+
+    return NightRecord(
+        outcome=outcome,
+        dispatched=_night_count(data, 'dispatched'),
+        completed=_night_count(data, 'completed'),
+        retryable_failures=_night_count(data, 'retryable_failures'),
+    )
+
+
+def _night_count(data: Mapping[str, Any], key: str) -> int:
+    value = _field(data, key)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise _CorruptState(f"'last_night.{key}' must be a non-negative integer")
+    return value
 
 
 def _field(data: Mapping[str, Any], key: str) -> Any:

@@ -12,7 +12,7 @@ import logging
 import random
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from http.client import HTTPMessage
 from pathlib import Path
@@ -47,9 +47,9 @@ from aliexpress_coins.runner.errors import (
 )
 from aliexpress_coins.runner.failures import FailureCode, failure
 from aliexpress_coins.runner.notify import AppriseSink, Notification, NotificationSink, WebhookSink
-from aliexpress_coins.runner.report import RunEventLog, RunReport, RunStatus
+from aliexpress_coins.runner.report import RunEventLog, RunReport, RunStatus, TaskRecord
 from aliexpress_coins.runner.safety import AbortCode, RunAborted, ScreenReport
-from aliexpress_coins.runner.state import DailyStateStore
+from aliexpress_coins.runner.state import DailyStateStore, NightOutcome
 from aliexpress_coins.tasks import notifications as notifications_module
 from aliexpress_coins.tasks.browse import ReturnResult
 from aliexpress_coins.tasks.catalogue import TaskCatalogue, TaskCategory, load_task_catalogue
@@ -640,6 +640,11 @@ def test_an_executor_exception_is_a_failed_task_not_a_lost_night(
     assert report.tasks[0].outcome == 'failed'
     assert 'RuntimeError: executor broke' in report.tasks[0].detail
     assert report.ok is True
+    assert context.state.snapshot().completed_night is False
+    night = context.state.snapshot().last_night
+    assert night is not None
+    assert night.outcome is NightOutcome.RETRYABLE_FAILURES
+    assert night.retryable_failures == 1
 
 
 def test_a_run_level_failure_still_writes_a_parseable_report(
@@ -739,7 +744,11 @@ def test_a_controller_factory_is_used_after_the_first_frame(
 
     assert report.status is RunStatus.COMPLETED
     assert created == [frame]
-    assert context.state.snapshot().completed_night is True
+    snapshot = context.state.snapshot()
+    assert snapshot.completed_night is True
+    assert snapshot.last_night is not None
+    assert snapshot.last_night.outcome is NightOutcome.EXHAUSTED
+    assert report.night == snapshot.last_night.as_dict()
     assert isinstance(context.hygiene, _Hygiene)
     assert context.hygiene.restored == 1
 
@@ -2595,10 +2604,10 @@ def test_state_completion_failure_does_not_fail_a_finished_run(
         corpus=corpus,
     )
 
-    def broken_complete() -> None:
+    def broken_complete(_night: object) -> None:
         raise OSError('state volume read-only')
 
-    monkeypatch.setattr(context.state, 'complete_night', broken_complete)
+    monkeypatch.setattr(context.state, 'record_night', broken_complete)
 
     report = engine.run_once(context)
 
@@ -3929,7 +3938,212 @@ def test_an_unverified_task_that_stays_unverified_is_reported_and_the_walk_conti
     assert report.status is RunStatus.COMPLETED
     assert report.ok is True
     assert report.tasks[0].code == FailureCode.TASK_UNVERIFIED.value
-    assert 'task_unverified' in report.summary_path.read_text(encoding='utf-8')
+    summary = report.summary_path.read_text(encoding='utf-8')
+    assert 'task_unverified' in summary
+    assert '**Night:** open' in summary
+    assert context.state.snapshot().completed_night is False
+
+
+@pytest.mark.slow
+def test_all_retryable_failures_leave_the_night_open_for_a_later_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    frame = _boost_frame('coins_quiz')
+    _surface(monkeypatch, roster, frame)
+    now = [CAPTURED_AT]
+    first = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    first.wall_clock = lambda: now[0]
+    attempts: list[str] = []
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        attempts.append(entry.key or '')
+        if len(attempts) == 1:
+            return EngineResult(
+                'failed',
+                'question_not_arrived',
+                'the quiz question never arrived',
+                False,
+                {'key': entry.key},
+                failure=failure(FailureCode.TASK_UNVERIFIED, detail='question_not_arrived'),
+                acted=True,
+            )
+        _context.state.record(entry.key or '')
+        return EngineResult('completed', 'progress_badge', 'the row moved', True, {'key': entry.key})
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    first_report = engine.run_once(first)
+
+    snapshot = first.state.snapshot()
+    assert first_report.status is RunStatus.COMPLETED
+    assert first_report.tasks[0].completed is False
+    assert snapshot.completed_night is False
+    assert snapshot.last_night is not None
+    assert snapshot.last_night.outcome is NightOutcome.RETRYABLE_FAILURES
+    assert snapshot.last_night.dispatched == 1
+    assert snapshot.last_night.completed == 0
+    assert snapshot.last_night.retryable_failures == 1
+    summary = first_report.summary_path.read_text(encoding='utf-8')
+    assert '**Night:** open' in summary
+    assert '1 retryable task failure(s) of 1 dispatch(es) remain' in summary
+
+    # The same local day, a later run: the day is still open, so it dispatches
+    # the row again instead of treating the failed night as finished.
+    now[0] = CAPTURED_AT + timedelta(minutes=5)
+    second = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    second.wall_clock = lambda: now[0]
+
+    second_report = engine.run_once(second)
+
+    assert len(attempts) == 2
+    assert second_report.tasks[0].completed is True
+    final = second.state.snapshot()
+    assert final.completed_night is True
+    assert final.last_night is not None
+    assert final.last_night.outcome is NightOutcome.EXHAUSTED
+    assert '**Night:** complete' in second_report.summary_path.read_text(encoding='utf-8')
+
+
+@pytest.mark.slow
+def test_a_mixed_night_with_one_retryable_failure_stays_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    """A completed row does not buy the day: the retryable row is still unclaimed work."""
+    wanted = ('coins_quiz', 'notifications')
+    roster = replace(full_roster, entries=tuple(_entry(full_roster, key) for key in wanted))
+    frame = _boost_frame(*wanted)
+    _surface(monkeypatch, roster, frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        if entry.key == 'coins_quiz':
+            _context.state.record(entry.key)
+            return EngineResult('completed', 'progress_badge', 'the row moved', True, {'key': entry.key})
+        return EngineResult(
+            'failed',
+            'no_observation',
+            'the notifications row was not observable',
+            False,
+            {'key': entry.key},
+            failure=failure(FailureCode.TASK_UNVERIFIED, detail='no_observation'),
+            acted=True,
+        )
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    snapshot = context.state.snapshot()
+    assert report.status is RunStatus.COMPLETED
+    assert [task.completed for task in report.tasks] == [True, False]
+    assert snapshot.completed_night is False
+    assert snapshot.last_night is not None
+    assert snapshot.last_night.outcome is NightOutcome.RETRYABLE_FAILURES
+    assert snapshot.last_night.dispatched == 2
+    assert snapshot.last_night.completed == 1
+    assert snapshot.last_night.retryable_failures == 1
+    summary = report.summary_path.read_text(encoding='utf-8')
+    assert '**Night:** open' in summary
+    assert '1 retryable task failure(s) of 2 dispatch(es) remain' in summary
+
+
+@pytest.mark.slow
+def test_a_night_with_only_terminal_outcomes_still_completes_the_day(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    frame = _boost_frame('coins_quiz')
+    _surface(monkeypatch, roster, frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        return EngineResult(
+            'unavailable',
+            'unavailable',
+            'the app reports the row is unavailable today',
+            False,
+            {'key': entry.key},
+        )
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    snapshot = context.state.snapshot()
+    assert report.status is RunStatus.COMPLETED
+    assert snapshot.completed_night is True
+    assert snapshot.last_night is not None
+    assert snapshot.last_night.outcome is NightOutcome.EXHAUSTED
+    assert snapshot.last_night.dispatched == 1
+    assert snapshot.last_night.completed == 0
+    assert snapshot.last_night.retryable_failures == 0
+    assert '**Night:** complete' in report.summary_path.read_text(encoding='utf-8')
+
+
+@pytest.mark.parametrize(
+    ('outcome', 'code', 'completed', 'expected'),
+    [
+        ('completed', None, True, False),
+        ('skipped', None, False, False),
+        ('unavailable', None, False, False),
+        ('failed', FailureCode.TASK_UNVERIFIED, False, True),
+        ('failed', FailureCode.NAVIGATION_FAILED, False, False),
+        ('failed', None, False, True),
+    ],
+)
+def test_retryable_task_failure_comes_from_the_taxonomy(
+    outcome: str,
+    code: FailureCode | None,
+    completed: bool,
+    expected: bool,
+) -> None:
+    record = TaskRecord(
+        title='Take the coins quiz',
+        key='coins_quiz',
+        category='quiz',
+        outcome=outcome,
+        verification='test',
+        detail='test',
+        duration_seconds=0.0,
+        completed=completed,
+        result={},
+        failure=None if code is None else failure(code).as_dict(),
+    )
+
+    assert engine._retryable_task_failure(record) is expected
 
 
 @pytest.mark.slow

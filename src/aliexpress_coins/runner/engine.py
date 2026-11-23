@@ -55,9 +55,9 @@ from aliexpress_coins.runner.failures import (
 )
 from aliexpress_coins.runner.levels import SKIPPED_ROW_LOG_LEVEL, run_log_level, task_log_level
 from aliexpress_coins.runner.notify import Notification, NotificationSink, build_notifier
-from aliexpress_coins.runner.report import RunEventLog, RunReport, RunStatus, prune_runs
+from aliexpress_coins.runner.report import RunEventLog, RunReport, RunStatus, TaskRecord, prune_runs
 from aliexpress_coins.runner.safety import UNEXPECTED_SCREEN_LIMIT, AbortCode, RunAborted, SafetyGuard
-from aliexpress_coins.runner.state import DailyStateStore
+from aliexpress_coins.runner.state import DailyStateStore, NightOutcome, NightRecord
 from aliexpress_coins.tasks.browse import return_to_coins_page, run_browse_task
 from aliexpress_coins.tasks.catalogue import AllowedTaskSpec, TaskCatalogue, TaskCategory, load_task_catalogue
 from aliexpress_coins.tasks.discovery import (
@@ -554,10 +554,24 @@ def run_once(
             detail = exc.failure.describe()
             log.error('%s', _event('run_aborted', code=exc.code.value, detail=detail))
         if status is RunStatus.COMPLETED and not context.config.dry_run:
+            night = _night_record(report)
+            report.night = night.as_dict()
             try:
-                context.state.complete_night()
+                context.state.record_night(night)
             except Exception as exc:
                 log.warning('%s', _event('state_complete_failed', detail=f'{type(exc).__name__}: {exc}'))
+            log.log(
+                logging.INFO if night.complete else logging.WARNING,
+                '%s',
+                _event(
+                    'night_decided',
+                    outcome=night.outcome.value,
+                    complete=night.complete,
+                    dispatched=night.dispatched,
+                    completed=night.completed,
+                    retryable_failures=night.retryable_failures,
+                ),
+            )
         finalized = False
         try:
             used = max(0.0, context.clock() - started)
@@ -1558,6 +1572,52 @@ def _record_unrun(
             reason=reason,
             detail=why,
         )
+
+
+def _night_record(report: RunReport) -> NightRecord:
+    """Decide what a finished roster walk leaves for the rest of the day (#97).
+
+    A night is ``exhausted`` when nothing dispatched is worth retrying: every
+    row completed, was skipped/refused (policy, daily limit, the app reporting
+    it unavailable), or failed with a taxonomy entry that spends no retry.
+    Terminal-versus-retryable comes from :class:`~aliexpress_coins.runner.failures.Failure`:
+    ``TaskRecord.failure['retryable']`` is the taxonomy's own ``retries > 0``.
+    A failed row with no named failure is treated as retryable because "unknown"
+    must not consume the day.
+
+    Any retryable failure keeps the day open even when another row completed:
+    the retryable row is still unclaimed work, and the operator most needs the
+    daemon to try it while asleep.
+    """
+    completed = 0
+    retryable = 0
+    for task in report.tasks:
+        if task.completed:
+            completed += 1
+        elif _retryable_task_failure(task):
+            retryable += 1
+    outcome = NightOutcome.RETRYABLE_FAILURES if retryable else NightOutcome.EXHAUSTED
+    return NightRecord(
+        outcome=outcome,
+        dispatched=len(report.tasks),
+        completed=completed,
+        retryable_failures=retryable,
+    )
+
+
+def _retryable_task_failure(task: TaskRecord) -> bool:
+    """Whether one dispatched row still has work worth another run.
+
+    Only a ``failed`` outcome can be retryable. A skipped row, a refusal, an
+    ``already_done``/``unavailable`` executor outcome and a completed row are
+    terminal. A failed row is retryable when the taxonomy says its class spends
+    a retry (``retries > 0``); an unnamed failure defaults to retryable.
+    """
+    if task.outcome != 'failed':
+        return False
+    if task.failure is None:
+        return True
+    return bool(task.failure.get('retryable', True))
 
 
 def _next_entry(roster: Roster, state: DailyStateStore, blocked: set[str]) -> RosterEntry | None:
