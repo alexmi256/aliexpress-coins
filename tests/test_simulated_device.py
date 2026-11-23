@@ -9,6 +9,7 @@ not weaken them.
 
 from __future__ import annotations
 
+import json
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,15 +17,16 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from aliexpress_coins.control.controller import Controller
 from aliexpress_coins.control.device import AdbInputDevice
 from aliexpress_coins.perception.capture import AdbSnapshotter
 from aliexpress_coins.perception.geometry import DeviceGeometry
 from aliexpress_coins.perception.layout import group_rows
 from aliexpress_coins.perception.ocr import RapidOcrEngine
-from aliexpress_coins.perception.snapshot import Snapshot
+from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.waits import WaitStatus, wait_until_stable
 from aliexpress_coins.transport import AdbResult
-from tests.support.adb import RecordingAdbRunner, ScriptedAdbRunner, ok
+from tests.support.adb import TRANSCRIPT_DIR, RecordingAdbRunner, ScriptedAdbRunner, ok
 from tests.support.frames import ScriptedSnapshotter
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -107,6 +109,32 @@ def test_the_scripted_runner_drives_the_real_input_client() -> None:
     assert runner.timeouts == [4.0]
 
 
+def test_the_snapshot_seam_feeds_the_real_controller() -> None:
+    frame = Snapshot(
+        image=Image.new('RGB', (40, 60), 'white'),
+        boxes=(TextBox(text='GO', box=((10, 10), (30, 10), (30, 30), (10, 30)), score=0.9),),
+        captured_at=CAPTURED_AT,
+        geometry=DeviceGeometry.from_frame(40, 60, density=240, sdk=35),
+    )
+    snapshotter = ScriptedSnapshotter([frame])
+    runner = ScriptedAdbRunner(ok())
+    controller = Controller.from_frame(AdbInputDevice('tablet', runner=runner), snapshotter.capture())
+
+    record = controller.tap_text(frame, 'GO', why='replay a tap')
+
+    assert record.label == 'GO'
+    assert runner.calls[-1] == (
+        'adb',
+        '-s',
+        'tablet',
+        'shell',
+        'input',
+        'tap',
+        str(record.point[0]),
+        str(record.point[1]),
+    )
+
+
 def test_an_unscripted_call_fails_loudly_and_never_spawns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -151,25 +179,60 @@ def test_recording_writes_a_transcript_that_replays(tmp_path: Path) -> None:
     transcript = tmp_path / 'session.json'
     inner = ScriptedAdbRunner(
         ok('device'),
-        AdbResult(1, b'\x89PNG\r\n\x1a\n', b'warn'),
+        AdbResult(1, b'out', b'warn'),
     )
-    recorder = RecordingAdbRunner(inner, transcript)
+    recorder = RecordingAdbRunner(inner, transcript, allow_outside_transcripts=True)
 
     first = recorder(('adb', '-s', 'tablet', 'get-state'), 10.0)
-    second = recorder(('adb', '-s', 'tablet', 'exec-out', 'screencap', '-p'), 30.0)
+    second = recorder(('adb', '-s', 'tablet', 'shell', 'wm', 'size'), 30.0)
 
     assert first == ok('device')
-    assert second == AdbResult(1, b'\x89PNG\r\n\x1a\n', b'warn')
+    assert second == AdbResult(1, b'out', b'warn')
     assert transcript.is_file()
 
     replay = ScriptedAdbRunner.from_transcript(transcript)
     assert replay(('adb', '-s', 'tablet', 'get-state'), 10.0) == first
-    assert replay(('adb', '-s', 'tablet', 'exec-out', 'screencap', '-p'), 30.0) == second
+    assert replay(('adb', '-s', 'tablet', 'shell', 'wm', 'size'), 30.0) == second
+
+
+def test_the_default_transcript_path_is_gitignored() -> None:
+    recorder = RecordingAdbRunner(ScriptedAdbRunner(ok('device')))
+
+    assert recorder.path.parent == TRANSCRIPT_DIR
+    assert 'tests/transcripts/' in (ROOT / '.gitignore').read_text(encoding='utf-8')
+
+
+def test_recording_refuses_a_transcript_outside_the_ignored_directory(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match='tests/transcripts'):
+        RecordingAdbRunner(ScriptedAdbRunner(ok()), tmp_path / 'session.json')
+
+
+def test_recording_omits_a_binary_screencap_payload(tmp_path: Path) -> None:
+    transcript = tmp_path / 'session.json'
+    png = b'\x89PNG\r\n\x1a\n' + b'\xff' * 64
+    recorder = RecordingAdbRunner(
+        ScriptedAdbRunner(AdbResult(0, png, b'')),
+        transcript,
+        allow_outside_transcripts=True,
+    )
+
+    recorder(('adb', '-s', 'tablet', 'exec-out', 'screencap', '-p'), 30.0)
+
+    written = transcript.read_text(encoding='utf-8')
+    assert 'stdout_b64' not in written
+    assert png not in transcript.read_bytes()
+    entry = json.loads(written)['calls'][0]
+    assert 'stdout' not in entry
+    assert entry['stdout_omitted_bytes'] == len(png)
 
 
 def test_a_transcript_replay_rejects_a_different_command(tmp_path: Path) -> None:
     transcript = tmp_path / 'session.json'
-    RecordingAdbRunner(ScriptedAdbRunner(ok('device')), transcript)(('adb', 'get-state'), 5.0)
+    RecordingAdbRunner(
+        ScriptedAdbRunner(ok('device')),
+        transcript,
+        allow_outside_transcripts=True,
+    )(('adb', 'get-state'), 5.0)
     replay = ScriptedAdbRunner.from_transcript(transcript)
 
     with pytest.raises(AssertionError, match=r'expected.*get-state.*sent'):

@@ -38,22 +38,24 @@ is limited to that directory.
 
 The suite replays these files through `tests/support/frames.py`; it never captures from the
 device. When a flow needs a new fixture, capture it once with
-[`tools/capture_frames.py`](../../tools/capture_frames.py). The tool uses the same
-`SubprocessAdbRunner` transport as the collector, calls only `adb exec-out screencap -p` (no
-tapping, ordering, redeeming, sharing or games), and never downscales: the frame must match the
-geometry `wm size`/`wm density` report, or it exits non-zero, because #42 keys calibration by that
-geometry.
+[`capture_frames.py`](../../src/aliexpress_coins/tools/capture_frames.py). The tool drives the
+production `AdbSnapshotter` over the shared `SubprocessAdbRunner`, so it uses the same geometry
+probe and screencap path as the collector; it calls only `adb exec-out screencap -p` (no tapping,
+ordering, redeeming, sharing or games) and never downscales. A frame is fully decoded and checked
+against the `wm size`/`wm density` geometry before it is written through a temporary file and
+atomic rename, so a truncated or wrong-size capture leaves the reviewed fixture untouched. #42
+keys calibration by that geometry.
 
 ```sh
 # Capture the `states` set. The tool prompts before each frame so you can put
 # the device on the right screen, then prints the manifest.
-.venv/bin/python tools/capture_frames.py --serial 192.168.8.65:5555 --set states
+.venv/bin/python -m aliexpress_coins.tools.capture_frames --serial "$AECOINS_DEVICE" --set states
 
 # Print the manifest for the frames already in the directory, without a device.
-.venv/bin/python tools/capture_frames.py --set states --manifest-only
+.venv/bin/python -m aliexpress_coins.tools.capture_frames --set states --manifest-only
 
 # List the sets and the files each one expects.
-.venv/bin/python tools/capture_frames.py --list
+.venv/bin/python -m aliexpress_coins.tools.capture_frames --list
 ```
 
 `--set` is one of `states`, `flows` or `popups`; `--out` overrides

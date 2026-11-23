@@ -15,25 +15,36 @@ Three ways to script a run:
   with `ScriptedAdbRunner.from_transcript()`. The transcript records argv and
   exit status, so a replay also checks that the client still asks for the same
   command.
+
+Transcripts may contain device output, so they default to the gitignored
+``tests/transcripts/`` directory. Binary stdout and stderr are never
+base64-encoded: the entry records ``stdout_omitted_bytes`` instead, which keeps
+a screencap PNG (and therefore account data) out of the repository even if the
+file is committed by mistake.
 """
 
 from __future__ import annotations
 
-import base64
 import json
+import os
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from aliexpress_coins.transport import AdbResult, AdbRunner
 
 __all__ = [
+    'TRANSCRIPT_DIR',
     'RecordingAdbRunner',
     'Responder',
     'ScriptedAdbRunner',
     'fail',
     'ok',
 ]
+
+TRANSCRIPT_DIR = (Path(__file__).resolve().parents[2] / 'tests' / 'transcripts').resolve()
+"""The one directory a transcript may be written to without an explicit opt-in."""
 
 Responder = Callable[[tuple[str, ...]], AdbResult | Exception | None]
 """Answer one argv, or return ``None`` to fall through to the queued result."""
@@ -47,6 +58,11 @@ def ok(text: str = '') -> AdbResult:
 def fail(text: str = 'failed', *, returncode: int = 1) -> AdbResult:
     """A failed adb result whose stderr is ``text``."""
     return AdbResult(returncode, b'', text.encode())
+
+
+def _default_transcript_path() -> Path:
+    stamp = datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')
+    return TRANSCRIPT_DIR / f'adb-{stamp}-{os.getpid()}.json'
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,14 +97,18 @@ class ScriptedAdbRunner:
 
     @classmethod
     def from_transcript(cls, path: Path | str) -> ScriptedAdbRunner:
-        """Load a transcript written by :class:`RecordingAdbRunner`."""
+        """Load a transcript written by :class:`RecordingAdbRunner`.
+
+        Binary output was omitted at record time, so it replays as empty bytes.
+        Frames belong in ``tests/data/``, not in a command transcript.
+        """
         payload = json.loads(Path(path).read_text(encoding='utf-8'))
         entries = [
             _Entry(
                 AdbResult(
                     returncode=int(call['returncode']),
-                    stdout=_decode(call, 'stdout'),
-                    stderr=_decode(call, 'stderr'),
+                    stdout=str(call.get('stdout', '')).encode(),
+                    stderr=str(call.get('stderr', '')).encode(),
                 ),
                 argv=tuple(str(part) for part in call['argv']),
             )
@@ -136,11 +156,28 @@ class RecordingAdbRunner:
 
     Recording is deliberately a separate object: a test that constructs the
     ``ScriptedAdbRunner`` cannot accidentally have a real runner behind it.
+    The default destination is the gitignored ``tests/transcripts/`` directory;
+    a caller-supplied path needs ``allow_outside_transcripts=True``.
     """
 
-    def __init__(self, inner: AdbRunner, path: Path | str) -> None:
+    def __init__(
+        self,
+        inner: AdbRunner,
+        path: Path | str | None = None,
+        *,
+        allow_outside_transcripts: bool = False,
+    ) -> None:
         self._inner = inner
-        self._path = Path(path)
+        self._path = Path(path) if path is not None else _default_transcript_path()
+        if (
+            path is not None
+            and not self._path.resolve().is_relative_to(TRANSCRIPT_DIR)
+            and not allow_outside_transcripts
+        ):
+            raise ValueError(
+                f'refusing to write a transcript outside {TRANSCRIPT_DIR}; '
+                'pass allow_outside_transcripts=True only for a path that cannot be committed',
+            )
         self._calls: list[dict[str, object]] = []
 
     @property
@@ -154,8 +191,8 @@ class RecordingAdbRunner:
             {
                 'argv': list(args),
                 'returncode': result.returncode,
-                **_encode('stdout', result.stdout),
-                **_encode('stderr', result.stderr),
+                **_text_field('stdout', result.stdout),
+                **_text_field('stderr', result.stderr),
             },
         )
         self._write()
@@ -167,15 +204,14 @@ class RecordingAdbRunner:
         self._path.write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n', encoding='utf-8')
 
 
-def _encode(field: str, value: bytes) -> dict[str, str]:
+def _text_field(field: str, value: bytes) -> dict[str, str | int]:
+    """Keep text output; record only the size of binary output.
+
+    A screencap payload is never encoded into the transcript. That is what keeps
+    a frame (and the account data in it) out of git even if a transcript is
+    committed by mistake.
+    """
     try:
         return {field: value.decode('utf-8')}
     except UnicodeDecodeError:
-        return {f'{field}_b64': base64.b64encode(value).decode('ascii')}
-
-
-def _decode(call: dict[str, object], field: str) -> bytes:
-    encoded = call.get(f'{field}_b64')
-    if encoded is not None:
-        return base64.b64decode(str(encoded))
-    return str(call.get(field, '')).encode()
+        return {f'{field}_omitted_bytes': len(value)}

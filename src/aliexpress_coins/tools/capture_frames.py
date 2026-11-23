@@ -6,21 +6,26 @@ captures it once on the real device, prints a manifest describing the geometry
 it was taken at, and writes the PNGs under ``tests/data/<set>/`` unchanged. The
 suite then replays those files through ``tests/support/frames.py``.
 
-No dependency is added for capture: ``adb exec-out screencap -p`` returns the
-PNG bytes, and the tool uses the same ``SubprocessAdbRunner`` transport the
-package uses.
+No dependency is added for capture: ``AdbSnapshotter`` runs
+``adb exec-out screencap -p`` through the shared ``SubprocessAdbRunner``, so the
+tool uses the production geometry probe and PNG validation instead of a second
+capture path.
+
+The device address is configuration, not a constant: pass ``--serial`` or set
+``AECOINS_DEVICE``. Both the IP and the adb port move when the tablet
+reconnects, so a baked-in default can capture from the wrong host.
 
 Usage::
 
     # Capture the ``states`` set; prompts before each frame so the operator can
     # put the device on the right screen. Never taps, orders, redeems or shares.
-    .venv/bin/python tools/capture_frames.py --serial 192.168.8.65:5555 --set states
+    .venv/bin/python -m aliexpress_coins.tools.capture_frames --serial "$AECOINS_DEVICE" --set states
 
     # Re-print the manifest for an existing set without touching the device.
-    .venv/bin/python tools/capture_frames.py --set states --manifest-only
+    .venv/bin/python -m aliexpress_coins.tools.capture_frames --set states --manifest-only
 
     # Discover the set names and the file each one needs.
-    .venv/bin/python tools/capture_frames.py --list
+    .venv/bin/python -m aliexpress_coins.tools.capture_frames --list
 """
 
 from __future__ import annotations
@@ -28,20 +33,21 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, UnidentifiedImageError
 
-from aliexpress_coins.perception.capture import PNG_MAGIC
-from aliexpress_coins.perception.geometry import parse_geometry
-from aliexpress_coins.transport import AdbResult, SubprocessAdbRunner
+from aliexpress_coins.perception.capture import AdbSnapshotter
+from aliexpress_coins.perception.errors import SnapshotError
+from aliexpress_coins.transport import SubprocessAdbRunner
 
-ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DEVICE = '192.168.8.65:5555'
+ROOT = Path(__file__).resolve().parents[3]
 
 SETS: dict[str, tuple[str, ...]] = {
     'states': (
@@ -107,8 +113,20 @@ class Frame:
 
 
 def _png_size(data: bytes) -> tuple[int, int]:
-    with Image.open(BytesIO(data)) as image:
-        return image.width, image.height
+    """Fully decode the PNG, not just its header.
+
+    A truncated screencap can carry a valid IHDR, so reading ``image.size``
+    alone would accept bytes that later fail to open. ``load()`` forces the
+    whole image through the decoder before anything touches the fixture.
+    """
+    try:
+        with Image.open(BytesIO(data)) as image:
+            image.load()
+            return image.width, image.height
+    except (OSError, SyntaxError, ValueError, UnidentifiedImageError) as exc:
+        raise SnapshotError(
+            f'the captured frame is not a fully decodable PNG ({type(exc).__name__}: {exc})',
+        ) from exc
 
 
 def _frame_from_bytes(name: str, path: Path, data: bytes) -> Frame:
@@ -127,38 +145,43 @@ def _frame_from_path(name: str, path: Path) -> Frame:
     return _frame_from_bytes(name, path, path.read_bytes())
 
 
-def _shell_text(runner: SubprocessAdbRunner, serial: str, *command: str) -> str:
-    args = ('adb', '-s', serial, 'shell', *command)
-    result: AdbResult = runner(args, 30.0)
-    if result.returncode != 0:
-        raise SystemExit(f'adb {" ".join(command)} exited {result.returncode}: {result.stderr_text.strip()}')
-    return result.stdout_text
+def _atomic_write(destination: Path, data: bytes) -> None:
+    """Write via a temporary file and rename, so a failed write keeps the old fixture."""
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    handle, temporary = tempfile.mkstemp(prefix=f'.{destination.name}.', suffix='.tmp', dir=destination.parent)
+    try:
+        with os.fdopen(handle, 'wb') as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, destination)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
 
 
-def probe_geometry(serial: str, runner: SubprocessAdbRunner) -> tuple[int, int, int, int]:
-    """Read the real panel geometry before the first capture.
-
-    The dimensions are returned portrait-normalised, matching what a screencap
-    writes. A frame that arrives smaller than these dimensions is a downscaled
-    fixture and is refused: #42 keys calibration by this geometry.
-    """
-    geometry = parse_geometry(
-        _shell_text(runner, serial, 'wm', 'size'),
-        _shell_text(runner, serial, 'wm', 'density'),
-        _shell_text(runner, serial, 'getprop', 'ro.build.version.sdk'),
-    )
-    width, height = sorted((geometry.width, geometry.height))
-    return width, height, geometry.density, geometry.sdk
-
-
-def capture_one(serial: str, runner: SubprocessAdbRunner, name: str, destination: Path) -> Frame:
-    result = runner(('adb', '-s', serial, 'exec-out', 'screencap', '-p'), 60.0)
-    if result.returncode != 0:
-        raise SystemExit(f'screencap exited {result.returncode}: {result.stderr_text.strip()}')
-    if not result.stdout.startswith(PNG_MAGIC):
-        raise SystemExit(f'screencap for {name!r} did not return a PNG')
-    destination.write_bytes(result.stdout)
-    return _frame_from_bytes(name, destination, result.stdout)
+def capture_one(
+    snapshotter: AdbSnapshotter,
+    name: str,
+    destination: Path,
+    expected: tuple[int, int],
+) -> Frame:
+    """Capture, fully validate and only then replace ``destination``."""
+    try:
+        data = snapshotter.capture_png()
+    except SnapshotError as exc:
+        raise SystemExit(f'{name}: {exc}') from exc
+    try:
+        width, height = _png_size(data)
+    except SnapshotError as exc:
+        raise SystemExit(f'{name}: {exc}') from exc
+    if (width, height) != expected:
+        raise SystemExit(
+            f'{name}: captured {width}x{height}, expected {expected[0]}x{expected[1]}; '
+            'the frame must be captured at the device geometry, not downscaled',
+        )
+    _atomic_write(destination, data)
+    return _frame_from_bytes(name, destination, data)
 
 
 def manifest(
@@ -198,39 +221,43 @@ def _prompt(index: int, total: int, name: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description='Capture recorded frames for one fixture set.')
-    parser.add_argument('--serial', default=DEFAULT_DEVICE, help=f'adb serial (default: {DEFAULT_DEVICE})')
+    parser.add_argument(
+        '--serial',
+        help='adb serial; defaults to AECOINS_DEVICE because the address is configuration, not a constant',
+    )
     parser.add_argument('--set', dest='set_name', choices=sorted(SETS), help='the fixture set to capture')
     parser.add_argument('--out', type=Path, help='destination directory (default: tests/data/<set>)')
     parser.add_argument('--list', action='store_true', help='list set names and their frames')
     parser.add_argument('--manifest-only', action='store_true', help='print the manifest without touching the device')
     parser.add_argument('--manifest-out', type=Path, help='also write the manifest as JSON')
-    parser.add_argument('--no-prompt', action='store_true', help='capture immediately; the screen must already be staged')
+    parser.add_argument(
+        '--no-prompt', action='store_true', help='capture immediately; the screen must already be staged'
+    )
     parser.add_argument('--density', type=int, default=240, help='density for --manifest-only (default: 240)')
     parser.add_argument('--sdk', type=int, default=35, help='SDK for --manifest-only (default: 35)')
     args = parser.parse_args(argv)
 
     if args.list:
-        for set_name, frames in SETS.items():
-            print(f'{set_name}: {len(frames)} frames')
-            for frame in frames:
-                print(f'  {frame}.png')
+        for set_name, frame_names in SETS.items():
+            print(f'{set_name}: {len(frame_names)} frames')
+            for frame_name in frame_names:
+                print(f'  {frame_name}.png')
         return 0
     if not args.set_name:
         parser.error('--set is required unless --list is given')
 
     names = SETS[args.set_name]
     destination = args.out if args.out is not None else ROOT / 'tests' / 'data' / args.set_name
-    destination.mkdir(parents=True, exist_ok=True)
 
     if args.manifest_only:
-        frames = [
+        existing = [
             _frame_from_path(name, destination / f'{name}.png')
             for name in names
             if (destination / f'{name}.png').is_file()
         ]
-        if not frames:
+        if not existing:
             raise SystemExit(f'no frames for {args.set_name!r} in {destination}')
-        width, height = frames[0].width, frames[0].height
+        width, height = existing[0].width, existing[0].height
         payload = manifest(
             name=args.set_name,
             serial=None,
@@ -238,7 +265,7 @@ def main(argv: list[str] | None = None) -> int:
             height=height,
             density=args.density,
             sdk=args.sdk,
-            frames=frames,
+            frames=existing,
             source='existing',
         )
         _print_manifest(payload)
@@ -246,27 +273,31 @@ def main(argv: list[str] | None = None) -> int:
             args.manifest_out.write_text(json.dumps(payload, indent=2, sort_keys=True) + '\n', encoding='utf-8')
         return 0
 
-    runner = SubprocessAdbRunner()
-    width, height, density, sdk = probe_geometry(args.serial, runner)
+    serial = args.serial or os.environ.get('AECOINS_DEVICE')
+    if not serial:
+        parser.error('--serial or AECOINS_DEVICE is required; the device address is configuration')
+
+    snapshotter = AdbSnapshotter(serial, runner=SubprocessAdbRunner())
+    try:
+        geometry = snapshotter.probe_geometry()
+    except SnapshotError as exc:
+        raise SystemExit(f'could not probe {serial}: {exc}') from exc
+    width, height = sorted((geometry.width, geometry.height))
+
+    destination.mkdir(parents=True, exist_ok=True)
     captured: list[Frame] = []
     for index, name in enumerate(names, start=1):
         if not args.no_prompt:
             _prompt(index, len(names), name)
-        frame = capture_one(args.serial, runner, name, destination / f'{name}.png')
-        if (frame.width, frame.height) != (width, height):
-            raise SystemExit(
-                f'{name}: captured {frame.width}x{frame.height}, expected {width}x{height}; '
-                'the frame must be captured at the device geometry, not downscaled',
-            )
-        captured.append(frame)
+        captured.append(capture_one(snapshotter, name, destination / f'{name}.png', (width, height)))
 
     payload = manifest(
         name=args.set_name,
-        serial=args.serial,
+        serial=serial,
         width=width,
         height=height,
-        density=density,
-        sdk=sdk,
+        density=geometry.density,
+        sdk=geometry.sdk,
         frames=captured,
         source='capture',
     )

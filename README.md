@@ -130,6 +130,8 @@ Above those guards sit the two seams from `docs/03-conventions.md`:
   constructed around it; tests pass `tests/support/adb.py:ScriptedAdbRunner`, which replays a
   queue, answers by argv, or replays a transcript recorded with `RecordingAdbRunner`. An
   unscripted call raises `AssertionError` naming the argv instead of falling back to a device.
+  Recording defaults to the gitignored `tests/transcripts/`; binary output such as a screencap is
+  omitted (only its byte count is recorded), never base64-encoded into the transcript.
 - **snapshot** — `tests/support/frames.py:ScriptedSnapshotter` implements the `Snapshotter`
   protocol and replays a directory of recorded PNGs. `repeat=2` supplies the same frame twice for
   stability waits, and `override_call()` substitutes one frame without rewriting the sequence.
@@ -140,8 +142,8 @@ Recorded frames live under `tests/data/` and are gitignored by set; the regenera
 `just check` remains the gate and runs every test with the coverage ratchet. `just check-fast` is
 the diagnostic loop: it excludes tests marked `slow` (full-frame OCR, template scans and the long
 engine retry walks) and does not enforce coverage. Measured on 2026-11-22: the full suite is
-**1561 passed in 188 s** (203 tests marked slow, coverage 99.40%); `just check-fast` is
-**1358 passed in 45 s** (46 s with lint, format and type checks). The fast lane is dominated by
+**1580 passed in 184 s** (203 tests marked slow, coverage 99.40%); `just check-fast` is
+**1377 passed in 43 s** (44 s with lint, format and type checks). The fast lane is dominated by
 the remaining sub-200 ms frame and parser tests plus collection, not by any single fixture.
 
 ## What was learned before writing any requirements
