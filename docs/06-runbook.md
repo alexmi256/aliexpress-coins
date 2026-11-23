@@ -745,8 +745,9 @@ Deliberately **not** executed here:
 - `run --once` without `--dry-run`: the day may already be claimed, and a real run would tap the
   shared tablet. The dry-run transcript is the safe proof.
 - `run --schedule` as a new process, and `docker compose up -d`: a nightly daemon was already
-  running; starting a second one against the same state could race it. The schedule output above
-  was read from the running daemon's logs.
+  running; starting a second one against the same state would have raced it under the pre-#78
+  code. The run lock now serialises them, but the schedule output above was read from the
+  running daemon's logs rather than starting a second one.
 - `docker compose stop` / `down`: stopping the running nightly daemon was forbidden for this task.
 
 ---

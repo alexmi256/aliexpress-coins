@@ -68,10 +68,14 @@ class StopFlag(Protocol):
 
 
 class NightlyState(Protocol):
-    """The daily-store query the scheduler needs."""
+    """The daily-store queries the scheduler needs."""
 
     def snapshot(self) -> DailySnapshot:
         """Return today's state snapshot."""
+        ...
+
+    def reload(self) -> None:
+        """Drop any cached snapshot so the next query reads the file again."""
         ...
 
 
@@ -173,9 +177,10 @@ def run_schedule(
             if acquired:
                 try:
                     # The run we waited for may have just finished the roster.
-                    # Re-read after taking the lock so a completed manual run
-                    # does not get a duplicate night from the daemon.
+                    # Re-read from disk after taking the lock so a completed
+                    # manual run does not get a duplicate night from the daemon.
                     try:
+                        state.reload()
                         skip = should_skip_night(state)
                     except Exception as exc:
                         skip = False

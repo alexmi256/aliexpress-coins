@@ -66,6 +66,9 @@ class _State:
     def snapshot(self) -> DailySnapshot:
         return DailySnapshot(day=date(2026, 11, 22), completions={}, completed_night=self.completed_night)
 
+    def reload(self) -> None:
+        pass
+
 
 def _monotonic(clock: _Clock) -> Any:
     """A monotonic reading derived from the test clock, so waits move it."""
@@ -240,6 +243,9 @@ def test_a_failed_state_check_still_runs_the_night(
         def snapshot(self) -> DailySnapshot:
             raise OSError('state volume unreadable')
 
+        def reload(self) -> None:
+            pass
+
     def night() -> RunReport:
         calls.append('run')
         report = RunReport(config.runs_dir, 'run-3', budget_seconds=60.0, started_at=clock.now)
@@ -297,10 +303,11 @@ def test_the_daemon_waits_for_a_manual_run_and_then_skips_a_completed_day(
     caplog.set_level(logging.INFO)
     config = _config(tmp_path, jitter=0)
     clock = _Clock(START)
-    store = _store(tmp_path, clock)
-    manual = store.run_lock()
+    waiter = _store(tmp_path, clock)
+    manual_store = _store(tmp_path, clock)
+    manual = manual_store.run_lock()
     manual.try_acquire()
-    stop = _ReleasingStop(clock, manual, store, complete=True)
+    stop = _ReleasingStop(clock, manual, manual_store, complete=True)
     calls: list[str] = []
 
     def night() -> RunReport:  # pragma: no cover - the assertion is that this is not called
@@ -311,10 +318,10 @@ def test_the_daemon_waits_for_a_manual_run_and_then_skips_a_completed_day(
         run_schedule(
             config,
             run_night=night,
-            state=store,
+            state=waiter,
             clock=clock,
             stop=stop,
-            lock=store.run_lock(),
+            lock=waiter.run_lock(),
             lock_wait_seconds=60,
             monotonic=_monotonic(clock),
         )
@@ -332,10 +339,11 @@ def test_a_budget_stopped_manual_run_leaves_the_night_for_the_daemon(
     caplog.set_level(logging.INFO)
     config = _config(tmp_path, jitter=0)
     clock = _Clock(START)
-    store = _store(tmp_path, clock)
-    manual = store.run_lock()
+    waiter = _store(tmp_path, clock)
+    manual_store = _store(tmp_path, clock)
+    manual = manual_store.run_lock()
     manual.try_acquire()
-    stop = _ReleasingStop(clock, manual, store, complete=False)
+    stop = _ReleasingStop(clock, manual, manual_store, complete=False)
     calls: list[str] = []
 
     def night() -> RunReport:
@@ -348,10 +356,10 @@ def test_a_budget_stopped_manual_run_leaves_the_night_for_the_daemon(
         run_schedule(
             config,
             run_night=night,
-            state=store,
+            state=waiter,
             clock=clock,
             stop=stop,
-            lock=store.run_lock(),
+            lock=waiter.run_lock(),
             lock_wait_seconds=60,
             monotonic=_monotonic(clock),
         )

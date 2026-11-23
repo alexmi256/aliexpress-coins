@@ -236,6 +236,18 @@ class DailyStateStore:
         """Give #31 the whole day: counters, balance, run count and timestamp."""
         return self._loaded()
 
+    def reload(self) -> None:
+        """Drop the cached snapshot so the next query reads the file again.
+
+        A long-lived scheduler caches the day after its first completed-night
+        check. Another process (a manual run, or a second daemon) can change the
+        file while that scheduler waits for the run lock, so the post-lock
+        re-check must not reuse the cache. Ordinary state updates stay in memory
+        because they are this store's own writes.
+        """
+        self._day = None
+        self._state = None
+
     def _path_for(self, day: date) -> Path:
         return self.state_dir / f'daily-{day.isoformat()}.json'
 
