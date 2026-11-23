@@ -17,6 +17,7 @@ from typing import Literal
 
 from aliexpress_coins.perception.errors import SnapshotError
 from aliexpress_coins.perception.geometry import parse_geometry
+from aliexpress_coins.transport import AdbResult, AdbRunner, SubprocessAdbRunner
 
 Status = Literal['ok', 'fail', 'skipped']
 
@@ -34,23 +35,18 @@ class CheckResult:
         return f'[{self.status}] {self.name}: {self.detail}'
 
 
-@dataclass(frozen=True)
-class CommandResult:
-    """The subset of a completed process that doctor needs."""
+CommandResult = AdbResult
+"""The shared transport result; doctor keeps its old name."""
 
-    returncode: int
-    stdout: str
-    stderr: str
+CommandRunner = AdbRunner
+"""The shared adb transport seam; doctor keeps its old name."""
 
-
-CommandRunner = Callable[[Sequence[str], float], CommandResult]
 Which = Callable[[str], str | None]
 OcrLoader = Callable[[], str]
 
 
 def _run_command(args: Sequence[str], timeout: float) -> CommandResult:
-    completed = subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
-    return CommandResult(completed.returncode, completed.stdout, completed.stderr)
+    return SubprocessAdbRunner()(args, timeout)
 
 
 def _first_line(*texts: str) -> str:
@@ -74,9 +70,9 @@ def check_adb(*, which: Which = shutil.which, run: CommandRunner = _run_command)
         return CheckResult('adb', 'fail', f'{path}: {exc}')
 
     if result.returncode != 0:
-        return CheckResult('adb', 'fail', f'{path} exited {result.returncode}: {_first_line(result.stderr)}')
+        return CheckResult('adb', 'fail', f'{path} exited {result.returncode}: {_first_line(result.stderr_text)}')
 
-    return CheckResult('adb', 'ok', f'{_first_line(result.stdout, result.stderr)} ({path})')
+    return CheckResult('adb', 'ok', f'{_first_line(result.stdout_text, result.stderr_text)} ({path})')
 
 
 def _is_network_serial(serial: str) -> bool:
@@ -89,7 +85,7 @@ def _get_state(serial: str, run: CommandRunner) -> tuple[str | None, str]:
     except (OSError, subprocess.TimeoutExpired) as exc:
         return None, str(exc)
 
-    output = result.stdout.strip() or result.stderr.strip()
+    output = result.stdout_text.strip() or result.stderr_text.strip()
     if result.returncode != 0 or output != 'device':
         return None, output or f'adb exited {result.returncode}'
     return output, output
@@ -107,7 +103,7 @@ def check_device(serial: str | None, *, run: CommandRunner = _run_command) -> Ch
         except (OSError, subprocess.TimeoutExpired) as exc:
             return CheckResult('device', 'fail', f'{serial}: adb connect failed: {exc}')
 
-        connect_detail = _first_line(connected.stdout, connected.stderr)
+        connect_detail = _first_line(connected.stdout_text, connected.stderr_text)
         state, detail = _get_state(serial, run)
         if state is None:
             return CheckResult('device', 'fail', f'{serial}: {detail}; adb connect: {connect_detail}')
@@ -126,9 +122,9 @@ def _geometry_probe(serial: str, command: Sequence[str], run: CommandRunner) -> 
         raise SnapshotError(f'adb {" ".join(command)} failed: {exc}') from exc
     if result.returncode != 0:
         raise SnapshotError(
-            f'adb {" ".join(command)} exited {result.returncode}: {_first_line(result.stderr, result.stdout)}',
+            f'adb {" ".join(command)} exited {result.returncode}: {_first_line(result.stderr_text, result.stdout_text)}',
         )
-    return result.stdout
+    return result.stdout_text
 
 
 def check_geometry(serial: str | None, *, run: CommandRunner = _run_command) -> CheckResult:

@@ -49,6 +49,7 @@ from aliexpress_coins.runner.errors import (
     DeviceUnavailable,
 )
 from aliexpress_coins.tasks.surface import SHORTCUT_DEEP_LINK, SurfaceRoute
+from aliexpress_coins.transport import AdbResult, AdbRunner, SubprocessAdbRunner
 
 __all__ = [
     'APP_ACTIVITY',
@@ -59,6 +60,15 @@ __all__ = [
     'HygieneReport',
     'SubprocessCommandRunner',
 ]
+
+DeviceCommandResult = AdbResult
+"""The shared transport result; the device vocabulary keeps its old name."""
+
+CommandRunner = AdbRunner
+"""The shared adb transport seam; the device vocabulary keeps its old name."""
+
+SubprocessCommandRunner = SubprocessAdbRunner
+"""The real transport; the device vocabulary keeps its old name."""
 
 APP_PACKAGE = 'com.alibaba.aliexpresshd'
 """The measured AliExpress package."""
@@ -75,27 +85,6 @@ SWIPE_DURATION_MS = 200
 
 WAKE_SETTLE_SECONDS = 0.5
 """A bounded pause before re-reading power state after a sleeping start."""
-
-
-@dataclass(frozen=True, slots=True)
-class DeviceCommandResult:
-    """The bytes and exit status of one adb command."""
-
-    returncode: int
-    stdout: bytes = b''
-    stderr: bytes = b''
-
-
-CommandRunner = Callable[[Sequence[str], float], DeviceCommandResult]
-"""The transport seam: a callable that runs one adb argv."""
-
-
-class SubprocessCommandRunner:
-    """Run the real adb command outside tests."""
-
-    def __call__(self, args: Sequence[str], timeout: float) -> DeviceCommandResult:
-        completed = subprocess.run(args, capture_output=True, timeout=timeout, check=False)
-        return DeviceCommandResult(completed.returncode, completed.stdout, completed.stderr)
 
 
 class HygieneDevice(Protocol):

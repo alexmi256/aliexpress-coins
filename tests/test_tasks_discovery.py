@@ -225,6 +225,7 @@ _EXPECTED_BOOST: dict[str, tuple[tuple[str, str, TaskCategory | None, str | None
 
 
 @pytest.mark.parametrize('fixture', tuple(_EXPECTED_BOOST))
+@pytest.mark.slow
 def test_the_measured_boost_fixtures_enumerate_every_row_with_its_decision(
     frames: dict[str, Snapshot],
     catalogue: TaskCatalogue,
@@ -528,6 +529,7 @@ def test_open_boost_list_waits_for_the_task_set_to_stop_changing(
     assert opened.history == (ScreenState.PAGE, ScreenState.PAGE, ScreenState.PAGE)
 
 
+@pytest.mark.slow
 def test_open_boost_list_sweeps_a_popup_over_an_already_populated_list(
     frames: dict[str, Snapshot],
     corpus: PopupCorpus,
@@ -583,6 +585,7 @@ def test_open_boost_list_retries_a_loading_coin_page_before_choosing_inline(
     assert len(device.taps) == 1
 
 
+@pytest.mark.slow
 def test_open_boost_list_sweeps_an_initial_popup_before_reading_the_coin_page(
     frames: dict[str, Snapshot],
     corpus: PopupCorpus,
@@ -616,6 +619,7 @@ def test_open_boost_list_sweeps_an_initial_popup_before_reading_the_coin_page(
     assert len(device.taps) == 2
 
 
+@pytest.mark.slow
 def test_open_boost_list_does_not_tap_through_a_stuck_initial_popup(
     frames: dict[str, Snapshot],
     corpus: PopupCorpus,
@@ -679,6 +683,7 @@ def test_open_boost_list_accepts_a_popup_classified_destination_without_another_
     assert enumerate_roster(opened.snapshot, catalogue).count == 4
 
 
+@pytest.mark.slow
 def test_open_boost_list_sweeps_a_popup_seen_on_the_way(
     frames: dict[str, Snapshot],
     corpus: PopupCorpus,

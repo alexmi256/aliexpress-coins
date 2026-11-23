@@ -111,6 +111,7 @@ def test_rapidocr_is_imported_lazily_and_once(monkeypatch: pytest.MonkeyPatch) -
     assert created == [{'Global.log_level': 'error'}]
 
 
+@pytest.mark.slow
 def test_the_real_adapter_reads_the_committed_fixture() -> None:
     fixture = Path(__file__).parent / 'data' / 'frame.png'
     with Image.open(fixture) as image:

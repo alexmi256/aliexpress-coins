@@ -288,6 +288,7 @@ def test_the_measured_coins_page_labels_resolve() -> None:
     assert find_text(snapshot, 'Take the coins quiz') is None  # not in this roster
 
 
+@pytest.mark.slow
 def test_the_committed_fixture_resolves_the_acceptance_labels_through_the_real_engine() -> None:
     # The fixture is synthetic (tests/data/README.md), but the boxes below are
     # what RapidOCR actually returns for it, so this exercises the real adapter

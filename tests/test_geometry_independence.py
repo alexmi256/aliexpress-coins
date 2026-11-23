@@ -50,6 +50,7 @@ def _load(path: Path, size: tuple[int, int] | None = None) -> Snapshot:
 
 
 @pytest.mark.parametrize('path', [BOOST, COINS], ids=['boost-page', 'coin-page'])
+@pytest.mark.slow
 def test_a_scaled_task_frame_yields_the_same_roster_keys(path: Path) -> None:
     catalogue = load_task_catalogue(CATALOGUE)
     tablet = _load(path)
@@ -69,6 +70,7 @@ def test_a_scaled_task_frame_yields_the_same_roster_keys(path: Path) -> None:
 
 
 @pytest.mark.parametrize(('path', 'count'), [(BOOST, 4), (COINS, 3)], ids=['boost-page', 'coin-page'])
+@pytest.mark.slow
 def test_every_scaled_action_stays_right_of_its_title(path: Path, count: int) -> None:
     catalogue = load_task_catalogue(CATALOGUE)
     phone = _load(path, (1080, 1920))

@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from aliexpress_coins import doctor
+from tests.support.adb import ScriptedAdbRunner
 
 
 def _runner(
@@ -17,12 +18,12 @@ def _runner(
 ) -> doctor.CommandRunner:
     queue = list(responses)
 
-    def run(args: Sequence[str], _timeout: float) -> doctor.CommandResult:
+    def respond(argv: tuple[str, ...]) -> doctor.CommandResult:
         if calls is not None:
-            calls.append(list(args))
+            calls.append(list(argv))
         return queue.pop(0)
 
-    return run
+    return ScriptedAdbRunner.responding(respond)
 
 
 def _raise_timeout(args: Sequence[str], timeout: float) -> doctor.CommandResult:
@@ -39,7 +40,7 @@ def test_check_adb_reports_version() -> None:
     calls: list[list[str]] = []
     result = doctor.check_adb(
         which=lambda _name: '/usr/bin/adb',
-        run=_runner([doctor.CommandResult(0, 'Android Debug Bridge version 1.0.41\n', '')], calls),
+        run=_runner([doctor.CommandResult(0, b'Android Debug Bridge version 1.0.41\n', b'')], calls),
     )
     assert result.status == 'ok'
     assert 'Android Debug Bridge version 1.0.41' in result.detail
@@ -49,7 +50,7 @@ def test_check_adb_reports_version() -> None:
 def test_check_adb_fails_on_non_zero_exit() -> None:
     result = doctor.check_adb(
         which=lambda _name: '/usr/bin/adb',
-        run=_runner([doctor.CommandResult(1, '', 'cannot execute')]),
+        run=_runner([doctor.CommandResult(1, b'', b'cannot execute')]),
     )
     assert result.status == 'fail'
     assert 'cannot execute' in result.detail
@@ -83,7 +84,7 @@ def test_check_device_accepts_an_already_connected_serial() -> None:
     calls: list[list[str]] = []
     result = doctor.check_device(
         '192.0.2.10:5555',
-        run=_runner([doctor.CommandResult(0, 'device\n', '')], calls),
+        run=_runner([doctor.CommandResult(0, b'device\n', b'')], calls),
     )
     assert result.status == 'ok'
     assert calls == [['adb', '-s', '192.0.2.10:5555', 'get-state']]
@@ -95,9 +96,9 @@ def test_check_device_connects_a_network_serial_first() -> None:
         '192.0.2.10:5555',
         run=_runner(
             [
-                doctor.CommandResult(1, '', 'unknown'),
-                doctor.CommandResult(0, 'connected to 192.0.2.10:5555\n', ''),
-                doctor.CommandResult(0, 'device\n', ''),
+                doctor.CommandResult(1, b'', b'unknown'),
+                doctor.CommandResult(0, b'connected to 192.0.2.10:5555\n', b''),
+                doctor.CommandResult(0, b'device\n', b''),
             ],
             calls,
         ),
@@ -112,9 +113,9 @@ def test_check_device_reports_a_failed_connect() -> None:
         '192.0.2.10:5555',
         run=_runner(
             [
-                doctor.CommandResult(1, '', 'unknown'),
-                doctor.CommandResult(0, 'failed to connect\n', ''),
-                doctor.CommandResult(1, '', 'unknown'),
+                doctor.CommandResult(1, b'', b'unknown'),
+                doctor.CommandResult(0, b'failed to connect\n', b''),
+                doctor.CommandResult(1, b'', b'unknown'),
             ]
         ),
     )
@@ -126,7 +127,7 @@ def test_check_device_does_not_connect_a_usb_serial() -> None:
     calls: list[list[str]] = []
     result = doctor.check_device(
         'USB123456',
-        run=_runner([doctor.CommandResult(1, '', 'offline')], calls),
+        run=_runner([doctor.CommandResult(1, b'', b'offline')], calls),
     )
     assert result.status == 'fail'
     assert 'offline' in result.detail
@@ -139,7 +140,7 @@ def test_check_device_fails_when_connect_times_out() -> None:
     def run(args: Sequence[str], timeout: float) -> doctor.CommandResult:
         calls.append(list(args))
         if len(calls) == 1:
-            return doctor.CommandResult(1, '', 'offline')
+            return doctor.CommandResult(1, b'', b'offline')
         raise subprocess.TimeoutExpired(list(args), timeout)
 
     result = doctor.check_device('192.0.2.10:5555', run=run)
@@ -162,9 +163,9 @@ def test_check_geometry_prints_the_profile_and_every_derived_dimension() -> None
         '192.0.2.10:5555',
         run=_runner(
             [
-                doctor.CommandResult(0, 'Physical size: 2000x1200\n', ''),
-                doctor.CommandResult(0, 'Physical density: 240\n', ''),
-                doctor.CommandResult(0, '35\n', ''),
+                doctor.CommandResult(0, b'Physical size: 2000x1200\n', b''),
+                doctor.CommandResult(0, b'Physical density: 240\n', b''),
+                doctor.CommandResult(0, b'35\n', b''),
             ],
             calls,
         ),
@@ -186,7 +187,7 @@ def test_check_geometry_prints_the_profile_and_every_derived_dimension() -> None
 def test_check_geometry_reports_a_failed_probe() -> None:
     result = doctor.check_geometry(
         '192.0.2.10:5555',
-        run=_runner([doctor.CommandResult(1, '', 'no shell')]),
+        run=_runner([doctor.CommandResult(1, b'', b'no shell')]),
     )
 
     assert result.status == 'fail'
@@ -206,9 +207,9 @@ def test_check_geometry_reports_unparseable_probe_output() -> None:
         '192.0.2.10:5555',
         run=_runner(
             [
-                doctor.CommandResult(0, 'size unknown\n', ''),
-                doctor.CommandResult(0, 'Physical density: 240\n', ''),
-                doctor.CommandResult(0, '35\n', ''),
+                doctor.CommandResult(0, b'size unknown\n', b''),
+                doctor.CommandResult(0, b'Physical density: 240\n', b''),
+                doctor.CommandResult(0, b'35\n', b''),
             ],
         ),
     )
@@ -217,6 +218,7 @@ def test_check_geometry_reports_unparseable_probe_output() -> None:
     assert 'could not parse wm size' in result.detail
 
 
+@pytest.mark.slow
 def test_load_ocr_reads_its_probe_image() -> None:
     assert 'COINS' in doctor._load_ocr()
 
@@ -240,7 +242,7 @@ def test_run_doctor_passes_with_device_skipped() -> None:
     result = doctor.run_doctor(
         {},
         which=lambda _name: '/usr/bin/adb',
-        run=_runner([doctor.CommandResult(0, 'Android Debug Bridge\n', '')]),
+        run=_runner([doctor.CommandResult(0, b'Android Debug Bridge\n', b'')]),
         load_ocr=lambda: 'RapidOCR ready',
     )
     assert result == 0
@@ -252,11 +254,11 @@ def test_run_doctor_checks_the_configured_device() -> None:
         which=lambda _name: '/usr/bin/adb',
         run=_runner(
             [
-                doctor.CommandResult(0, 'Android Debug Bridge\n', ''),
-                doctor.CommandResult(0, 'device\n', ''),
-                doctor.CommandResult(0, 'Physical size: 2000x1200\n', ''),
-                doctor.CommandResult(0, 'Physical density: 240\n', ''),
-                doctor.CommandResult(0, '35\n', ''),
+                doctor.CommandResult(0, b'Android Debug Bridge\n', b''),
+                doctor.CommandResult(0, b'device\n', b''),
+                doctor.CommandResult(0, b'Physical size: 2000x1200\n', b''),
+                doctor.CommandResult(0, b'Physical density: 240\n', b''),
+                doctor.CommandResult(0, b'35\n', b''),
             ]
         ),
         load_ocr=lambda: 'RapidOCR ready',
@@ -271,7 +273,7 @@ def test_run_doctor_exits_non_zero_when_a_check_fails() -> None:
     result = doctor.run_doctor(
         {},
         which=lambda _name: '/usr/bin/adb',
-        run=_runner([doctor.CommandResult(0, 'Android Debug Bridge\n', '')]),
+        run=_runner([doctor.CommandResult(0, b'Android Debug Bridge\n', b'')]),
         load_ocr=broken,
     )
     assert result == 1
@@ -286,7 +288,7 @@ def test_run_doctor_prints_one_line_per_check(capsys: pytest.CaptureFixture[str]
     doctor.run_doctor(
         {},
         which=lambda _name: '/usr/bin/adb',
-        run=_runner([doctor.CommandResult(0, 'Android Debug Bridge\n', '')]),
+        run=_runner([doctor.CommandResult(0, b'Android Debug Bridge\n', b'')]),
         load_ocr=lambda: 'RapidOCR ready',
     )
     lines = capsys.readouterr().out.splitlines()
@@ -301,7 +303,7 @@ def test_run_command_collects_the_process_output(monkeypatch: pytest.MonkeyPatch
     def fake_run(args: Sequence[str], **kwargs: object) -> SimpleNamespace:
         assert list(args) == ['adb', 'version']
         assert kwargs['timeout'] == 5.0
-        return SimpleNamespace(returncode=0, stdout='out\n', stderr='err\n')
+        return SimpleNamespace(returncode=0, stdout=b'out\n', stderr=b'err\n')
 
     monkeypatch.setattr(subprocess, 'run', fake_run)
-    assert doctor._run_command(['adb', 'version'], 5.0) == doctor.CommandResult(0, 'out\n', 'err\n')
+    assert doctor._run_command(['adb', 'version'], 5.0) == doctor.CommandResult(0, b'out\n', b'err\n')

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import subprocess
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import BytesIO
 from typing import Protocol
@@ -24,30 +23,16 @@ from aliexpress_coins.perception.geometry import (
 )
 from aliexpress_coins.perception.ocr import OcrEngine
 from aliexpress_coins.perception.snapshot import Snapshot
+from aliexpress_coins.transport import AdbResult, AdbRunner, SubprocessAdbRunner
+
+__all__ = [
+    'AdbResult',
+    'AdbRunner',
+    'SubprocessAdbRunner',
+]
 
 PNG_MAGIC = b'\x89PNG\r\n\x1a\n'
 _PREVIEW_BYTES = 200
-
-
-@dataclass(frozen=True, slots=True)
-class AdbResult:
-    """The raw bytes and exit status of one adb invocation."""
-
-    returncode: int
-    stdout: bytes
-    stderr: bytes
-
-
-AdbRunner = Callable[[Sequence[str], float], AdbResult]
-"""The transport seam: a callable that runs one adb argv and returns bytes."""
-
-
-class SubprocessAdbRunner:
-    """The real transport, used outside tests."""
-
-    def __call__(self, args: Sequence[str], timeout: float) -> AdbResult:
-        completed = subprocess.run(args, capture_output=True, timeout=timeout, check=False)
-        return AdbResult(completed.returncode, completed.stdout, completed.stderr)
 
 
 class Snapshotter(Protocol):

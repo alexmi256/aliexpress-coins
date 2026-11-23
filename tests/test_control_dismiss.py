@@ -175,6 +175,7 @@ def popup_frames(engine: RapidOcrEngine) -> dict[str, Snapshot]:
     return {name: _snapshot(POPUP_FIXTURES / name, engine) for name, _, _ in _FIXTURES}
 
 
+@pytest.mark.slow
 def test_the_launch_modal_is_dismissed_at_a_second_geometry(
     corpus: PopupCorpus,
     page: Snapshot,
@@ -223,6 +224,7 @@ def test_each_committed_family_closes_in_one_tap(
     assert report.taps[0].tap is not None
 
 
+@pytest.mark.slow
 def test_a_chain_is_followed_from_one_family_to_the_next(
     corpus: PopupCorpus,
     page: Snapshot,
@@ -509,6 +511,7 @@ def test_a_non_blocking_family_that_cannot_close_is_reported_not_fatal(
     assert report.attempts[0].outcome is DismissOutcome.NOT_FOUND
 
 
+@pytest.mark.slow
 def test_the_repeated_target_guard_stops_a_reopened_family(
     corpus: PopupCorpus,
     popup_frames: dict[str, Snapshot],
@@ -550,6 +553,7 @@ def test_the_repeated_target_guard_tolerates_a_render_shift(
     assert report.attempts[-1].outcome is DismissOutcome.REPEATED
 
 
+@pytest.mark.slow
 def test_a_popup_that_does_not_close_ends_with_a_warning(
     corpus: PopupCorpus,
     popup_frames: dict[str, Snapshot],
@@ -568,6 +572,7 @@ def test_a_popup_that_does_not_close_ends_with_a_warning(
     assert report.attempts[-1].outcome is DismissOutcome.REPEATED
 
 
+@pytest.mark.slow
 def test_a_missing_glyph_is_unclosable_without_a_tap(
     corpus: PopupCorpus,
     popup_frames: dict[str, Snapshot],
@@ -615,6 +620,7 @@ def test_settle_time_is_injected_not_slept_through(
     assert sleeps == [0.25]
 
 
+@pytest.mark.slow
 def test_a_chain_that_reopens_each_other_stops_at_the_round_bound(
     corpus: PopupCorpus,
     popup_frames: dict[str, Snapshot],

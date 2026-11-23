@@ -86,6 +86,7 @@ def frames() -> dict[str, Snapshot]:
 
 
 @pytest.mark.parametrize(('name', 'expected'), tuple(_EXPECTED.items()))
+@pytest.mark.slow
 def test_the_recorded_frames_classify_as_expected(
     frames: dict[str, Snapshot],
     name: str,
@@ -210,6 +211,7 @@ def test_a_single_fragment_on_a_blank_frame_is_loading_not_a_page() -> None:
     assert classification.evidence[0].signal == 'few_text_fragments'
 
 
+@pytest.mark.slow
 def test_classification_is_well_under_an_ocr_pass(frames: dict[str, Snapshot]) -> None:
     snapshot = frames['boost.png']
     timings: list[float] = []

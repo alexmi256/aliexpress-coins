@@ -430,6 +430,7 @@ def test_group_sections_keeps_a_header_with_no_rows() -> None:
     ]
 
 
+@pytest.mark.slow
 def test_the_measured_boost_fixture_pairs_every_title_with_its_own_action(
     boost_snapshot: Snapshot,
 ) -> None:
