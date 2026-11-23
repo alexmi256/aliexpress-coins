@@ -1056,7 +1056,9 @@ def _dispatch_with_retry(
                 acted=False,
             )
         if fresh is None:
-            _clear_acted_marker(context, authorized.key)
+            # Keep the marker: the row's control may still be present on a
+            # partial/stale roster, so a later dispatch must re-check again
+            # rather than tap without proof.
             return EngineResult(
                 outcome='skipped',
                 verification='already_done',
@@ -1071,12 +1073,14 @@ def _dispatch_with_retry(
         log.info('%s', _event('acted_recheck', key=authorized.key, claimable=True))
 
     result = _attempt_dispatch(context, controller, authorized)
+    # Persist the safety marker before the signed-out guard: if the session
+    # expired after the task acted, the next run still needs the re-check.
+    _remember_acted_result(context, authorized, result)
     if not result.completed:
         # A failed task is the first place a session that expired mid-walk is
         # visible. Detect it before spending the retry, so a signed-out app
         # stops the run instead of producing more task failures.
         _guard_signed_in(context, _capture(context.capture))
-    _remember_acted_result(context, authorized, result)
     named = result.failure
     if named is None or not named.retryable or named.retry is not RetryScope.TASK or result.acted:
         return result

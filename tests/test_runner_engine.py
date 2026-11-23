@@ -4100,9 +4100,96 @@ def test_a_cross_run_acted_failure_rechecks_before_tapping(
     assert report.tasks[0].outcome == 'skipped'
     assert report.tasks[0].verification == 'already_done'
     final = second.state.snapshot()
-    assert final.acted_unverified == ()
+    assert final.acted_unverified == ('coins_quiz',)
     assert final.completed_night is True
     assert '**Night:** complete' in report.summary_path.read_text(encoding='utf-8')
+
+
+@pytest.mark.slow
+def test_a_proven_acted_row_stays_marked_so_a_third_run_rechecks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    wanted = _entry(full_roster, 'coins_quiz')
+    roster = replace(full_roster, entries=(wanted,))
+    frame = _boost_frame('coins_quiz')
+    _surface(monkeypatch, roster, frame)
+    now = [CAPTURED_AT]
+
+    def fail_acted(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        return EngineResult(
+            'failed',
+            'no_observation',
+            'the row was tapped but no fresh frame proved it',
+            False,
+            {'key': entry.key},
+            failure=failure(FailureCode.TASK_UNVERIFIED, detail='no_observation'),
+            acted=True,
+        )
+
+    monkeypatch.setattr(engine, '_dispatch_entry', fail_acted)
+    first = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    first.wall_clock = lambda: now[0]
+
+    first_report = engine.run_once(first)
+    assert first_report.tasks[0].code == FailureCode.TASK_UNVERIFIED.value
+    assert first.state.snapshot().acted_unverified == ('coins_quiz',)
+
+    dispatches: list[str] = []
+
+    def must_not_dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        dispatches.append(entry.key or '')
+        raise AssertionError('the proven-already-done row must not be dispatched')
+
+    monkeypatch.setattr(engine, '_dispatch_entry', must_not_dispatch)
+    base = _boost_frame('coins_quiz')
+    complete = replace(base, boxes=(*base.boxes, _box('6/6', 700, 280, 760, 320)))
+    opens: list[int] = []
+
+    def open_boost(*args: Any, **kwargs: Any) -> BoostList:
+        snapshot_frame = base if len(opens) % 2 == 0 else complete
+        opens.append(1)
+        return BoostList(snapshot=snapshot_frame, route=DiscoveryRoute.BOOST, detail='test')
+
+    monkeypatch.setattr(engine, 'open_boost_list', open_boost)
+
+    now[0] = CAPTURED_AT + timedelta(minutes=5)
+    second = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    second.wall_clock = lambda: now[0]
+
+    second_report = engine.run_once(second)
+
+    assert dispatches == []
+    assert second.state.snapshot().acted_unverified == ('coins_quiz',)
+    assert second_report.tasks[0].verification == 'already_done'
+
+    now[0] = CAPTURED_AT + timedelta(minutes=10)
+    third = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    third.wall_clock = lambda: now[0]
+
+    third_report = engine.run_once(third)
+
+    assert dispatches == []
+    assert third.state.snapshot().acted_unverified == ('coins_quiz',)
+    assert third_report.tasks[0].verification == 'already_done'
 
 
 @pytest.mark.slow
@@ -4247,6 +4334,41 @@ def test_a_completed_progress_badge_makes_an_acted_row_terminal(
 
     assert readable is True
     assert fresh is None
+
+
+def test_an_acted_failure_is_marked_before_a_signed_out_guard_stops_the_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    context = _context(
+        tmp_path,
+        capture=_Capture(_logged_out_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    entry = _entry(full_roster, 'coins_quiz')
+
+    def fail_acted(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        return EngineResult(
+            'failed',
+            'no_observation',
+            'the row acted but no fresh frame proved it',
+            False,
+            {'key': entry.key},
+            failure=failure(FailureCode.TASK_UNVERIFIED, detail='no_observation'),
+            acted=True,
+        )
+
+    monkeypatch.setattr(engine, '_dispatch_entry', fail_acted)
+    assert context.controller is not None
+
+    with pytest.raises(AppLoggedOut):
+        engine._dispatch_with_retry(context, context.controller, entry)
+
+    assert context.state.is_acted_unverified('coins_quiz') is True
 
 
 def test_acted_marker_write_failures_are_logged_without_failing_the_task(
