@@ -236,7 +236,23 @@ def test_provenance_is_ignored_when_no_balance_is_stored(tmp_path: Path) -> None
     assert snapshot.last_balance_verified is None
 
 
-def test_a_legacy_unverified_zero_is_cleared_on_load(
+def test_a_prelock_snapshot_of_a_legacy_zero_does_not_write(
+    tmp_path: Path,
+) -> None:
+    payload = _valid_payload()
+    payload['last_balance'] = 0.0
+    payload.pop('last_balance_verified', None)
+    _write_json(_path(tmp_path), payload)
+    store = _store(tmp_path)
+    before = store.path.read_bytes()
+
+    assert store.snapshot().last_balance == 0.0
+    assert store.snapshot().last_balance_verified is None
+
+    assert store.path.read_bytes() == before
+
+
+def test_begin_run_clears_a_legacy_unverified_zero(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -246,6 +262,8 @@ def test_a_legacy_unverified_zero_is_cleared_on_load(
     _write_json(_path(tmp_path), payload)
     store = _store(tmp_path)
     caplog.set_level(logging.WARNING)
+
+    store.begin_run(at=NOW)
 
     assert store.snapshot().last_balance is None
     assert store.snapshot().last_balance_verified is None

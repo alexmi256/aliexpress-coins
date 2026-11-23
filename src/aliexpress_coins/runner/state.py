@@ -236,8 +236,21 @@ class DailyStateStore:
         return self.count(task_key) > 0
 
     def begin_run(self, *, at: datetime | None = None) -> int:
-        """Count this run and stamp its start, returning the day's run number."""
+        """Count this run and stamp its start, returning the day's run number.
+
+        This is called after the run lock is held, so it is also the first safe
+        place to persist the one-time healing of a legacy zero. The pre-lock
+        schedule read must stay side-effect free: another process may be
+        writing the same day's state.
+        """
         current = self._loaded()
+        if current.last_balance == 0.0 and current.last_balance_verified is not True:
+            self._warn(
+                'balance_zero_unverified_cleared',
+                stored_balance=0.0,
+                detail='the stored zero had no trusted coin-page provenance',
+            )
+            current = replace(current, last_balance=None, last_balance_verified=None)
         run_at = self._clock() if at is None else at
         run_count = current.run_count + 1
         self._commit(replace(current, run_count=run_count, last_run_at=run_at))
@@ -319,22 +332,10 @@ class DailyStateStore:
             raise StateReadError(f'could not read {path}: {exc}') from exc
 
         try:
-            state = _parse(raw, day)
+            return _parse(raw, day)
         except _CorruptState as exc:
             self._quarantine(path, exc)
             return _fresh(day)
-        if state.last_balance == 0.0 and state.last_balance_verified is not True:
-            # A legacy zero has no provenance. Treat it as unreadable rather
-            # than carrying the #94 bug forever, even on a run that claims
-            # nothing and would otherwise never write the balance.
-            self._warn(
-                'balance_zero_unverified_cleared',
-                stored_balance=0.0,
-                detail='the stored zero had no trusted coin-page provenance',
-            )
-            state = replace(state, last_balance=None, last_balance_verified=None)
-            self._commit(state)
-        return state
 
     def _commit(self, state: DailySnapshot) -> None:
         path = self._path_for(state.day)
