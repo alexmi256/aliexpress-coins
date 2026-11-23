@@ -1054,6 +1054,8 @@ def test_a_dry_run_that_stays_on_the_empty_boost_page_fails_with_its_own_reason(
     assert report.plan['surface'] == 'empty_boost'
     assert report.plan['steps'] == []
     assert report.plan['taps_issued'] == 0
+    assert report.shots.get('failure') == 'shots/failure.png'
+    assert (report.run_dir / 'shots' / 'failure.png').is_file()
     assert context.controller.tap_count == 0
     assert device.taps == []
 
@@ -1118,6 +1120,44 @@ def test_a_dry_run_fails_when_the_inline_rows_never_render(
     assert report.plan['surface'] == 'rows_absent'
     assert report.plan['steps'] == []
     assert report.plan['taps_issued'] == 0
+    assert context.controller.tap_count == 0
+    assert device.taps == []
+
+
+def test_a_dry_run_keeps_rows_read_from_an_unverified_surface(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _snapshot(
+        _box('Take the coins quiz', 180, 1269, 700, 1305),
+        _box('GO', 982, 1273, 1040, 1310),
+    )
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+    device = _RecordingDevice()
+    context.controller = Controller.from_frame(device, frame, rng=random.Random(0))
+    assert isinstance(context.navigate, _Navigate)
+
+    report = engine.run_once(context)
+
+    assert context.navigate.routes == []
+    assert report.status is RunStatus.FAILED
+    assert report.failure_code == FailureCode.NAVIGATION_FAILED.value
+    assert report.detail is not None
+    assert report.detail.startswith('surface_unverified')
+    assert 'rows: Take the coins quiz' in report.detail
+    assert report.plan is not None
+    assert report.plan['surface'] == 'unknown'
+    assert [step['key'] for step in report.plan['steps']] == ['coins_quiz']
+    assert report.plan['taps_issued'] == 0
+    assert report.roster is not None
+    assert report.roster['count'] == 1
     assert context.controller.tap_count == 0
     assert device.taps == []
 

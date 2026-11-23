@@ -350,6 +350,7 @@ def run_once(
     artifacts = ArtifactStore(report.runs_dir, report.run_id)
     record_dismissal = _popup_recorder(report)
     event_log = RunEventLog(report.event_log_path)
+    raw_capture = context.capture
     log.addHandler(event_log)
     try:
         event_log.record(
@@ -524,8 +525,17 @@ def run_once(
                     log,
                     on_dismiss=record_dismissal,
                 )
-            if status is RunStatus.FAILED and not context.config.dry_run:
-                _record_failure_frame(context, report, artifacts, log)
+            if status is RunStatus.FAILED:
+                # A dry run has already ended; use the unwrapped source so the
+                # diagnostic frame cannot trip the guard and overwrite the
+                # planner's named failure.
+                _record_failure_frame(
+                    context,
+                    report,
+                    artifacts,
+                    log,
+                    capture=raw_capture if context.config.dry_run else None,
+                )
         except RunAborted as exc:
             status = RunStatus.ABORTED
             if context.safety is not None:
@@ -670,16 +680,19 @@ def _plan_dry_run(
             routes_taken=tuple(routes),
         )
 
+    initial_roster = read_roster()
     if (
-        surface is Surface.UNKNOWN
+        (surface is Surface.UNKNOWN and initial_roster.empty)
         or initial_state is ScreenState.POPUP
         or surface in (Surface.ROWS_ABSENT, Surface.EMPTY_BOOST)
     ) and fire_route():
         # A popup may be cleared by the route, and an unclassified or empty
-        # surface gets the one #38 warm re-entry. A populated page is read as is.
+        # surface gets one shortcut attempt. A populated page is read as is.
         settle()
+        roster = read_roster()
+    else:
+        roster = initial_roster
 
-    roster = read_roster()
     unreadable = _unreadable_plan_reason(roster, surface, waits, content_waits, settle_note, initial_state)
     if unreadable is not None:
         last = waits[-1] if waits else None
@@ -689,14 +702,14 @@ def _plan_dry_run(
             # popup is not a readable coin page, so report it as unread rather
             # than planning the rows under the scrim.
             surface = Surface.UNKNOWN
-        roster = Roster(
-            entries=(),
-            route=DiscoveryRoute.INLINE,
-            catalogue_version=context.catalogue.version,
-            default_deny_reason=context.catalogue.default_deny_reason,
-            surface_variant=surface,
-            routes_taken=tuple(routes),
-        )
+            roster = Roster(
+                entries=(),
+                route=DiscoveryRoute.INLINE,
+                catalogue_version=context.catalogue.version,
+                default_deny_reason=context.catalogue.default_deny_reason,
+                surface_variant=surface,
+                routes_taken=tuple(routes),
+            )
 
     report.geometry = _geometry(frame)
     report.roster = roster.as_dict()
@@ -845,7 +858,11 @@ def _unreadable_plan_reason(
     elif surface is Surface.EMPTY_BOOST:
         reason = 'surface_empty_boost: the Coins boost page was still the documented load fault'
     elif surface is Surface.UNKNOWN:
-        reason = 'surface_unknown: the coin page did not render'
+        if roster.empty:
+            reason = 'surface_unknown: the coin page did not render'
+        else:
+            rows = ', '.join(entry.title for entry in roster.entries)
+            reason = f'surface_unverified: task rows were read but the coin page marker was missing (rows: {rows})'
     elif not roster.empty:
         return None
     elif surface is Surface.ROWS_ABSENT:
@@ -1600,12 +1617,14 @@ def _record_failure_frame(
     report: RunReport,
     artifacts: ArtifactStore,
     log: logging.Logger,
+    *,
+    capture: CaptureSource | None = None,
 ) -> None:
     """Best-effort final frame for a failed run; never mask the original error."""
     if 'failure' in report.shots:
         return
     try:
-        frame = _capture(context.capture)
+        frame = _capture(context.capture if capture is None else capture)
     except RunAborted:
         raise
     except Exception as exc:

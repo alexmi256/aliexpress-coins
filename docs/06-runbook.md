@@ -374,7 +374,7 @@ runs/<UTC timestamp>/          # e.g. runs/20261123T015402Z/
     ├── balance-before.json    # its OCR boxes and geometry sidecar
     ├── balance-after.png
     ├── balance-after.json
-    └── failure.png            # best-effort, failed live runs only
+    └── failure.png            # best-effort, failed runs only
 ```
 
 `AECOINS_RUNS_DIR` overrides the root. In the container it is `/app/runs`, backed by the named
@@ -554,7 +554,9 @@ is decided server-side; changing the tablet's timezone did not clear completed t
 The schedule is **03:30 plus up to 180 s of jitter**. That is probably after a ~03:00 roll, but
 "probably" is not a measurement. Do not move the schedule earlier to "catch" the reset without
 first running the two-dry-run measurement in #63 (around 02:50 and 03:10 local, with no claims) and
-reading the nightly `roster.jsonl`.
+reading the nightly `roster.jsonl`. A pre-reset dry run is **expected to exit non-zero**
+(`surface_incomplete` or `surface_rows_incomplete`) rather than print `planned`; the measurement is
+the roster log, not the exit code.
 
 If a night claims nothing, check in this order:
 
@@ -606,7 +608,7 @@ swipe or page press. A result that may already have acted is reported, never rep
 | `navigation_failed` | The route did not reach the screen it promised; a live run records a fallback and may continue from the inline surface, while a dry run has no fallback and exits non-zero with a `surface_*` detail. | Read `Route fallback` and `route_error`; for a dry run, read the `surface_*` detail and retry once the page settles; start the app normally, settle ~10 s, then send the shortcut intent; check for the empty `Coins boost` page and an app update that changed labels. | none |
 | `popup_unclosable` | A popup had no safe dismissal: no known label, no template match and no calibration for this profile. | Open the failure frame in `shots/`; note the app version and the `doctor` profile id; update the popup corpus (#11) or the profile calibration (#42). Never tap a guessed coordinate. | none |
 | `task_unverified` | The task did not prove completion on screen. | Read the task row's `code`, `outcome`, `evidence` and `detail`; inspect `run.jsonl`; check whether `acted` is true. A task that acted is not retried, so verify by hand before the next night. | task ×1 |
-| `unexpected_screen` | The same unrecognised or dead screen was seen three times in a row. | Read `abort.screen` labels and fingerprint, and the `failure` frame; check for an app update, a new popup or a hybrid page that did not render; capture a fixture for #11. | none |
+| `unexpected_screen` | The same unrecognised or dead screen was seen three times in a row. | Read `abort.screen` labels and fingerprint, and the `failure` frame when one was written; check for an app update, a new popup or a hybrid page that did not render; capture a fixture for #11. | none |
 | `dangerous_control` | A buy, order, cart or redeem control appeared while a task was running; the run aborted before tapping it. | Read `abort.screen`; do not tap it; confirm no purchase or redemption happened; check whether the app changed a row or layout; file an issue with the redacted frame and the label that triggered it. | none |
 | `balance_decreased` | The coin balance is lower than the baseline recorded before the first task. | Compare `shots/balance-before.*` and `shots/balance-after.*`; check account activity and orders; something acted outside the policy or a human used the tablet. Do not rerun until the cause is known. | none |
 | `budget_exhausted` | The wall-clock or task budget ended the walk; the remaining rows wait for tomorrow. | Read `budget.seconds` / `used_seconds`, the number of tasks, and the per-task seconds; check network and OCR speed; raise `AECOINS_RUN_BUDGET_SECONDS` or `AECOINS_MAX_TASKS_PER_RUN` only deliberately. | none |

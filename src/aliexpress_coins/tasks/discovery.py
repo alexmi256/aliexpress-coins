@@ -1084,11 +1084,11 @@ DiscoveryResult = BoostList
 class CoinPageWait:
     """The frame the pre-tap coin-page wait settled on, and how it got there.
 
-    ``settled`` is true only when the last frame is neither ``LOADING`` nor
-    ``POPUP``. A dry run cannot dismiss a popup — that is an in-app tap — so it
-    calls :func:`wait_for_coin_page` without ``dismiss_popup`` and receives the
-    ``POPUP`` frame immediately instead of waiting out the deadline for a screen
-    it is not allowed to touch.
+    ``settled`` is true only when the last frame is neither ``LOADING``,
+    ``POPUP`` nor ``UNKNOWN``. A dry run cannot dismiss a popup — that is an
+    in-app tap — so it calls :func:`wait_for_coin_page` without
+    ``dismiss_popup`` and receives the ``POPUP`` frame immediately instead of
+    waiting out the deadline for a screen it is not allowed to touch.
     """
 
     snapshot: Snapshot
@@ -1098,7 +1098,7 @@ class CoinPageWait:
 
     @property
     def settled(self) -> bool:
-        """Whether the page stopped loading without a modal still covering it."""
+        """Whether the page stopped loading without a modal or unknown frame."""
         return not self.timed_out and self.classification.state not in (
             ScreenState.LOADING,
             ScreenState.POPUP,
