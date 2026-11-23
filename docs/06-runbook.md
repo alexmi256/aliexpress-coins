@@ -101,7 +101,7 @@ Successfully installed aliexpress-coins-0.1.0
 $ just check
 ...
 Required test coverage of 99.39% reached. Total coverage: 99.40%
-======================= 1584 passed in 185.94s (0:03:05) =======================
+======================= 1584 passed in 185.67s (0:03:05) =======================
 All quality gates passed.
 ```
 
@@ -585,7 +585,7 @@ device was `192.168.8.65:5555`, app `8.180.1`, timezone `America/Toronto` ✅.
 |---|---|
 | `git clone git@github.com:alexmi256/aliexpress-coins.git` | fresh clone, no `runs/`, `state/` or `.venv/` |
 | `just setup` | `.venv` created, package installed |
-| `just check` | 1584 passed in 185.94 s, coverage 99.40% |
+| `just check` | 1584 passed in 185.67 s, coverage 99.40% |
 | `python -m aliexpress_coins doctor` (local and container) | four `[ok]` lines, exit 0 |
 | `adb ... exec-out screencap -p` | 1200×2000 PNG |
 | `python -m aliexpress_coins.tools.capture_frames --list` | three fixture sets listed |
