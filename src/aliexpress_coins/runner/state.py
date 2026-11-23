@@ -17,6 +17,7 @@ mistaken for today's and stays on disk for the report.
       "date": "2026-11-21",
       "completions": {"daily_checkin": 1, "sponsored_items": 3},
       "last_balance": 1240.0,
+      "last_balance_verified": true,
       "run_count": 2,
       "last_run_at": "2026-11-21T03:42:11+00:00",
       "completed_night": true,
@@ -37,6 +38,12 @@ explain it. A run with a retryable failure leaves the day open even when another
 row completed, because the retryable row is still unclaimed work. A task that
 acted without proof is named in ``acted_unverified`` so its next dispatch
 re-reads the fresh row before tapping.
+
+``last_balance_verified`` records the provenance of the stored value: ``true``
+means it came from a trusted coin-page balance band, ``false`` or ``null``
+means a zero of unknown provenance (a legacy file has no field at all). A
+verified zero is a real new account; an unverified zero is cleared the next
+time the balance cannot be read (issue #94).
 
 Every update is staged in the same directory, fsynced, then renamed over the
 target (:func:`aliexpress_coins.perception.artifacts.atomic_write_bytes`), so a
@@ -151,6 +158,7 @@ class DailySnapshot:
     day: date
     completions: Mapping[str, int]
     last_balance: float | None = None
+    last_balance_verified: bool | None = None
     run_count: int = 0
     last_run_at: datetime | None = None
     completed_night: bool = False
@@ -168,6 +176,7 @@ class DailySnapshot:
             'date': self.day.isoformat(),
             'completions': dict(self.completions),
             'last_balance': self.last_balance,
+            'last_balance_verified': self.last_balance_verified,
             'run_count': self.run_count,
             'last_run_at': None if self.last_run_at is None else self.last_run_at.isoformat(),
             'completed_night': self.completed_night,
@@ -242,20 +251,37 @@ class DailyStateStore:
             logger=self._logger if logger is None else logger,
         )
 
-    def record(self, task_key: str, *, balance: float | None = None) -> int:
+    def record(
+        self,
+        task_key: str,
+        *,
+        balance: float | None = None,
+        balance_verified: bool = True,
+    ) -> int:
         """Count one completion of ``task_key`` and return its new total.
 
         ``balance`` is optional so a task that does not read the balance can
-        record without clobbering the last observed value. The file is written
-        before the in-memory state changes: a failed write leaves the previous
-        state authoritative and raises :class:`StateWriteError`.
+        record without clobbering the last observed value. ``balance_verified``
+        says whether a supplied value came from a trusted coin-page reading; it
+        is only meaningful for a zero, where it separates a new account from a
+        misread control numeral. The file is written before the in-memory state
+        changes: a failed write leaves the previous state authoritative and
+        raises :class:`StateWriteError`.
         """
         key = _task_key(task_key)
         current = self._loaded()
         completions = dict(current.completions)
         completions[key] = completions.get(key, 0) + 1
         last_balance = current.last_balance if balance is None else _balance(balance)
-        self._commit(replace(current, completions=completions, last_balance=last_balance))
+        last_balance_verified = current.last_balance_verified if balance is None else balance_verified
+        self._commit(
+            replace(
+                current,
+                completions=completions,
+                last_balance=last_balance,
+                last_balance_verified=last_balance_verified,
+            ),
+        )
         return completions[key]
 
     def count(self, task_key: str) -> int:
@@ -267,8 +293,21 @@ class DailyStateStore:
         return self.count(task_key) > 0
 
     def begin_run(self, *, at: datetime | None = None) -> int:
-        """Count this run and stamp its start, returning the day's run number."""
+        """Count this run and stamp its start, returning the day's run number.
+
+        This is called after the run lock is held, so it is also the first safe
+        place to persist the one-time healing of a legacy zero. The pre-lock
+        schedule read must stay side-effect free: another process may be
+        writing the same day's state.
+        """
         current = self._loaded()
+        if current.last_balance == 0.0 and current.last_balance_verified is not True:
+            self._warn(
+                'balance_zero_unverified_cleared',
+                stored_balance=0.0,
+                detail='the stored zero had no trusted coin-page provenance',
+            )
+            current = replace(current, last_balance=None, last_balance_verified=None)
         run_at = self._clock() if at is None else at
         run_count = current.run_count + 1
         self._commit(replace(current, run_count=run_count, last_run_at=run_at))
@@ -312,10 +351,33 @@ class DailyStateStore:
         keys = tuple(item for item in current.acted_unverified if item != key)
         self._commit(replace(current, acted_unverified=keys))
 
-    def observe_balance(self, balance: float) -> None:
-        """Store the last balance seen, without recording a task completion."""
+    def observe_balance(self, balance: float | None, *, verified: bool = True) -> None:
+        """Store the last balance seen, without recording a task completion.
+
+        ``None`` means this attempt could not read a balance. It keeps a
+        known-good value, but clears a stored zero without trusted provenance,
+        because keeping that would preserve the bug in issue #94. ``verified``
+        is the provenance of a zero: true only when the reading came from a
+        validated coin page, so a later unreadable run can tell a real new
+        account from a legacy misread zero.
+        """
         current = self._loaded()
-        self._commit(replace(current, last_balance=_balance(balance)))
+        if balance is None:
+            if current.last_balance == 0.0 and current.last_balance_verified is not True:
+                self._warn(
+                    'balance_zero_unverified_cleared',
+                    stored_balance=0.0,
+                    detail='the stored zero had no trusted coin-page provenance and this attempt could not read a balance',
+                )
+                self._commit(replace(current, last_balance=None, last_balance_verified=None))
+            return
+        self._commit(
+            replace(
+                current,
+                last_balance=_balance(balance),
+                last_balance_verified=verified,
+            ),
+        )
 
     def snapshot(self) -> DailySnapshot:
         """Give #31 the whole day: counters, balance, run count and timestamp."""
@@ -449,6 +511,16 @@ def _parse(raw: bytes, day: date) -> DailySnapshot:
     else:
         last_balance = float(last_balance_raw)
 
+    last_balance_verified_raw = data.get('last_balance_verified')
+    if last_balance_verified_raw is None:
+        last_balance_verified = None
+    elif isinstance(last_balance_verified_raw, bool):
+        last_balance_verified = last_balance_verified_raw
+    else:
+        raise _CorruptState("'last_balance_verified' must be a boolean or null")
+    if last_balance is None:
+        last_balance_verified = None
+
     run_count = _field(data, 'run_count')
     if isinstance(run_count, bool) or not isinstance(run_count, int) or run_count < 0:
         raise _CorruptState("'run_count' must be a non-negative integer")
@@ -474,6 +546,7 @@ def _parse(raw: bytes, day: date) -> DailySnapshot:
         day=day,
         completions=completions,
         last_balance=last_balance,
+        last_balance_verified=last_balance_verified,
         run_count=run_count,
         last_run_at=last_run_at,
         completed_night=completed_night,

@@ -123,8 +123,8 @@ $ just setup
 Successfully installed aliexpress-coins-0.1.0
 $ just check
 ...
-Required test coverage of 99.47% reached. Total coverage: 99.48%
-======================= 1778 passed in 213.31s (0:03:33) =======================
+Required test coverage of 99.48% reached. Total coverage: 99.48%
+======================= 1783 passed in 213.31s (0:03:33) =======================
 All quality gates passed.
 ```
 
@@ -511,7 +511,11 @@ The task table in `summary.md` has one row per dispatched task:
 ```
 
 `key` is the catalogue key, `code` is the failure code for a task that did not verify, and
-`evidence` is the executor's own proof. `Skipped` lists rows that were never dispatched and groups
+`evidence` is the executor's own proof. In `run.json`, a task's `state` is `in_flight` while its
+executor is running (a report left by a killed run can show this), `aborted` when the run stopped
+mid-task, and otherwise the executor's own outcome. A task that was running when the run aborted
+keeps its row with `outcome=aborted`; its `code` and `evidence` name the abort and the `detail`
+names the screen. `Skipped` lists rows that were never dispatched and groups
 them by `reason`: `policy` (deny list), `no executor`, `no action`, `daily limit`, `run budget`,
 `stopped` or `not selected`.
 
@@ -553,7 +557,7 @@ deliberately; a larger budget is not a fix for a slow network or a stuck screen.
 | `night` | the completion decision: `outcome`, dispatched/completed counts and retryable failures |
 | `failure` | code, stage, retry scope, retries, `abort_run`, sentence and detail |
 | `error` | the raw exception for a failed run, in addition to the named failure |
-| `tasks[]`, `skipped[]` | the task and skip tables in structured form |
+| `tasks[]`, `skipped[]` | the task and skip tables in structured form; each task carries `state` (`in_flight`, `aborted`, or the executor outcome) |
 
 **Balance provenance.** The engine writes the `balance-before` frame, then **reloads the PNG and
 its OCR sidecar from `shots/`** and reads the balance from that copy. It does the same for
@@ -646,7 +650,7 @@ swipe or page press. A result that may already have acted is reported, never rep
 | `popup_unclosable` | A popup had no safe dismissal: no known label, no template match and no calibration for this profile. | Open the failure frame in `shots/`; note the app version and the `doctor` profile id; update the popup corpus (#11) or the profile calibration (#42). Never tap a guessed coordinate. | none |
 | `task_unverified` | The task did not prove completion on screen. | Read the task row's `code`, `outcome`, `verification` and `detail`; inspect `run.jsonl`; check `tasks[i].result.acted`. A task that acted is not retried, so verify by hand before the next night. | task ×1 |
 | `unexpected_screen` | The same unrecognised or dead screen was seen three times in a row. Inside a task that fails the task and the run tries three shortcut entries back to the coins page; the run aborts only when that recovery fails. | Read `tasks[i].result.payload.screen` for a task-scoped failure, or `abort.screen` labels and fingerprint when the run aborted; check for an app update, a new popup or a hybrid page that did not render; capture a fixture for #11. | none |
-| `dangerous_control` | A buy, order, cart or redeem control appeared while a task was running; the run aborted before tapping it. | Read `abort.screen`; do not tap it; confirm no purchase or redemption happened; check whether the app changed a row or layout; file an issue with the redacted frame and the label that triggered it. | none |
+| `dangerous_control` | A short buy/checkout/cart/redeem action caption (for example `Buy now`, `Add to cart` or `Place order`) appeared while a task was running; the run aborted before tapping it. | Read `abort.screen`; do not tap it; confirm no purchase or redemption happened; check whether the app changed a row or layout; file an issue with the redacted frame and the label that triggered it. | none |
 | `balance_decreased` | The coin balance is lower than the baseline recorded before the first task. | Compare `shots/balance-before.*` and `shots/balance-after.*`; check account activity and orders; something acted outside the policy or a human used the tablet. Do not rerun until the cause is known. | none |
 | `budget_exhausted` | The wall-clock or task budget ended the walk; the remaining rows wait for tomorrow. | Read `budget.seconds` / `used_seconds`, the number of tasks, and the per-task seconds; check network and OCR speed; raise `AECOINS_RUN_BUDGET_SECONDS` or `AECOINS_MAX_TASKS_PER_RUN` only deliberately. | none |
 | `internal_error` | An unexpected exception escaped; the report was still written. | Read `error` and the last events in `run.jsonl`; reproduce with `--dry-run`; file an issue with the run id, the traceback and the report. Do not edit the run directory to hide it. | none |
@@ -715,7 +719,7 @@ daemon container and its volumes stayed untouched):
 | `docker compose run --rm collector python -m aliexpress_coins run --once --dry-run` | `run 20261123T170916Z: planned`, `surface: rows_present`, 2 planned / 1 refused, `taps issued: 0`, exit `0` |
 | `docker compose run --rm collector cat /app/runs/20261123T170916Z/summary.md` | report read cleanly from the `runs` volume |
 | `docker logs --tail 5 aliexpress-coins-collector-1` *(live daemon)* | `schedule_wait` for `2026-11-24T03:31:31.431469-05:00` |
-| `just setup && just check` | ruff, format check, mypy strict, **1778 passed**, coverage **99.48%** (floor **99.47%**) |
+| `just setup && just check` | ruff, format check, mypy strict, **1783 passed**, coverage **99.48%** (floor **99.48%**) |
 | `.venv/bin/python -m aliexpress_coins.tools.capture_frames --list` | `states: 11 frames`, `flows: 14 frames`, `popups: 7 frames` |
 
 Deliberately **not** executed here:

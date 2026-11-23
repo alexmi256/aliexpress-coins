@@ -520,6 +520,44 @@ def test_a_full_walk_dispatches_in_reading_order_and_reports_the_task_budget(
     assert _report_payload(tmp_path)['status'] == 'budget'
 
 
+@pytest.mark.slow
+def test_a_task_is_written_in_flight_before_its_executor_finishes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    frame = _boost_frame('coins_quiz')
+    _surface(monkeypatch, roster, frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    report = RunReport(context.config.runs_dir, 'in-flight-write', budget_seconds=60.0, started_at=CAPTURED_AT)
+    observed: list[str] = []
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        payload = json.loads(report.json_path.read_text(encoding='utf-8'))
+        summary = report.summary_path.read_text(encoding='utf-8')
+        observed.append(payload['tasks'][0]['state'])
+        assert 'Take the coins quiz' in summary
+        assert 'No task was dispatched.' not in summary
+        if entry.key is not None:
+            _context.state.record(entry.key)
+        return EngineResult('completed', 'fake', 'done', True, {'key': entry.key})
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    engine.run_once(context, report=report)
+
+    assert observed == ['in_flight']
+    assert report.tasks[0].state == 'completed'
+
+
 def test_policy_and_missing_executor_are_reported_as_skips(
     tmp_path: Path,
     full_roster: Roster,
@@ -1443,12 +1481,55 @@ def test_an_aborted_run_reports_the_screen_and_returns_to_the_coins_page(
     assert report.abort['screen']['labels'] == ['Mystery checkout', 'Buy now']
     assert report.abort['reason'] == "a 'Buy now' control appeared"
     assert report.returned_to_coins_page is True
+    assert len(report.tasks) == 1
+    aborted_task = report.tasks[0]
+    assert aborted_task.title == 'Take the coins quiz'
+    assert aborted_task.key == 'coins_quiz'
+    assert aborted_task.state == 'aborted'
+    assert aborted_task.outcome == 'aborted'
+    assert aborted_task.code == FailureCode.DANGEROUS_CONTROL.value
+    assert aborted_task.result['abort']['screen']['labels'] == ['Mystery checkout', 'Buy now']
     summary = report.summary_path.read_text(encoding='utf-8')
     assert '**Abort:** dangerous_control' in summary
     assert 'Mystery checkout' in summary
+    assert '| Take the coins quiz | coins_quiz | dangerous_control | aborted |' in summary
+    assert 'No task was dispatched.' not in summary
     payload = _report_payload(tmp_path)
     assert payload['status'] == 'aborted'
     assert payload['abort']['screen']['surface'] == 'unknown'
+    assert payload['tasks'][0]['state'] == 'aborted'
+    assert payload['tasks'][0]['result']['abort']['screen']['labels'] == ['Mystery checkout', 'Buy now']
+
+
+@pytest.mark.slow
+def test_an_abort_while_routing_still_reports_no_task_dispatched(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    context = _context(
+        tmp_path,
+        capture=_Capture(_coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    monkeypatch.setattr(
+        engine,
+        'discover_roster',
+        lambda *args, **kwargs: (_ for _ in ()).throw(_safety_abort()),
+    )
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.ABORTED
+    assert report.abort is not None
+    assert report.tasks == []
+    summary = report.summary_path.read_text(encoding='utf-8')
+    assert '**Abort:** dangerous_control' in summary
+    assert 'No task was dispatched.' in summary
+    payload = _report_payload(tmp_path)
+    assert payload['tasks'] == []
 
 
 @pytest.mark.slow
@@ -1588,7 +1669,19 @@ def test_a_run_still_aborts_when_recovery_cannot_reach_the_coins_page(
     assert report.abort['screen']['labels'] == ['For you', 'Search']
     assert report.failure_code == FailureCode.UNEXPECTED_SCREEN.value
     assert engine.TASK_RECOVERY_ATTEMPTS in recovery_attempts
-    assert report.tasks == []
+    assert len(report.tasks) == 1
+    aborted_task = report.tasks[0]
+    assert aborted_task.key == 'sponsored_items'
+    assert aborted_task.title == 'Explore sponsored items'
+    assert aborted_task.state == 'aborted'
+    assert aborted_task.outcome == 'aborted'
+    assert aborted_task.code == FailureCode.UNEXPECTED_SCREEN.value
+    assert aborted_task.result['abort']['screen']['labels'] == ['For you', 'Search']
+    summary = report.summary_path.read_text(encoding='utf-8')
+    assert '| Explore sponsored items | sponsored_items | unexpected_screen | aborted |' in summary
+    assert 'No task was dispatched.' not in summary
+    payload = _report_payload(tmp_path)
+    assert payload['tasks'][0]['state'] == 'aborted'
     assert any(event.get('event') == 'run_aborted' and event.get('level') == 'error' for event in _events(report))
 
 
@@ -2011,6 +2104,9 @@ def test_a_stop_that_interrupts_a_task_is_reported_as_a_stopped_run(
     assert report.status is RunStatus.STOPPED
     assert report.detail is not None
     assert 'signal arrived mid-task' in report.detail
+    assert len(report.tasks) == 1
+    assert report.tasks[0].state == 'aborted'
+    assert report.tasks[0].outcome == 'aborted'
 
 
 def test_a_stop_during_hygiene_is_reported_without_a_controller(
@@ -3687,7 +3783,9 @@ def test_a_network_pull_mid_walk_is_a_named_failure_and_a_clean_exit(
 
     assert report.status is RunStatus.FAILED
     assert report.failure_code == FailureCode.DEVICE_OFFLINE.value
-    assert report.tasks == []
+    assert len(report.tasks) == 1
+    assert report.tasks[0].state == 'aborted'
+    assert report.tasks[0].code == FailureCode.DEVICE_OFFLINE.value
     assert flaky.calls >= 3
     assert clock.value >= 1.0  # the injected clock was advanced, no real wait
     assert isinstance(context.hygiene, _Hygiene)
@@ -4566,7 +4664,9 @@ def test_an_unclosable_popup_aborts_the_run_without_a_retry(
     assert report.failure_code == FailureCode.POPUP_UNCLOSABLE.value
     assert len(attempts) == 1
     assert clock.value == 0.0
-    assert report.tasks == []
+    assert len(report.tasks) == 1
+    assert report.tasks[0].state == 'aborted'
+    assert report.tasks[0].code == FailureCode.POPUP_UNCLOSABLE.value
 
 
 @pytest.mark.slow
@@ -4811,7 +4911,9 @@ def test_a_sign_out_during_the_walk_stops_the_next_dispatch(
 
     assert len(attempts) == 1
     assert report.failure_code == FailureCode.APP_LOGGED_OUT.value
-    assert report.tasks == []
+    assert len(report.tasks) == 1
+    assert report.tasks[0].state == 'aborted'
+    assert report.tasks[0].code == FailureCode.APP_LOGGED_OUT.value
 
 
 def test_an_undecodable_frame_is_named_and_not_retried(

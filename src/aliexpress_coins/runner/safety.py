@@ -12,7 +12,8 @@ whole run:
   task the engine first spends its bounded recovery (three shortcut entries)
   and fails only that task when the coins page is proven again; if recovery
   fails, the run aborts with the original screen (#83).
-* ``dangerous_control`` — a buy / order / cart / redeem control is visible while
+* ``dangerous_control`` — a short buy / checkout / cart / redeem action label
+  (a button caption, not the same vocabulary inside a sentence) is visible while
   a task is running. The one exception is the measured surprise-item product
   detail page, whose unavoidable ``Add to cart`` / ``Buy now`` buttons are
   documented as never tapped (docs/07 §product detail); the guard still aborts on
@@ -29,6 +30,7 @@ it. The engine reports both and still runs its return-to-coins-page path.
 from __future__ import annotations
 
 import re
+import statistics
 import unicodedata
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -65,11 +67,45 @@ __all__ = [
 UNEXPECTED_SCREEN_LIMIT = 3
 """How many identical unexpected frames in a row abort the run."""
 
-DANGEROUS_WORDS = frozenset({'add to cart', 'buy', 'cart', 'checkout', 'order', 'orders', 'purchase', 'redeem'})
-"""The spending/redeem vocabulary that must not be acted on during a task."""
+DANGEROUS_WORDS = frozenset(
+    {
+        'add to bag',
+        'add to cart',
+        'buy',
+        'buy it now',
+        'buy now',
+        'check out',
+        'checkout',
+        'order now',
+        'place an order',
+        'place order',
+        'purchase',
+        'purchase now',
+        'redeem',
+        'redeem now',
+    }
+)
+"""Exact short labels that are spending/redeem *controls*, not vocabulary.
 
-_SAFE_REDEEM_LABELS = frozenset({'coins credits to redeem', 'you can now redeem'})
-"""The two measured labels that merely name the redeem destination."""
+A label is dangerous only when the whole OCR line is one of these action
+phrases, optionally followed by a price or count the button carries. The same
+words inside a sentence are copy: the quiz page's ``Can be applied directly at
+Checkout`` answer is promotional text, not a button. Bare ``cart``, ``order``
+and ``orders`` are destinations or row titles, not actions, so they are
+deliberately absent.
+"""
+
+_CONTROL_MAX_HEIGHT_RATIO = 5.0
+"""A control caption's box is no taller than this multiple of the median text box.
+
+The bound only rejects display-scale text. A prominent CTA can be several times
+the body size on a small-print page (a 100 px caption beside 20 px text is 5x),
+while a headline an order of magnitude taller is not a tappable caption. The
+scale comes from the frame's own text, never a stored pixel size.
+"""
+
+_CONTROL_SUFFIX = re.compile(r'(?:[·•|:~-]\s*)?(?:\(\s*\d+\s*\)?|(?:c\$|us\s*\$|\$|cs)\s*\d[\d.,]*)')
+"""A bounded price/count/separator remainder after a button caption."""
 
 _PRODUCT_DETAIL = re.compile(r'\bitem\s+\d+\s*/\s*\d+\b')
 _PRODUCT_DETAIL_SAFE = frozenset({'add to cart', 'buy', 'buy now'})
@@ -308,36 +344,102 @@ def find_dangerous_controls(
     snapshot: Snapshot,
     catalogue: TaskCatalogue | None = None,
 ) -> tuple[TextBox, ...]:
-    """Return the OCR boxes that name a buy/order/cart/redeem control.
+    """Return the OCR boxes that name a short buy/checkout/cart/redeem caption.
 
-    The known surprise-item product detail page is exempt for its two purchase
-    buttons because the task visits that page deliberately and never taps them;
-    any other dangerous control on that page still aborts. With a catalogue, the
-    labels of *denied* task rows are exempt (policy refuses those rows); a
-    purchase label beside an allowed row is still a live control.
+    A control is one OCR line whose box is caption-sized relative to the
+    frame's median text height and whose whole normalised text is an action
+    caption, optionally followed by a bounded price/count/separator. A wrapped
+    two-line caption is recovered from its row. The known surprise-item product
+    detail page is exempt for its two purchase buttons because the task visits
+    that page deliberately and never taps them; any other dangerous control on
+    that page still aborts. With a catalogue, the labels of *denied* task rows
+    are exempt (policy refuses those rows); a purchase label beside an allowed
+    row is still a live control.
     """
     product_detail = _is_product_detail(snapshot)
     refused_row_labels = _refused_row_labels(snapshot, catalogue)
+    median_height = _median_text_height(snapshot)
     found: list[TextBox] = []
+    found_ids: set[int] = set()
     for box in snapshot.boxes:
         if box.score < DEFAULT_MIN_OCR_SCORE:
             continue
         if id(box) in refused_row_labels:
             continue
         text = normalize(box.text)
-        if not text or _is_safe_label(text):
+        if not text:
             continue
-        if text == _COIN_REDEEM_LABEL and _is_coin_page(snapshot):
+        caption = _control_caption(text)
+        if caption is None or not _is_control_box(box, median_height):
             continue
-        words = text.split()
-        if not any(word in DANGEROUS_WORDS for word in words) and not any(
-            phrase in text for phrase in ('add to cart', 'buy now')
-        ):
-            continue
-        if product_detail and text in _PRODUCT_DETAIL_SAFE:
+        if _is_exempt_caption(snapshot, caption, product_detail=product_detail):
             continue
         found.append(box)
+        found_ids.add(id(box))
+
+    # A button whose caption wraps over two OCR lines is still one control;
+    # its row carries the complete caption. Rows already matched above are
+    # skipped so a sidecar price is not reported as a second control.
+    for row in group_rows(snapshot.boxes, snapshot.geometry):
+        if any(id(box) in found_ids for box in row.boxes):
+            continue
+        candidate = next(
+            (
+                box
+                for box in row.boxes
+                if box.score >= DEFAULT_MIN_OCR_SCORE and id(box) not in refused_row_labels and normalize(box.text)
+            ),
+            None,
+        )
+        if candidate is None or not _is_control_box(candidate, median_height):
+            continue
+        caption = _control_caption(normalize(row.text))
+        if caption is None or _is_exempt_caption(snapshot, caption, product_detail=product_detail):
+            continue
+        found.append(candidate)
+
     return tuple(found)
+
+
+def _control_caption(text: str) -> str | None:
+    """The action caption matched by the whole normalised line, if any.
+
+    The caption must match a :data:`DANGEROUS_WORDS` entry from the start; the
+    only permitted remainder is a price, a count, or their separator. A sentence
+    that merely contains ``checkout`` or ``redeem`` stays copy and cannot abort.
+    """
+    for caption in DANGEROUS_WORDS:
+        if text == caption:
+            return caption
+        if text.startswith(f'{caption} '):
+            remainder = text[len(caption) + 1 :].strip()
+            if remainder and _CONTROL_SUFFIX.fullmatch(remainder):
+                return caption
+    return None
+
+
+def _is_exempt_caption(snapshot: Snapshot, caption: str, *, product_detail: bool) -> bool:
+    """Apply the coin-page redeem and known product-detail exemptions."""
+    if caption == _COIN_REDEEM_LABEL and _is_coin_page(snapshot):
+        return True
+    return product_detail and caption in _PRODUCT_DETAIL_SAFE
+
+
+def _median_text_height(snapshot: Snapshot) -> float | None:
+    """The median height of readable text boxes, the frame's caption scale."""
+    heights = [
+        box.height
+        for box in snapshot.boxes
+        if box.height > 0 and box.text.strip() and box.score >= DEFAULT_MIN_OCR_SCORE
+    ]
+    return float(statistics.median(heights)) if heights else None
+
+
+def _is_control_box(box: TextBox, median_height: float | None) -> bool:
+    """Whether ``box`` is one caption-sized line, not a display headline."""
+    if median_height is None or median_height <= 0 or box.height <= 0:
+        return False
+    return box.height <= median_height * _CONTROL_MAX_HEIGHT_RATIO
 
 
 def _screen_report(snapshot: Snapshot, state: ScreenState, surface: Surface) -> ScreenReport:
@@ -410,12 +512,6 @@ def _has_countdown(snapshot: Snapshot) -> bool:
         if _COUNTDOWN.match(unicodedata.normalize('NFKC', box.text)):
             return True
     return False
-
-
-def _is_safe_label(text: str) -> bool:
-    if text in _SAFE_REDEEM_LABELS:
-        return True
-    return any(text.startswith(safe) and text.count(' ') <= len(safe.split()) + 1 for safe in _SAFE_REDEEM_LABELS)
 
 
 def _refused_row_labels(snapshot: Snapshot, catalogue: TaskCatalogue | None) -> set[int]:
