@@ -83,8 +83,8 @@ fresh-day path is never exercised, and the run reports success while earning not
 example ships `AECOINS_TIMEZONE=UTC`; on this tablet that is the wrong value.
 
 The collector checks this comparison at startup. `doctor` prints both values (see §3), and
-`run --schedule` **refuses to schedule** (exit `2`, before waiting) when they disagree or when the
-device property cannot be read. The error names the configured zone and the device zone:
+`run --schedule` **refuses to schedule** (exit `2`, before waiting) when they disagree. The error
+names the configured zone and the device zone:
 
 ```console
 $ AECOINS_DEVICE=192.168.8.65:5555 AECOINS_TIMEZONE=UTC \
@@ -92,9 +92,14 @@ $ AECOINS_DEVICE=192.168.8.65:5555 AECOINS_TIMEZONE=UTC \
 error: configuration: refusing to schedule: configured timezone UTC; device timezone America/Toronto; the schedule would fire before the device day rolls. Set AECOINS_TIMEZONE to the device zone (`adb -s <serial> shell getprop persist.sys.timezone`).
 ```
 
+If the device property cannot be read at startup (a transient adb outage, for example), the
+scheduler **warns and keeps the schedule alive**; it checks again immediately before each night and
+refuses that night, with the reason, if the zone is still unreadable or has since disagreed. A
+transient reboot therefore costs no future night.
+
 A manual `run --once` is supervised, so it **warns** in the log and on stderr with the same two
 values and continues; use it to diagnose, not to hide a mismatch. The scheduler is the unattended
-path, so it refuses.
+path, so it refuses at fire time.
 
 The **daily reset hour is still unmeasured** ❓ ([`05-app-knowledge.md`](05-app-knowledge.md) §8).
 The operator recalls rewards resetting around 03:00 local, but that is not confirmed for coins. The
@@ -126,7 +131,7 @@ All quality gates passed.
 ```
 
 The **branch tree** adds the timezone refusal, its tests, the stability log and the runbook
-additions, so the suite is 1610 tests. The exact clean-clone transcript and the commit it came
+additions, so the suite is 1614 tests. The exact clean-clone transcript and the commit it came
 from are in §13; the timed onboarding path is in §2.1.
 
 `just check` is the gate: ruff lint, ruff format check, mypy strict over `src/` and `tests/`, then
@@ -161,7 +166,7 @@ the local Python process does **not**, which is why the local path exports the v
 
 ### 2.1 Measured onboarding time
 
-Measured on 2026-11-22/23 from a fresh clone of this branch (`c99d98b`) on the build box, with
+Measured on 2026-11-22/23 from a fresh clone of this branch (`issue-79`) on the build box, with
 docker and the tablet reachable. The timed path was: clone → `just setup` → copy and edit `.env` →
 local `doctor` → `docker compose build` → container `doctor` → container `run --once --dry-run`
 (the safe first run; no live night was taken while the daemon was running). It used a separate
@@ -427,8 +432,10 @@ state directory**: the completed-night marker is the only coordination, and two 
 instant can both see it unset.
 
 Before this command waits, it checks the configured zone against the device and refuses on a
-mismatch or an unreadable property (§1.3). Record every finished night in
-[`08-stability.md`](08-stability.md); two consecutive weeks of rows is the release gate in #41.
+mismatch (§1.3). An unreadable property at startup only warns; the check runs again immediately
+before each night and refuses that night if it is still unreadable or now mismatched. Record every
+finished night in [`08-stability.md`](08-stability.md); two consecutive weeks of rows is the release
+gate in #41.
 
 ---
 
@@ -594,7 +601,7 @@ swipe or page press. A result that may already have acted is reported, never rep
 | `device_locked` | The keyguard still showed after wake and swipe. A PIN or biometric lock cannot be driven. | Unlock the tablet; remove the lock or leave it unlocked (Q2); `adb shell dumpsys window` and look for a keyguard. | none |
 | `app_not_installed` | `pm path com.alibaba.aliexpresshd` returned no package. | `adb shell pm path com.alibaba.aliexpresshd`; install or update AliExpress; confirm the right Android user/profile. | none |
 | `app_launch_failed` | The package exists but `FirstActivity` did not start. | `adb shell am start -n com.alibaba.aliexpresshd/com.aliexpress.app.FirstActivity`; `adb shell am force-stop com.alibaba.aliexpresshd` then retry; check for an app update or a disabled activity. | stage ×1 |
-| `unsupported_geometry` | The captured frame has no measured profile or calibration; this build measures only `c9b8f88670e295b5` (1200×2000 @ 240 dpi, sdk 35, portrait). | `doctor`; `adb shell wm size`, `wm density`, `getprop ro.build.version.sdk`; compare [`02-architecture.md`](02-architecture.md), §14 and #42; add calibration rather than forcing a different size. | none |
+| `unsupported_geometry` | The frame reports no measured profile or calibration. This is a taxonomy refusal, not the capture path's response to a different portrait geometry; see §14. | `doctor`; `adb shell wm size`, `wm density`, `getprop ro.build.version.sdk`; compare [`02-architecture.md`](02-architecture.md), §14 and #42; add calibration rather than forcing a different size. | none |
 | `frame_undecodable` | A screencap arrived but could not be decoded. | `adb -s <serial> exec-out screencap -p > /tmp/frame.png`; `file /tmp/frame.png`; check free disk, the USB/network path and the screen. A truncated frame is not retried because the device did answer. | none |
 | `app_logged_out` | The app shows a sign-in prompt instead of the account surface. | Sign in on the tablet; confirm the Account tab loads; `adb shell dumpsys window` for the focused app; run again. The run stops at the first detection. | none |
 | `navigation_failed` | The route did not reach the screen it promised; the run records a fallback and may continue from the inline surface. | Read `Route fallback` and `route_error`; start the app normally, settle ~10 s, then send the shortcut intent; check for the empty `Coins boost` page and an app update that changed labels. | none |
@@ -677,7 +684,7 @@ All quality gates passed.
 `doctor` and `--dry-run` were also run on this tree. The dry run returned `planned` with
 `surface: unknown` and zero steps because of #76; that is the timing defect, not an empty day.
 
-### Branch tree: `issue-79` at `c99d98b` (code; this documentation commit follows)
+### Branch tree: `issue-79` (code revision before this documentation commit)
 
 This tree adds the startup timezone refusal and its tests, the stability log and these runbook
 additions. The timed onboarding path from the same code commit is in §2.1.
@@ -692,7 +699,7 @@ Successfully installed aliexpress-coins-0.1.0
 $ just check
 ...
 Required test coverage of 99.42% reached. Total coverage: 99.43%
-======================= 1610 passed in 181.08s (0:03:01) =======================
+======================= 1614 passed in 191.98s (0:03:11) =======================
 All quality gates passed.
 ```
 
@@ -731,7 +738,7 @@ gets an unattended night.
 | limit | measured value | what breaks if it differs |
 |---|---|---|
 | device serial | `AECOINS_DEVICE`, e.g. `192.168.8.65:5555` | The IP and wireless-debugging port move when the tablet reconnects. `doctor` reports the serial it can reach; a container needs its own `adb connect` (it does this itself). The serial is never compiled in. |
-| screen geometry | `c9b8f88670e295b5` = 1200×2000 @ 240 dpi, sdk 35, portrait | This is the only profile with measured row positions and popup calibration. Any other frame profile is refused before a tap with `unsupported_geometry`; forcing a different `wm size` is not a substitute for measuring it (#42). |
+| screen geometry | `c9b8f88670e295b5` = 1200×2000 @ 240 dpi, sdk 35, portrait | This is the only profile with measured row positions and popup calibration. A different portrait geometry is **not** refused at capture; only a popup whose calibration is absent for that profile is refused, as `popup_unclosable` rather than a guessed tap. `doctor` prints the new profile and `--dry-run` shows what the planner can read. Forcing a different `wm size` is not a substitute for measuring the new profile (#42). |
 | Android / app | Android 15 (sdk 35), AliExpress `8.180.1` | An update can move a row, change a label or add a popup. The deny list still refuses unknown rows, but the allowed catalogue may stop matching; capture a fixture and update the catalogue rather than tapping a guess. |
 | store region / locale | AliExpress Canada store, `en`, coin values in `C$` | The catalogue and patterns were built from this region. Another region or locale changes labels, row ordering and currency rendering; treat it as unmeasured and re-run recon. |
 | account and device use | one signed-in account, one device, no concurrency | The collector assumes the tablet is unlocked with no PIN/biometric lock, the charger is attached, and no human is using it. Two schedulers or two runs against one state directory can both see a day as unfinished. |
@@ -742,10 +749,13 @@ gets an unattended night.
 
 A user on their own phone must do these in order, with the daemon **not** running yet:
 
-1. `doctor` — all five lines `ok`, including the timezone line with both zones equal, and a
-   geometry profile they are willing to measure or that matches `c9b8f88670e295b5`.
-2. `run --once --dry-run` — read the plan. `taps_issued: 0` is required. A `surface: unknown`
-   with zero steps is a load/timing fault (#76), not an empty day; retry or inspect the screen.
+1. `doctor` — all five lines `ok`, including the timezone line with both zones equal. The geometry
+   line gives the profile; on another phone it will not be `c9b8f88670e295b5`, and that is not a
+   capture refusal. It is an unmeasured profile whose popup calibration is absent.
+2. `run --once --dry-run` — read the plan. `taps_issued: 0` is required. The plan shows what the
+   new frame can read before a real night; a popup with no calibration for the new profile will
+   report `popup_unclosable` instead of tapping. A `surface: unknown` with zero steps is a
+   load/timing fault (#76), not an empty day; retry or inspect the screen.
 3. One supervised `run --once` — take one real night by hand, well away from the scheduled fire
    time, and read `summary.md`, the task evidence and the balance delta. Do not start the
    scheduler until this night is understood.

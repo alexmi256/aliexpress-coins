@@ -62,9 +62,9 @@ time, timezone, jitter and wall-clock budget come from `AECOINS_SCHEDULE_TIME`,
 timezone** (`adb shell getprop persist.sys.timezone`): the schedule and the daily store's day boundary
 both follow it, so a timezone that disagrees with the device fires a run before the device's day has
 rolled — the coins are already claimed, the fresh-day path is never exercised, and the run reports
-success while earning nothing. `doctor` prints both zones; `run --schedule` refuses to start when
-they differ or the device value cannot be read, while a supervised `run --once` warns and continues.
-A night that finished its roster
+success while earning nothing. `doctor` prints both zones; `run --schedule` refuses when they
+differ and re-checks before each night (an unreadable value at startup only warns), while a
+supervised `run --once` warns and continues. A night that finished its roster
 walk marks the day complete and is skipped on a retry, while a manual run stopped by
 its budget leaves the nightly window open. Compose retries a failed daemon a bounded
 number of times rather than looping forever on a configuration error. Run one night
@@ -146,7 +146,7 @@ Recorded frames live under `tests/data/` and are gitignored by set; the regenera
 `just check` remains the gate and runs every test with the coverage ratchet. `just check-fast` is
 the diagnostic loop: it excludes tests marked `slow` (full-frame OCR, template scans and the long
 engine retry walks) and does not enforce coverage. Measured on 2026-11-23: the full suite is
-**1610 passed in 181 s** (203 tests marked slow, coverage 99.43%); `just check-fast` is
+**1614 passed in 192 s** (203 tests marked slow, coverage 99.43%); `just check-fast` is
 the same fast lane, dominated by the remaining sub-200 ms frame and parser tests plus collection,
 not by any single fixture.
 

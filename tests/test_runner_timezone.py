@@ -8,6 +8,7 @@ from datetime import UTC, timedelta, timezone, tzinfo
 from zoneinfo import ZoneInfo
 
 import pytest
+import tzlocal
 
 from aliexpress_coins.runner.timezone import (
     compare_timezone,
@@ -114,6 +115,33 @@ def test_timezone_check_from_environment_skips_without_a_device() -> None:
         raise AssertionError('no device read should happen without a serial')
 
     assert timezone_check_from_environment({'AECOINS_TIMEZONE': 'UTC'}, None, reader=unexpected) is None
+
+
+def test_an_unset_timezone_uses_the_system_iana_zone(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tzlocal, 'get_localzone', lambda: ZoneInfo('America/Toronto'))
+
+    check = timezone_check_from_environment(
+        {},
+        '192.0.2.10:5555',
+        reader=lambda _serial: 'America/Toronto',
+    )
+
+    assert check is not None
+    assert check.configured == 'America/Toronto'
+    assert check.matches is True
+
+
+def test_a_mismatched_timezone_environment_is_reported() -> None:
+    check = timezone_check_from_environment(
+        {'TZ': 'UTC'},
+        '192.0.2.10:5555',
+        reader=lambda _serial: 'America/Toronto',
+    )
+
+    assert check is not None
+    assert check.status == 'mismatch'
+    assert 'configured timezone UTC' in check.message()
+    assert 'device timezone America/Toronto' in check.message()
 
 
 def test_timezone_check_from_environment_injects_the_device_read() -> None:

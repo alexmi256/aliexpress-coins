@@ -17,6 +17,7 @@ import pytest
 
 import aliexpress_coins
 from aliexpress_coins import cli
+from aliexpress_coins.runner.errors import ConfigError
 from aliexpress_coins.runner.report import RunReport, RunStatus
 
 Handler = Callable[[int, FrameType | None], None]
@@ -315,7 +316,7 @@ def test_the_scheduler_refuses_a_timezone_mismatch(
     assert 'device timezone America/Toronto' in error
 
 
-def test_the_scheduler_refuses_an_unreadable_device_timezone(
+def test_the_scheduler_keeps_running_when_the_startup_zone_is_unreadable(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -332,12 +333,39 @@ def test_the_scheduler_refuses_an_unreadable_device_timezone(
         device_timezone=lambda _serial: None,
     )
 
-    assert result == 2
-    assert calls == []
+    assert result == 0
+    assert calls == ['run']
     error = capsys.readouterr().err
-    assert 'refusing to schedule' in error
+    assert 'warning: timezone unverified' in error
     assert 'configured timezone UTC' in error
     assert 'could not be read' in error
+    assert 'Keeping the schedule alive' in error
+
+
+def test_the_scheduler_checks_the_zone_again_before_the_night(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refusals: list[str] = []
+
+    def fake_schedule(config: Any, *, run_night: Any, state: Any, clock: Any, stop: Any) -> int:
+        with pytest.raises(ConfigError) as raised:
+            run_night()
+        refusals.append(str(raised.value))
+        return 0
+
+    monkeypatch.setattr(cli, 'run_schedule', fake_schedule)
+    zones = iter(('UTC', 'America/Toronto'))
+
+    result = cli.run_schedule_command(
+        {'AECOINS_DEVICE': 'tablet', 'AECOINS_TIMEZONE': 'UTC'},
+        device_timezone=lambda _serial: next(zones),
+    )
+
+    assert result == 0
+    assert len(refusals) == 1
+    assert 'refusing to schedule' in refusals[0]
+    assert 'configured timezone UTC' in refusals[0]
+    assert 'device timezone America/Toronto' in refusals[0]
 
 
 def test_a_manual_run_warns_but_continues_on_a_timezone_mismatch(

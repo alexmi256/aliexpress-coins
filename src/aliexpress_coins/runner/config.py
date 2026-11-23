@@ -225,12 +225,14 @@ def timezone_from_environment(environment: Mapping[str, str]) -> tzinfo:
 
 
 def _local_timezone() -> tzinfo:
-    from datetime import datetime
+    from tzlocal import get_localzone
 
-    zone = datetime.now().astimezone().tzinfo
-    if zone is None:  # pragma: no cover - every supported platform has one
-        raise ConfigError('the local timezone could not be determined; set AECOINS_TIMEZONE or TZ')
-    return zone
+    try:
+        # The system zone's IANA key is what the device comparison needs;
+        # `datetime.now().astimezone()` only gives an abbreviation such as EST.
+        return get_localzone()
+    except Exception as exc:
+        raise ConfigError('the local timezone could not be determined; set AECOINS_TIMEZONE or TZ') from exc
 
 
 def _spec_path(environment: Mapping[str, str], name: str, default: str, base: Path) -> Path:

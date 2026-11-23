@@ -99,7 +99,7 @@ def run_once_command(
     """
     try:
         config = _config(environment, dry_run=dry_run, root=root)
-        _warn_timezone(environment, config.device, device_timezone)
+        _warn_timezone(_timezone_check(environment, config.device, device_timezone))
         stop = threading.Event()
         _install_stop_handlers(stop)
         try:
@@ -129,7 +129,14 @@ def run_schedule_command(
         config = _config(environment, dry_run=dry_run, root=root)
         if config.device is None:
             raise ConfigError('AECOINS_DEVICE is not set; the scheduler needs a device serial')
-        _refuse_bad_timezone(environment, config.device, device_timezone)
+        startup_check = _timezone_check(environment, config.device, device_timezone)
+        if startup_check is not None and startup_check.status == 'unreadable':
+            _warning(
+                f'timezone unverified: {startup_check.message()}. Keeping the schedule alive; '
+                'the check runs again before each night.',
+            )
+        else:
+            _refuse_bad_timezone(startup_check)
         stop = threading.Event()
         _install_stop_handlers(stop)
 
@@ -142,6 +149,11 @@ def run_schedule_command(
         )
 
         def night() -> RunReport:
+            # A transient adb outage at startup must not cost the night. This
+            # second check is the fail-closed one: it runs immediately before
+            # the walk, so a mismatch or an unreadable zone refuses that night
+            # with a clear reason while the daemon survives for tomorrow.
+            _refuse_bad_timezone(_timezone_check(environment, config.device, device_timezone))
             context = make_live_context(config, stop=stop, wall_clock=wall_clock)
             return run_once(context)
 
@@ -193,12 +205,7 @@ def _timezone_check(
     return timezone_check_from_environment(env, device, reader=reader)
 
 
-def _warn_timezone(
-    environment: Mapping[str, str] | None,
-    device: str | None,
-    reader: DeviceTimezoneReader | None,
-) -> None:
-    check = _timezone_check(environment, device, reader)
+def _warn_timezone(check: TimezoneCheck | None) -> None:
     if check is None or check.matches:
         return
     subject = 'timezone unverified' if check.status == 'unreadable' else 'timezone mismatch'
@@ -208,12 +215,7 @@ def _warn_timezone(
     )
 
 
-def _refuse_bad_timezone(
-    environment: Mapping[str, str] | None,
-    device: str | None,
-    reader: DeviceTimezoneReader | None,
-) -> None:
-    check = _timezone_check(environment, device, reader)
+def _refuse_bad_timezone(check: TimezoneCheck | None) -> None:
     if check is None or check.matches:
         return
     raise ConfigError(
