@@ -1001,6 +1001,67 @@ def test_claim_boost_checkin_never_stores_zero_for_an_unreadable_balance(
     assert 'balance_unreadable' in caplog.text
 
 
+def test_claim_boost_checkin_ignores_a_zero_from_a_boost_page_baseline(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A lone control zero on the boost page is not a genuine balance baseline."""
+    before = _with_box(frames['real_boost'], _box('0', 200, 120, 300, 180))
+    after = _boost_without_row(frames['real_boost'])
+    state = _state(tmp_path)
+    caplog.set_level(logging.WARNING)
+
+    result = claim_boost_checkin(
+        _controller(_RecordingDevice(), before),
+        _Capture([before, after, after, after]),
+        corpus,
+        state,
+        authorization=_signin_authorization(),
+        timeout=2.0,
+        interval=1.0,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.completed is True
+    assert result.balance_before is None
+    assert state.snapshot().last_balance is None
+    assert 'balance_zero_unverified' in caplog.text
+
+
+def test_claim_boost_checkin_does_not_store_a_bare_zero_after_an_unreadable_baseline(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The #94 pair: unreadable before, a bare ``0`` after, still no stored zero."""
+    before = frames['real_boost']
+    after = _with_box(_boost_without_row(before), _box('0', 200, 120, 300, 180))
+    state = _state(tmp_path)
+    caplog.set_level(logging.WARNING)
+
+    result = claim_boost_checkin(
+        _controller(_RecordingDevice(), before),
+        _Capture([before, after, after, after]),
+        corpus,
+        state,
+        authorization=_signin_authorization(),
+        timeout=2.0,
+        interval=1.0,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.completed is True
+    assert result.balance_before is None
+    assert result.balance_after is None
+    assert state.snapshot().last_balance is None
+    assert 'balance_zero_unverified' in caplog.text
+
+
 def test_claim_boost_checkin_records_a_readable_balance_when_none_was_stored(
     frames: dict[str, Snapshot],
     corpus: PopupCorpus,
@@ -1055,6 +1116,36 @@ def test_claim_streak_keeps_a_genuine_zero_balance(
     assert result.balance_before == 0.0
     assert result.balance_after == 0.0
     assert state.snapshot().last_balance == 0.0
+    assert state.snapshot().last_balance_verified is True
+
+
+def test_claim_streak_replaces_an_unverified_zero_with_a_readable_balance(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    before = _streak_frame(frames['coins'], balance='55')
+    after = _streak_frame(frames['coins'], balance='56', collect=False, tomorrow=True)
+    state = _state(tmp_path)
+    state.observe_balance(0.0, verified=False)
+
+    result = claim_streak(
+        _controller(_RecordingDevice(), before),
+        _Capture([before, after, after, after]),
+        corpus,
+        state,
+        authorization=_signin_authorization(),
+        timeout=2.0,
+        interval=1.0,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.completed is True
+    assert result.balance_before == 55.0
+    assert result.balance_after == 56.0
+    assert state.snapshot().last_balance == 56.0
+    assert state.snapshot().last_balance_verified is True
 
 
 def test_claim_balance_never_records_a_post_claim_drop() -> None:

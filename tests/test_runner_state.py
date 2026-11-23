@@ -100,6 +100,7 @@ def test_a_missing_day_starts_empty_and_creates_the_directory(tmp_path: Path) ->
         'date': DAY.isoformat(),
         'completions': {},
         'last_balance': None,
+        'last_balance_verified': None,
         'run_count': 0,
         'last_run_at': None,
         'completed_night': False,
@@ -123,6 +124,7 @@ def test_record_counts_a_task_and_writes_plain_json(tmp_path: Path) -> None:
         'date': DAY.isoformat(),
         'completions': {'sponsored_items': 2},
         'last_balance': None,
+        'last_balance_verified': None,
         'run_count': 0,
         'last_run_at': None,
         'completed_night': False,
@@ -222,6 +224,65 @@ def test_a_balance_that_was_never_read_is_null_not_zero(tmp_path: Path) -> None:
     assert json.loads(store.path.read_text(encoding='utf-8'))['last_balance'] is None
 
 
+def test_provenance_is_ignored_when_no_balance_is_stored(tmp_path: Path) -> None:
+    payload = _valid_payload()
+    payload['last_balance'] = None
+    payload['last_balance_verified'] = True
+    _write_json(_path(tmp_path), payload)
+
+    snapshot = _store(tmp_path).snapshot()
+
+    assert snapshot.last_balance is None
+    assert snapshot.last_balance_verified is None
+
+
+def test_a_legacy_unverified_zero_is_cleared_when_the_balance_is_unreadable(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    payload = _valid_payload()
+    payload['last_balance'] = 0.0
+    payload.pop('last_balance_verified', None)
+    _write_json(_path(tmp_path), payload)
+    store = _store(tmp_path)
+    caplog.set_level(logging.WARNING)
+
+    assert store.snapshot().last_balance == 0.0
+    assert store.snapshot().last_balance_verified is None
+
+    store.record('daily_checkin')
+
+    assert store.snapshot().last_balance is None
+    assert store.snapshot().last_balance_verified is None
+    assert 'balance_zero_unverified_cleared' in caplog.text
+    assert json.loads(store.path.read_text(encoding='utf-8'))['last_balance'] is None
+
+
+def test_a_verified_zero_survives_an_unreadable_balance(
+    tmp_path: Path,
+) -> None:
+    payload = _valid_payload()
+    payload['last_balance'] = 0.0
+    payload['last_balance_verified'] = True
+    _write_json(_path(tmp_path), payload)
+    store = _store(tmp_path)
+
+    store.record('daily_checkin')
+
+    assert store.snapshot().last_balance == 0.0
+    assert store.snapshot().last_balance_verified is True
+
+
+def test_a_readable_balance_replaces_an_unverified_zero(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.observe_balance(0.0, verified=False)
+
+    store.record('daily_checkin', balance=56, balance_verified=True)
+
+    assert store.snapshot().last_balance == 56.0
+    assert store.snapshot().last_balance_verified is True
+
+
 def test_snapshot_gives_the_report_the_whole_day(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.begin_run(at=NOW)
@@ -236,6 +297,7 @@ def test_snapshot_gives_the_report_the_whole_day(tmp_path: Path) -> None:
         'date': DAY.isoformat(),
         'completions': {'daily_checkin': 1},
         'last_balance': 120.0,
+        'last_balance_verified': True,
         'run_count': 1,
         'last_run_at': NOW.isoformat(),
         'completed_night': False,
@@ -357,6 +419,7 @@ def test_a_corrupt_file_is_quarantined_and_the_day_starts_fresh(
         (lambda payload: payload.__setitem__('last_balance', True), 'finite number or null'),
         (lambda payload: payload.__setitem__('last_balance', '120'), 'finite number or null'),
         (lambda payload: payload.__setitem__('last_balance', float('nan')), 'finite number or null'),
+        (lambda payload: payload.__setitem__('last_balance_verified', 'yes'), 'must be a boolean or null'),
         (lambda payload: payload.pop('run_count'), "missing field 'run_count'"),
         (lambda payload: payload.__setitem__('run_count', -1), 'non-negative integer'),
         (lambda payload: payload.__setitem__('run_count', True), 'non-negative integer'),
