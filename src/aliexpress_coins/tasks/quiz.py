@@ -167,10 +167,10 @@ QUESTION_PREFIX = re.compile(r'^\s*Q\s*[:.)]', re.IGNORECASE)
 _PAYOUT = re.compile(r'You got\s*\+\s*(\d+)', re.IGNORECASE)
 """The result page's payout line (``You got +6``)."""
 
-_CORRECT_ANSWER = re.compile(r'correct\s*answer', re.IGNORECASE)
+_CORRECT_ANSWER = re.compile(r'^\s*correct\s*answer\b', re.IGNORECASE)
 """The marker for the learned-answer line (``Correct answer: X``)."""
 
-_YOUR_ANSWER = re.compile(r'your\s*answer', re.IGNORECASE)
+_YOUR_ANSWER = re.compile(r'^\s*your\s*answer\b', re.IGNORECASE)
 """The marker that ends a wrapped learned-answer line (``Your answer: Y``)."""
 
 _BARE_NUMBER = re.compile(r'^\s*\d{1,3}\s*$')
@@ -208,12 +208,14 @@ class QuizResult:
     """One quiz visit, the evidence behind it and whether state was recorded.
 
     ``verification`` names the proof: ``interstitial`` (the redeem overlay
-    appeared, which means the quiz paid coin credit), ``row_gone``, ``action_gone``,
-    ``action_completed`` on the success path; ``daily_limit``, ``not_settled``,
-    ``task_surface_unavailable``, ``row_vanished``, ``row_complete``,
-    ``question_not_arrived``, ``options_not_found``, ``result_not_arrived``,
-    ``go_back_not_found``, ``exit_not_reached``, ``no_change``, ``no_observation``
-    or ``return_failed`` on the others. ``detail`` is the report-safe sentence.
+    appeared, which means the quiz paid coin credit), ``result_page`` (the
+    result page printed ``Correct answer:``/``Your answer:``), ``row_gone``,
+    ``action_gone``, ``action_completed`` on the success path; ``daily_limit``,
+    ``not_settled``, ``task_surface_unavailable``, ``row_vanished``,
+    ``row_complete``, ``question_not_arrived``, ``options_not_found``,
+    ``result_not_arrived``, ``go_back_not_found``, ``exit_not_reached``,
+    ``no_change``, ``no_observation`` or ``return_failed`` on the others.
+    ``detail`` is the report-safe sentence.
     """
 
     key: str
@@ -229,6 +231,8 @@ class QuizResult:
     options: tuple[AnswerOption, ...] = ()
     chosen: str | None = None
     correct: str | None = None
+    your_answer: str | None = None
+    answer_correct: bool | None = None
     payout: str | None = None
     taps: tuple[TapRecord, ...] = ()
     stop: str | None = None
@@ -296,6 +300,8 @@ class QuizResult:
             'options': [option.text for option in self.options],
             'chosen': self.chosen,
             'correct': self.correct,
+            'your_answer': self.your_answer,
+            'answer_correct': self.answer_correct,
             'payout': self.payout,
             'reward_coins': self.reward_coins,
             'recorded': self.recorded,
@@ -547,9 +553,13 @@ def run_quiz_task(
     options: tuple[AnswerOption, ...] = ()
     chosen: str | None = None
     correct: str | None = None
+    your_answer: str | None = None
+    answer_correct: bool | None = None
     payout: str | None = None
     stop: str | None = None
     answer_source: str | None = None
+    answered = False
+    result_observed = False
     dismissals: list[DismissReport] = []
     if entry_sweep is not None:
         dismissals.append(entry_sweep)
@@ -582,6 +592,11 @@ def run_quiz_task(
             if stop is not None:
                 break
             if not arrived:
+                if answered:
+                    # An answer was already submitted and its result read. A
+                    # second question that does not settle is not proof the
+                    # quiz failed, so let the result page and return decide.
+                    break
                 return _finish_failed(
                     controller=controller,
                     capture=capture,
@@ -598,6 +613,8 @@ def run_quiz_task(
                     options=options,
                     chosen=chosen,
                     correct=correct,
+                    your_answer=your_answer,
+                    answer_correct=answer_correct,
                     payout=payout,
                     taps=taps,
                     stop=stop,
@@ -615,6 +632,10 @@ def run_quiz_task(
                 )
             options = find_answer_options(current)
             if len(options) < MIN_OPTIONS:
+                if answered:
+                    # The previous answer's result is still the evidence; do
+                    # not fail the visit on an unreadable follow-up round.
+                    break
                 return _finish_failed(
                     controller=controller,
                     capture=capture,
@@ -631,6 +652,8 @@ def run_quiz_task(
                     options=options,
                     chosen=chosen,
                     correct=correct,
+                    your_answer=your_answer,
+                    answer_correct=answer_correct,
                     payout=payout,
                     taps=taps,
                     stop=stop,
@@ -668,6 +691,7 @@ def run_quiz_task(
                     label=chosen_option.box.text,
                 ),
             )
+            answered = True
             current, arrived, dismiss, stop = _wait_for_surface(
                 controller,
                 capture,
@@ -696,12 +720,14 @@ def run_quiz_task(
                     done_before=done_before,
                     limit=limit,
                     verification='result_not_arrived',
-                    detail='the question page did not reach the result page',
+                    detail='the answer was submitted but the result page could not be read',
                     rounds=rounds,
                     question=question,
                     options=options,
                     chosen=chosen,
                     correct=correct,
+                    your_answer=your_answer,
+                    answer_correct=answer_correct,
                     payout=payout,
                     taps=taps,
                     stop=stop,
@@ -719,6 +745,11 @@ def run_quiz_task(
                 )
             payout = read_payout(current)
             correct = _correct_answer(current)
+            your_answer = _your_answer(current)
+            # Markers without a readable value are not proof of which answer was
+            # submitted; the row/payout still gets to decide that case.
+            result_observed = correct is not None or your_answer is not None
+            answer_correct = _answer_correct(correct, your_answer, chosen, options)
             _record_observation(
                 quiz_bank,
                 question,
@@ -745,6 +776,8 @@ def run_quiz_task(
                     options=options,
                     chosen=chosen,
                     correct=correct,
+                    your_answer=your_answer,
+                    answer_correct=answer_correct,
                     payout=payout,
                     taps=taps,
                     stop=stop,
@@ -805,6 +838,8 @@ def run_quiz_task(
                     options=options,
                     chosen=chosen,
                     correct=correct,
+                    your_answer=your_answer,
+                    answer_correct=answer_correct,
                     payout=payout,
                     taps=taps,
                     stop=stop,
@@ -863,6 +898,8 @@ def run_quiz_task(
                 options=options,
                 chosen=chosen,
                 correct=correct,
+                your_answer=your_answer,
+                answer_correct=answer_correct,
                 payout=payout,
                 taps=taps,
                 stop=stop,
@@ -889,6 +926,8 @@ def run_quiz_task(
                     options=options,
                     chosen=chosen,
                     correct=correct,
+                    your_answer=your_answer,
+                    answer_correct=answer_correct,
                     payout=payout,
                     taps=taps,
                     stop=stop,
@@ -914,6 +953,8 @@ def run_quiz_task(
                 options=options,
                 chosen=chosen,
                 correct=correct,
+                your_answer=your_answer,
+                answer_correct=answer_correct,
                 payout=payout,
                 taps=taps,
                 stop=stop,
@@ -962,6 +1003,8 @@ def run_quiz_task(
                     options=options,
                     chosen=chosen,
                     correct=correct,
+                    your_answer=your_answer,
+                    answer_correct=answer_correct,
                     payout=payout,
                     taps=taps,
                     stop=stop,
@@ -971,18 +1014,22 @@ def run_quiz_task(
                     logger=log,
                 )
 
-        # A decisive row verdict is the strongest signal. The result page's own
-        # payout may stand in only when the row could not be read at all: a row
-        # that was read and still offers GO contradicts the payout, and the
-        # conventions say a false completed is worse than unverified.
+        # A submitted answer is proved by the result page it produced. That is
+        # stronger than a roster row that has not refreshed yet: recording the
+        # visit as failed here would re-open an already claimed quiz tomorrow.
+        # A decisive row verdict still names the row evidence; a payout remains
+        # the fallback only when the result page itself could not be read.
         payout_fallback = payout is not None and verdict.status == 'no_observation'
-        if verdict.decisive or payout_fallback:
-            verification = verdict.status if verdict.decisive else 'result_reward'
-            detail = (
-                verdict.detail
-                if verdict.decisive
-                else f'the result paid {payout}; the roster row could not be read for a second signal'
-            )
+        if verdict.decisive or result_observed or payout_fallback:
+            if verdict.decisive:
+                verification = verdict.status
+                detail = verdict.detail
+            elif result_observed:
+                verification = 'result_page'
+                detail = _result_page_detail(correct, your_answer, answer_correct)
+            else:
+                verification = 'result_reward'
+                detail = f'the result paid {payout}; the roster row could not be read for a second signal'
             state.record(spec.key)
             return _result(
                 spec,
@@ -998,6 +1045,8 @@ def run_quiz_task(
                 options=options,
                 chosen=chosen,
                 correct=correct,
+                your_answer=your_answer,
+                answer_correct=answer_correct,
                 payout=payout,
                 taps=taps,
                 stop=stop,
@@ -1022,6 +1071,8 @@ def run_quiz_task(
             options=options,
             chosen=chosen,
             correct=correct,
+            your_answer=your_answer,
+            answer_correct=answer_correct,
             payout=payout,
             taps=taps,
             stop=stop,
@@ -1175,6 +1226,8 @@ def _result(
     options: Sequence[AnswerOption],
     chosen: str | None,
     correct: str | None,
+    your_answer: str | None,
+    answer_correct: bool | None,
     payout: str | None,
     taps: Sequence[TapRecord],
     stop: str | None,
@@ -1198,6 +1251,8 @@ def _result(
         options=tuple(options),
         chosen=chosen,
         correct=correct,
+        your_answer=your_answer,
+        answer_correct=answer_correct,
         payout=payout,
         taps=tuple(taps),
         stop=stop,
@@ -1236,6 +1291,8 @@ def _finish_failed(
     options: Sequence[AnswerOption] = (),
     chosen: str | None = None,
     correct: str | None = None,
+    your_answer: str | None = None,
+    answer_correct: bool | None = None,
     payout: str | None = None,
     taps: Sequence[TapRecord] = (),
     stop: str | None = None,
@@ -1276,6 +1333,8 @@ def _finish_failed(
         options=tuple(options),
         chosen=chosen,
         correct=correct,
+        your_answer=your_answer,
+        answer_correct=answer_correct,
         payout=payout,
         taps=tuple(taps),
         stop=stop,
@@ -1553,8 +1612,13 @@ def _on_coin_page(snapshot: Snapshot) -> bool:
 
 
 def _is_question_page(snapshot: Snapshot) -> bool:
+    # The result page keeps the quiz header and often the question itself while
+    # it prints the learned answer. Without this veto the exit wait mistakes the
+    # result page for a second question and then reports that question never
+    # arrived after it was already answered (issue #98).
     return (
-        _question_box(snapshot) is not None
+        not _has_result_evidence(snapshot)
+        and _question_box(snapshot) is not None
         and contains_text(snapshot, 'Coins quiz')
         and contains_text(snapshot, 'Answer quiz questions for')
         and contains_text(snapshot, 'more coins')
@@ -1562,7 +1626,16 @@ def _is_question_page(snapshot: Snapshot) -> bool:
 
 
 def _is_result_page(snapshot: Snapshot) -> bool:
-    return contains_text(snapshot, 'Correct answer:') and contains_text(snapshot, 'Your answer:')
+    return _has_result_marker(snapshot, _CORRECT_ANSWER) and _has_result_marker(snapshot, _YOUR_ANSWER)
+
+
+def _has_result_marker(snapshot: Snapshot, pattern: re.Pattern[str]) -> bool:
+    return any(box.score >= DEFAULT_MIN_OCR_SCORE and pattern.search(box.text) for box in snapshot.boxes)
+
+
+def _has_result_evidence(snapshot: Snapshot) -> bool:
+    """Whether either result-page marker is visible, even on a partly-read frame."""
+    return _has_result_marker(snapshot, _CORRECT_ANSWER) or _has_result_marker(snapshot, _YOUR_ANSWER)
 
 
 def _is_redeem(snapshot: Snapshot) -> bool:
@@ -1647,6 +1720,78 @@ def _answer_continuation(snapshot: Snapshot, correct: TextBox) -> tuple[str, ...
     lines = [box for box in boxes if correct.bbox[1] < box.bbox[1] < limit]
     lines.sort(key=lambda box: (box.bbox[1], box.bbox[0]))
     return tuple(box.text.strip() for box in lines if box.text.strip())
+
+
+def _your_answer(snapshot: Snapshot) -> str | None:
+    """Read the submitted answer off the result page (``Your answer: Y``)."""
+    anchor = next(
+        (box for box in snapshot.boxes if box.score >= DEFAULT_MIN_OCR_SCORE and _YOUR_ANSWER.search(box.text)),
+        None,
+    )
+    if anchor is None:
+        return None
+    value = re.sub(r'^.*your\s*answer\s*[:.]?\s*', '', anchor.text, count=1, flags=re.IGNORECASE).strip()
+    if not value:
+        return None
+    return ' '.join((value, *_wrapped_lines(snapshot, anchor)))
+
+
+def _wrapped_lines(snapshot: Snapshot, anchor: TextBox) -> tuple[str, ...]:
+    """The lines that continue ``anchor`` before the row gap ends the answer."""
+    heights = [box.height for box in snapshot.boxes if box.height > 0]
+    if not heights:
+        return ()
+    median_height = statistics.median(heights)
+    lines: list[str] = []
+    bottom = anchor.bbox[3]
+    for box in sorted(snapshot.boxes, key=lambda item: (item.bbox[1], item.bbox[0])):
+        if box is anchor or box.score < DEFAULT_MIN_OCR_SCORE or box.bbox[1] <= anchor.bbox[1]:
+            continue
+        if _PAYOUT.search(box.text) or normalize(box.text).startswith('go back'):
+            break
+        if box.bbox[1] - bottom >= median_height * OPTION_GAP_RATIO:
+            break
+        text = box.text.strip()
+        if text:
+            lines.append(text)
+        bottom = max(box.bbox[3], bottom)
+    return tuple(lines)
+
+
+def _answer_correct(
+    correct: str | None,
+    your_answer: str | None,
+    chosen: str | None,
+    options: Sequence[AnswerOption],
+) -> bool | None:
+    """Whether the result page's answer and the submitted answer agree.
+
+    The result page is the authority; ``chosen`` is the fallback when OCR did
+    not carry the ``Your answer:`` value far enough to match one of the options
+    actually shown on the question page.
+    """
+    if correct is None:
+        return None
+    submitted = your_answer if your_answer is not None else chosen
+    if submitted is None:
+        return None
+    option_texts = [option.text for option in options]
+    matched = match_option(submitted, option_texts)
+    if matched is not None:
+        submitted = option_texts[matched]
+    elif chosen is not None:
+        submitted = chosen
+    return match_option(correct, (submitted,)) == 0
+
+
+def _result_page_detail(correct: str | None, your_answer: str | None, answer_correct: bool | None) -> str:
+    """Name the result-page evidence in the report-safe sentence."""
+    detail = f'the result page printed Correct answer: {correct!r} and Your answer: {your_answer!r}'
+    if answer_correct is True:
+        return f'{detail}; the submitted answer was correct'
+    if answer_correct is False:
+        return f'{detail}; the submitted answer was incorrect'
+    return detail
 
 
 def _sweep(

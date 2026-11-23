@@ -41,6 +41,8 @@ from aliexpress_coins.tasks.quiz import (
     QuizResult,
     find_answer_options,
     find_go_back,
+    is_question_state,
+    is_result_state,
     read_payout,
     run_quiz_task,
 )
@@ -247,16 +249,45 @@ def _offer_copy_question_frame() -> Snapshot:
     )
 
 
+def _leaky_result_frame(
+    *,
+    correct: str = 'All of the above',
+    your_answer: str = 'Can be combined with other',
+    your_tail: str | None = 'discounts and coins',
+) -> Snapshot:
+    """The result page from run ``20261123T183834Z`` with the question still visible.
+
+    The measured result page keeps the ``Coins quiz`` header and the question it
+    answered. That is why the question state must veto a frame carrying the
+    result markers: otherwise the exit wait mistakes the result for round two.
+    """
+    boxes = [
+        _box('Coins quiz', 55, 329, 433, 424),
+        _box('Answer quiz questions for', 60, 436, 608, 487),
+        _box('more coins!', 60, 490, 309, 533),
+        _box('Q : Which statements about coins credits', 70, 783, 1130, 846),
+        _box('are correct?', 441, 855, 757, 910),
+        _box(f'Correct answer: {correct}', 60, 1100, 1130, 1150),
+        _box(f'Your answer: {your_answer}', 60, 1220, 900, 1270),
+        _box('You got +6', 60, 1450, 500, 1510),
+        _box('Go back', 400, 1748, 800, 1800),
+    ]
+    if your_tail is not None:
+        boxes.insert(7, _box(your_tail, 200, 1275, 780, 1325))
+    return _snapshot(*boxes)
+
+
 def _result_frame(
     *,
     correct: str = 'True',
+    your_answer: str = 'False',
     payout: str = 'You got +6',
     go_back: bool = True,
 ) -> Snapshot:
     """The quiz result page: learned answer, chosen answer, payout, Go back."""
     boxes = [
         _box(f'Correct answer: {correct}', 60, 400, 700, 450),
-        _box('Your answer: False', 60, 520, 700, 570),
+        _box(f'Your answer: {your_answer}', 60, 520, 700, 570),
         _box(payout, 60, 700, 500, 760),
     ]
     if go_back:
@@ -730,6 +761,346 @@ def test_run_quiz_task_proceeds_when_an_answer_mentions_checkout(
     assert guard.task_running is False
 
 
+def test_a_result_page_that_keeps_the_question_is_not_a_question_page() -> None:
+    frame = _leaky_result_frame()
+
+    assert is_result_state(frame) is True
+    assert is_question_state(frame) is False
+
+
+def test_a_question_that_mentions_a_correct_answer_is_still_a_question() -> None:
+    frame = _question_frame(question='Q : Which is the correct answer?')
+
+    assert is_question_state(frame) is True
+    assert is_result_state(frame) is False
+
+
+@pytest.mark.slow
+def test_run_quiz_task_replays_the_answered_result_without_question_not_arrived(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """Run ``20261123T183834Z``: an answer and its result are not a missing question."""
+    question = _offer_copy_question_frame()
+    labels = (
+        'Coins credits are an extra benefit',
+        'Can be applied directly at Checkout',
+        'Can be combined with other',
+        'All of the above',
+    )
+    result_frame = _leaky_result_frame()
+    world = _World(
+        series={
+            'boost': (_quiz_boost_frame(),),
+            'question': (question,),
+            'result': (result_frame,),
+            # The result page survives one capture after Go back, as it did in
+            # the run, then the app lands on the coin page.
+            'stale': (result_frame, _coins_frame()),
+            'coins': (_coins_frame(),),
+            'boost_after': (_boost_after_frame(with_row=True, action='GO'),),
+        },
+        transitions={
+            ('boost', 'GO'): 'question',
+            **{('question', label): 'result' for label in labels},
+            ('result', 'Go back'): 'stale',
+            ('stale', 'Earn more >'): 'boost_after',
+            ('coins', 'Earn more >'): 'boost_after',
+        },
+    )
+    bank = QuizBank(tmp_path / 'quiz_bank.json')
+    expected = random.Random(7).choice(find_answer_options(question))
+
+    result = run_quiz_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        exit_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+        rng=random.Random(7),
+        bank=bank,
+    )
+
+    assert result.outcome is QuizOutcome.COMPLETED
+    assert result.verification == 'result_page'
+    assert result.question == 'Q : Which statements about coins credits are correct?'
+    assert result.chosen == expected.text == 'Can be combined with other discounts and coins'
+    assert result.correct == 'All of the above'
+    assert result.your_answer == 'Can be combined with other discounts and coins'
+    assert result.answer_correct is False
+    assert [tap.reason for tap in result.taps] == [
+        'quiz coins_quiz: open the quiz',
+        'quiz coins_quiz: choose the random answer',
+        'quiz coins_quiz: leave the result page',
+    ]
+    learned = bank.lookup(result.question or '')
+    assert learned is not None
+    assert learned.correct == 'All of the above'
+    assert learned.chosen == result.chosen
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ('your_answer', 'expected_correct'),
+    [
+        ('True', True),
+        ('False', False),
+    ],
+)
+def test_run_quiz_task_reads_correct_and_incorrect_from_the_result_page(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+    your_answer: str,
+    expected_correct: bool,
+) -> None:
+    """The result page, not the tap alone, says whether the submitted answer was right."""
+    bank = QuizBank(tmp_path / 'quiz_bank.json')
+    world = _success_world(result_frame=_result_frame(correct='True', your_answer=your_answer))
+
+    result = run_quiz_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        exit_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+        rng=random.Random(3),
+        bank=bank,
+    )
+
+    assert result.outcome is QuizOutcome.COMPLETED
+    assert result.chosen == 'True'
+    assert result.correct == 'True'
+    assert result.your_answer == your_answer
+    assert result.answer_correct is expected_correct
+    learned = bank.lookup(result.question or '')
+    assert learned is not None
+    assert learned.correct == 'True'
+
+
+def test_run_quiz_task_does_not_tap_an_answer_when_the_question_text_is_missing(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """Header and option-looking rows without a question prefix are not a question."""
+    missing_question = _snapshot(
+        _box('Coins quiz', 60, 90, 400, 150),
+        _box('Answer quiz questions for more coins!', 60, 170, 600, 210),
+        _box('True', 80, 600, 800, 650),
+        _box('False', 80, 750, 800, 800),
+    )
+    world = _World(
+        series={
+            'boost': (_quiz_boost_frame(),),
+            'missing': (missing_question,),
+            'coins': (_coins_frame(),),
+        },
+        transitions={('boost', 'GO'): 'missing'},
+    )
+
+    result = run_quiz_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        return_timeout=2.0,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+        rng=random.Random(3),
+    )
+
+    assert result.outcome is QuizOutcome.FAILED
+    assert result.verification == 'question_not_arrived'
+    assert result.question is None
+    assert [tap.reason for tap in result.taps] == ['quiz coins_quiz: open the quiz']
+    assert [tap.label for tap in result.taps] == ['GO']
+
+
+@pytest.mark.slow
+def test_run_quiz_task_keeps_the_first_result_when_a_follow_up_question_vanishes(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """A question glimpsed after Go back cannot turn a submitted answer into 'never arrived'."""
+
+    def on_tap(screen: str, label: str | None, _count: int) -> str | None:
+        if screen == 'result' and label == 'Go back':
+            return 'second'
+        return None
+
+    second = _question_frame(options=('Yes', 'No'), question='Q : Second question?')
+    world = _World(
+        series={
+            'boost': (_quiz_boost_frame(),),
+            'question': (_question_frame(),),
+            'result': (_result_frame(),),
+            'second': (second, _coins_frame()),
+            'coins': (_coins_frame(),),
+            'boost_after': (_boost_after_frame(with_row=True, action='GO'),),
+        },
+        transitions={
+            ('boost', 'GO'): 'question',
+            ('question', 'True'): 'result',
+            ('question', 'False'): 'result',
+            ('second', 'Earn more >'): 'boost_after',
+            ('coins', 'Earn more >'): 'boost_after',
+        },
+        on_tap=on_tap,
+    )
+
+    result = run_quiz_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        exit_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+        rng=random.Random(3),
+    )
+
+    assert result.outcome is QuizOutcome.COMPLETED
+    assert result.verification == 'result_page'
+    assert result.rounds == 1
+    assert result.correct == 'True'
+    assert [tap.label for tap in result.taps] == ['GO', 'True', 'Go back']
+
+
+@pytest.mark.slow
+def test_run_quiz_task_keeps_the_first_result_when_a_follow_up_has_no_options(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """An unreadable second round is not proof the first answer failed."""
+
+    def on_tap(screen: str, label: str | None, _count: int) -> str | None:
+        if screen == 'result' and label == 'Go back':
+            return 'second'
+        return None
+
+    second = _question_frame(options=('True',), question='Q : Second question?')
+    world = _World(
+        series={
+            'boost': (_quiz_boost_frame(),),
+            'question': (_question_frame(),),
+            'result': (_result_frame(),),
+            'second': (second,),
+            'coins': (_coins_frame(),),
+            'boost_after': (_boost_after_frame(with_row=True, action='GO'),),
+        },
+        transitions={
+            ('boost', 'GO'): 'question',
+            ('question', 'True'): 'result',
+            ('question', 'False'): 'result',
+            ('coins', 'Earn more >'): 'boost_after',
+        },
+        on_tap=on_tap,
+    )
+
+    result = run_quiz_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        exit_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+        rng=random.Random(3),
+    )
+
+    assert result.outcome is QuizOutcome.COMPLETED
+    assert result.verification == 'result_page'
+    assert result.rounds == 1
+
+
+def test_your_answer_reads_a_wrapped_value_and_stops_at_the_row_gap() -> None:
+    from aliexpress_coins.tasks.quiz import _your_answer
+
+    frame = _snapshot(
+        _box('Your answer: Can be combined with other', 60, 1220, 900, 1270),
+        _box('discounts and coins', 200, 1275, 780, 1325),
+        _box('You got +6', 60, 1450, 500, 1510),
+    )
+
+    assert _your_answer(frame) == 'Can be combined with other discounts and coins'
+
+
+def test_your_answer_returns_none_without_the_marker_or_without_geometry() -> None:
+    from aliexpress_coins.tasks.quiz import _your_answer
+
+    assert _your_answer(_snapshot(_box('Correct answer: True', 60, 400, 700, 450))) is None
+
+    zero = TextBox(text='Your answer: True', box=((0, 0), (0, 0), (0, 0), (0, 0)), score=0.99)
+    assert _your_answer(_snapshot(zero)) == 'True'
+
+
+def test_wrapped_lines_skips_blank_continuations_and_ends_without_a_gap() -> None:
+    from aliexpress_coins.tasks.quiz import _wrapped_lines
+
+    anchor = _box('Your answer: True', 60, 1220, 900, 1270)
+    frame = _snapshot(
+        anchor,
+        _box('   ', 200, 1275, 780, 1325),
+        _box('and more', 200, 1330, 780, 1380),
+    )
+    close_payout = _snapshot(anchor, _box('You got +6', 60, 1275, 500, 1325))
+
+    assert _wrapped_lines(frame, anchor) == ('and more',)
+    assert _wrapped_lines(close_payout, anchor) == ()
+
+
+def test_answer_correct_handles_missing_values_and_an_unmatched_submission() -> None:
+    from aliexpress_coins.tasks.quiz import _answer_correct
+
+    option = AnswerOption(text='True', box=_box('True', 80, 600, 800, 650))
+
+    assert _answer_correct(None, 'True', 'True', (option,)) is None
+    assert _answer_correct('True', None, None, (option,)) is None
+    assert _answer_correct('True', 'something else', None, (option,)) is False
+    assert _answer_correct('True', 'True', None, (option,)) is True
+
+
+def test_result_page_detail_names_all_three_outcomes() -> None:
+    from aliexpress_coins.tasks.quiz import _result_page_detail
+
+    assert 'was correct' in _result_page_detail('True', 'True', True)
+    assert 'was incorrect' in _result_page_detail('True', 'False', False)
+    assert _result_page_detail('True', None, None) == (
+        "the result page printed Correct answer: 'True' and Your answer: None"
+    )
+
+
 def test_run_quiz_task_records_a_new_question_in_the_bank(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1172,12 +1543,12 @@ def test_run_quiz_task_completes_when_the_action_is_gone(
 
 
 @pytest.mark.slow
-def test_run_quiz_task_does_not_complete_on_a_visible_payout_when_the_row_still_offers_go(
+def test_run_quiz_task_completes_from_the_result_page_when_the_row_still_offers_go(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
     tmp_path: Path,
 ) -> None:
-    """A trusted row that still offers GO contradicts the result payout."""
+    """A submitted answer is proved by its result page; a stale row does not undo it."""
     world = _success_world(after_with_row=True, after_action='GO')
     state = _state(tmp_path)
 
@@ -1197,22 +1568,28 @@ def test_run_quiz_task_does_not_complete_on_a_visible_payout_when_the_row_still_
         rng=random.Random(3),
     )
 
-    assert result.outcome is QuizOutcome.FAILED
-    assert result.verification == 'no_change'
-    assert result.recorded is False
-    assert state.count('coins_quiz') == 0
+    assert result.outcome is QuizOutcome.COMPLETED
+    assert result.verification == 'result_page'
+    assert result.recorded is True
+    assert state.count('coins_quiz') == 1
 
 
 @pytest.mark.slow
-def test_run_quiz_task_fails_when_nothing_changes(
+def test_run_quiz_task_fails_when_nothing_changes_and_the_result_is_unreadable(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
     tmp_path: Path,
 ) -> None:
+    unreadable = _snapshot(
+        _box('Correct answer:', 60, 400, 700, 450),
+        _box('Your answer:', 60, 520, 700, 570),
+        _box('No payout shown', 60, 700, 500, 760),
+        _box('Go back', 400, 1400, 800, 1500),
+    )
     world = _success_world(
         after_with_row=True,
         after_action='GO',
-        result_frame=_result_frame(payout='No payout shown'),
+        result_frame=unreadable,
     )
     state = _state(tmp_path)
     result = run_quiz_task(
@@ -1234,6 +1611,8 @@ def test_run_quiz_task_fails_when_nothing_changes(
     assert result.outcome is QuizOutcome.FAILED
     assert result.verification == 'no_change'
     assert result.recorded is False
+    assert result.correct is None
+    assert result.your_answer is None
     assert state.count('coins_quiz') == 0
 
 
@@ -1454,7 +1833,11 @@ def test_run_quiz_task_fails_when_the_result_never_arrives(
 
     assert result.outcome is QuizOutcome.FAILED
     assert result.verification == 'result_not_arrived'
+    assert result.verification != 'question_not_arrived'
     assert result.recorded is False
+    assert result.question is not None
+    assert result.chosen is not None
+    assert len(result.taps) == 2  # GO and the answer; nothing else was tapped
 
 
 def test_run_quiz_task_fails_when_go_back_is_missing(
@@ -1703,9 +2086,60 @@ def test_run_quiz_task_reports_no_observation_when_the_list_cannot_be_read(
     )
 
     assert result.outcome is QuizOutcome.COMPLETED
-    assert result.verification == 'result_reward'
+    assert result.verification == 'result_page'
     assert result.recorded is True
     assert result.returned is True
+
+
+@pytest.mark.slow
+def test_run_quiz_task_uses_the_payout_when_the_result_values_are_unreadable(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """With no answer text and no readable row, the payout is the last signal."""
+    unreadable = _snapshot(
+        _box('Correct answer:', 60, 400, 700, 450),
+        _box('Your answer:', 60, 520, 700, 570),
+        _box('You got +6', 60, 700, 500, 760),
+        _box('Go back', 400, 1400, 800, 1500),
+    )
+    world = _World(
+        series={
+            'boost': (_quiz_boost_frame(),),
+            'question': (_question_frame(),),
+            'result': (unreadable,),
+            'coins': (_coins_frame(),),
+            'broken': (_wrong_page(),),
+        },
+        transitions={
+            ('boost', 'GO'): 'question',
+            ('question', 'True'): 'result',
+            ('question', 'False'): 'result',
+            ('result', 'Go back'): 'coins',
+            ('coins', 'Earn more >'): 'broken',
+        },
+    )
+
+    result = run_quiz_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        exit_timeout=1.0,
+        return_timeout=1.0,
+        clock=_SteppingClock(step=1.0),
+        sleep=_SteppingClock().sleep,
+        rng=random.Random(3),
+    )
+
+    assert result.outcome is QuizOutcome.COMPLETED
+    assert result.verification == 'result_reward'
+    assert result.payout == '+6'
+    assert result.recorded is True
 
 
 def _loading_frame() -> Snapshot:
@@ -2105,10 +2539,10 @@ def test_run_quiz_task_stops_the_round_loop_at_the_bound(
     )
 
     assert result.rounds == 3
-    # The bound stops the round loop; the verification verdict decides.
-    assert result.outcome is QuizOutcome.FAILED
-    assert result.verification == 'no_change'
-    assert result.recorded is False
+    # The bound stops the round loop; the result page still proves the answers.
+    assert result.outcome is QuizOutcome.COMPLETED
+    assert result.verification == 'result_page'
+    assert result.recorded is True
 
 
 def test_find_answer_options_ignores_a_low_score_question() -> None:
@@ -2486,9 +2920,9 @@ def test_run_quiz_task_reads_an_inline_route_with_no_earn_more(
         rng=random.Random(3),
     )
 
-    assert result.outcome is QuizOutcome.FAILED
-    assert result.verification == 'no_change'
-    assert result.recorded is False
+    assert result.outcome is QuizOutcome.COMPLETED
+    assert result.verification == 'result_page'
+    assert result.recorded is True
     assert result.returned is True
 
 
