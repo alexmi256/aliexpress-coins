@@ -91,13 +91,14 @@ markers = [
 # (measured 99.38%), then to 99.39 when the wait primitives landed (measured
 # 99.40%), then to 99.42 when the timezone refusal and stability ledger landed
 # (measured 99.43%), then to 99.44 when the dry-run settle wait landed (measured
-# 99.44%). See "Quality gate" in README.md.
+# 99.44%), then to 99.45 when the quiz question bank landed (measured 99.45%).
+# See "Quality gate" in README.md.
 [tool.coverage.run]
 branch = true
 source = ["aliexpress_coins"]
 
 [tool.coverage.report]
-fail_under = 99.44
+fail_under = 99.45
 precision = 2
 show_missing = true
 skip_covered = true

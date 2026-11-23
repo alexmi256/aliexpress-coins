@@ -32,6 +32,8 @@ from aliexpress_coins.tasks.discovery import RosterEntry, enumerate_roster
 from aliexpress_coins.tasks.dispatch import DispatchGate
 from aliexpress_coins.tasks.errors import TaskError
 from aliexpress_coins.tasks.quiz import (
+    ANSWER_FROM_BANK,
+    ANSWER_GUESS,
     REDEEM_INTERSTITIAL,
     AnswerOption,
     QuizOutcome,
@@ -41,6 +43,7 @@ from aliexpress_coins.tasks.quiz import (
     read_payout,
     run_quiz_task,
 )
+from aliexpress_coins.tasks.quiz_bank import QuestionSource, QuizBank, normalize_question
 from aliexpress_coins.tasks.surface import RouteFirer, SurfaceRoute
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -646,6 +649,196 @@ def test_run_quiz_task_completes_a_normal_visit(
     payload = result.as_dict()
     assert payload['outcome'] == 'completed'
     assert payload['verification'] == 'row_gone'
+
+
+def test_run_quiz_task_records_a_new_question_in_the_bank(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """The first encounter records the question, its options and the learned answer."""
+    from datetime import UTC, datetime
+
+    stamp = datetime(2026, 11, 22, 12, 0, tzinfo=UTC)
+    bank = QuizBank(tmp_path / 'quiz_bank.json', clock=lambda: stamp)
+    world = _success_world()
+
+    result = run_quiz_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        exit_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+        rng=random.Random(3),
+        bank=bank,
+    )
+
+    assert result.outcome is QuizOutcome.COMPLETED
+    assert result.answer_source == ANSWER_GUESS
+    entry = bank.lookup(result.question or '')
+    assert entry is not None
+    assert entry.question == result.question
+    assert entry.normalized == normalize_question(result.question or '')
+    assert entry.options == tuple(option.text for option in result.options)
+    assert entry.chosen == result.chosen
+    assert entry.correct == result.correct == 'True'
+    assert entry.source is QuestionSource.RESULT_PAGE
+    assert entry.seen_at == stamp
+
+
+def test_run_quiz_task_answers_a_repeated_question_from_the_bank(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """The second encounter taps the learned option, not another random guess."""
+    from datetime import UTC, datetime
+
+    stamp = datetime(2026, 11, 22, 12, 0, tzinfo=UTC)
+    bank = QuizBank(tmp_path / 'quiz_bank.json', clock=lambda: stamp)
+
+    first_world = _success_world()
+    first = run_quiz_task(
+        _controller(first_world, first_world.frame),
+        first_world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=first_world.navigate,
+        arrival_timeout=1.0,
+        exit_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+        rng=random.Random(3),
+        bank=bank,
+    )
+    learned = bank.lookup(first.question or '')
+    assert learned is not None
+    first_bytes = (tmp_path / 'quiz_bank.json').read_bytes()
+
+    second_world = _success_world()
+    second = run_quiz_task(
+        _controller(second_world, second_world.frame),
+        second_world.capture,
+        corpus,
+        DailyStateStore(tmp_path / 'state-two', clock=lambda: datetime(2026, 11, 22, tzinfo=UTC)),
+        _entry(catalogue),
+        navigate=second_world.navigate,
+        arrival_timeout=1.0,
+        exit_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+        rng=random.Random(999),
+        bank=bank,
+    )
+
+    assert second.outcome is QuizOutcome.COMPLETED
+    assert second.bank_hit is True
+    assert second.answer_source == ANSWER_FROM_BANK
+    assert second.chosen == learned.correct
+    assert (tmp_path / 'quiz_bank.json').read_bytes() == first_bytes
+    answer_tap = second.taps[1]
+    assert answer_tap.label == learned.correct
+
+
+def test_run_quiz_task_guesses_and_records_when_the_recorded_option_is_gone(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """A changed option set is a new question: no remembered position is tapped."""
+    bank = QuizBank(tmp_path / 'quiz_bank.json')
+    bank.record(
+        'Q : Which of the following statements is correct?',
+        ('True', 'False'),
+        'False',
+        'True',
+    )
+    world = _World(
+        series={
+            'boost': (_quiz_boost_frame(),),
+            'question': (_question_frame(options=('Yes', 'No')),),
+            'result': (_result_frame(correct='Yes', payout='You got +6'),),
+            'coins': (_coins_frame(),),
+            'boost_after': (_boost_after_frame(action=None),),
+        },
+        transitions={
+            ('boost', 'GO'): 'question',
+            ('question', 'Yes'): 'result',
+            ('question', 'No'): 'result',
+            ('result', 'Go back'): 'coins',
+            ('coins', 'Earn more >'): 'boost_after',
+        },
+    )
+
+    result = run_quiz_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        exit_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+        rng=random.Random(7),
+        bank=bank,
+    )
+
+    assert result.outcome is QuizOutcome.COMPLETED
+    assert result.answer_source == ANSWER_GUESS
+    assert result.chosen in ('Yes', 'No')
+    entry = bank.lookup(result.question or '')
+    assert entry is not None
+    assert entry.options == ('Yes', 'No')
+    assert entry.correct == 'Yes'
+    assert result.taps[1].label in ('Yes', 'No')
+
+
+def test_run_quiz_task_guesses_when_the_bank_cannot_be_read_or_written(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A bank path that is a directory warns twice and never fails the quiz."""
+    world = _success_world()
+
+    result = run_quiz_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        exit_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+        rng=random.Random(3),
+        bank=tmp_path,
+    )
+
+    assert result.outcome is QuizOutcome.COMPLETED
+    assert result.answer_source == ANSWER_GUESS
+    assert 'quiz_bank_unreadable' in caplog.text
+    assert 'quiz_bank_write_failed' in caplog.text
 
 
 def _done_label_coins_frame() -> Snapshot:
@@ -1340,6 +1533,25 @@ def test_run_quiz_task_fails_and_returns_on_a_non_task_surface(
     assert result.verification == 'task_surface_unavailable'
     assert result.returned is True
     assert world.current == 'coins'
+
+
+def test_choose_option_guesses_when_there_is_no_question(tmp_path: Path) -> None:
+    import logging
+
+    from aliexpress_coins.tasks.quiz import _choose_option
+
+    option = AnswerOption(text='True', box=_box('True', 80, 600, 800, 650))
+
+    chosen, source = _choose_option(
+        QuizBank(tmp_path / 'quiz_bank.json'),
+        None,
+        (option,),
+        random.Random(0),
+        logger=logging.getLogger('test'),
+    )
+
+    assert chosen is option
+    assert source == ANSWER_GUESS
 
 
 def test_quiz_result_as_dict_renders_the_evidence() -> None:

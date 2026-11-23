@@ -9,6 +9,7 @@ imported by name is caught as well as `subprocess.Popen`.
 import socket
 import sys
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -73,3 +74,9 @@ def _no_processes() -> Iterator[None]:
         yield
     finally:
         _processes_armed = False
+
+
+@pytest.fixture(autouse=True)
+def _isolated_quiz_bank(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never let a test learn into the committed question bank."""
+    monkeypatch.setenv('AECOINS_QUIZ_BANK_PATH', str(tmp_path / 'quiz_bank.json'))
