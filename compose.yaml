@@ -27,6 +27,9 @@ services:
     volumes:
       - runs:/app/runs
       - state:/app/state
+      # The committed bank seeds this volume on first creation; entries learned
+      # at runtime then live here and survive image rebuilds and `up --build`.
+      - data:/app/data
     # Named volumes inherit the image's ownership, so the non-root collector
     # can write without a host-side chown. Inspect with `docker compose cp`.
     stop_grace_period: 5s
@@ -36,3 +39,4 @@ services:
 volumes:
   runs:
   state:
+  data:

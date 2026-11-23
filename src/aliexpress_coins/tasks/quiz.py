@@ -25,8 +25,9 @@ The measured contract has four rules:
 
 A wrong answer still pays (docs/05 §5: "a wrong answer still pays something"),
 so nothing downstream branches on a guess being right. The learned answer is
-recorded in the result for the report; the question bank is issue #39 and is not
-written here.
+also written to the question bank (#39): a recognised question is answered from
+the recorded option by text, an unrecognised one is guessed and then recorded
+from the result page so the next encounter is answered correctly.
 """
 
 from __future__ import annotations
@@ -40,6 +41,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from pathlib import Path
 
 from aliexpress_coins.control.controller import LOGGER_NAME, Controller, TapRecord
 from aliexpress_coins.control.errors import PopupUnclosable
@@ -63,6 +65,14 @@ from aliexpress_coins.tasks.catalogue import AllowedTaskSpec, TaskCategory
 from aliexpress_coins.tasks.discovery import BoostList, DiscoveryRoute, RosterEntry, open_boost_list
 from aliexpress_coins.tasks.dispatch import authorization_of
 from aliexpress_coins.tasks.errors import TaskError
+from aliexpress_coins.tasks.quiz_bank import (
+    ANSWER_FROM_BANK,
+    ANSWER_GUESS,
+    QuestionSource,
+    QuizBank,
+    QuizBankError,
+    match_option,
+)
 from aliexpress_coins.tasks.surface import (
     COIN_PAGE_MARKERS,
     REDEEM_MARKER,
@@ -75,6 +85,8 @@ from aliexpress_coins.tasks.surface import (
 )
 
 __all__ = [
+    'ANSWER_FROM_BANK',
+    'ANSWER_GUESS',
     'DEFAULT_EXIT_TIMEOUT',
     'DEFAULT_INTERVAL',
     'DEFAULT_LOAD_TIMEOUT',
@@ -158,6 +170,9 @@ _PAYOUT = re.compile(r'You got\s*\+\s*(\d+)', re.IGNORECASE)
 _CORRECT_ANSWER = re.compile(r'correct\s*answer', re.IGNORECASE)
 """The marker for the learned-answer line (``Correct answer: X``)."""
 
+_YOUR_ANSWER = re.compile(r'your\s*answer', re.IGNORECASE)
+"""The marker that ends a wrapped learned-answer line (``Your answer: Y``)."""
+
 _BARE_NUMBER = re.compile(r'^\s*\d{1,3}\s*$')
 """A standalone digit: a page counter, never an answer option."""
 
@@ -218,6 +233,7 @@ class QuizResult:
     taps: tuple[TapRecord, ...] = ()
     stop: str | None = None
     recorded: bool = False
+    answer_source: str | None = None
     return_state: ReturnResult | None = None
     dismissals: tuple[DismissReport, ...] = ()
 
@@ -252,6 +268,11 @@ class QuizResult:
         return self.return_state is not None and self.return_state.returned
 
     @property
+    def bank_hit(self) -> bool:
+        """Whether the tapped answer came from the question bank, not a guess."""
+        return self.answer_source == ANSWER_FROM_BANK
+
+    @property
     def reward_coins(self) -> int | None:
         """The payout as an integer when OCR read a number, else ``None``."""
         if self.payout is None:
@@ -278,6 +299,7 @@ class QuizResult:
             'payout': self.payout,
             'reward_coins': self.reward_coins,
             'recorded': self.recorded,
+            'answer_source': self.answer_source,
             'stop': self.stop,
             'taps': [tap.as_dict() for tap in self.taps],
             'dismissals': [report.as_dict() for report in self.dismissals],
@@ -389,6 +411,7 @@ def run_quiz_task(
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     rng: random.Random | None = None,
+    bank: QuizBank | str | Path | None = None,
     logger: logging.Logger | None = None,
 ) -> QuizResult:
     """Run one quiz task from an allowed roster row.
@@ -435,6 +458,7 @@ def run_quiz_task(
         raise ValueError(f'settle must not be negative, got {settle!r}')
 
     rng = rng if rng is not None else random.Random()
+    quiz_bank = _quiz_bank(bank, logger=log)
 
     frame = snapshot if snapshot is not None else _capture(capture)
     frame, settled, entry_sweep = _settle_surface(
@@ -525,6 +549,7 @@ def run_quiz_task(
     correct: str | None = None
     payout: str | None = None
     stop: str | None = None
+    answer_source: str | None = None
     dismissals: list[DismissReport] = []
     if entry_sweep is not None:
         dismissals.append(entry_sweep)
@@ -576,6 +601,7 @@ def run_quiz_task(
                     payout=payout,
                     taps=taps,
                     stop=stop,
+                    answer_source=answer_source,
                     dismissals=dismissals,
                     route=route,
                     templates=templates,
@@ -608,6 +634,7 @@ def run_quiz_task(
                     payout=payout,
                     taps=taps,
                     stop=stop,
+                    answer_source=answer_source,
                     dismissals=dismissals,
                     route=route,
                     templates=templates,
@@ -621,12 +648,23 @@ def run_quiz_task(
                 )
             question = _question_text(current)
             rounds += 1
-            chosen_option = rng.choice(options)
+            chosen_option, answer_source = _choose_option(
+                quiz_bank,
+                question,
+                options,
+                rng,
+                logger=log,
+            )
             chosen = chosen_option.text
+            why = (
+                f'quiz {spec.key}: choose the banked answer'
+                if answer_source == ANSWER_FROM_BANK
+                else f'quiz {spec.key}: choose the random answer'
+            )
             taps.append(
                 controller.tap_box(
                     chosen_option.box,
-                    why=f'quiz {spec.key}: choose the random answer',
+                    why=why,
                     label=chosen_option.box.text,
                 ),
             )
@@ -667,6 +705,7 @@ def run_quiz_task(
                     payout=payout,
                     taps=taps,
                     stop=stop,
+                    answer_source=answer_source,
                     dismissals=dismissals,
                     route=route,
                     templates=templates,
@@ -680,6 +719,14 @@ def run_quiz_task(
                 )
             payout = read_payout(current)
             correct = _correct_answer(current)
+            _record_observation(
+                quiz_bank,
+                question,
+                options,
+                chosen,
+                correct,
+                logger=log,
+            )
             go_back = find_go_back(current)
             if go_back is None:
                 return _finish_failed(
@@ -701,6 +748,7 @@ def run_quiz_task(
                     payout=payout,
                     taps=taps,
                     stop=stop,
+                    answer_source=answer_source,
                     dismissals=dismissals,
                     route=route,
                     templates=templates,
@@ -760,6 +808,7 @@ def run_quiz_task(
                     payout=payout,
                     taps=taps,
                     stop=stop,
+                    answer_source=answer_source,
                     dismissals=dismissals,
                     route=route,
                     templates=templates,
@@ -817,6 +866,7 @@ def run_quiz_task(
                 payout=payout,
                 taps=taps,
                 stop=stop,
+                answer_source=answer_source,
                 dismissals=dismissals,
                 return_state=return_state,
                 logger=log,
@@ -842,6 +892,7 @@ def run_quiz_task(
                     payout=payout,
                     taps=taps,
                     stop=stop,
+                    answer_source=answer_source,
                     dismissals=dismissals,
                     return_state=return_state,
                     logger=log,
@@ -866,6 +917,7 @@ def run_quiz_task(
                 payout=payout,
                 taps=taps,
                 stop=stop,
+                answer_source=answer_source,
                 dismissals=dismissals,
                 return_state=return_state,
                 recorded=True,
@@ -913,6 +965,7 @@ def run_quiz_task(
                     payout=payout,
                     taps=taps,
                     stop=stop,
+                    answer_source=answer_source,
                     dismissals=dismissals,
                     return_state=return_state,
                     logger=log,
@@ -948,6 +1001,7 @@ def run_quiz_task(
                 payout=payout,
                 taps=taps,
                 stop=stop,
+                answer_source=answer_source,
                 dismissals=dismissals,
                 return_state=return_state,
                 recorded=True,
@@ -971,6 +1025,7 @@ def run_quiz_task(
             payout=payout,
             taps=taps,
             stop=stop,
+            answer_source=answer_source,
             dismissals=dismissals,
             return_state=return_state,
             logger=log,
@@ -1001,6 +1056,75 @@ def run_quiz_task(
 # The issue's public name; ``run_quiz_task`` says what it does at the dispatch point.
 run_quiz = run_quiz_task
 MAX_QUESTION_ROUNDS = MAX_ROUNDS
+
+
+def _quiz_bank(bank: QuizBank | str | Path | None, *, logger: logging.Logger) -> QuizBank:
+    """Resolve the injected bank, a path, or the environment-backed default."""
+    if isinstance(bank, QuizBank):
+        return bank
+    if bank is None:
+        return QuizBank.from_environment(logger=logger)
+    return QuizBank(bank, logger=logger)
+
+
+def _choose_option(
+    bank: QuizBank,
+    question: str | None,
+    options: Sequence[AnswerOption],
+    rng: random.Random,
+    *,
+    logger: logging.Logger,
+) -> tuple[AnswerOption, str]:
+    """Answer from the bank when its recorded option is on screen, else guess.
+
+    The bank is never allowed to fail a quiz: an unreadable bank is a warning
+    and the #25 guess. A recorded answer whose text is no longer an option is a
+    changed quiz, so it is not tapped by position.
+    """
+    if question is not None:
+        try:
+            index = bank.resolve(question, [option.text for option in options])
+        except QuizBankError as exc:
+            _warn(logger, 'quiz_bank_unreadable', detail=f'{type(exc).__name__}: {exc}')
+        else:
+            if index is not None:
+                return options[index], ANSWER_FROM_BANK
+    return rng.choice(options), ANSWER_GUESS
+
+
+def _record_observation(
+    bank: QuizBank,
+    question: str | None,
+    options: Sequence[AnswerOption],
+    chosen: str | None,
+    correct: str | None,
+    *,
+    logger: logging.Logger,
+) -> None:
+    """Learn the result page's answer, without letting a write failure fail the quiz."""
+    if question is None or chosen is None or correct is None:
+        return
+    option_texts = [option.text for option in options]
+    matched = match_option(correct, option_texts)
+    if matched is None:
+        _warn(
+            logger,
+            'quiz_bank_answer_unmatched',
+            question=question,
+            correct=correct,
+            options=option_texts,
+        )
+        return
+    try:
+        bank.record(
+            question,
+            option_texts,
+            chosen,
+            option_texts[matched],
+            source=QuestionSource.RESULT_PAGE,
+        )
+    except (QuizBankError, OSError, ValueError, TypeError) as exc:
+        _warn(logger, 'quiz_bank_write_failed', detail=f'{type(exc).__name__}: {exc}')
 
 
 def _allowed_spec(entry: RosterEntry) -> AllowedTaskSpec:
@@ -1057,6 +1181,7 @@ def _result(
     dismissals: Sequence[DismissReport],
     return_state: ReturnResult | None = None,
     recorded: bool = False,
+    answer_source: str | None = None,
     logger: logging.Logger,
 ) -> QuizResult:
     result = QuizResult(
@@ -1077,6 +1202,7 @@ def _result(
         taps=tuple(taps),
         stop=stop,
         recorded=recorded,
+        answer_source=answer_source,
         return_state=return_state,
         dismissals=tuple(dismissals),
     )
@@ -1114,6 +1240,7 @@ def _finish_failed(
     taps: Sequence[TapRecord] = (),
     stop: str | None = None,
     dismissals: Sequence[DismissReport] = (),
+    answer_source: str | None = None,
 ) -> QuizResult:
     """End a failure on the coins page and build its result."""
     return_state = return_to_coins_page(
@@ -1152,6 +1279,7 @@ def _finish_failed(
         payout=payout,
         taps=tuple(taps),
         stop=stop,
+        answer_source=answer_source,
         return_state=return_state,
         dismissals=tuple(dismissals),
     )
@@ -1490,16 +1618,35 @@ def _question_text(snapshot: Snapshot) -> str | None:
 
 
 def _correct_answer(snapshot: Snapshot) -> str | None:
-    """Read the learned answer off the result page (``Correct answer: X``)."""
-    for box in snapshot.boxes:
-        if box.score < DEFAULT_MIN_OCR_SCORE:
-            continue
-        if _CORRECT_ANSWER.search(box.text):
-            value = re.sub(r'^.*correct\s*answer\s*[:.]?\s*', '', box.text, count=1, flags=re.IGNORECASE)
-            value = value.strip()
-            if value:
-                return value
-    return None
+    """Read the learned answer off the result page (``Correct answer: X``).
+
+    Long option text wraps onto following OCR lines; those lines are joined up
+    to the ``Your answer:`` marker so the recorded answer is the option the quiz
+    page actually shows, not just the first physical line.
+    """
+    correct = next(
+        (box for box in snapshot.boxes if box.score >= DEFAULT_MIN_OCR_SCORE and _CORRECT_ANSWER.search(box.text)),
+        None,
+    )
+    if correct is None:
+        return None
+    value = re.sub(r'^.*correct\s*answer\s*[:.]?\s*', '', correct.text, count=1, flags=re.IGNORECASE)
+    value = value.strip()
+    if not value:
+        return None
+    return ' '.join((value, *_answer_continuation(snapshot, correct)))
+
+
+def _answer_continuation(snapshot: Snapshot, correct: TextBox) -> tuple[str, ...]:
+    """The wrapped lines between the learned answer and ``Your answer:``."""
+    boxes = [box for box in snapshot.boxes if box is not correct and box.score >= DEFAULT_MIN_OCR_SCORE]
+    endings = [box for box in boxes if _YOUR_ANSWER.search(box.text) and box.bbox[1] > correct.bbox[1]]
+    if not endings:
+        return ()
+    limit = min(box.bbox[1] for box in endings)
+    lines = [box for box in boxes if correct.bbox[1] < box.bbox[1] < limit]
+    lines.sort(key=lambda box: (box.bbox[1], box.bbox[0]))
+    return tuple(box.text.strip() for box in lines if box.text.strip())
 
 
 def _sweep(

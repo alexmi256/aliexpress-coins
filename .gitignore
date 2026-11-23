@@ -212,6 +212,11 @@ state/
 *.db
 *.sqlite3
 
+# The quiz bank is committed data, but a corrupt copy is quarantined beside it
+# and an atomic write can leave a staged sibling if the process is killed.
+data/*.corrupt-*
+data/.quiz_bank.json.*
+
 # Editors / OS
 .idea/
 .vscode/
