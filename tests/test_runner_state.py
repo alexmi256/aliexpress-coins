@@ -271,6 +271,36 @@ def test_begin_run_clears_a_legacy_unverified_zero(
     assert json.loads(store.path.read_text(encoding='utf-8'))['last_balance'] is None
 
 
+def test_begin_run_clears_a_zero_marked_unverified(
+    tmp_path: Path,
+) -> None:
+    payload = _valid_payload()
+    payload['last_balance'] = 0.0
+    payload['last_balance_verified'] = False
+    _write_json(_path(tmp_path), payload)
+    store = _store(tmp_path)
+
+    store.begin_run(at=NOW)
+
+    assert store.snapshot().last_balance is None
+    assert store.snapshot().last_balance_verified is None
+
+
+def test_begin_run_keeps_a_verified_zero(
+    tmp_path: Path,
+) -> None:
+    payload = _valid_payload()
+    payload['last_balance'] = 0.0
+    payload['last_balance_verified'] = True
+    _write_json(_path(tmp_path), payload)
+    store = _store(tmp_path)
+
+    store.begin_run(at=NOW)
+
+    assert store.snapshot().last_balance == 0.0
+    assert store.snapshot().last_balance_verified is True
+
+
 def test_a_runtime_unverified_zero_is_cleared_on_an_unreadable_balance(
     tmp_path: Path,
 ) -> None:
