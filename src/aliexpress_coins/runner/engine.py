@@ -697,10 +697,11 @@ def _plan_dry_run(
     if unreadable is not None:
         last = waits[-1] if waits else None
         last_state = last.classification.state if last is not None else initial_state
-        if last_state is ScreenState.POPUP or (last is not None and not last.settled):
+        if last_state is ScreenState.POPUP:
             # The classifier can see coin markers and rows through a modal; a
             # popup is not a readable coin page, so report it as unread rather
-            # than planning the rows under the scrim.
+            # than planning the rows under the scrim. A non-popup unreadable
+            # frame keeps any rows it did show as evidence.
             surface = Surface.UNKNOWN
             roster = Roster(
                 entries=(),

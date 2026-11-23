@@ -314,7 +314,9 @@ Read it like this:
   `redeem_interstitial`, `empty_boost`, or `unknown`. `unknown`, `empty_boost`, a redeem interstitial,
   or a `rows_absent` with no readable task row is an unreadable report, not a plan.
 - **steps** are the rows that would be dispatched, in order, with the catalogue key and executor
-  category. `Daily coins` is the streak sign-in; it is allowed but not a boost row.
+  category. `Daily coins` is the streak sign-in; it is allowed but not a boost row. When task rows are
+  legible on an `unknown` surface, the run fails as `surface_unverified`; `steps` is then evidence of
+  what was read, not a forecast that the day is workable.
 - **refusals** are the deny-list decisions. `unrecognised` is default-deny: the row is not in
   `specs/tasks.yaml`, so the collector skips it. `spending_order` is an explicit refusal. A refusal
   is a safety feature, not a failure.
@@ -324,9 +326,11 @@ A dry run exits `0` only when it positively read a complete roster. Any unreadab
 loading, no known coin page, a popup or redeem interstitial, the empty `Coins boost` load fault, or
 coin-page markers without their task rows — ends `failed` with `navigation_failed` and a `surface_*`
 detail (or `aborted` with `unexpected_screen` when the same unreadable frame repeats three times) and
-exits non-zero. Treat any non-zero dry run as "retry or inspect", never as "the day is done"; a clean
-empty day cannot be proven from the inline coin page alone. The `Coins boost` empty page is a load
-fault ([`05-app-knowledge.md`](05-app-knowledge.md) §4b), not evidence about the day.
+exits non-zero. When task rows were legible but the coin-page marker was missing, the failure is
+`surface_unverified` and the rows remain in `steps` as evidence, not as a successful plan. Treat any
+non-zero dry run as "retry or inspect", never as "the day is done"; a clean empty day cannot be proven
+from the inline coin page alone. The `Coins boost` empty page is a load fault
+([`05-app-knowledge.md`](05-app-knowledge.md) §4b), not evidence about the day.
 
 ---
 
@@ -605,7 +609,7 @@ swipe or page press. A result that may already have acted is reported, never rep
 | `unsupported_geometry` | The frame reports no measured profile or calibration. This is a taxonomy refusal, not the capture path's response to a different portrait geometry; see §14. | `doctor`; `adb shell wm size`, `wm density`, `getprop ro.build.version.sdk`; compare [`02-architecture.md`](02-architecture.md), §14 and #42; add calibration rather than forcing a different size. | none |
 | `frame_undecodable` | A screencap arrived but could not be decoded. | `adb -s <serial> exec-out screencap -p > /tmp/frame.png`; `file /tmp/frame.png`; check free disk, the USB/network path and the screen. A truncated frame is not retried because the device did answer. | none |
 | `app_logged_out` | The app shows a sign-in prompt instead of the account surface. | Sign in on the tablet; confirm the Account tab loads; `adb shell dumpsys window` for the focused app; run again. The run stops at the first detection. | none |
-| `navigation_failed` | The route did not reach the screen it promised; a live run records a fallback and may continue from the inline surface, while a dry run has no fallback and exits non-zero with a `surface_*` detail. | Read `Route fallback` and `route_error`; for a dry run, read the `surface_*` detail and retry once the page settles; start the app normally, settle ~10 s, then send the shortcut intent; check for the empty `Coins boost` page and an app update that changed labels. | none |
+| `navigation_failed` | The route did not reach the screen it promised; a live run records a fallback and may continue from the inline surface, while a dry run has no fallback and exits non-zero with a `surface_*` detail. When rows were legible but the surface was unrecognised, the detail is `surface_unverified` and the rows stay in `steps` as evidence. | Read `Route fallback` and `route_error`; for a dry run, read the `surface_*` detail and retry once the page settles; start the app normally, settle ~10 s, then send the shortcut intent; check for the empty `Coins boost` page and an app update that changed labels. | none |
 | `popup_unclosable` | A popup had no safe dismissal: no known label, no template match and no calibration for this profile. | Open the failure frame in `shots/`; note the app version and the `doctor` profile id; update the popup corpus (#11) or the profile calibration (#42). Never tap a guessed coordinate. | none |
 | `task_unverified` | The task did not prove completion on screen. | Read the task row's `code`, `outcome`, `evidence` and `detail`; inspect `run.jsonl`; check whether `acted` is true. A task that acted is not retried, so verify by hand before the next night. | task ×1 |
 | `unexpected_screen` | The same unrecognised or dead screen was seen three times in a row. | Read `abort.screen` labels and fingerprint, and the `failure` frame when one was written; check for an app update, a new popup or a hybrid page that did not render; capture a fixture for #11. | none |
