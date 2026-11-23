@@ -22,6 +22,11 @@ from aliexpress_coins.runner.errors import ConfigError
 from aliexpress_coins.runner.report import RunReport
 from aliexpress_coins.runner.schedule import run_schedule
 from aliexpress_coins.runner.state import DailyStateStore
+from aliexpress_coins.runner.timezone import (
+    DeviceTimezoneReader,
+    TimezoneCheck,
+    timezone_check_from_environment,
+)
 
 LOGGER_NAME = 'aliexpress_coins.cli'
 
@@ -84,10 +89,17 @@ def run_once_command(
     *,
     dry_run: bool = False,
     root: str | None = None,
+    device_timezone: DeviceTimezoneReader | None = None,
 ) -> int:
-    """Perform one night and return the process exit code."""
+    """Perform one night and return the process exit code.
+
+    A manual run is supervised, so a timezone disagreement is a loud warning
+    rather than a refusal: the operator may deliberately be taking one night
+    from another zone. The scheduler, which is unattended, refuses instead.
+    """
     try:
         config = _config(environment, dry_run=dry_run, root=root)
+        _warn_timezone(environment, config.device, device_timezone)
         stop = threading.Event()
         _install_stop_handlers(stop)
         try:
@@ -110,12 +122,14 @@ def run_schedule_command(
     *,
     dry_run: bool = False,
     root: str | None = None,
+    device_timezone: DeviceTimezoneReader | None = None,
 ) -> int:
     """Run the nightly daemon until SIGTERM/SIGINT, then return its exit code."""
     try:
         config = _config(environment, dry_run=dry_run, root=root)
         if config.device is None:
             raise ConfigError('AECOINS_DEVICE is not set; the scheduler needs a device serial')
+        _refuse_bad_timezone(environment, config.device, device_timezone)
         stop = threading.Event()
         _install_stop_handlers(stop)
 
@@ -168,6 +182,44 @@ def _config(
     if dry_run:
         config = replace(config, dry_run=True)
     return config
+
+
+def _timezone_check(
+    environment: Mapping[str, str] | None,
+    device: str | None,
+    reader: DeviceTimezoneReader | None,
+) -> TimezoneCheck | None:
+    env = os.environ if environment is None else environment
+    return timezone_check_from_environment(env, device, reader=reader)
+
+
+def _warn_timezone(
+    environment: Mapping[str, str] | None,
+    device: str | None,
+    reader: DeviceTimezoneReader | None,
+) -> None:
+    check = _timezone_check(environment, device, reader)
+    if check is None or check.matches:
+        return
+    subject = 'timezone unverified' if check.status == 'unreadable' else 'timezone mismatch'
+    _warning(
+        f'{subject}: {check.message()}. Set AECOINS_TIMEZONE to the device zone '
+        '(`adb -s <serial> shell getprop persist.sys.timezone`) before the unattended schedule.',
+    )
+
+
+def _refuse_bad_timezone(
+    environment: Mapping[str, str] | None,
+    device: str | None,
+    reader: DeviceTimezoneReader | None,
+) -> None:
+    check = _timezone_check(environment, device, reader)
+    if check is None or check.matches:
+        return
+    raise ConfigError(
+        f'refusing to schedule: {check.message()}. '
+        'Set AECOINS_TIMEZONE to the device zone (`adb -s <serial> shell getprop persist.sys.timezone`).',
+    )
 
 
 _HANDLERS: dict[int, Any] = {}
@@ -234,6 +286,11 @@ def _print_abort(abort: dict[str, Any]) -> None:
 def _error(message: str) -> None:
     logging.getLogger(LOGGER_NAME).error('%s', message)
     print(f'error: {message}', file=sys.stderr, flush=True)
+
+
+def _warning(message: str) -> None:
+    logging.getLogger(LOGGER_NAME).warning('%s', message)
+    print(f'warning: {message}', file=sys.stderr, flush=True)
 
 
 __all__ = [

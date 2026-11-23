@@ -17,6 +17,13 @@ from typing import Literal
 
 from aliexpress_coins.perception.errors import SnapshotError
 from aliexpress_coins.perception.geometry import parse_geometry
+from aliexpress_coins.runner.config import timezone_from_environment
+from aliexpress_coins.runner.errors import ConfigError
+from aliexpress_coins.runner.timezone import (
+    compare_timezone,
+    configured_timezone_name,
+    read_device_timezone,
+)
 from aliexpress_coins.transport import AdbResult, AdbRunner, SubprocessAdbRunner
 
 Status = Literal['ok', 'fail', 'skipped']
@@ -155,6 +162,38 @@ def check_geometry(serial: str | None, *, run: CommandRunner = _run_command) -> 
     return CheckResult('geometry', 'ok', f'{serial}: {geometry.describe()}')
 
 
+def check_timezone(
+    environment: Mapping[str, str],
+    serial: str | None,
+    *,
+    run: CommandRunner = _run_command,
+) -> CheckResult:
+    """Compare the configured zone with the device's own zone (issue #79).
+
+    The schedule and the daily store both follow the configured zone. A value
+    that disagrees with ``persist.sys.timezone`` fires a night before the device
+    day has rolled, which looks successful and earns nothing. Printing both
+    values here is the pre-flight proof; a mismatch is a failed check, so an
+    operator cannot read a clean doctor and keep the wrong zone.
+    """
+    try:
+        configured = configured_timezone_name(timezone_from_environment(environment))
+    except ConfigError as exc:
+        return CheckResult('timezone', 'fail', f'configured timezone is invalid: {exc}')
+
+    if not serial:
+        return CheckResult(
+            'timezone',
+            'skipped',
+            f'configured {configured}; device timezone skipped (AECOINS_DEVICE is not set)',
+        )
+
+    check = compare_timezone(configured, read_device_timezone(serial, runner=run))
+    if check.matches:
+        return CheckResult('timezone', 'ok', f'{check.message()} ({serial})')
+    return CheckResult('timezone', 'fail', f'{check.message()} ({serial})')
+
+
 def _load_ocr() -> str:
     """Initialise RapidOCR and read a generated probe image.
 
@@ -199,6 +238,7 @@ def run_doctor(
         check_adb(which=which, run=run),
         check_device(serial, run=run),
         check_geometry(serial, run=run),
+        check_timezone(environment, serial, run=run),
         check_ocr(load=load_ocr),
     )
     for result in results:
