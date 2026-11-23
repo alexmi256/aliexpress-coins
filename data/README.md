@@ -31,9 +31,19 @@ when the options change, the result page replaces it.
 ```
 
 `question` is the raw OCR text a human reads; `key` and `normalized` are derived
-from it (case-folded, punctuation-stripped, whitespace-collapsed, with `l`/`1`
-and `o`/`0` folded together so OCR noise does not create duplicates). Entries
-are sorted by `key`, and replaying an unchanged observation does not rewrite the
+from it and are never displayed. The derivation, in order: NFKC, case-fold, fold
+the digit-confusables **towards the digit** (`l`→`1`, `o`→`0`), strip punctuation,
+collapse whitespace. `key` is the SHA-256 of `normalized`.
+
+The fold direction is worth stating plainly, because it is what makes the example
+above look corrupted when it is not: a clean `following` normalises to
+`f0110wing`, exactly as an OCR'd `f0110wing` does. That is the point — one entry,
+however the glyph was read, instead of a new entry on every visit. The cost is
+that strings differing only by `l`/`1` or `o`/`0` collapse together; `match_option`
+shares the same normalisation, so an option set containing both `10` and `lO`
+cannot be distinguished (no such set has been observed on this surface).
+
+Entries are sorted by `key`, and replaying an unchanged observation does not rewrite the
 file. Questions and options only: no account data belongs here.
 
 ## Container persistence
