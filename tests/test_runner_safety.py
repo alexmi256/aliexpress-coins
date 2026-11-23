@@ -437,6 +437,22 @@ def test_the_coin_pages_own_redeem_entry_is_not_a_live_control_during_a_task() -
     assert [box.text for box in find_dangerous_controls(_snapshot(_box('Redeem', 940, 340, 1100, 380)))] == ['Redeem']
 
 
+def test_a_lone_redeem_row_on_the_coin_page_is_still_exempt() -> None:
+    guard = _guard()
+    page = _snapshot(
+        _box('Coins', 100, 220, 300, 280),
+        _box('52', 100, 400, 260, 460),
+        _box('Coins credits to redeem >', 100, 330, 700, 380),
+        _box('Redeem', 940, 700, 1100, 760),
+        _box('Daily coins', 100, 900, 500, 950),
+    )
+
+    with guard.task('Daily coins'):
+        guard.inspect(page)
+
+    assert find_dangerous_controls(page) == ()
+
+
 def test_a_refused_task_row_on_the_list_is_not_a_live_purchase_control() -> None:
     guard = _guard()
     boost_list = _snapshot(
@@ -514,6 +530,21 @@ def test_the_known_surprise_product_detail_does_not_abort_for_its_two_buttons() 
         guard.inspect(detail)
 
     assert guard.task_running is False
+
+
+def test_the_product_detail_suffixed_purchase_captions_are_exempt() -> None:
+    guard = _guard()
+    detail = _snapshot(
+        _box('Item 1/3', 500, 120, 700, 170),
+        _box('Wireless Earbuds', 60, 300, 600, 350),
+        _box('Add to cart C$12.99', 60, 1800, 400, 1860),
+        _box('Buy now C$12.99', 500, 1800, 900, 1860),
+    )
+
+    with guard.task('Browse surprise items'):
+        guard.inspect(detail)
+
+    assert find_dangerous_controls(detail) == ()
 
 
 def test_a_real_spending_control_on_a_product_detail_still_aborts() -> None:
@@ -615,11 +646,26 @@ def test_empty_or_zero_height_text_is_not_a_control() -> None:
 
 def test_a_display_headline_is_not_a_caption_sized_control() -> None:
     frame = _snapshot(
-        _box('Wireless Earbuds', 60, 300, 600, 350),
-        _box('Buy now', 100, 500, 1100, 700),
+        _box('Item one', 60, 300, 600, 350),
+        _box('Item two', 60, 360, 600, 410),
+        _box('Item three', 60, 420, 600, 470),
+        _box('Item four', 60, 480, 600, 530),
+        _box('Buy now', 100, 900, 1100, 1400),
     )
 
     assert find_dangerous_controls(frame) == ()
+
+
+def test_a_prominent_caption_on_small_body_text_is_still_a_control() -> None:
+    frame = _snapshot(
+        _box('Item one', 60, 300, 600, 320),
+        _box('Item two', 60, 360, 600, 380),
+        _box('Item three', 60, 420, 600, 440),
+        _box('Item four', 60, 480, 600, 500),
+        _box('Buy now', 100, 1000, 1100, 1100),
+    )
+
+    assert [box.text for box in find_dangerous_controls(frame)] == ['Buy now']
 
 
 def test_the_product_detail_split_add_to_cart_caption_is_exempt() -> None:

@@ -95,12 +95,13 @@ and ``orders`` are destinations or row titles, not actions, so they are
 deliberately absent.
 """
 
-_CONTROL_MAX_HEIGHT_RATIO = 1.5
+_CONTROL_MAX_HEIGHT_RATIO = 5.0
 """A control caption's box is no taller than this multiple of the median text box.
 
-The height bound keeps a large headline from becoming a button merely because
-it contains an action phrase; it is derived from the frame's own text, not a
-stored pixel size.
+The bound only rejects display-scale text. A prominent CTA can be several times
+the body size on a small-print page (a 100 px caption beside 20 px text is 5x),
+while a headline an order of magnitude taller is not a tappable caption. The
+scale comes from the frame's own text, never a stored pixel size.
 """
 
 _CONTROL_SUFFIX = re.compile(r'(?:[·•|:~-]\s*)?(?:\(\s*\d+\s*\)?|(?:c\$|us\s*\$|\$|cs)\s*\d[\d.,]*)')
@@ -368,11 +369,10 @@ def find_dangerous_controls(
         text = normalize(box.text)
         if not text:
             continue
-        if text == _COIN_REDEEM_LABEL and _is_coin_page(snapshot):
+        caption = _control_caption(text)
+        if caption is None or not _is_control_box(box, median_height):
             continue
-        if not _is_control_box(box, median_height) or not _is_action_caption(text):
-            continue
-        if product_detail and text in _PRODUCT_DETAIL_SAFE:
+        if _is_exempt_caption(snapshot, caption, product_detail=product_detail):
             continue
         found.append(box)
         found_ids.add(id(box))
@@ -393,18 +393,16 @@ def find_dangerous_controls(
         )
         if candidate is None or not _is_control_box(candidate, median_height):
             continue
-        text = normalize(row.text)
-        if not text or not _is_action_caption(text):
-            continue
-        if product_detail and text in _PRODUCT_DETAIL_SAFE:
+        caption = _control_caption(normalize(row.text))
+        if caption is None or _is_exempt_caption(snapshot, caption, product_detail=product_detail):
             continue
         found.append(candidate)
 
     return tuple(found)
 
 
-def _is_action_caption(text: str) -> bool:
-    """Whether the whole normalised line is an action caption plus bounded suffix.
+def _control_caption(text: str) -> str | None:
+    """The action caption matched by the whole normalised line, if any.
 
     The caption must match a :data:`DANGEROUS_WORDS` entry from the start; the
     only permitted remainder is a price, a count, or their separator. A sentence
@@ -412,12 +410,19 @@ def _is_action_caption(text: str) -> bool:
     """
     for caption in DANGEROUS_WORDS:
         if text == caption:
-            return True
+            return caption
         if text.startswith(f'{caption} '):
             remainder = text[len(caption) + 1 :].strip()
             if remainder and _CONTROL_SUFFIX.fullmatch(remainder):
-                return True
-    return False
+                return caption
+    return None
+
+
+def _is_exempt_caption(snapshot: Snapshot, caption: str, *, product_detail: bool) -> bool:
+    """Apply the coin-page redeem and known product-detail exemptions."""
+    if caption == _COIN_REDEEM_LABEL and _is_coin_page(snapshot):
+        return True
+    return product_detail and caption in _PRODUCT_DETAIL_SAFE
 
 
 def _median_text_height(snapshot: Snapshot) -> float | None:
