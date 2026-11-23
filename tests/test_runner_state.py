@@ -25,6 +25,8 @@ from aliexpress_coins.runner.state import (
     LOGGER_NAME,
     DailySnapshot,
     DailyStateStore,
+    NightOutcome,
+    NightRecord,
 )
 
 DAY = date(2026, 11, 21)
@@ -104,6 +106,8 @@ def test_a_missing_day_starts_empty_and_creates_the_directory(tmp_path: Path) ->
         'run_count': 0,
         'last_run_at': None,
         'completed_night': False,
+        'acted_unverified': [],
+        'last_night': None,
     }
     assert store.count('daily_checkin') == 0
     assert store.done_today('daily_checkin') is False
@@ -128,6 +132,8 @@ def test_record_counts_a_task_and_writes_plain_json(tmp_path: Path) -> None:
         'run_count': 0,
         'last_run_at': None,
         'completed_night': False,
+        'acted_unverified': [],
+        'last_night': None,
     }
     assert store.path.read_text(encoding='utf-8').endswith('\n')
     assert [item.name for item in tmp_path.iterdir()] == ['daily-2026-11-21.json']
@@ -169,15 +175,49 @@ def test_begin_run_counts_runs_and_stamps_the_start(tmp_path: Path) -> None:
     assert _store(tmp_path, clock=clock).snapshot().last_run_at == later
 
 
-def test_complete_night_is_the_schedulers_skip_flag_and_survives_a_restart(tmp_path: Path) -> None:
+def test_an_exhausted_night_is_the_schedulers_skip_flag_and_survives_a_restart(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.begin_run(at=NOW)
     assert store.snapshot().completed_night is False
 
-    store.complete_night()
+    record = NightRecord(NightOutcome.EXHAUSTED, dispatched=3, completed=1, retryable_failures=0)
+    store.record_night(record)
 
-    assert store.snapshot().completed_night is True
-    assert _store(tmp_path).snapshot().completed_night is True
+    snapshot = store.snapshot()
+    assert snapshot.completed_night is True
+    assert snapshot.last_night == record
+    assert _store(tmp_path).snapshot() == snapshot
+
+
+def test_a_retryable_failure_leaves_the_day_open_and_records_the_decision(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    record = NightRecord(NightOutcome.RETRYABLE_FAILURES, dispatched=3, completed=0, retryable_failures=3)
+
+    store.record_night(record)
+
+    snapshot = store.snapshot()
+    assert snapshot.completed_night is False
+    assert snapshot.last_night == record
+    assert snapshot.last_night is not None
+    assert snapshot.as_dict()['last_night'] == {
+        'outcome': 'retryable_failures',
+        'dispatched': 3,
+        'completed': 0,
+        'retryable_failures': 3,
+    }
+    assert _store(tmp_path).snapshot().completed_night is False
+
+
+def test_a_later_retryable_night_reopens_a_finished_day(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.record_night(NightRecord(NightOutcome.EXHAUSTED, dispatched=1, completed=1))
+    later = NightRecord(NightOutcome.RETRYABLE_FAILURES, dispatched=1, completed=0, retryable_failures=1)
+
+    store.record_night(later)
+
+    snapshot = store.snapshot()
+    assert snapshot.completed_night is False
+    assert snapshot.last_night == later
 
 
 def test_reload_replaces_a_cached_snapshot_written_by_another_store(tmp_path: Path) -> None:
@@ -185,21 +225,81 @@ def test_reload_replaces_a_cached_snapshot_written_by_another_store(tmp_path: Pa
     other = _store(tmp_path)
     assert waiter.snapshot().completed_night is False
 
-    other.complete_night()
+    other.record_night(NightRecord(NightOutcome.EXHAUSTED, dispatched=1, completed=1))
 
     assert waiter.snapshot().completed_night is False
     waiter.reload()
     assert waiter.snapshot().completed_night is True
 
 
-def test_an_old_state_file_without_the_night_flag_still_loads(tmp_path: Path) -> None:
+def test_an_old_state_file_without_the_night_flags_still_loads(tmp_path: Path) -> None:
     payload = _valid_payload()
     payload.pop('completed_night')
+    payload.pop('last_night', None)
     _write_json(_path(tmp_path), payload)
 
     snapshot = _store(tmp_path).snapshot()
 
     assert snapshot.completed_night is False
+    assert snapshot.last_night is None
+
+
+def test_a_state_file_records_a_retryable_night(tmp_path: Path) -> None:
+    payload = _valid_payload()
+    payload['last_night'] = {
+        'outcome': 'retryable_failures',
+        'dispatched': 3,
+        'completed': 0,
+        'retryable_failures': 3,
+    }
+    _write_json(_path(tmp_path), payload)
+
+    snapshot = _store(tmp_path).snapshot()
+
+    assert snapshot.last_night == NightRecord(
+        NightOutcome.RETRYABLE_FAILURES,
+        dispatched=3,
+        completed=0,
+        retryable_failures=3,
+    )
+
+
+def test_acted_unverified_markers_survive_a_restart_and_clear(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+
+    assert store.is_acted_unverified('boost_checkin') is False
+    store.mark_acted_unverified('boost_checkin')
+    store.mark_acted_unverified('boost_checkin')
+
+    assert store.snapshot().acted_unverified == ('boost_checkin',)
+    assert _store(tmp_path).is_acted_unverified('boost_checkin') is True
+
+    store.clear_acted_unverified('boost_checkin')
+    store.clear_acted_unverified('boost_checkin')
+
+    assert store.snapshot().acted_unverified == ()
+    assert _store(tmp_path).snapshot().acted_unverified == ()
+
+
+def test_an_old_state_file_without_acted_markers_still_loads(tmp_path: Path) -> None:
+    payload = _valid_payload()
+    payload.pop('acted_unverified', None)
+    _write_json(_path(tmp_path), payload)
+
+    snapshot = _store(tmp_path).snapshot()
+
+    assert snapshot.acted_unverified == ()
+
+
+def test_a_state_file_records_acted_unverified_tasks(tmp_path: Path) -> None:
+    payload = _valid_payload()
+    payload['acted_unverified'] = ['boost_checkin', 'coins_quiz']
+    _write_json(_path(tmp_path), payload)
+
+    snapshot = _store(tmp_path).snapshot()
+
+    assert snapshot.acted_unverified == ('boost_checkin', 'coins_quiz')
+    assert snapshot.as_dict()['acted_unverified'] == ['boost_checkin', 'coins_quiz']
 
 
 def test_record_carries_the_last_balance_without_clobbering_it(tmp_path: Path) -> None:
@@ -366,6 +466,8 @@ def test_snapshot_gives_the_report_the_whole_day(tmp_path: Path) -> None:
         'run_count': 1,
         'last_run_at': NOW.isoformat(),
         'completed_night': False,
+        'acted_unverified': [],
+        'last_night': None,
     }
 
 
@@ -493,6 +595,40 @@ def test_a_corrupt_file_is_quarantined_and_the_day_starts_fresh(
         (lambda payload: payload.__setitem__('last_run_at', 5), 'ISO timestamp or null'),
         (lambda payload: payload.__setitem__('last_run_at', 'yesterday'), 'is not an ISO timestamp'),
         (lambda payload: payload.__setitem__('completed_night', 'yes'), 'must be a boolean'),
+        (lambda payload: payload.__setitem__('acted_unverified', 'boost_checkin'), 'must be a JSON array'),
+        (lambda payload: payload.__setitem__('acted_unverified', [5]), 'entries must be strings'),
+        (lambda payload: payload.__setitem__('acted_unverified', [' boost_checkin']), 'surrounding whitespace'),
+        (lambda payload: payload.__setitem__('acted_unverified', ['boost_checkin', 'boost_checkin']), 'duplicate'),
+        (lambda payload: payload.__setitem__('last_night', 5), 'must be a JSON object or null'),
+        (
+            lambda payload: payload.__setitem__('last_night', {'outcome': 'maybe'}),
+            'is not a known outcome',
+        ),
+        (
+            lambda payload: payload.__setitem__('last_night', {'outcome': 5}),
+            "last_night.outcome' must be a string",
+        ),
+        (
+            lambda payload: payload.__setitem__(
+                'last_night',
+                {'outcome': 'exhausted', 'dispatched': -1, 'completed': 0, 'retryable_failures': 0},
+            ),
+            "last_night.dispatched' must be a non-negative integer",
+        ),
+        (
+            lambda payload: payload.__setitem__(
+                'last_night',
+                {'outcome': 'exhausted', 'dispatched': 1, 'completed': True, 'retryable_failures': 0},
+            ),
+            "last_night.completed' must be a non-negative integer",
+        ),
+        (
+            lambda payload: payload.__setitem__(
+                'last_night',
+                {'outcome': 'exhausted', 'dispatched': 1, 'completed': 1},
+            ),
+            "missing field 'retryable_failures'",
+        ),
     ],
 )
 def test_a_malformed_state_file_resets_without_raising(

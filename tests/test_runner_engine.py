@@ -12,7 +12,7 @@ import logging
 import random
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from http.client import HTTPMessage
 from pathlib import Path
@@ -47,9 +47,9 @@ from aliexpress_coins.runner.errors import (
 )
 from aliexpress_coins.runner.failures import FailureCode, failure
 from aliexpress_coins.runner.notify import AppriseSink, Notification, NotificationSink, WebhookSink
-from aliexpress_coins.runner.report import RunEventLog, RunReport, RunStatus
+from aliexpress_coins.runner.report import RunEventLog, RunReport, RunStatus, TaskRecord
 from aliexpress_coins.runner.safety import AbortCode, RunAborted, ScreenReport
-from aliexpress_coins.runner.state import DailyStateStore
+from aliexpress_coins.runner.state import DailyStateStore, NightOutcome
 from aliexpress_coins.tasks import notifications as notifications_module
 from aliexpress_coins.tasks.browse import ReturnResult
 from aliexpress_coins.tasks.catalogue import TaskCatalogue, TaskCategory, load_task_catalogue
@@ -678,6 +678,11 @@ def test_an_executor_exception_is_a_failed_task_not_a_lost_night(
     assert report.tasks[0].outcome == 'failed'
     assert 'RuntimeError: executor broke' in report.tasks[0].detail
     assert report.ok is True
+    assert context.state.snapshot().completed_night is False
+    night = context.state.snapshot().last_night
+    assert night is not None
+    assert night.outcome is NightOutcome.RETRYABLE_FAILURES
+    assert night.retryable_failures == 1
 
 
 def test_a_run_level_failure_still_writes_a_parseable_report(
@@ -777,7 +782,11 @@ def test_a_controller_factory_is_used_after_the_first_frame(
 
     assert report.status is RunStatus.COMPLETED
     assert created == [frame]
-    assert context.state.snapshot().completed_night is True
+    snapshot = context.state.snapshot()
+    assert snapshot.completed_night is True
+    assert snapshot.last_night is not None
+    assert snapshot.last_night.outcome is NightOutcome.EXHAUSTED
+    assert report.night == snapshot.last_night.as_dict()
     assert isinstance(context.hygiene, _Hygiene)
     assert context.hygiene.restored == 1
 
@@ -2691,15 +2700,22 @@ def test_state_completion_failure_does_not_fail_a_finished_run(
         corpus=corpus,
     )
 
-    def broken_complete() -> None:
+    def broken_complete(_night: object) -> None:
         raise OSError('state volume read-only')
 
-    monkeypatch.setattr(context.state, 'complete_night', broken_complete)
+    monkeypatch.setattr(context.state, 'record_night', broken_complete)
 
     report = engine.run_once(context)
 
     assert report.status is RunStatus.COMPLETED
     assert report.ok is True
+    # The state write failed, so neither the report nor its summary may claim
+    # the day was completed; the warning and event log carry the failure.
+    assert report.night is None
+    assert '**Night:**' not in report.summary_path.read_text(encoding='utf-8')
+    events = _events(report)
+    assert any(event['event'] == 'state_complete_failed' for event in events)
+    assert not any(event['event'] == 'night_decided' for event in events)
 
 
 @pytest.mark.slow
@@ -4027,7 +4043,593 @@ def test_an_unverified_task_that_stays_unverified_is_reported_and_the_walk_conti
     assert report.status is RunStatus.COMPLETED
     assert report.ok is True
     assert report.tasks[0].code == FailureCode.TASK_UNVERIFIED.value
-    assert 'task_unverified' in report.summary_path.read_text(encoding='utf-8')
+    summary = report.summary_path.read_text(encoding='utf-8')
+    assert 'task_unverified' in summary
+    assert '**Night:** open' in summary
+    assert context.state.snapshot().completed_night is False
+
+
+@pytest.mark.slow
+def test_all_retryable_failures_leave_the_night_open_for_a_later_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    frame = _boost_frame('coins_quiz')
+    _surface(monkeypatch, roster, frame)
+    now = [CAPTURED_AT]
+    first = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    first.wall_clock = lambda: now[0]
+    attempts: list[str] = []
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        attempts.append(entry.key or '')
+        if len(attempts) == 1:
+            return EngineResult(
+                'failed',
+                'question_not_arrived',
+                'the quiz question never arrived',
+                False,
+                {'key': entry.key},
+                failure=failure(FailureCode.TASK_UNVERIFIED, detail='question_not_arrived'),
+                acted=True,
+            )
+        _context.state.record(entry.key or '')
+        return EngineResult('completed', 'progress_badge', 'the row moved', True, {'key': entry.key})
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    first_report = engine.run_once(first)
+
+    snapshot = first.state.snapshot()
+    assert first_report.status is RunStatus.COMPLETED
+    assert first_report.tasks[0].completed is False
+    assert snapshot.completed_night is False
+    assert snapshot.acted_unverified == ('coins_quiz',)
+    assert snapshot.last_night is not None
+    assert snapshot.last_night.outcome is NightOutcome.RETRYABLE_FAILURES
+    assert snapshot.last_night.dispatched == 1
+    assert snapshot.last_night.completed == 0
+    assert snapshot.last_night.retryable_failures == 1
+    summary = first_report.summary_path.read_text(encoding='utf-8')
+    assert '**Night:** open' in summary
+    assert '1 retryable task failure(s) of 1 dispatch(es) remain' in summary
+
+    # The same local day, a later run: the day is still open, so it dispatches
+    # the row again instead of treating the failed night as finished.
+    now[0] = CAPTURED_AT + timedelta(minutes=5)
+    second = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    second.wall_clock = lambda: now[0]
+
+    second_report = engine.run_once(second)
+
+    assert len(attempts) == 2
+    assert second_report.tasks[0].completed is True
+    final = second.state.snapshot()
+    assert final.completed_night is True
+    assert final.acted_unverified == ()
+    assert final.last_night is not None
+    assert final.last_night.outcome is NightOutcome.EXHAUSTED
+    assert '**Night:** complete' in second_report.summary_path.read_text(encoding='utf-8')
+
+
+@pytest.mark.slow
+def test_a_cross_run_acted_failure_rechecks_before_tapping(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    frame = _boost_frame('coins_quiz')
+    _surface(monkeypatch, roster, frame)
+    now = [CAPTURED_AT]
+    first = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    first.wall_clock = lambda: now[0]
+
+    def fail_acted(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        return EngineResult(
+            'failed',
+            'no_observation',
+            'the row was tapped but no fresh frame proved it',
+            False,
+            {'key': entry.key},
+            failure=failure(FailureCode.TASK_UNVERIFIED, detail='no_observation'),
+            acted=True,
+        )
+
+    monkeypatch.setattr(engine, '_dispatch_entry', fail_acted)
+    engine.run_once(first)
+
+    snapshot = first.state.snapshot()
+    assert snapshot.completed_night is False
+    assert snapshot.acted_unverified == ('coins_quiz',)
+
+    # A later run starts from a claimable roster, but the dispatch-time
+    # re-check reads a complete boost list without the quiz row.
+    now[0] = CAPTURED_AT + timedelta(minutes=5)
+    second = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    second.wall_clock = lambda: now[0]
+    dispatches: list[str] = []
+
+    def must_not_dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        dispatches.append(entry.key or '')
+        raise AssertionError('the claimed row must not be dispatched')
+
+    monkeypatch.setattr(engine, '_dispatch_entry', must_not_dispatch)
+    recheck_frames = [_boost_frame('coins_quiz'), _boost_frame('notifications')]
+    opens: list[int] = []
+
+    def open_boost(*args: Any, **kwargs: Any) -> BoostList:
+        snapshot_frame = recheck_frames[min(len(opens), len(recheck_frames) - 1)]
+        opens.append(1)
+        return BoostList(snapshot=snapshot_frame, route=DiscoveryRoute.BOOST, detail='test')
+
+    monkeypatch.setattr(engine, 'open_boost_list', open_boost)
+
+    report = engine.run_once(second)
+
+    assert dispatches == []
+    assert len(opens) >= 2
+    assert report.tasks[0].outcome == 'skipped'
+    assert report.tasks[0].verification == 'already_done'
+    final = second.state.snapshot()
+    assert final.acted_unverified == ('coins_quiz',)
+    assert final.completed_night is True
+    assert '**Night:** complete' in report.summary_path.read_text(encoding='utf-8')
+
+
+@pytest.mark.slow
+def test_a_proven_acted_row_stays_marked_so_a_third_run_rechecks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    wanted = _entry(full_roster, 'coins_quiz')
+    roster = replace(full_roster, entries=(wanted,))
+    frame = _boost_frame('coins_quiz')
+    _surface(monkeypatch, roster, frame)
+    now = [CAPTURED_AT]
+
+    def fail_acted(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        return EngineResult(
+            'failed',
+            'no_observation',
+            'the row was tapped but no fresh frame proved it',
+            False,
+            {'key': entry.key},
+            failure=failure(FailureCode.TASK_UNVERIFIED, detail='no_observation'),
+            acted=True,
+        )
+
+    monkeypatch.setattr(engine, '_dispatch_entry', fail_acted)
+    first = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    first.wall_clock = lambda: now[0]
+
+    first_report = engine.run_once(first)
+    assert first_report.tasks[0].code == FailureCode.TASK_UNVERIFIED.value
+    assert first.state.snapshot().acted_unverified == ('coins_quiz',)
+
+    dispatches: list[str] = []
+
+    def must_not_dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        dispatches.append(entry.key or '')
+        raise AssertionError('the proven-already-done row must not be dispatched')
+
+    monkeypatch.setattr(engine, '_dispatch_entry', must_not_dispatch)
+    base = _boost_frame('coins_quiz')
+    complete = replace(base, boxes=(*base.boxes, _box('6/6', 700, 280, 760, 320)))
+    opens: list[int] = []
+
+    def open_boost(*args: Any, **kwargs: Any) -> BoostList:
+        snapshot_frame = base if len(opens) % 2 == 0 else complete
+        opens.append(1)
+        return BoostList(snapshot=snapshot_frame, route=DiscoveryRoute.BOOST, detail='test')
+
+    monkeypatch.setattr(engine, 'open_boost_list', open_boost)
+
+    now[0] = CAPTURED_AT + timedelta(minutes=5)
+    second = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    second.wall_clock = lambda: now[0]
+
+    second_report = engine.run_once(second)
+
+    assert dispatches == []
+    assert second.state.snapshot().acted_unverified == ('coins_quiz',)
+    assert second_report.tasks[0].verification == 'already_done'
+
+    now[0] = CAPTURED_AT + timedelta(minutes=10)
+    third = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    third.wall_clock = lambda: now[0]
+
+    third_report = engine.run_once(third)
+
+    assert dispatches == []
+    assert third.state.snapshot().acted_unverified == ('coins_quiz',)
+    assert third_report.tasks[0].verification == 'already_done'
+
+
+@pytest.mark.slow
+def test_an_unreadable_acted_recheck_stays_retryable_without_tapping(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    frame = _boost_frame('coins_quiz')
+    _surface(monkeypatch, roster, frame)
+    now = [CAPTURED_AT]
+    first = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    first.wall_clock = lambda: now[0]
+
+    def fail_acted(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        return EngineResult(
+            'failed',
+            'no_observation',
+            'the row was tapped but no fresh frame proved it',
+            False,
+            {'key': entry.key},
+            failure=failure(FailureCode.TASK_UNVERIFIED, detail='no_observation'),
+            acted=True,
+        )
+
+    monkeypatch.setattr(engine, '_dispatch_entry', fail_acted)
+    engine.run_once(first)
+
+    now[0] = CAPTURED_AT + timedelta(minutes=5)
+    second = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    second.wall_clock = lambda: now[0]
+    dispatches: list[str] = []
+
+    def must_not_dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        dispatches.append(entry.key or '')
+        raise AssertionError('the unreadable row must not be dispatched')
+
+    monkeypatch.setattr(engine, '_dispatch_entry', must_not_dispatch)
+    recheck_frames = [_boost_frame('coins_quiz'), _coin_frame()]
+    opens: list[int] = []
+
+    def open_boost(*args: Any, **kwargs: Any) -> BoostList:
+        snapshot_frame = recheck_frames[min(len(opens), len(recheck_frames) - 1)]
+        opens.append(1)
+        route = DiscoveryRoute.BOOST if len(opens) == 1 else DiscoveryRoute.INLINE
+        return BoostList(snapshot=snapshot_frame, route=route, detail='test')
+
+    monkeypatch.setattr(engine, 'open_boost_list', open_boost)
+
+    report = engine.run_once(second)
+
+    assert dispatches == []
+    assert report.tasks[0].outcome == 'failed'
+    assert report.tasks[0].verification == 'acted_recheck_unavailable'
+    final = second.state.snapshot()
+    assert final.acted_unverified == ('coins_quiz',)
+    assert final.completed_night is False
+    assert '**Night:** open' in report.summary_path.read_text(encoding='utf-8')
+
+
+def test_an_acted_recheck_that_cannot_read_the_surface_is_not_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    frame = _boost_frame('coins_quiz')
+    context = _context(tmp_path, capture=_Capture(frame, _coin_frame()), catalogue=catalogue, corpus=corpus)
+    entry = _entry(full_roster, 'coins_quiz')
+
+    def broken(*args: Any, **kwargs: Any) -> BoostList:
+        raise StateTimeout('the boost page did not appear')
+
+    monkeypatch.setattr(engine, 'open_boost_list', broken)
+    caplog.set_level(logging.WARNING)
+    assert context.controller is not None
+
+    readable, fresh = engine._recheck_acted_row(context, context.controller, entry)
+
+    assert readable is False
+    assert fresh is None
+    assert 'acted_recheck_failed' in caplog.text
+
+
+@pytest.mark.parametrize('error', [RunInterrupted('stop requested'), AppLoggedOut('signed out')])
+def test_an_acted_recheck_re_raises_run_level_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    error: Exception,
+) -> None:
+    frame = _boost_frame('coins_quiz')
+    context = _context(tmp_path, capture=_Capture(frame, _coin_frame()), catalogue=catalogue, corpus=corpus)
+    entry = _entry(full_roster, 'coins_quiz')
+
+    def broken(*args: Any, **kwargs: Any) -> BoostList:
+        raise error
+
+    monkeypatch.setattr(engine, 'open_boost_list', broken)
+    assert context.controller is not None
+
+    with pytest.raises(type(error)):
+        engine._recheck_acted_row(context, context.controller, entry)
+
+
+def test_a_completed_progress_badge_makes_an_acted_row_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    base = _boost_frame('coins_quiz')
+    complete = replace(base, boxes=(*base.boxes, _box('6/6', 700, 280, 760, 320)))
+    context = _context(tmp_path, capture=_Capture(base, _coin_frame()), catalogue=catalogue, corpus=corpus)
+    entry = _entry(full_roster, 'coins_quiz')
+    monkeypatch.setattr(
+        engine,
+        'open_boost_list',
+        lambda *args, **kwargs: BoostList(snapshot=complete, route=DiscoveryRoute.BOOST, detail='test'),
+    )
+    assert context.controller is not None
+
+    readable, fresh = engine._recheck_acted_row(context, context.controller, entry)
+
+    assert readable is True
+    assert fresh is None
+
+
+def test_an_acted_failure_is_marked_before_a_signed_out_guard_stops_the_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    context = _context(
+        tmp_path,
+        capture=_Capture(_logged_out_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    entry = _entry(full_roster, 'coins_quiz')
+
+    def fail_acted(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        return EngineResult(
+            'failed',
+            'no_observation',
+            'the row acted but no fresh frame proved it',
+            False,
+            {'key': entry.key},
+            failure=failure(FailureCode.TASK_UNVERIFIED, detail='no_observation'),
+            acted=True,
+        )
+
+    monkeypatch.setattr(engine, '_dispatch_entry', fail_acted)
+    assert context.controller is not None
+
+    with pytest.raises(AppLoggedOut):
+        engine._dispatch_with_retry(context, context.controller, entry)
+
+    assert context.state.is_acted_unverified('coins_quiz') is True
+
+
+def test_acted_marker_write_failures_are_logged_without_failing_the_task(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    frame = _boost_frame('coins_quiz')
+    context = _context(tmp_path, capture=_Capture(frame, _coin_frame()), catalogue=catalogue, corpus=corpus)
+    entry = _entry(full_roster, 'coins_quiz')
+    result = EngineResult(
+        'failed',
+        'no_observation',
+        'the row was tapped but no fresh frame proved it',
+        False,
+        {'key': entry.key},
+        failure=failure(FailureCode.TASK_UNVERIFIED, detail='no_observation'),
+        acted=True,
+    )
+
+    def broken(_key: str) -> None:
+        raise OSError('state volume read-only')
+
+    monkeypatch.setattr(context.state, 'mark_acted_unverified', broken)
+    monkeypatch.setattr(context.state, 'clear_acted_unverified', broken)
+    caplog.set_level(logging.WARNING)
+
+    engine._remember_acted_result(context, entry, result)
+    engine._clear_acted_marker(context, 'coins_quiz')
+    engine._clear_acted_marker(context, None)
+
+    assert caplog.text.count('state_acted_marker_failed') == 2
+
+
+@pytest.mark.slow
+def test_a_mixed_night_with_one_retryable_failure_stays_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    """A completed row does not buy the day: the retryable row is still unclaimed work."""
+    wanted = ('coins_quiz', 'notifications')
+    roster = replace(full_roster, entries=tuple(_entry(full_roster, key) for key in wanted))
+    frame = _boost_frame(*wanted)
+    _surface(monkeypatch, roster, frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        if entry.key == 'coins_quiz':
+            _context.state.record(entry.key)
+            return EngineResult('completed', 'progress_badge', 'the row moved', True, {'key': entry.key})
+        return EngineResult(
+            'failed',
+            'no_observation',
+            'the notifications row was not observable',
+            False,
+            {'key': entry.key},
+            failure=failure(FailureCode.TASK_UNVERIFIED, detail='no_observation'),
+            acted=True,
+        )
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    snapshot = context.state.snapshot()
+    assert report.status is RunStatus.COMPLETED
+    assert [task.completed for task in report.tasks] == [True, False]
+    assert snapshot.completed_night is False
+    assert snapshot.last_night is not None
+    assert snapshot.last_night.outcome is NightOutcome.RETRYABLE_FAILURES
+    assert snapshot.last_night.dispatched == 2
+    assert snapshot.last_night.completed == 1
+    assert snapshot.last_night.retryable_failures == 1
+    summary = report.summary_path.read_text(encoding='utf-8')
+    assert '**Night:** open' in summary
+    assert '1 retryable task failure(s) of 2 dispatch(es) remain' in summary
+
+
+@pytest.mark.slow
+def test_a_night_with_only_terminal_outcomes_still_completes_the_day(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    frame = _boost_frame('coins_quiz')
+    _surface(monkeypatch, roster, frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        return EngineResult(
+            'unavailable',
+            'unavailable',
+            'the app reports the row is unavailable today',
+            False,
+            {'key': entry.key},
+        )
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    snapshot = context.state.snapshot()
+    assert report.status is RunStatus.COMPLETED
+    assert snapshot.completed_night is True
+    assert snapshot.last_night is not None
+    assert snapshot.last_night.outcome is NightOutcome.EXHAUSTED
+    assert snapshot.last_night.dispatched == 1
+    assert snapshot.last_night.completed == 0
+    assert snapshot.last_night.retryable_failures == 0
+    assert '**Night:** complete' in report.summary_path.read_text(encoding='utf-8')
+
+
+@pytest.mark.parametrize(
+    ('outcome', 'code', 'completed', 'expected'),
+    [
+        ('completed', None, True, False),
+        ('skipped', None, False, False),
+        ('unavailable', None, False, False),
+        ('failed', FailureCode.TASK_UNVERIFIED, False, True),
+        ('failed', FailureCode.NAVIGATION_FAILED, False, False),
+        ('failed', None, False, True),
+    ],
+)
+def test_retryable_task_failure_comes_from_the_taxonomy(
+    outcome: str,
+    code: FailureCode | None,
+    completed: bool,
+    expected: bool,
+) -> None:
+    record = TaskRecord(
+        title='Take the coins quiz',
+        key='coins_quiz',
+        category='quiz',
+        state=outcome,
+        outcome=outcome,
+        verification='test',
+        detail='test',
+        duration_seconds=0.0,
+        completed=completed,
+        result={},
+        failure=None if code is None else failure(code).as_dict(),
+    )
+
+    assert engine._retryable_task_failure(record) is expected
 
 
 @pytest.mark.slow
