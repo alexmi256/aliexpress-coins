@@ -809,6 +809,10 @@ def run_quiz_task(
             )
             go_back = find_go_back(current)
             if go_back is None:
+                if settle_from_last_result():
+                    # The result has already proved the submission; the
+                    # shortcut return can leave without the result-page control.
+                    break
                 return _finish_failed(
                     controller=controller,
                     capture=capture,

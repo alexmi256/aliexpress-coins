@@ -2216,16 +2216,21 @@ def test_run_quiz_task_fails_when_the_result_never_arrives(
     assert len(result.taps) == 2  # GO and the answer; nothing else was tapped
 
 
-def test_run_quiz_task_fails_when_go_back_is_missing(
+def test_run_quiz_task_fails_when_an_unreadable_result_has_no_go_back(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
     tmp_path: Path,
 ) -> None:
+    unreadable = _snapshot(
+        _box('Correct answer:', 60, 400, 700, 450),
+        _box('Your answer:', 60, 520, 700, 570),
+        _box('You got +6', 60, 700, 500, 760),
+    )
     world = _World(
         series={
             'boost': (_quiz_boost_frame(),),
             'question': (_question_frame(),),
-            'result': (_result_frame(go_back=False),),
+            'result': (unreadable,),
             'coins': (_coins_frame(),),
         },
         transitions={
@@ -2252,6 +2257,44 @@ def test_run_quiz_task_fails_when_go_back_is_missing(
 
     assert result.outcome is QuizOutcome.FAILED
     assert result.verification == 'go_back_not_found'
+
+
+@pytest.mark.slow
+def test_run_quiz_task_completes_a_readable_result_without_go_back(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """A submitted answer is proved by the result page; a missing control does not undo it."""
+    world = _success_world(
+        result_frame=_result_frame(go_back=False),
+        after_with_row=True,
+        after_action='GO',
+    )
+    state = _state(tmp_path)
+
+    result = run_quiz_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        state,
+        _entry(catalogue),
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        exit_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+        rng=random.Random(3),
+    )
+
+    assert result.outcome is QuizOutcome.COMPLETED
+    assert result.verification == 'result_page'
+    assert result.recorded is True
+    assert result.correct == 'True'
+    assert [tap.label for tap in result.taps] == ['GO', 'True']
+    assert state.count('coins_quiz') == 1
 
 
 @pytest.mark.slow
