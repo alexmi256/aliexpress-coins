@@ -131,7 +131,7 @@ All quality gates passed.
 ```
 
 The **branch tree** adds the timezone refusal, its tests, the stability log and the runbook
-additions, so the suite is 1614 tests. The exact clean-clone transcript and the commit it came
+additions, so the suite is 1615 tests. The exact clean-clone transcript and the commit it came
 from are in §13; the timed onboarding path is in §2.1.
 
 `just check` is the gate: ruff lint, ruff format check, mypy strict over `src/` and `tests/`, then
@@ -699,7 +699,7 @@ Successfully installed aliexpress-coins-0.1.0
 $ just check
 ...
 Required test coverage of 99.42% reached. Total coverage: 99.43%
-======================= 1614 passed in 191.98s (0:03:11) =======================
+======================= 1615 passed in 184.23s (0:03:04) =======================
 All quality gates passed.
 ```
 

@@ -368,6 +368,34 @@ def test_the_scheduler_checks_the_zone_again_before_the_night(
     assert 'device timezone America/Toronto' in refusals[0]
 
 
+def test_the_pre_night_check_bounds_the_default_reader(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    report = _report(tmp_path)
+    seen: list[float] = []
+
+    def fake_reader(serial: str, *, timeout: float = 10.0) -> str | None:
+        del serial
+        seen.append(timeout)
+        return 'UTC'
+
+    monkeypatch.setattr(cli, 'read_device_timezone', fake_reader)
+    monkeypatch.setattr(cli, 'make_live_context', lambda config, stop, wall_clock: object())
+    monkeypatch.setattr(cli, 'run_once', lambda context: report)
+    monkeypatch.setattr(cli, '_install_stop_handlers', lambda stop: None)
+    monkeypatch.setattr(cli, '_restore_stop_handlers', lambda: None)
+
+    def fake_schedule(config: Any, *, run_night: Any, state: Any, clock: Any, stop: Any) -> int:
+        assert run_night() is report
+        return 0
+
+    monkeypatch.setattr(cli, 'run_schedule', fake_schedule)
+
+    assert cli.run_schedule_command({'AECOINS_DEVICE': 'tablet', 'AECOINS_TIMEZONE': 'UTC'}) == 0
+    assert seen == [10.0, 2.0]
+
+
 def test_a_manual_run_warns_but_continues_on_a_timezone_mismatch(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

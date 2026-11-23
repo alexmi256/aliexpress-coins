@@ -11,6 +11,7 @@ import threading
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
+from functools import partial
 from types import FrameType
 from typing import Any
 
@@ -25,10 +26,13 @@ from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.runner.timezone import (
     DeviceTimezoneReader,
     TimezoneCheck,
+    read_device_timezone,
     timezone_check_from_environment,
 )
 
 LOGGER_NAME = 'aliexpress_coins.cli'
+PRE_NIGHT_TIMEZONE_TIMEOUT_SECONDS = 2.0
+"""Bound the pre-night adb probes inside Compose's five-second stop grace."""
 
 
 def run_idle() -> int:
@@ -153,7 +157,14 @@ def run_schedule_command(
             # second check is the fail-closed one: it runs immediately before
             # the walk, so a mismatch or an unreadable zone refuses that night
             # with a clear reason while the daemon survives for tomorrow.
-            _refuse_bad_timezone(_timezone_check(environment, config.device, device_timezone))
+            _refuse_bad_timezone(
+                _timezone_check(
+                    environment,
+                    config.device,
+                    device_timezone,
+                    timeout=PRE_NIGHT_TIMEZONE_TIMEOUT_SECONDS,
+                ),
+            )
             context = make_live_context(config, stop=stop, wall_clock=wall_clock)
             return run_once(context)
 
@@ -200,9 +211,12 @@ def _timezone_check(
     environment: Mapping[str, str] | None,
     device: str | None,
     reader: DeviceTimezoneReader | None,
+    *,
+    timeout: float = 10.0,
 ) -> TimezoneCheck | None:
     env = os.environ if environment is None else environment
-    return timezone_check_from_environment(env, device, reader=reader)
+    effective_reader = reader if reader is not None else partial(read_device_timezone, timeout=timeout)
+    return timezone_check_from_environment(env, device, reader=effective_reader)
 
 
 def _warn_timezone(check: TimezoneCheck | None) -> None:

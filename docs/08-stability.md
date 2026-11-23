@@ -61,5 +61,14 @@ Never rewrite an earlier row. A correction is a new note on the same row plus a 
 that explains it. A run with no report is recorded as `no report` with its directory, because a
 night that left no artifact is itself a stability fact. If a run directory exists but its
 `run.json` cannot be read, put the row in with `unknown` in the fields it cannot supply and the
-read error in Notes; quietly omitting it is not allowed. Two consecutive weeks of rows is #41's
-criterion; this issue supplies the ledger, not the evidence.
+read error in Notes; quietly omitting it is not allowed.
+
+A night refused **before the walk** — for example the fire-time timezone check — has no run
+directory. It still gets a row: date is the scheduled fire's local date, outcome is `refused`,
+tasks completed is `0`, abort condition is `timezone_refusal` (or the named refusal), run directory
+is `—`, and Notes carries the `schedule_error` detail including both zones. The preceding
+`schedule_start` line gives the fire time and the `schedule_error` line gives the refusal. Do not
+treat a refused night as a missing row; #41 counts the nights it was actually asked to run.
+
+Two consecutive weeks of rows is #41's criterion; this issue supplies the ledger, not the
+evidence.
