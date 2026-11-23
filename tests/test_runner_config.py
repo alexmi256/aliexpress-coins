@@ -7,6 +7,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pytest
+import tzlocal
 
 from aliexpress_coins.runner.config import (
     DEFAULT_APP_SETTLE_SECONDS,
@@ -124,6 +125,16 @@ def test_apprise_accepts_the_unprefixed_names_and_prefers_the_project_prefix() -
         },
     )
     assert prefixed.apprise_url == 'https://apprise.example'
+
+
+def test_a_missing_system_zone_is_a_configuration_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def broken() -> ZoneInfo:
+        raise RuntimeError('no system zone')
+
+    monkeypatch.setattr(tzlocal, 'get_localzone', broken)
+
+    with pytest.raises(ConfigError, match='local timezone could not be determined'):
+        RunConfig.from_environment({})
 
 
 def test_tz_is_used_when_the_explicit_timezone_is_absent() -> None:

@@ -35,6 +35,7 @@ __all__ = [
     'DEFAULT_SETTLE_SECONDS',
     'DEFAULT_STATE_DIR',
     'RunConfig',
+    'timezone_from_environment',
 ]
 
 DEFAULT_SCHEDULE_TIME = time(3, 30)
@@ -116,7 +117,7 @@ class RunConfig:
             budget_seconds=_positive_float(env, 'AECOINS_RUN_BUDGET_SECONDS', DEFAULT_RUN_BUDGET_SECONDS),
             max_tasks=_positive_int(env, 'AECOINS_MAX_TASKS_PER_RUN', DEFAULT_MAX_TASKS),
             schedule_time=_time_value(env.get('AECOINS_SCHEDULE_TIME', '').strip()),
-            timezone=_timezone(env),
+            timezone=timezone_from_environment(env),
             jitter_seconds=_non_negative_int(env, 'AECOINS_SCHEDULE_JITTER_SECONDS', DEFAULT_JITTER_SECONDS),
             runs_dir=Path(env.get('AECOINS_RUNS_DIR', '').strip() or DEFAULT_RUNS_DIR),
             state_dir=Path(env.get('AECOINS_STATE_DIR', '').strip() or DEFAULT_STATE_DIR),
@@ -212,7 +213,8 @@ def _time_value(raw: str) -> time:
     return time(hour, minute)
 
 
-def _timezone(environment: Mapping[str, str]) -> tzinfo:
+def timezone_from_environment(environment: Mapping[str, str]) -> tzinfo:
+    """Resolve ``AECOINS_TIMEZONE`` (then ``TZ``, then the local zone)."""
     name = environment.get('AECOINS_TIMEZONE', '').strip() or environment.get('TZ', '').strip()
     if not name:
         return _local_timezone()
@@ -223,12 +225,14 @@ def _timezone(environment: Mapping[str, str]) -> tzinfo:
 
 
 def _local_timezone() -> tzinfo:
-    from datetime import datetime
+    from tzlocal import get_localzone
 
-    zone = datetime.now().astimezone().tzinfo
-    if zone is None:  # pragma: no cover - every supported platform has one
-        raise ConfigError('the local timezone could not be determined; set AECOINS_TIMEZONE or TZ')
-    return zone
+    try:
+        # The system zone's IANA key is what the device comparison needs;
+        # `datetime.now().astimezone()` only gives an abbreviation such as EST.
+        return get_localzone()
+    except Exception as exc:
+        raise ConfigError('the local timezone could not be determined; set AECOINS_TIMEZONE or TZ') from exc
 
 
 def _spec_path(environment: Mapping[str, str], name: str, default: str, base: Path) -> Path:

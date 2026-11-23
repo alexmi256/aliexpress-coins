@@ -32,8 +32,12 @@ pydantic==2.14.4
 # time, so there is no scheduler thread to stop on SIGTERM.
 apscheduler==3.11.3
 
-# Transitive pins reported by pip for the runtime packages above.
+# Local timezone resolution for the device-timezone guard (issue #79). The
+# system's IANA zone is compared with `persist.sys.timezone`; APScheduler also
+# uses tzlocal for its local-time arithmetic.
 tzlocal==5.4.5
+
+# Transitive pins reported by pip for the runtime packages above.
 annotated-types==0.8.0
 certifi==2026.11.20
 charset-normalizer==3.5.2

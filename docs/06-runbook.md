@@ -6,7 +6,8 @@ clean clone, not from a prepared working tree.
 
 Companion documents: [`04-delivery-plan.md`](04-delivery-plan.md) for the build order,
 [`05-app-knowledge.md`](05-app-knowledge.md) for the app's behaviour,
-[`07-navigation-map.md`](07-navigation-map.md) for the screen graph, and
+[`07-navigation-map.md`](07-navigation-map.md) for the screen graph,
+[`08-stability.md`](08-stability.md) for the nightly outcomes ledger, and
 [`adr/`](adr/README.md) for the decisions behind the architecture.
 
 Legend: ✅ executed for this revision · ❓ still unknown · ⚠️ operator action required.
@@ -47,6 +48,9 @@ If the serial is absent, enable wireless debugging on the tablet and connect onc
 its own adb server, so it does not inherit the host's connection; `doctor` connects a `host:port`
 serial itself.
 
+The serial is **configuration**, not part of the artifact. This build is measured for one device
+shape and one store region; read §14 before pointing it at a different phone.
+
 The run also needs:
 
 - the AliExpress app installed and **signed in**;
@@ -78,6 +82,25 @@ tablet's, it fires **before the device's day has rolled**. Today's coins are alr
 fresh-day path is never exercised, and the run reports success while earning nothing. The `.env`
 example ships `AECOINS_TIMEZONE=UTC`; on this tablet that is the wrong value.
 
+The collector checks this comparison at startup. `doctor` prints both values (see §3), and
+`run --schedule` **refuses to schedule** (exit `2`, before waiting) when they disagree. The error
+names the configured zone and the device zone:
+
+```console
+$ AECOINS_DEVICE=192.168.8.65:5555 AECOINS_TIMEZONE=UTC \
+    .venv/bin/python -m aliexpress_coins run --schedule
+error: configuration: refusing to schedule: configured timezone UTC; device timezone America/Toronto; the schedule would fire before the device day rolls. Set AECOINS_TIMEZONE to the device zone (`adb -s <serial> shell getprop persist.sys.timezone`).
+```
+
+If the device property cannot be read at startup (a transient adb outage, for example), the
+scheduler **warns and keeps the schedule alive**; it checks again immediately before each night and
+refuses that night, with the reason, if the zone is still unreadable or has since disagreed. A
+transient reboot therefore costs no future night.
+
+A manual `run --once` is supervised, so it **warns** in the log and on stderr with the same two
+values and continues; use it to diagnose, not to hide a mismatch. The scheduler is the unattended
+path, so it refuses at fire time.
+
 The **daily reset hour is still unmeasured** ❓ ([`05-app-knowledge.md`](05-app-knowledge.md) §8).
 The operator recalls rewards resetting around 03:00 local, but that is not confirmed for coins. The
 schedule is 03:30 plus up to three minutes of jitter, which is *probably* after the roll — not
@@ -107,12 +130,14 @@ Required test coverage of 99.39% reached. Total coverage: 99.40%
 All quality gates passed.
 ```
 
-The **branch tree** adds the runbook and its enforcement tests, so the suite is 1586 tests. The
-exact clean-clone transcript and the commit it came from are in §13.
+The **branch tree** adds the timezone refusal, its tests, the stability log and the runbook
+additions, so the suite is 1615 tests. The exact clean-clone transcript and the commit it came
+from are in §13; the timed onboarding path is in §2.1.
 
 `just check` is the gate: ruff lint, ruff format check, mypy strict over `src/` and `tests/`, then
 pytest with the coverage ratchet. A green test run without the lint, format and type checks is not
-a green gate. Both trees reached coverage **99.40%** against the **99.39%** floor.
+a green gate. The base tree reached coverage **99.40%** against its **99.39%** floor; this branch
+reaches **99.43%** against the raised **99.42%** floor.
 
 The clean clone has no device configuration yet. For a local run, export the two values that name
 the device and its timezone:
@@ -139,6 +164,40 @@ AECOINS_TIMEZONE=America/Toronto
 `.env` is gitignored because it names a device on your network. Compose reads it automatically;
 the local Python process does **not**, which is why the local path exports the variables instead.
 
+### 2.1 Measured onboarding time
+
+Measured on 2026-11-22/23 from a fresh clone of this branch (`issue-79`) on the build box, with
+docker and the tablet reachable. The timed path was: clone → `just setup` → copy and edit `.env` →
+local `doctor` → `docker compose build` → container `doctor` → container `run --once --dry-run`
+(the safe first run; no live night was taken while the daemon was running). It used a separate
+Compose project and image tag so the live daemon's volumes and image were untouched.
+
+Box: Arch Linux, kernel 7.3.5, 16 vCPU, 27 GiB RAM, Docker 29.10.0, Compose 5.8.0, Python 3.14.10,
+tablet on the same LAN at `192.168.8.65:5555`.
+
+| stage | seconds |
+|---|---:|
+| `git clone` (local single branch) | 0.1 |
+| `just setup` | 8.9 |
+| configure `.env` | < 0.1 |
+| local `doctor` | 2.0 |
+| `docker compose build` (warm Docker layer cache) | 149.1 |
+| container `doctor` | 7.1 |
+| container `run --once --dry-run` | 25.3 |
+| **total, warm image cache** | **192.4 s (3 min 12 s)** |
+
+The image build dominates: **149 s of the 192 s**. With the Docker layer cache removed
+(`docker build --no-cache`) the same image took **478 s (7 min 58 s)**, so a first-time machine
+lands around **8 min 41 s** for the same sequence. The base image and this box's pip wheel cache
+were already present; a truly empty machine adds their downloads. The apt layer (`adb`, `tini`,
+`tzdata`, OpenCV's `libgl*`) and the `requirements.txt` layer (RapidOCR, onnxruntime,
+opencv-headless, numpy) are the two heavy steps.
+
+That is over the five-minute target on a cold machine. The shortest fix is a **prebuilt image**
+published to GHCR and pulled by Compose instead of built locally; a smaller base or a thinner
+requirements set would help less because the OCR runtime is the product. This measurement excludes
+`just check` (about 3 min more); onboarding is the setup path, not the contributor gate.
+
 ---
 
 ## 3. `doctor` — prove the machine, device and OCR
@@ -151,6 +210,7 @@ $ AECOINS_DEVICE=192.168.8.65:5555 AECOINS_TIMEZONE=America/Toronto \
 [ok] adb: Android Debug Bridge version 1.0.41 (/usr/bin/adb)
 [ok] device: 192.168.8.65:5555 (device)
 [ok] geometry: 192.168.8.65:5555: 1200x2000 @ 240 dpi, sdk 35, portrait, profile c9b8f88670e295b5
+[ok] timezone: configured timezone America/Toronto; device timezone America/Toronto (192.168.8.65:5555)
 [ok] ocr: RapidOCR loaded and read 'COINS' from its probe image
 ```
 
@@ -166,6 +226,10 @@ What a healthy output means:
 - **geometry** — the frame the run will actually see, plus the profile id used to key last-resort
   popup calibration. On the reference tablet this is `1200×2000 @ 240 dpi, sdk 35, portrait,
   profile c9b8f88670e295b5`. The profile is a hash of those four facts, not a stored model name.
+- **timezone** — the configured `AECOINS_TIMEZONE` (or `TZ`, or the local zone) beside the device's
+  `persist.sys.timezone`. Both values are always printed. They must match; a mismatch is a failed
+  check, which is what stops a clean doctor from blessing the wrong zone. With `AECOINS_DEVICE`
+  unset the device side is `skipped`, not failed.
 - **ocr** — RapidOCR loads every bundled model and reads a generated probe image. No network and
   no device are used.
 
@@ -179,6 +243,7 @@ $ docker compose run --rm collector python -m aliexpress_coins doctor
 [ok] adb: Android Debug Bridge version 1.0.41 (/usr/bin/adb)
 [ok] device: 192.168.8.65:5555 (device)
 [ok] geometry: 192.168.8.65:5555: 1200x2000 @ 240 dpi, sdk 35, portrait, profile c9b8f88670e295b5
+[ok] timezone: configured timezone America/Toronto; device timezone America/Toronto (192.168.8.65:5555)
 [ok] ocr: RapidOCR loaded and read 'COINS' from its probe image
 ```
 
@@ -366,6 +431,12 @@ rather than looping forever on a configuration error. **Do not run two scheduler
 state directory**: the completed-night marker is the only coordination, and two starts at the same
 instant can both see it unset.
 
+Before this command waits, it checks the configured zone against the device and refuses on a
+mismatch (§1.3). An unreadable property at startup only warns; the check runs again immediately
+before each night and refuses that night if it is still unreadable or now mismatched. Record every
+finished night in [`08-stability.md`](08-stability.md); two consecutive weeks of rows is the release
+gate in #41.
+
 ---
 
 ## 8. Reading `summary.md` and `run.json`
@@ -501,7 +572,8 @@ If a night claims nothing, check in this order:
    in the catalogue but this build has no executor for its category; `daily limit` means the state
    file already counts the task today; `run budget` means the cap stopped the walk.
 5. **Timezone.** Confirm `AECOINS_TIMEZONE` equals
-   `adb shell getprop persist.sys.timezone`. A mismatch is the classic "successful, empty night".
+   `adb shell getprop persist.sys.timezone`; `doctor` prints both lines, and the scheduler now
+   refuses a mismatch instead of starting. A mismatch is the classic "successful, empty night".
 6. **The device's day.** Open the app and look at the task rows. If they carry the drawn check or
    are absent because the server has already credited them, the day is claimed. Wait for the next
    reset; do not re-press a claimed card.
@@ -529,7 +601,7 @@ swipe or page press. A result that may already have acted is reported, never rep
 | `device_locked` | The keyguard still showed after wake and swipe. A PIN or biometric lock cannot be driven. | Unlock the tablet; remove the lock or leave it unlocked (Q2); `adb shell dumpsys window` and look for a keyguard. | none |
 | `app_not_installed` | `pm path com.alibaba.aliexpresshd` returned no package. | `adb shell pm path com.alibaba.aliexpresshd`; install or update AliExpress; confirm the right Android user/profile. | none |
 | `app_launch_failed` | The package exists but `FirstActivity` did not start. | `adb shell am start -n com.alibaba.aliexpresshd/com.aliexpress.app.FirstActivity`; `adb shell am force-stop com.alibaba.aliexpresshd` then retry; check for an app update or a disabled activity. | stage ×1 |
-| `unsupported_geometry` | The captured frame has no measured profile or calibration. | `doctor`; `adb shell wm size`, `wm density`, `getprop ro.build.version.sdk`; compare [`02-architecture.md`](02-architecture.md) and #42; add calibration rather than forcing a different size. | none |
+| `unsupported_geometry` | The frame reports no measured profile or calibration. This is a taxonomy refusal, not the capture path's response to a different portrait geometry; see §14. | `doctor`; `adb shell wm size`, `wm density`, `getprop ro.build.version.sdk`; compare [`02-architecture.md`](02-architecture.md), §14 and #42; add calibration rather than forcing a different size. | none |
 | `frame_undecodable` | A screencap arrived but could not be decoded. | `adb -s <serial> exec-out screencap -p > /tmp/frame.png`; `file /tmp/frame.png`; check free disk, the USB/network path and the screen. A truncated frame is not retried because the device did answer. | none |
 | `app_logged_out` | The app shows a sign-in prompt instead of the account surface. | Sign in on the tablet; confirm the Account tab loads; `adb shell dumpsys window` for the focused app; run again. The run stops at the first detection. | none |
 | `navigation_failed` | The route did not reach the screen it promised; the run records a fallback and may continue from the inline surface. | Read `Route fallback` and `route_error`; start the app normally, settle ~10 s, then send the shortcut intent; check for the empty `Coins boost` page and an app update that changed labels. | none |
@@ -612,13 +684,13 @@ All quality gates passed.
 `doctor` and `--dry-run` were also run on this tree. The dry run returned `planned` with
 `surface: unknown` and zero steps because of #76; that is the timing defect, not an empty day.
 
-### Branch tree: `issue-37` at `2981b7a`
+### Branch tree: `issue-79` (code revision before this documentation commit)
 
-This tree adds this runbook and the `tests/test_docs.py` enforcement tests. Later commits update
-this section, the README counts and the stale-row test fixture; the suite count is unchanged.
+This tree adds the startup timezone refusal and its tests, the stability log and these runbook
+additions. The timed onboarding path from the same code commit is in §2.1.
 
 ```console
-$ git clone --branch issue-37 git@github.com:alexmi256/aliexpress-coins.git
+$ git clone --branch issue-79 git@github.com:alexmi256/aliexpress-coins.git
 Cloning into 'aliexpress-coins'...
 $ cd aliexpress-coins
 $ just setup
@@ -626,19 +698,19 @@ $ just setup
 Successfully installed aliexpress-coins-0.1.0
 $ just check
 ...
-Required test coverage of 99.39% reached. Total coverage: 99.40%
-======================= 1586 passed in 185.36s (0:03:05) =======================
+Required test coverage of 99.42% reached. Total coverage: 99.43%
+======================= 1615 passed in 184.23s (0:03:04) =======================
 All quality gates passed.
 ```
 
-The command table below records the remaining commands from the base tree; the branch adds only
-documentation and tests, not different runtime behaviour.
+The command table below records the remaining commands from the base tree; the branch adds the
+startup timezone check, which its unit tests walk in both directions without a device tap.
 
 | command | result |
 |---|---|
 | `git clone git@github.com:alexmi256/aliexpress-coins.git` | fresh base clone, no `runs/`, `state/` or `.venv/` |
 | `just setup` | `.venv` created, package installed |
-| `python -m aliexpress_coins doctor` (local and container) | four `[ok]` lines, exit 0 |
+| `python -m aliexpress_coins doctor` (local and container) | five `[ok]` lines including both timezones, exit 0 |
 | `adb ... exec-out screencap -p` | 1200×2000 PNG |
 | `python -m aliexpress_coins.tools.capture_frames --list` | three fixture sets listed |
 | `python -m aliexpress_coins run --once --dry-run` | `planned`, report written, `taps_issued: 0`; one run hit #76 with `surface: unknown` |
@@ -654,3 +726,40 @@ Deliberately **not** executed here:
   running; starting a second one against the same state could race it. The schedule output above
   was read from the running daemon's logs.
 - `docker compose stop` / `down`: stopping the running nightly daemon was forbidden for this task.
+
+---
+
+## 14. Portability limits
+
+This is a measured collector, not a universal AliExpress client. Everything below is a limit of
+the artifact, not a preference; a new phone or store region needs its own measurement before it
+gets an unattended night.
+
+| limit | measured value | what breaks if it differs |
+|---|---|---|
+| device serial | `AECOINS_DEVICE`, e.g. `192.168.8.65:5555` | The IP and wireless-debugging port move when the tablet reconnects. `doctor` reports the serial it can reach; a container needs its own `adb connect` (it does this itself). The serial is never compiled in. |
+| screen geometry | `c9b8f88670e295b5` = 1200×2000 @ 240 dpi, sdk 35, portrait | This is the only profile with measured row positions and popup calibration. A different portrait geometry is **not** refused at capture; only a popup whose calibration is absent for that profile is refused, as `popup_unclosable` rather than a guessed tap. `doctor` prints the new profile and `--dry-run` shows what the planner can read. Forcing a different `wm size` is not a substitute for measuring the new profile (#42). |
+| Android / app | Android 15 (sdk 35), AliExpress `8.180.1` | An update can move a row, change a label or add a popup. The deny list still refuses unknown rows, but the allowed catalogue may stop matching; capture a fixture and update the catalogue rather than tapping a guess. |
+| store region / locale | AliExpress Canada store, `en`, coin values in `C$` | The catalogue and patterns were built from this region. Another region or locale changes labels, row ordering and currency rendering; treat it as unmeasured and re-run recon. |
+| account and device use | one signed-in account, one device, no concurrency | The collector assumes the tablet is unlocked with no PIN/biometric lock, the charger is attached, and no human is using it. Two schedulers or two runs against one state directory can both see a day as unfinished. |
+| daily reset hour | ❓ unmeasured; schedule is 03:30 local plus up to 180 s jitter | A run before the device's day rolls finds every task already claimed and reports a successful, empty night. Confirm the reset before moving the schedule earlier (§9). |
+| balance and verification | OCR on the shipped frame | Account data is never in git; screenshots contain the nickname, cart and orders. A frame that cannot be read leaves the balance `unknown`, never guessed. |
+
+### Before the first unattended night
+
+A user on their own phone must do these in order, with the daemon **not** running yet:
+
+1. `doctor` — all five lines `ok`, including the timezone line with both zones equal. The geometry
+   line gives the profile; on another phone it will not be `c9b8f88670e295b5`, and that is not a
+   capture refusal. It is an unmeasured profile whose popup calibration is absent.
+2. `run --once --dry-run` — read the plan. `taps_issued: 0` is required. The plan shows what the
+   new frame can read before a real night; a popup with no calibration for the new profile will
+   report `popup_unclosable` instead of tapping. A `surface: unknown` with zero steps is a
+   load/timing fault (#76), not an empty day; retry or inspect the screen.
+3. One supervised `run --once` — take one real night by hand, well away from the scheduled fire
+   time, and read `summary.md`, the task evidence and the balance delta. Do not start the
+   scheduler until this night is understood.
+
+Only then start `run --schedule` (Compose: `docker compose up -d`), and append its first row to
+[`08-stability.md`](08-stability.md). Do not run a manual `--once` beside the daemon: the state
+store has no lock, and `completed_night` is honoured only by the scheduler (#78).

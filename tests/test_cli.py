@@ -17,6 +17,7 @@ import pytest
 
 import aliexpress_coins
 from aliexpress_coins import cli
+from aliexpress_coins.runner.errors import ConfigError
 from aliexpress_coins.runner.report import RunReport, RunStatus
 
 Handler = Callable[[int, FrameType | None], None]
@@ -137,7 +138,14 @@ def test_run_once_prints_the_report_and_returns_its_status(
     monkeypatch.setattr(cli, '_install_stop_handlers', lambda stop: None)
     monkeypatch.setattr(cli, '_restore_stop_handlers', lambda: None)
 
-    assert cli.run_once_command({'AECOINS_DEVICE': 'tablet', 'TZ': 'UTC'}, root=str(tmp_path)) == 0
+    assert (
+        cli.run_once_command(
+            {'AECOINS_DEVICE': 'tablet', 'TZ': 'UTC'},
+            root=str(tmp_path),
+            device_timezone=lambda _serial: 'UTC',
+        )
+        == 0
+    )
     output = capsys.readouterr().out
     assert 'run run-1: completed' in output
     assert f'summary: {report.summary_path}' in output
@@ -176,7 +184,12 @@ def test_a_dry_run_plan_and_an_abort_are_printed(
     monkeypatch.setattr(cli, '_install_stop_handlers', lambda stop: None)
     monkeypatch.setattr(cli, '_restore_stop_handlers', lambda: None)
 
-    cli.run_once_command({'AECOINS_DEVICE': 'tablet', 'TZ': 'UTC'}, dry_run=True, root=str(tmp_path))
+    cli.run_once_command(
+        {'AECOINS_DEVICE': 'tablet', 'TZ': 'UTC'},
+        dry_run=True,
+        root=str(tmp_path),
+        device_timezone=lambda _serial: 'UTC',
+    )
 
     output = capsys.readouterr().out
     assert 'plan: dry run: 1 task(s) planned' in output
@@ -198,7 +211,14 @@ def test_a_failed_night_returns_non_zero(
     monkeypatch.setattr(cli, '_install_stop_handlers', lambda stop: None)
     monkeypatch.setattr(cli, '_restore_stop_handlers', lambda: None)
 
-    assert cli.run_once_command({'AECOINS_DEVICE': 'tablet', 'TZ': 'UTC'}, root=str(tmp_path)) == 1
+    assert (
+        cli.run_once_command(
+            {'AECOINS_DEVICE': 'tablet', 'TZ': 'UTC'},
+            root=str(tmp_path),
+            device_timezone=lambda _serial: 'UTC',
+        )
+        == 1
+    )
 
 
 def test_a_runner_error_is_reported_and_returns_non_zero(
@@ -212,7 +232,13 @@ def test_a_runner_error_is_reported_and_returns_non_zero(
     monkeypatch.setattr(cli, '_install_stop_handlers', lambda stop: None)
     monkeypatch.setattr(cli, '_restore_stop_handlers', lambda: None)
 
-    assert cli.run_once_command({'AECOINS_DEVICE': 'tablet', 'TZ': 'UTC'}) == 1
+    assert (
+        cli.run_once_command(
+            {'AECOINS_DEVICE': 'tablet', 'TZ': 'UTC'},
+            device_timezone=lambda _serial: 'UTC',
+        )
+        == 1
+    )
     assert 'OSError: no adb' in capsys.readouterr().err
 
 
@@ -251,6 +277,7 @@ def test_the_schedule_command_builds_a_night_from_the_same_configuration(
                 'AECOINS_STATE_DIR': str(tmp_path / 'state'),
             },
             root=str(tmp_path),
+            device_timezone=lambda _serial: 'UTC',
         )
         == 0
     )
@@ -262,6 +289,137 @@ def test_schedule_configuration_failure_is_non_zero(
 ) -> None:
     assert cli.run_schedule_command({'TZ': 'UTC'}) == 2
     assert 'AECOINS_DEVICE is not set' in capsys.readouterr().err
+
+
+def test_the_scheduler_refuses_a_timezone_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[str] = []
+
+    def fake_schedule(*args: Any, **kwargs: Any) -> int:
+        calls.append('run')
+        return 0
+
+    monkeypatch.setattr(cli, 'run_schedule', fake_schedule)
+
+    result = cli.run_schedule_command(
+        {'AECOINS_DEVICE': 'tablet', 'AECOINS_TIMEZONE': 'UTC'},
+        device_timezone=lambda _serial: 'America/Toronto',
+    )
+
+    assert result == 2
+    assert calls == []
+    error = capsys.readouterr().err
+    assert 'refusing to schedule' in error
+    assert 'configured timezone UTC' in error
+    assert 'device timezone America/Toronto' in error
+
+
+def test_the_scheduler_keeps_running_when_the_startup_zone_is_unreadable(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls: list[str] = []
+
+    def fake_schedule(*args: Any, **kwargs: Any) -> int:
+        calls.append('run')
+        return 0
+
+    monkeypatch.setattr(cli, 'run_schedule', fake_schedule)
+
+    result = cli.run_schedule_command(
+        {'AECOINS_DEVICE': 'tablet', 'AECOINS_TIMEZONE': 'UTC'},
+        device_timezone=lambda _serial: None,
+    )
+
+    assert result == 0
+    assert calls == ['run']
+    error = capsys.readouterr().err
+    assert 'warning: timezone unverified' in error
+    assert 'configured timezone UTC' in error
+    assert 'could not be read' in error
+    assert 'Keeping the schedule alive' in error
+
+
+def test_the_scheduler_checks_the_zone_again_before_the_night(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    refusals: list[str] = []
+
+    def fake_schedule(config: Any, *, run_night: Any, state: Any, clock: Any, stop: Any) -> int:
+        with pytest.raises(ConfigError) as raised:
+            run_night()
+        refusals.append(str(raised.value))
+        return 0
+
+    monkeypatch.setattr(cli, 'run_schedule', fake_schedule)
+    zones = iter(('UTC', 'America/Toronto'))
+
+    result = cli.run_schedule_command(
+        {'AECOINS_DEVICE': 'tablet', 'AECOINS_TIMEZONE': 'UTC'},
+        device_timezone=lambda _serial: next(zones),
+    )
+
+    assert result == 0
+    assert len(refusals) == 1
+    assert 'refusing to schedule' in refusals[0]
+    assert 'configured timezone UTC' in refusals[0]
+    assert 'device timezone America/Toronto' in refusals[0]
+
+
+def test_the_pre_night_check_bounds_the_default_reader(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    report = _report(tmp_path)
+    seen: list[float] = []
+
+    def fake_reader(serial: str, *, timeout: float = 10.0) -> str | None:
+        del serial
+        seen.append(timeout)
+        return 'UTC'
+
+    monkeypatch.setattr(cli, 'read_device_timezone', fake_reader)
+    monkeypatch.setattr(cli, 'make_live_context', lambda config, stop, wall_clock: object())
+    monkeypatch.setattr(cli, 'run_once', lambda context: report)
+    monkeypatch.setattr(cli, '_install_stop_handlers', lambda stop: None)
+    monkeypatch.setattr(cli, '_restore_stop_handlers', lambda: None)
+
+    def fake_schedule(config: Any, *, run_night: Any, state: Any, clock: Any, stop: Any) -> int:
+        assert run_night() is report
+        return 0
+
+    monkeypatch.setattr(cli, 'run_schedule', fake_schedule)
+
+    assert cli.run_schedule_command({'AECOINS_DEVICE': 'tablet', 'AECOINS_TIMEZONE': 'UTC'}) == 0
+    assert seen == [10.0, 2.0]
+
+
+def test_a_manual_run_warns_but_continues_on_a_timezone_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    report = _report(tmp_path)
+    monkeypatch.setattr(cli, 'make_live_context', lambda config, stop: object())
+    monkeypatch.setattr(cli, 'run_once', lambda context: report)
+    monkeypatch.setattr(cli, '_install_stop_handlers', lambda stop: None)
+    monkeypatch.setattr(cli, '_restore_stop_handlers', lambda: None)
+
+    assert (
+        cli.run_once_command(
+            {'AECOINS_DEVICE': 'tablet', 'AECOINS_TIMEZONE': 'UTC'},
+            root=str(tmp_path),
+            device_timezone=lambda _serial: 'America/Toronto',
+        )
+        == 0
+    )
+    output = capsys.readouterr()
+    assert 'warning: timezone mismatch' in output.err
+    assert 'configured timezone UTC' in output.err
+    assert 'device timezone America/Toronto' in output.err
+    assert 'run run-1: completed' in output.out
 
 
 def test_run_once_honours_the_dry_run_flag(
@@ -280,7 +438,15 @@ def test_run_once_honours_the_dry_run_flag(
     monkeypatch.setattr(cli, '_install_stop_handlers', lambda stop: None)
     monkeypatch.setattr(cli, '_restore_stop_handlers', lambda: None)
 
-    assert cli.run_once_command({'AECOINS_DEVICE': 'tablet', 'TZ': 'UTC'}, dry_run=True, root=str(tmp_path)) == 0
+    assert (
+        cli.run_once_command(
+            {'AECOINS_DEVICE': 'tablet', 'TZ': 'UTC'},
+            dry_run=True,
+            root=str(tmp_path),
+            device_timezone=lambda _serial: 'UTC',
+        )
+        == 0
+    )
     assert seen == [True]
 
 
@@ -296,7 +462,14 @@ def test_a_report_detail_is_printed(
     monkeypatch.setattr(cli, '_install_stop_handlers', lambda stop: None)
     monkeypatch.setattr(cli, '_restore_stop_handlers', lambda: None)
 
-    assert cli.run_once_command({'AECOINS_DEVICE': 'tablet', 'TZ': 'UTC'}, root=str(tmp_path)) == 0
+    assert (
+        cli.run_once_command(
+            {'AECOINS_DEVICE': 'tablet', 'TZ': 'UTC'},
+            root=str(tmp_path),
+            device_timezone=lambda _serial: 'UTC',
+        )
+        == 0
+    )
     assert 'detail: a useful detail' in capsys.readouterr().out
 
 
@@ -313,7 +486,13 @@ def test_a_schedule_failure_is_reported_and_returns_non_zero(
         lambda *args, **kwargs: (_ for _ in ()).throw(OSError('scheduler broke')),
     )
 
-    assert cli.run_schedule_command({'AECOINS_DEVICE': 'tablet', 'TZ': 'UTC'}) == 1
+    assert (
+        cli.run_schedule_command(
+            {'AECOINS_DEVICE': 'tablet', 'TZ': 'UTC'},
+            device_timezone=lambda _serial: 'UTC',
+        )
+        == 1
+    )
     assert 'OSError: scheduler broke' in capsys.readouterr().err
 
 

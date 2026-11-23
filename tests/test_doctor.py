@@ -134,6 +134,16 @@ def test_check_device_does_not_connect_a_usb_serial() -> None:
     assert len(calls) == 1
 
 
+def test_check_device_reports_a_probe_that_cannot_spawn() -> None:
+    def unexecutable(_args: Sequence[str], _timeout: float) -> doctor.CommandResult:
+        raise OSError('adb is not executable')
+
+    result = doctor.check_device('192.0.2.10:5555', run=unexecutable)
+
+    assert result.status == 'fail'
+    assert 'adb is not executable' in result.detail
+
+
 def test_check_device_fails_when_connect_times_out() -> None:
     calls: list[list[str]] = []
 
@@ -184,6 +194,23 @@ def test_check_geometry_prints_the_profile_and_every_derived_dimension() -> None
     ]
 
 
+def test_check_geometry_keeps_a_panel_that_is_already_portrait() -> None:
+    result = doctor.check_geometry(
+        '192.0.2.10:5555',
+        run=_runner(
+            [
+                doctor.CommandResult(0, b'Physical size: 1200x2000\n', b''),
+                doctor.CommandResult(0, b'Physical density: 240\n', b''),
+                doctor.CommandResult(0, b'35\n', b''),
+            ],
+        ),
+    )
+
+    assert result.status == 'ok'
+    assert '1200x2000' in result.detail
+    assert 'portrait' in result.detail
+
+
 def test_check_geometry_reports_a_failed_probe() -> None:
     result = doctor.check_geometry(
         '192.0.2.10:5555',
@@ -218,6 +245,63 @@ def test_check_geometry_reports_unparseable_probe_output() -> None:
     assert 'could not parse wm size' in result.detail
 
 
+def test_check_timezone_prints_both_values_when_they_match() -> None:
+    calls: list[list[str]] = []
+    result = doctor.check_timezone(
+        {'AECOINS_TIMEZONE': 'America/Toronto'},
+        '192.0.2.10:5555',
+        run=_runner([doctor.CommandResult(0, b'America/Toronto\n', b'')], calls),
+    )
+
+    assert result.status == 'ok'
+    assert result.detail.count('America/Toronto') == 2
+    assert calls == [['adb', '-s', '192.0.2.10:5555', 'shell', 'getprop', 'persist.sys.timezone']]
+
+
+def test_check_timezone_fails_naming_both_when_they_differ() -> None:
+    result = doctor.check_timezone(
+        {'AECOINS_TIMEZONE': 'America/Toronto'},
+        '192.0.2.10:5555',
+        run=_runner([doctor.CommandResult(0, b'UTC\n', b'')]),
+    )
+
+    assert result.status == 'fail'
+    assert 'America/Toronto' in result.detail
+    assert 'UTC' in result.detail
+    assert 'before the device day rolls' in result.detail
+
+
+def test_check_timezone_is_skipped_when_the_device_is_unset() -> None:
+    def unexpected(_args: Sequence[str], _timeout: float) -> doctor.CommandResult:
+        raise AssertionError('no command should run without a serial')
+
+    result = doctor.check_timezone({'AECOINS_TIMEZONE': 'America/Toronto'}, None, run=unexpected)
+
+    assert result.status == 'skipped'
+    assert 'America/Toronto' in result.detail
+    assert 'AECOINS_DEVICE' in result.detail
+
+
+def test_check_timezone_fails_when_the_device_property_is_empty() -> None:
+    result = doctor.check_timezone(
+        {'AECOINS_TIMEZONE': 'America/Toronto'},
+        '192.0.2.10:5555',
+        run=_runner([doctor.CommandResult(0, b'\n', b'')]),
+    )
+
+    assert result.status == 'fail'
+    assert 'America/Toronto' in result.detail
+    assert 'could not be read' in result.detail
+
+
+def test_check_timezone_reports_an_invalid_configured_zone() -> None:
+    result = doctor.check_timezone({'AECOINS_TIMEZONE': 'Mars/Olympus'}, '192.0.2.10:5555')
+
+    assert result.status == 'fail'
+    assert 'Mars/Olympus' in result.detail
+    assert 'unknown timezone' in result.detail
+
+
 @pytest.mark.slow
 def test_load_ocr_reads_its_probe_image() -> None:
     assert 'COINS' in doctor._load_ocr()
@@ -250,7 +334,7 @@ def test_run_doctor_passes_with_device_skipped() -> None:
 
 def test_run_doctor_checks_the_configured_device() -> None:
     result = doctor.run_doctor(
-        {'AECOINS_DEVICE': '192.0.2.10:5555'},
+        {'AECOINS_DEVICE': '192.0.2.10:5555', 'AECOINS_TIMEZONE': 'America/Toronto'},
         which=lambda _name: '/usr/bin/adb',
         run=_runner(
             [
@@ -259,11 +343,36 @@ def test_run_doctor_checks_the_configured_device() -> None:
                 doctor.CommandResult(0, b'Physical size: 2000x1200\n', b''),
                 doctor.CommandResult(0, b'Physical density: 240\n', b''),
                 doctor.CommandResult(0, b'35\n', b''),
+                doctor.CommandResult(0, b'America/Toronto\n', b''),
             ]
         ),
         load_ocr=lambda: 'RapidOCR ready',
     )
     assert result == 0
+
+
+def test_run_doctor_fails_on_a_timezone_mismatch(capsys: pytest.CaptureFixture[str]) -> None:
+    result = doctor.run_doctor(
+        {'AECOINS_DEVICE': '192.0.2.10:5555', 'AECOINS_TIMEZONE': 'UTC'},
+        which=lambda _name: '/usr/bin/adb',
+        run=_runner(
+            [
+                doctor.CommandResult(0, b'Android Debug Bridge\n', b''),
+                doctor.CommandResult(0, b'device\n', b''),
+                doctor.CommandResult(0, b'Physical size: 2000x1200\n', b''),
+                doctor.CommandResult(0, b'Physical density: 240\n', b''),
+                doctor.CommandResult(0, b'35\n', b''),
+                doctor.CommandResult(0, b'America/Toronto\n', b''),
+            ]
+        ),
+        load_ocr=lambda: 'RapidOCR ready',
+    )
+
+    assert result == 1
+    output = capsys.readouterr().out
+    assert '[fail] timezone:' in output
+    assert 'configured timezone UTC' in output
+    assert 'device timezone America/Toronto' in output
 
 
 def test_run_doctor_exits_non_zero_when_a_check_fails() -> None:
@@ -292,11 +401,12 @@ def test_run_doctor_prints_one_line_per_check(capsys: pytest.CaptureFixture[str]
         load_ocr=lambda: 'RapidOCR ready',
     )
     lines = capsys.readouterr().out.splitlines()
-    assert len(lines) == 4
+    assert len(lines) == 5
     assert lines[0].startswith('[ok] adb:')
     assert lines[1].startswith('[skipped] device:')
     assert lines[2].startswith('[skipped] geometry:')
-    assert lines[3].startswith('[ok] ocr:')
+    assert lines[3].startswith('[skipped] timezone:')
+    assert lines[4].startswith('[ok] ocr:')
 
 
 def test_run_command_collects_the_process_output(monkeypatch: pytest.MonkeyPatch) -> None:

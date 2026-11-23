@@ -62,7 +62,9 @@ time, timezone, jitter and wall-clock budget come from `AECOINS_SCHEDULE_TIME`,
 timezone** (`adb shell getprop persist.sys.timezone`): the schedule and the daily store's day boundary
 both follow it, so a timezone that disagrees with the device fires a run before the device's day has
 rolled — the coins are already claimed, the fresh-day path is never exercised, and the run reports
-success while earning nothing. A night that finished its roster
+success while earning nothing. `doctor` prints both zones; `run --schedule` refuses when they
+differ and re-checks before each night (an unreadable value at startup only warns), while a
+supervised `run --once` warns and continues. A night that finished its roster
 walk marks the day complete and is skipped on a retry, while a manual run stopped by
 its budget leaves the nightly window open. Compose retries a failed daemon a bounded
 number of times rather than looping forever on a configuration error. Run one night
@@ -107,7 +109,8 @@ when geometry independence landed (measured 99.33%), to **99.33%** when the disp
 abort conditions landed (measured 99.33%), to **99.35%** when abort propagation through executor
 and cleanup handlers landed (measured 99.36%), and to **99.37%** when the inside-task countdown
 band was narrowed (measured 99.38%), then to **99.39%** when the wait primitives landed (measured
-99.40%).
+99.40%), then to **99.42%** when the timezone refusal and stability ledger landed (measured
+99.43%).
 The scaffold is fully covered, but a one-statement package makes that 100% an artefact of the
 stub, so the floor starts below the maximum. As real modules land, raise the floor toward the
 measured number; never lower it to make a change pass. The gate fails the build when coverage
@@ -142,10 +145,10 @@ Recorded frames live under `tests/data/` and are gitignored by set; the regenera
 
 `just check` remains the gate and runs every test with the coverage ratchet. `just check-fast` is
 the diagnostic loop: it excludes tests marked `slow` (full-frame OCR, template scans and the long
-engine retry walks) and does not enforce coverage. Measured on 2026-11-22: the full suite is
-**1586 passed in 186 s** (203 tests marked slow, coverage 99.40%); `just check-fast` is
-**1383 passed in 44 s** (45 s with lint, format and type checks). The fast lane is dominated by
-the remaining sub-200 ms frame and parser tests plus collection, not by any single fixture.
+engine retry walks) and does not enforce coverage. Measured on 2026-11-23: the full suite is
+**1615 passed in 184 s** (203 tests marked slow, coverage 99.43%); `just check-fast` is
+the same fast lane, dominated by the remaining sub-200 ms frame and parser tests plus collection,
+not by any single fixture.
 
 ## What was learned before writing any requirements
 
@@ -174,6 +177,7 @@ Full evidence, with the commands that produced it:
 | [`docs/05-app-knowledge.md`](docs/05-app-knowledge.md) | how the app actually works: entry points, pages, tasks, rewards |
 | [`docs/06-runbook.md`](docs/06-runbook.md) | the operator's quickstart, reports, failure codes and daily-reset caveat |
 | [`docs/07-navigation-map.md`](docs/07-navigation-map.md) | the screen graph: entry points, markers per screen, stuck states and recovery |
+| [`docs/08-stability.md`](docs/08-stability.md) | the nightly outcomes ledger and its append rule, for the #41 stability gate |
 | [`docs/adr/README.md`](docs/adr/README.md) | the ADR index: every decision with a one-line summary |
 
 ## How the work is organised
