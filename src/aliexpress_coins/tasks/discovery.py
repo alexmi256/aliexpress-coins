@@ -96,6 +96,7 @@ __all__ = [
     'ROSTER_OBSERVATION_SCHEMA',
     'BoostList',
     'BoostOpenResult',
+    'CoinPageWait',
     'DiscoveryResult',
     'DiscoveryRoute',
     'Roster',
@@ -115,6 +116,7 @@ __all__ = [
     'observe_roster',
     'open_boost_list',
     'read_roster_log',
+    'wait_for_coin_page',
 ]
 
 EARN_MORE_LABEL = 'Earn more'
@@ -1078,6 +1080,115 @@ BoostOpenResult = BoostList
 DiscoveryResult = BoostList
 
 
+@dataclass(frozen=True, slots=True)
+class CoinPageWait:
+    """The frame the pre-tap coin-page wait settled on, and how it got there.
+
+    ``settled`` is true only when the last frame is neither ``LOADING``,
+    ``POPUP`` nor ``UNKNOWN``. A dry run cannot dismiss a popup — that is an
+    in-app tap — so it calls :func:`wait_for_coin_page` without
+    ``dismiss_popup`` and receives the ``POPUP`` frame immediately instead of
+    waiting out the deadline for a screen it is not allowed to touch.
+    """
+
+    snapshot: Snapshot
+    classification: Classification
+    history: tuple[ScreenState, ...]
+    timed_out: bool
+
+    @property
+    def settled(self) -> bool:
+        """Whether the page stopped loading without a modal or unknown frame."""
+        return not self.timed_out and self.classification.state not in (
+            ScreenState.LOADING,
+            ScreenState.POPUP,
+            ScreenState.UNKNOWN,
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        """Render the wait for a run report."""
+        return {
+            'state': self.classification.state.value,
+            'settled': self.settled,
+            'timed_out': self.timed_out,
+            'history': [state.value for state in self.history],
+        }
+
+
+def wait_for_coin_page(
+    capture: CaptureSource,
+    *,
+    started: float | None = None,
+    timeout: float = DEFAULT_BOOST_TIMEOUT,
+    interval: float = DEFAULT_BOOST_INTERVAL,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    dismiss_popup: Callable[[Snapshot], None] | None = None,
+) -> CoinPageWait:
+    """Poll until the coin page is no longer the loading skeleton.
+
+    This is the pre-tap wait :func:`open_boost_list` has always used: a loading
+    hybrid page is not proof that ``Earn more`` is absent, so the frame is
+    re-captured until it is no longer ``LOADING``. The measured failure in #76
+    was the dry-run planner classifying the skeleton once and reporting a clean
+    zero-step plan; the same helper now supplies both paths' settled frame.
+
+    ``started`` lets a caller that already read the clock share its deadline
+    without an extra read. ``dismiss_popup`` is the live path's in-app
+    dismissal. It is ``None`` for a dry run, which returns on the first
+    ``POPUP`` rather than pretending the page settled or spending a tap it must
+    not issue. A deadline returns ``timed_out`` with the last frame and every
+    state on the way, so a caller can name "still loading" or "not the coin
+    page" instead of treating it as an empty page.
+
+    ``UNKNOWN`` is deliberately not settled: the measured device sequence starts
+    with the pre-transition frame, and returning on it was the #76 bug. The wait
+    keeps polling until a coin-page or boost marker appears, the deadline ends,
+    or a caller's capture guard names the repeating screen.
+    """
+    if timeout <= 0:
+        raise ValueError('timeout must be positive')
+    if interval <= 0:
+        raise ValueError('interval must be positive')
+
+    begin = clock() if started is None else started
+    deadline = begin + timeout
+    frame = _capture(capture)
+    classification = classify(frame)
+    history = [classification.state]
+
+    while classification.state in (ScreenState.LOADING, ScreenState.POPUP, ScreenState.UNKNOWN):
+        now = clock()
+        if now >= deadline:
+            return CoinPageWait(
+                snapshot=frame,
+                classification=classification,
+                history=tuple(history),
+                timed_out=True,
+            )
+        if classification.state is ScreenState.POPUP:
+            if dismiss_popup is None:
+                return CoinPageWait(
+                    snapshot=frame,
+                    classification=classification,
+                    history=tuple(history),
+                    timed_out=False,
+                )
+            dismiss_popup(frame)
+        else:
+            sleep(min(interval, max(0.0, deadline - now)))
+        frame = _capture(capture)
+        classification = classify(frame)
+        history.append(classification.state)
+
+    return CoinPageWait(
+        snapshot=frame,
+        classification=classification,
+        history=tuple(history),
+        timed_out=False,
+    )
+
+
 def open_boost_list(
     controller: Controller,
     capture: CaptureSource,
@@ -1124,36 +1235,37 @@ def open_boost_list(
     deadline = started + timeout
     dismiss: DismissReport | None = None
 
-    initial = _capture(capture)
-    initial_classification = classify(initial)
-    earn_more = find_text(initial, EARN_MORE_LABEL)
+    def _dismiss_initial_popup(_snapshot: Snapshot) -> None:
+        nonlocal dismiss
+        dismiss = dismiss_after(
+            controller,
+            capture,
+            corpus,
+            templates=templates,
+            settle=settle,
+            clock=clock,
+            sleep=sleep,
+            logger=logger,
+        )
+        if on_dismiss is not None:
+            on_dismiss(dismiss)
 
     # A loading coin page is not proof that the label is absent, and tapping
     # through a popup would land on the scrim even when OCR can still see the
-    # label underneath it. Resolve those states first; a settled page with no
-    # label is a real page variant and degrades immediately.
-    while initial_classification.state in (ScreenState.LOADING, ScreenState.POPUP):
-        now = clock()
-        if now >= deadline:
-            break
-        if initial_classification.state is ScreenState.POPUP:
-            dismiss = dismiss_after(
-                controller,
-                capture,
-                corpus,
-                templates=templates,
-                settle=settle,
-                clock=clock,
-                sleep=sleep,
-                logger=logger,
-            )
-            if on_dismiss is not None:
-                on_dismiss(dismiss)
-        else:
-            sleep(min(interval, max(0.0, deadline - now)))
-        initial = _capture(capture)
-        initial_classification = classify(initial)
-        earn_more = find_text(initial, EARN_MORE_LABEL)
+    # label underneath it. Resolve those states first with the one wait the dry
+    # run also uses; a settled page with no label is a real page variant and
+    # degrades immediately.
+    arrival = wait_for_coin_page(
+        capture,
+        started=started,
+        timeout=timeout,
+        interval=interval,
+        clock=clock,
+        sleep=sleep,
+        dismiss_popup=_dismiss_initial_popup,
+    )
+    initial = arrival.snapshot
+    initial_classification = arrival.classification
 
     if initial_classification.state is ScreenState.POPUP:
         raise StateTimeout(
@@ -1161,6 +1273,7 @@ def open_boost_list(
             f'no tap was issued for {EARN_MORE_LABEL!r}',
         )
 
+    earn_more = find_text(initial, EARN_MORE_LABEL)
     if earn_more is None:
         return BoostList(
             snapshot=initial,
