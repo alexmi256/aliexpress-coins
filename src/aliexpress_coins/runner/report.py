@@ -60,12 +60,14 @@ class RunStatus(StrEnum):
 
 
 class TaskState(StrEnum):
-    """Where one dispatched row got to when the report was written."""
+    """The two run-controlled states; a finished row mirrors its executor outcome.
+
+    A terminal ``TaskRecord.state`` is the executor's own outcome string (for
+    example ``completed``, ``already_done`` or ``failed``), which is deliberately
+    an open set rather than a member of this enum.
+    """
 
     IN_FLIGHT = 'in_flight'
-    COMPLETED = 'completed'
-    SKIPPED = 'skipped'
-    FAILED = 'failed'
     ABORTED = 'aborted'
 
 
