@@ -44,7 +44,6 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import Any
 
 from aliexpress_coins.control.controller import LOGGER_NAME, Controller, TapRecord
 from aliexpress_coins.control.errors import PopupUnclosable
@@ -71,6 +70,7 @@ from aliexpress_coins.tasks.surface import (
     is_boost_page,
     is_empty_boost,
 )
+from aliexpress_coins.transport import AdbRunner, SubprocessAdbRunner
 
 __all__ = [
     'ALLOW_LABELS',
@@ -249,25 +249,11 @@ class PermissionReading:
         return {'state': self.state.value, 'granted': self.granted, 'raw': self.raw, 'source': self.source}
 
 
-@dataclass(frozen=True, slots=True)
-class _ProbeResult:
-    """The minimal shape a probe runner must return."""
+ProbeRunner = AdbRunner
+"""The shared adb transport seam used by the optional permission probe."""
 
-    returncode: int = 0
-    stdout: str = ''
-    stderr: str = ''
-
-
-ProbeRunner = Callable[[Sequence[str], float], Any]
-"""The transport seam for the optional permission probe."""
-
-
-class _SubprocessProbeRunner:
-    """Run the real adb command outside tests."""
-
-    def __call__(self, args: Sequence[str], timeout: float) -> _ProbeResult:
-        completed = subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
-        return _ProbeResult(completed.returncode, completed.stdout, completed.stderr)
+_SubprocessProbeRunner = SubprocessAdbRunner
+"""The real transport; the probe keeps its old name."""
 
 
 @dataclass(frozen=True, slots=True)

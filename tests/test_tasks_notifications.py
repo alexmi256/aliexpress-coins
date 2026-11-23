@@ -50,6 +50,7 @@ from aliexpress_coins.tasks.notifications import (
     run_notifications_task,
 )
 from aliexpress_coins.tasks.surface import SurfaceRoute
+from tests.support.adb import ScriptedAdbRunner, fail, ok
 
 ROOT = Path(__file__).resolve().parents[1]
 CORPUS_PATH = ROOT / 'specs' / 'popups.yaml'
@@ -424,37 +425,21 @@ def test_permission_output_parsing_accepts_appops_and_probe_shapes() -> None:
     assert parse_permission_output('something else').state is NotificationPermission.UNKNOWN
 
 
-class _FakeProbeRunner:
-    def __init__(
-        self, *, returncode: int = 0, stdout: str = '', stderr: str = '', error: Exception | None = None
-    ) -> None:
-        self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
-        self.error = error
-
-    def __call__(self, args: Sequence[str], timeout: float) -> object:
-        del args, timeout
-        if self.error is not None:
-            raise self.error
-        from types import SimpleNamespace
-
-        return SimpleNamespace(returncode=self.returncode, stdout=self.stdout, stderr=self.stderr)
-
-
 def test_appops_probe_parses_success_failure_and_exceptions() -> None:
     from aliexpress_coins.tasks.notifications import AppOpsPermissionProbe
 
-    granted = AppOpsPermissionProbe('serial', runner=_FakeProbeRunner(stdout='Uid mode: POST_NOTIFICATION: allow'))
-    denied = AppOpsPermissionProbe('serial', runner=_FakeProbeRunner(stdout='Uid mode: POST_NOTIFICATION: ignore'))
-    failed = AppOpsPermissionProbe('serial', runner=_FakeProbeRunner(returncode=1, stderr='boom'))
-    broken = AppOpsPermissionProbe('serial', runner=_FakeProbeRunner(error=OSError('adb gone')))
+    granted = AppOpsPermissionProbe('serial', runner=ScriptedAdbRunner(ok('Uid mode: POST_NOTIFICATION: allow')))
+    denied = AppOpsPermissionProbe('serial', runner=ScriptedAdbRunner(ok('Uid mode: POST_NOTIFICATION: ignore')))
+    failed = AppOpsPermissionProbe('serial', runner=ScriptedAdbRunner(fail('boom')))
+    broken = AppOpsPermissionProbe('serial', runner=ScriptedAdbRunner(OSError('adb gone')))
+
+    broken_reading = broken()
 
     assert granted().state is NotificationPermission.GRANTED
     assert denied().state is NotificationPermission.DENIED
     assert failed().state is NotificationPermission.UNKNOWN
-    assert broken().state is NotificationPermission.UNKNOWN
-    assert broken().raw is not None
+    assert broken_reading.state is NotificationPermission.UNKNOWN
+    assert broken_reading.raw is not None
 
     with pytest.raises(ValueError, match='serial'):
         AppOpsPermissionProbe(' ')
@@ -642,6 +627,7 @@ def test_run_notifications_reports_an_already_done_row_as_already_done(
 # --- live-shaped flows -------------------------------------------------------
 
 
+@pytest.mark.slow
 def test_granting_the_system_dialog_completes_and_records_the_row(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -665,6 +651,7 @@ def test_granting_the_system_dialog_completes_and_records_the_row(
     assert result.as_dict()['outcome'] == 'completed'
 
 
+@pytest.mark.slow
 def test_a_dialog_with_only_a_denial_control_is_recorded_and_does_not_raise(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -686,6 +673,7 @@ def test_a_dialog_with_only_a_denial_control_is_recorded_and_does_not_raise(
     assert result.done_today_after == 1
 
 
+@pytest.mark.slow
 def test_a_grant_that_never_closes_the_dialog_is_permission_denied(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -703,6 +691,7 @@ def test_a_grant_that_never_closes_the_dialog_is_permission_denied(
     assert state.count('notifications') == 1
 
 
+@pytest.mark.slow
 def test_an_os_settings_redirect_stops_the_task_without_flipping_the_switch(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -728,6 +717,7 @@ def test_an_os_settings_redirect_stops_the_task_without_flipping_the_switch(
     assert state.count('notifications') == 1
 
 
+@pytest.mark.slow
 def test_the_os_page_with_the_permission_already_on_also_routes_to_settings(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -748,6 +738,7 @@ def test_the_os_page_with_the_permission_already_on_also_routes_to_settings(
     assert result.screen == NotificationScreen.OS_SETTINGS_GRANTED.value
 
 
+@pytest.mark.slow
 def test_the_measured_no_dialog_path_records_the_row_completion(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -772,6 +763,7 @@ def test_the_measured_no_dialog_path_records_the_row_completion(
     assert state.count('notifications') == 1
 
 
+@pytest.mark.slow
 def test_the_app_pre_prompt_is_followed_to_the_system_dialog(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -799,6 +791,7 @@ def test_the_app_pre_prompt_is_followed_to_the_system_dialog(
     assert [tap.label for tap in result.taps] == ['GO', 'Enable all notifications', 'Allow']
 
 
+@pytest.mark.slow
 def test_an_app_prompt_with_no_grant_path_is_recorded_as_denied(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -819,6 +812,7 @@ def test_an_app_prompt_with_no_grant_path_is_recorded_as_denied(
     assert [tap.label for tap in result.taps] == ['GO', 'No thanks']
 
 
+@pytest.mark.slow
 def test_enable_notifications_false_denies_instead_of_granting(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -832,6 +826,7 @@ def test_enable_notifications_false_denies_instead_of_granting(
     assert [tap.label for tap in result.taps] == ['GO', "Don't allow"]
 
 
+@pytest.mark.slow
 def test_a_probe_that_reports_the_grant_completes_even_when_the_row_stays(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -855,6 +850,7 @@ def test_a_probe_that_reports_the_grant_completes_even_when_the_row_stays(
     assert state.count('notifications') == 1
 
 
+@pytest.mark.slow
 def test_a_probe_that_reports_denial_after_the_grant_overrides_the_row(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -877,6 +873,7 @@ def test_a_probe_that_reports_denial_after_the_grant_overrides_the_row(
     assert result.permission_after.denied is True
 
 
+@pytest.mark.slow
 def test_a_probe_that_raises_does_not_break_the_task(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -894,6 +891,7 @@ def test_a_probe_that_raises_does_not_break_the_task(
     assert result.permission_before.state is NotificationPermission.UNKNOWN
 
 
+@pytest.mark.slow
 def test_probe_values_are_coerced_from_bool_and_none(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -907,6 +905,7 @@ def test_probe_values_are_coerced_from_bool_and_none(
     assert result.permission_before.state is NotificationPermission.UNKNOWN
 
 
+@pytest.mark.slow
 def test_a_pressed_row_that_changes_nothing_fails_without_a_false_completion(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -924,6 +923,7 @@ def test_a_pressed_row_that_changes_nothing_fails_without_a_false_completion(
     assert result.returned is True
 
 
+@pytest.mark.slow
 def test_a_grant_with_no_row_change_and_no_probe_is_grant_not_observed(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -947,6 +947,7 @@ def test_a_grant_with_no_row_change_and_no_probe_is_grant_not_observed(
     assert result.done_today_after == 0
 
 
+@pytest.mark.slow
 def test_a_failed_return_is_reported_but_the_outcome_is_kept(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -989,6 +990,7 @@ def test_an_unexpected_fault_is_recorded_not_raised(
     assert 'input layer broke' in result.detail
 
 
+@pytest.mark.slow
 def test_a_dialog_whose_ocr_is_missing_fails_as_an_unclosable_popup_not_a_guess(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1014,6 +1016,7 @@ def test_a_dialog_whose_ocr_is_missing_fails_as_an_unclosable_popup_not_a_guess(
     assert [tap.label for tap in result.taps] == ['GO']
 
 
+@pytest.mark.slow
 def test_a_generic_in_app_popup_is_swept_before_the_row_is_read(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1075,6 +1078,7 @@ def test_run_notifications_rejects_a_loading_surface_it_cannot_settle(
     assert result.verification == 'unavailable'
 
 
+@pytest.mark.slow
 def test_the_result_payload_keeps_the_permission_and_dialog_evidence(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1092,6 +1096,7 @@ def test_the_result_payload_keeps_the_permission_and_dialog_evidence(
     assert isinstance(payload['taps'], list)
 
 
+@pytest.mark.slow
 def test_route_firer_callable_is_accepted_as_the_navigate_seam(
     catalogue: TaskCatalogue, corpus: PopupCorpus, tmp_path: Path
 ) -> None:
@@ -1178,7 +1183,7 @@ def test_the_real_subprocess_probe_runner_uses_the_injected_transport(monkeypatc
 
     def fake_run(args: Sequence[str], **kwargs: object) -> object:
         calls.append((tuple(args), float(cast(float, kwargs['timeout']))))
-        return SimpleNamespace(returncode=0, stdout='POST_NOTIFICATION: allow', stderr='')
+        return SimpleNamespace(returncode=0, stdout=b'POST_NOTIFICATION: allow', stderr=b'')
 
     monkeypatch.setattr(subprocess, 'run', fake_run)
     runner = notifications._SubprocessProbeRunner()
@@ -1186,7 +1191,7 @@ def test_the_real_subprocess_probe_runner_uses_the_injected_transport(monkeypatc
     result = runner(('adb', 'shell', 'cmd'), 2.0)
 
     assert result.returncode == 0
-    assert result.stdout == 'POST_NOTIFICATION: allow'
+    assert result.stdout == b'POST_NOTIFICATION: allow'
     assert calls == [(('adb', 'shell', 'cmd'), 2.0)]
 
 
@@ -1200,7 +1205,7 @@ def test_the_probe_turns_non_text_transport_output_into_unknown() -> None:
 
     probe = notifications.AppOpsPermissionProbe(
         'serial',
-        runner=lambda args, timeout: SimpleNamespace(returncode=0, stdout=None, stderr=123),
+        runner=cast(Any, lambda args, timeout: SimpleNamespace(returncode=0, stdout=None, stderr=123)),
     )
 
     assert probe().state is NotificationPermission.UNKNOWN
@@ -1225,6 +1230,7 @@ def test_an_os_settings_page_at_entry_is_routed_without_reading_a_row(
     assert state.count('notifications') == 1
 
 
+@pytest.mark.slow
 def test_an_app_prompt_at_entry_is_resolved_before_the_row_is_tapped(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1243,6 +1249,7 @@ def test_an_app_prompt_at_entry_is_resolved_before_the_row_is_tapped(
     assert all(tap.label != 'GO' for tap in result.taps)
 
 
+@pytest.mark.slow
 def test_a_system_dialog_at_entry_is_handled_before_the_row_is_tapped(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1274,6 +1281,7 @@ def test_a_system_dialog_at_entry_is_handled_before_the_row_is_tapped(
     assert result.dialog_appeared is True
 
 
+@pytest.mark.slow
 def test_an_entry_prompt_grant_is_probed_and_recorded_when_no_row_remains(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1309,6 +1317,7 @@ def test_an_entry_prompt_grant_is_probed_and_recorded_when_no_row_remains(
     assert state.count('notifications') == 1
 
 
+@pytest.mark.slow
 def test_a_row_that_disappears_from_the_populated_boost_list_is_completed(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1331,6 +1340,7 @@ def test_a_row_that_disappears_from_the_populated_boost_list_is_completed(
     assert state.count('notifications') == 1
 
 
+@pytest.mark.slow
 def test_completion_that_cannot_return_is_not_reported_as_complete(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1347,6 +1357,7 @@ def test_completion_that_cannot_return_is_not_reported_as_complete(
     assert state.count('notifications') == 0
 
 
+@pytest.mark.slow
 def test_a_dialog_without_any_control_is_recorded_as_denied_without_a_tap(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1368,6 +1379,7 @@ def test_a_dialog_without_any_control_is_recorded_as_denied_without_a_tap(
     assert [tap.label for tap in result.taps] == ['GO']
 
 
+@pytest.mark.slow
 def test_a_failed_grant_without_a_denial_control_still_returns(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1392,6 +1404,7 @@ def test_a_failed_grant_without_a_denial_control_still_returns(
     assert [tap.label for tap in result.taps] == ['GO', 'Allow']
 
 
+@pytest.mark.slow
 def test_an_app_prompt_with_no_control_uses_the_existing_sweep_and_reports(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1413,6 +1426,7 @@ def test_an_app_prompt_with_no_control_uses_the_existing_sweep_and_reports(
     assert result.stop is not None
 
 
+@pytest.mark.slow
 def test_a_generic_popup_that_closes_lets_the_flow_continue_to_completion(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1446,6 +1460,7 @@ def test_a_generic_popup_that_closes_lets_the_flow_continue_to_completion(
     assert any(attempt.label == 'Dismiss' for report in result.dismissals for attempt in report.taps)
 
 
+@pytest.mark.slow
 def test_an_enable_tap_that_changes_nothing_is_not_repeated_forever(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1467,6 +1482,7 @@ def test_an_enable_tap_that_changes_nothing_is_not_repeated_forever(
     assert result.recorded is True
 
 
+@pytest.mark.slow
 def test_an_enable_tap_that_changes_nothing_without_a_deny_control_still_terminates(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1487,6 +1503,7 @@ def test_an_enable_tap_that_changes_nothing_without_a_deny_control_still_termina
     assert [tap.label for tap in result.taps].count('Enable all notifications') == 1
 
 
+@pytest.mark.slow
 def test_an_entry_prompt_grant_without_a_probe_still_reports_what_it_saw(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1510,6 +1527,7 @@ def test_an_entry_prompt_grant_without_a_probe_still_reports_what_it_saw(
     assert [tap.label for tap in result.taps] == ['Allow']
 
 
+@pytest.mark.slow
 def test_an_entry_prompt_grant_keeps_the_grant_when_the_return_fails(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1541,6 +1559,7 @@ def test_an_entry_prompt_grant_keeps_the_grant_when_the_return_fails(
     assert result.detail.endswith('the shortcut route did not prove the coins page')
 
 
+@pytest.mark.slow
 def test_a_popup_over_the_boost_list_is_swept_before_a_missing_action_means_complete(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1579,6 +1598,7 @@ def test_a_popup_over_the_boost_list_is_swept_before_a_missing_action_means_comp
     assert state.count('notifications') == 1
 
 
+@pytest.mark.slow
 def test_the_result_log_carries_the_notifications_task_event(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1593,6 +1613,7 @@ def test_the_result_log_carries_the_notifications_task_event(
     assert '"event":"notifications_task"' in caplog.text
 
 
+@pytest.mark.slow
 def test_a_loading_frame_is_waited_out_before_reading_the_row(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1640,6 +1661,7 @@ def test_an_unsettled_loading_surface_is_not_tapped_and_still_returns(
     assert world.taps == []
 
 
+@pytest.mark.slow
 def test_verify_row_converts_an_unreadable_boost_list_into_no_observation(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1659,6 +1681,7 @@ def test_verify_row_converts_an_unreadable_boost_list_into_no_observation(
     assert result.verification == 'no_observation'
 
 
+@pytest.mark.slow
 def test_capture_can_be_a_snapshotter_object_not_only_a_callable(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1722,6 +1745,7 @@ def _skeleton() -> Snapshot:
     )
 
 
+@pytest.mark.slow
 def test_a_loading_entry_is_polled_until_the_boost_list_appears(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1744,6 +1768,7 @@ def test_a_loading_entry_is_polled_until_the_boost_list_appears(
     assert [tap.label for tap in result.taps][:1] == ['GO']
 
 
+@pytest.mark.slow
 def test_an_initial_popup_is_swept_before_the_row_is_read(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1781,6 +1806,7 @@ def test_an_initial_popup_is_swept_before_the_row_is_read(
     assert result.outcome is NotificationOutcome.ALREADY_DONE
 
 
+@pytest.mark.slow
 def test_loading_after_go_is_polled_inside_the_arrival_budget(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1799,6 +1825,7 @@ def test_loading_after_go_is_polled_inside_the_arrival_budget(
     assert result.outcome is NotificationOutcome.COMPLETED
 
 
+@pytest.mark.slow
 def test_verify_row_keeps_the_dismissal_it_saw_while_opening_the_list(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1825,6 +1852,7 @@ def test_verify_row_keeps_the_dismissal_it_saw_while_opening_the_list(
     assert dismiss in result.dismissals
 
 
+@pytest.mark.slow
 def test_verify_row_can_stop_on_an_inline_coin_page(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1870,16 +1898,30 @@ def test_coerce_reading_preserves_an_existing_reading() -> None:
 
 
 def test_probe_bytes_output_is_decoded() -> None:
-    from types import SimpleNamespace
 
     probe = notifications.AppOpsPermissionProbe(
         'serial',
-        runner=lambda args, timeout: SimpleNamespace(returncode=0, stdout=b'POST_NOTIFICATION: allow', stderr=b''),
+        runner=ScriptedAdbRunner(ok('POST_NOTIFICATION: allow')),
     )
 
     assert probe().state is NotificationPermission.GRANTED
 
 
+def test_probe_accepts_plain_text_transport_output() -> None:
+    from types import SimpleNamespace
+
+    probe = notifications.AppOpsPermissionProbe(
+        'serial',
+        runner=cast(
+            Any,
+            lambda args, timeout: SimpleNamespace(returncode=0, stdout='POST_NOTIFICATION: allow', stderr=''),
+        ),
+    )
+
+    assert probe().state is NotificationPermission.GRANTED
+
+
+@pytest.mark.slow
 def test_a_popup_stop_from_the_sweep_is_returned_from_the_wait(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1976,6 +2018,7 @@ def test_a_popup_stop_while_settling_the_entry_surface_is_reported(
     assert result.verification == 'not_settled'
 
 
+@pytest.mark.slow
 def test_an_app_prompt_with_no_control_reports_a_sweep_stop(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,

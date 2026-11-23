@@ -36,6 +36,12 @@ typecheck:
 test:
     {{python}} -m pytest
 
+# Run the fast lane: everything except the `slow` marker, without the coverage
+# ratchet. This is a diagnostic loop, not the gate; `just check` still runs
+# every test and enforces coverage.
+test-fast:
+    {{python}} -m pytest -m "not slow" --no-cov
+
 # Run the suite again with HTML and XML coverage reports for inspection.
 cov:
     {{python}} -m pytest --cov-report=html --cov-report=xml
@@ -43,6 +49,12 @@ cov:
 # The gate. A developer runs this and gets the verdict CI will give.
 check: lint fmt-check typecheck test
     @echo "All quality gates passed."
+
+# Quick feedback for the inner loop. It runs the same lint, format and type
+# checks as `check`, then excludes the tests marked `slow`. It does not run the
+# coverage ratchet, so a green fast lane is not a green gate.
+check-fast: lint fmt-check typecheck test-fast
+    @echo "Fast lane passed; run just check before claiming the task is done."
 
 # Remove the virtualenv, caches, coverage output and build artefacts.
 clean:

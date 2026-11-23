@@ -196,6 +196,17 @@ recon/artifacts/
 # artwork only, never account data; see specs/popups.yaml for the family map.
 !assets/templates/*.png
 
+# Atomic fixture writes leave a hidden *.tmp file only if the capture process is
+# killed between mkstemp and rename. It can contain a frame, so it stays out of
+# git like every other screenshot.
+*.tmp
+
+# Recorded adb transcripts contain device output and argv. Screencap payloads
+# are omitted at record time, but the remaining text can still identify the
+# account, so the whole directory stays out of git like screenshots and OCR
+# dumps. See tests/support/adb.py.
+tests/transcripts/
+
 # Local device state
 state/
 *.db

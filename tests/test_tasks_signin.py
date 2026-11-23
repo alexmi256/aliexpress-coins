@@ -260,6 +260,7 @@ def test_read_coin_balance_ignores_status_bar_currency_and_ocr_noise() -> None:
     assert read_coin_balance(_snapshot()) is None
 
 
+@pytest.mark.slow
 def test_find_streak_control_returns_the_measured_collect(frames: dict[str, Snapshot]) -> None:
     control = find_streak_control(frames['coins'])
 
@@ -540,6 +541,7 @@ def test_claim_streak_does_not_verify_from_a_claimed_task_row_below_the_card(
     assert state.done_today(STREAK_KEY) is False
 
 
+@pytest.mark.slow
 def test_claim_streak_sweeps_a_popup_before_looking_for_the_control(
     frames: dict[str, Snapshot],
     corpus: PopupCorpus,
@@ -1137,6 +1139,7 @@ def test_claim_boost_checkin_rejects_non_positive_wait_parameters(
         )
 
 
+@pytest.mark.slow
 def test_claim_daily_signins_fresh_day_claims_both_and_reports_the_delta(
     frames: dict[str, Snapshot],
     corpus: PopupCorpus,
@@ -1178,6 +1181,7 @@ def test_claim_daily_signins_fresh_day_claims_both_and_reports_the_delta(
     assert report.as_dict()['route'] == 'boost'
 
 
+@pytest.mark.slow
 def test_a_second_run_same_day_issues_zero_taps_and_skips_both(
     frames: dict[str, Snapshot],
     corpus: PopupCorpus,
@@ -1382,6 +1386,7 @@ def test_claim_daily_signins_claims_only_the_open_boost_when_the_streak_is_done(
     assert state.done_today(BOOST_KEY)
 
 
+@pytest.mark.slow
 def test_claim_daily_signins_falls_back_to_the_before_balance(
     frames: dict[str, Snapshot],
     corpus: PopupCorpus,

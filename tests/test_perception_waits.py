@@ -159,6 +159,7 @@ def _has_daily_coins(frame: Snapshot) -> bool:
     return find_text(frame, 'Daily coins', min_score=DEFAULT_MIN_SCORE) is not None
 
 
+@pytest.mark.slow
 def test_wait_for_text_waits_out_the_skeleton_transition(frames: dict[str, Snapshot]) -> None:
     clock = _Clock()
     capture = _QueueCapture([frames['skeleton'], frames['coins']])

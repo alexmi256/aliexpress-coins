@@ -189,6 +189,7 @@ def frames(engine: RapidOcrEngine) -> dict[str, Snapshot]:
     }
 
 
+@pytest.mark.slow
 def test_classify_surface_distinguishes_the_recorded_variants(frames: dict[str, Snapshot]) -> None:
     assert classify_surface(frames['boost']) is Surface.BOOST_PAGE
     assert classify_surface(frames['coins']) is Surface.ROWS_PRESENT

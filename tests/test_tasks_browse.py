@@ -785,6 +785,7 @@ def test_return_to_coins_page_records_a_navigation_error(corpus: PopupCorpus) ->
     assert 'adb route unavailable' in result.error
 
 
+@pytest.mark.slow
 def test_return_to_coins_page_sweeps_a_popup_on_arrival(
     corpus: PopupCorpus,
     launch: Snapshot,
@@ -871,6 +872,7 @@ def test_return_to_coins_page_rejects_invalid_parameters(
         )
 
 
+@pytest.mark.slow
 def test_run_browse_task_completes_and_quotes_the_badge_change(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -967,6 +969,7 @@ def test_run_browse_task_accepts_an_inline_badge_advance_without_reopening(
     assert world.current == 'coins'
 
 
+@pytest.mark.slow
 def test_run_browse_task_fails_when_the_taps_change_nothing(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1012,6 +1015,7 @@ def test_run_browse_task_fails_when_the_taps_change_nothing(
     assert state.count('sponsored_items') == 0
 
 
+@pytest.mark.slow
 def test_run_browse_task_returns_to_coins_when_the_destination_is_wrong(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1056,6 +1060,7 @@ def test_run_browse_task_returns_to_coins_when_the_destination_is_wrong(
     assert world.current == 'coins'
 
 
+@pytest.mark.slow
 def test_run_browse_task_completes_when_the_row_disappears(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1097,6 +1102,7 @@ def test_run_browse_task_completes_when_the_row_disappears(
     assert result.returned is True
 
 
+@pytest.mark.slow
 def test_run_browse_task_completes_on_a_done_label(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1136,6 +1142,7 @@ def test_run_browse_task_completes_on_a_done_label(
     assert result.recorded is True
 
 
+@pytest.mark.slow
 def test_run_browse_task_completes_when_the_action_is_gone(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1174,6 +1181,7 @@ def test_run_browse_task_completes_when_the_action_is_gone(
     assert result.verification == 'action_gone'
 
 
+@pytest.mark.slow
 def test_run_browse_task_completes_when_the_badge_is_complete_and_before_was_unread(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1218,6 +1226,7 @@ def test_run_browse_task_completes_when_the_badge_is_complete_and_before_was_unr
     assert result.badge_after == '6/6'
 
 
+@pytest.mark.slow
 def test_run_browse_task_retries_the_press_up_to_the_budget(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1323,6 +1332,7 @@ def test_run_browse_task_skips_a_vanished_row(
 
 
 @pytest.mark.parametrize('badge', ['0/6', None], ids=['with-badge', 'without-badge'])
+@pytest.mark.slow
 def test_run_browse_task_scrolls_to_a_row_below_the_fold(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1647,6 +1657,7 @@ def test_run_browse_task_returns_before_re_raising_an_unclosable_popup(
     assert len(world.navigations) >= 1
 
 
+@pytest.mark.slow
 def test_run_browse_task_reports_no_observation_when_the_list_cannot_be_read(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1686,6 +1697,7 @@ def test_run_browse_task_reports_no_observation_when_the_list_cannot_be_read(
     assert result.returned is True
 
 
+@pytest.mark.slow
 def test_run_browse_task_fails_when_the_verification_return_fails(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -2070,6 +2082,7 @@ def test_return_to_coins_page_settles_between_attempts(corpus: PopupCorpus) -> N
     assert result.attempts == 1
 
 
+@pytest.mark.slow
 def test_run_browse_task_sweeps_a_popup_on_entry(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -2119,6 +2132,7 @@ def test_run_browse_task_sweeps_a_popup_on_entry(
     assert any('launch_welcome_gifts' in report.closed for report in result.dismissals)
 
 
+@pytest.mark.slow
 def test_run_browse_task_stops_pressing_when_the_action_disappears(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -2160,6 +2174,7 @@ def test_run_browse_task_stops_pressing_when_the_action_disappears(
     assert result.outcome is BrowseOutcome.FAILED
 
 
+@pytest.mark.slow
 def test_run_browse_task_sweeps_a_popup_on_the_way_to_the_destination(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -2205,6 +2220,7 @@ def test_run_browse_task_sweeps_a_popup_on_the_way_to_the_destination(
     assert result.arrival.dismiss is not None
 
 
+@pytest.mark.slow
 def test_run_browse_task_reports_a_chip_timeout_but_still_verifies(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -2286,6 +2302,7 @@ def test_run_browse_task_returns_failed_when_the_first_return_fails(
     assert result.verification == 'return_failed'
 
 
+@pytest.mark.slow
 def test_run_browse_task_sweeps_a_popup_before_verification(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -2360,6 +2377,7 @@ def test_run_browse_task_reports_return_failed_when_an_early_failure_cannot_retu
     assert result.verification == 'return_failed'
 
 
+@pytest.mark.slow
 def test_run_browse_task_fails_when_the_press_bounces_to_the_coin_page(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -2399,6 +2417,7 @@ def test_run_browse_task_fails_when_the_press_bounces_to_the_coin_page(
     assert result.returned is True
 
 
+@pytest.mark.slow
 def test_run_browse_task_fails_on_the_inline_route_when_the_row_is_unchanged(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -2434,6 +2453,7 @@ def test_run_browse_task_fails_on_the_inline_route_when_the_row_is_unchanged(
     assert result.returned is True
 
 
+@pytest.mark.slow
 def test_run_browse_task_does_not_trust_row_absence_on_the_inline_coin_page(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -2479,6 +2499,7 @@ def test_run_browse_task_does_not_trust_row_absence_on_the_inline_coin_page(
     assert state.count('sponsored_items') == 0
 
 
+@pytest.mark.slow
 def test_run_browse_task_reports_no_observation_on_an_empty_boost_list(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -2518,6 +2539,7 @@ def test_run_browse_task_reports_no_observation_on_an_empty_boost_list(
     assert result.returned is True
 
 
+@pytest.mark.slow
 def test_run_browse_task_works_without_the_boost_family_in_the_corpus(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -2621,6 +2643,7 @@ def test_run_browse_task_stops_on_a_redeem_that_appears_after_the_chip(
     assert result.returned is True
 
 
+@pytest.mark.slow
 def test_run_browse_task_stops_on_a_redeem_that_appears_after_collect(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -2720,6 +2743,7 @@ def test_run_browse_task_stops_on_a_redeem_at_entry(
     assert world.current == 'coins'
 
 
+@pytest.mark.slow
 def test_run_browse_task_stops_when_a_redeem_appears_during_arrival(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -2753,6 +2777,7 @@ def test_run_browse_task_stops_when_a_redeem_appears_during_arrival(
     assert result.returned is True
 
 
+@pytest.mark.slow
 def test_run_browse_task_waits_out_a_loading_frame_on_arrival(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -2793,6 +2818,7 @@ def test_run_browse_task_waits_out_a_loading_frame_on_arrival(
     assert result.arrival.arrived is True
 
 
+@pytest.mark.slow
 def test_return_to_coins_page_sweeps_a_popup_that_reveals_a_wrong_page(
     corpus: PopupCorpus,
     launch: Snapshot,

@@ -68,6 +68,9 @@ addopts = [
     "--cov=aliexpress_coins",
     "--cov-report=term-missing",
 ]
+markers = [
+    "slow: builds large synthetic frames or walks long transcripts; excluded from `just check-fast`",
+]
 
 # --- coverage ratchet -------------------------------------------------------
 # The floor is a ratchet: start at 85% on the stub, raise it as modules land,

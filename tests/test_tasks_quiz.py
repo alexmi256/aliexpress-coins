@@ -379,6 +379,7 @@ def test_find_answer_options_on_a_two_option_frame() -> None:
     assert options[0].box.text == 'True'
 
 
+@pytest.mark.slow
 def test_find_answer_options_on_the_measured_four_option_frame() -> None:
     """The reviewed four-option question fixture gives every OCR line back."""
     pytest.importorskip('aliexpress_coins.perception.ocr')
@@ -603,6 +604,7 @@ def test_run_quiz_task_skips_a_row_with_no_action(
     assert result.verification == 'row_complete'
 
 
+@pytest.mark.slow
 def test_run_quiz_task_completes_a_normal_visit(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -702,6 +704,7 @@ def test_run_quiz_task_completes_a_completed_variant_via_the_done_label(
     assert len(world.taps) == 3
 
 
+@pytest.mark.slow
 def test_run_quiz_task_completes_when_the_action_is_gone(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -729,6 +732,7 @@ def test_run_quiz_task_completes_when_the_action_is_gone(
     assert result.recorded is True
 
 
+@pytest.mark.slow
 def test_run_quiz_task_does_not_complete_on_a_visible_payout_when_the_row_still_offers_go(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -760,6 +764,7 @@ def test_run_quiz_task_does_not_complete_on_a_visible_payout_when_the_row_still_
     assert state.count('coins_quiz') == 0
 
 
+@pytest.mark.slow
 def test_run_quiz_task_fails_when_nothing_changes(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -838,6 +843,7 @@ def test_run_quiz_task_completes_the_interstitial_visit(
     assert result.interstitial == REDEEM_INTERSTITIAL
 
 
+@pytest.mark.slow
 def test_run_quiz_task_completes_a_wrong_answer_without_aborting(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -886,6 +892,7 @@ def test_run_quiz_task_completes_a_wrong_answer_without_aborting(
     assert world.current == 'coins'
 
 
+@pytest.mark.slow
 def test_run_quiz_task_handles_a_multi_round_visit(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1049,6 +1056,7 @@ def test_run_quiz_task_fails_when_go_back_is_missing(
     assert result.verification == 'go_back_not_found'
 
 
+@pytest.mark.slow
 def test_run_quiz_task_fails_when_the_exit_never_arrives(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1121,6 +1129,7 @@ def test_run_quiz_task_fails_when_fewer_than_two_options_are_detected(
     assert result.verification == 'options_not_found'
 
 
+@pytest.mark.slow
 def test_run_quiz_task_fails_without_a_finishing_return(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1216,6 +1225,7 @@ def test_run_quiz_task_returns_before_re_raising_an_unclosable_popup(
     assert len(world.navigations) >= 1
 
 
+@pytest.mark.slow
 def test_run_quiz_task_reports_no_observation_when_the_list_cannot_be_read(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1373,6 +1383,7 @@ def test_quiz_result_as_dict_renders_the_evidence() -> None:
 # --- entry and arrival sweeps, and the verification return paths --------------
 
 
+@pytest.mark.slow
 def test_run_quiz_task_sweeps_a_popup_on_entry(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1422,6 +1433,7 @@ def test_run_quiz_task_sweeps_a_popup_on_entry(
     assert any('launch_welcome_gifts' in report.closed for report in result.dismissals)
 
 
+@pytest.mark.slow
 def test_run_quiz_task_sweeps_a_popup_on_arrival(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1470,6 +1482,7 @@ def test_run_quiz_task_sweeps_a_popup_on_arrival(
     assert result.dismissals
 
 
+@pytest.mark.slow
 def test_run_quiz_task_waits_out_a_loading_frame_on_arrival(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1589,6 +1602,7 @@ def test_run_quiz_task_returns_before_re_raising_when_the_return_also_fails(
     assert navigate.calls >= 1
 
 
+@pytest.mark.slow
 def test_run_quiz_task_stops_the_round_loop_at_the_bound(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1663,6 +1677,7 @@ def test_read_payout_ignores_a_low_score_box() -> None:
     assert read_payout(frame) is None
 
 
+@pytest.mark.slow
 def test_run_quiz_task_records_nothing_when_the_result_prints_no_answer(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1773,6 +1788,7 @@ def test_correct_answer_ignores_a_low_confidence_box() -> None:
     assert _correct_answer(frame) is None
 
 
+@pytest.mark.slow
 def test_run_quiz_task_sweeps_a_popup_during_the_result_wait(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1821,6 +1837,7 @@ def test_run_quiz_task_sweeps_a_popup_during_the_result_wait(
     assert result.dismissals
 
 
+@pytest.mark.slow
 def test_run_quiz_task_sweeps_a_popup_during_the_exit_wait(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1942,6 +1959,7 @@ def test_run_quiz_task_times_out_on_a_loading_question_wait(
     assert result.returned is True
 
 
+@pytest.mark.slow
 def test_run_quiz_task_reads_an_inline_route_with_no_earn_more(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1993,6 +2011,7 @@ def test_run_quiz_task_reads_an_inline_route_with_no_earn_more(
     assert result.returned is True
 
 
+@pytest.mark.slow
 def test_run_quiz_task_works_without_the_boost_family(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -2035,6 +2054,7 @@ class _CaptureObject:
         return self._world.capture()
 
 
+@pytest.mark.slow
 def test_run_quiz_task_accepts_a_capture_object(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -2280,6 +2300,7 @@ def test_run_quiz_task_quietly_returns_before_re_raising_when_the_popup_blocks_t
     assert world.navigations
 
 
+@pytest.mark.slow
 def test_run_quiz_task_taps_the_rng_chosen_label_in_a_reordered_answer_set(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -2331,6 +2352,7 @@ def test_run_quiz_task_taps_the_rng_chosen_label_in_a_reordered_answer_set(
     assert top <= answer_tap.point[1] <= bottom
 
 
+@pytest.mark.slow
 def test_run_quiz_task_keeps_a_redeem_stop_seen_by_the_exit_sweep(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,

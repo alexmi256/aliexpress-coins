@@ -8,34 +8,31 @@ Tests inject a recording fake, so no test spawns adb (docs/03-conventions.md).
 from __future__ import annotations
 
 import subprocess
-from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 from typing import Protocol
 
 from aliexpress_coins.control.errors import InputError
+from aliexpress_coins.transport import AdbResult, AdbRunner, SubprocessAdbRunner
+
+__all__ = [
+    'AdbInputDevice',
+    'InputDevice',
+    'InputResult',
+    'InputRunner',
+    'KeyDevice',
+    'SubprocessInputRunner',
+    'SwipeDevice',
+]
+
+InputResult = AdbResult
+"""An input invocation's raw bytes and exit status (the shared transport type)."""
+
+InputRunner = AdbRunner
+"""The shared adb transport seam; alias kept for the input-device vocabulary."""
+
+SubprocessInputRunner = SubprocessAdbRunner
+"""The real transport; alias kept for the input-device vocabulary."""
 
 _PREVIEW_BYTES = 200
-
-
-@dataclass(frozen=True, slots=True)
-class InputResult:
-    """The raw bytes and exit status of one input invocation."""
-
-    returncode: int
-    stdout: bytes = b''
-    stderr: bytes = b''
-
-
-InputRunner = Callable[[Sequence[str], float], InputResult]
-"""The transport seam: a callable that runs one adb argv and returns bytes."""
-
-
-class SubprocessInputRunner:
-    """The real transport, used outside tests."""
-
-    def __call__(self, args: Sequence[str], timeout: float) -> InputResult:
-        completed = subprocess.run(args, capture_output=True, timeout=timeout, check=False)
-        return InputResult(completed.returncode, completed.stdout, completed.stderr)
 
 
 class InputDevice(Protocol):

@@ -62,6 +62,7 @@ from aliexpress_coins.tasks.discovery import (
 from aliexpress_coins.tasks.dispatch import DispatchGate
 from aliexpress_coins.tasks.signin import ClaimResult, SigninOutcome, SigninReport, read_coin_balance
 from aliexpress_coins.tasks.surface import SHORTCUT_DEEP_LINK, Surface, SurfaceRoute
+from tests.support.adb import ScriptedAdbRunner, ok
 
 ROOT = Path(__file__).resolve().parents[1]
 CAPTURED_AT = datetime(2026, 11, 22, 3, 30, tzinfo=UTC)
@@ -201,24 +202,8 @@ class _FlakyCapture:
         return self.frame
 
 
-class _ScriptedRunner:
-    """The `adb` transport seam with one scripted result per command."""
-
-    def __init__(self, *results: DeviceCommandResult | Exception) -> None:
-        self.results = list(results)
-        self.calls: list[tuple[str, ...]] = []
-
-    def __call__(self, args: Any, timeout: float) -> DeviceCommandResult:
-        assert timeout > 0
-        self.calls.append(tuple(args))
-        result = self.results.pop(0)
-        if isinstance(result, Exception):
-            raise result
-        return result
-
-
 def _adb_ok(text: str = '') -> DeviceCommandResult:
-    return DeviceCommandResult(0, text.encode(), b'')
+    return ok(text)
 
 
 class _FakeOutcome(StrEnum):
@@ -451,6 +436,7 @@ def test_the_dispatch_table_covers_every_implemented_category(catalogue: TaskCat
     assert catalogue.allowed
 
 
+@pytest.mark.slow
 def test_a_full_walk_dispatches_in_reading_order_and_reports_the_task_budget(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -512,6 +498,7 @@ def test_policy_and_missing_executor_are_reported_as_skips(
     assert any(skip.title == 'Add a coins shortcut' and skip.reason == 'no executor' for skip in report.skipped)
 
 
+@pytest.mark.slow
 def test_a_wall_clock_budget_stops_before_the_first_task_and_lists_why(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -549,6 +536,7 @@ def test_a_wall_clock_budget_stops_before_the_first_task_and_lists_why(
     assert any(skip.key == 'coins_quiz' and skip.reason == 'run budget' for skip in report.skipped)
 
 
+@pytest.mark.slow
 def test_a_stop_request_ends_between_tasks_and_the_rest_is_reported(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -587,6 +575,7 @@ def test_a_stop_request_ends_between_tasks_and_the_rest_is_reported(
     assert report.ok is False
 
 
+@pytest.mark.slow
 def test_an_executor_exception_is_a_failed_task_not_a_lost_night(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -687,6 +676,7 @@ def test_a_cleanup_that_cannot_prove_the_coin_page_is_reported(
     assert report.return_error == 'no coin markers'
 
 
+@pytest.mark.slow
 def test_a_controller_factory_is_used_after_the_first_frame(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -928,6 +918,7 @@ def test_a_row_refused_by_the_gate_is_reported_as_a_policy_skip(
     assert result.payload['code'] == 'game_play_and_earn'
 
 
+@pytest.mark.slow
 def test_a_balance_decrease_during_a_task_aborts_and_still_returns_home(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1005,6 +996,7 @@ def test_an_aborted_run_reports_the_screen_and_returns_to_the_coins_page(
     assert payload['abort']['screen']['surface'] == 'unknown'
 
 
+@pytest.mark.slow
 def test_a_phone_geometry_runs_and_records_its_profile(
     tmp_path: Path,
     catalogue: TaskCatalogue,
@@ -1342,6 +1334,7 @@ def test_run_once_validates_its_own_budget_arguments(
         engine.run_once(context, max_tasks=0)
 
 
+@pytest.mark.slow
 def test_a_stop_that_interrupts_a_task_is_reported_as_a_stopped_run(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1453,6 +1446,7 @@ def test_balance_proof_re_raises_a_safety_abort(
         )
 
 
+@pytest.mark.slow
 def test_a_notification_task_abort_reaches_the_engine_and_returns_home(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1943,6 +1937,7 @@ def test_next_entry_returns_none_for_only_an_unsupported_row(
     assert engine._next_entry(replace(full_roster, entries=(shortcut,)), context.state, set()) is None
 
 
+@pytest.mark.slow
 def test_state_completion_failure_does_not_fail_a_finished_run(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1970,6 +1965,7 @@ def test_state_completion_failure_does_not_fail_a_finished_run(
     assert report.ok is True
 
 
+@pytest.mark.slow
 def test_a_stopped_run_still_restores_rotation_after_the_report(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1997,6 +1993,7 @@ def test_a_stopped_run_still_restores_rotation_after_the_report(
     assert report.json_path.is_file()
 
 
+@pytest.mark.slow
 def test_a_final_report_write_failure_still_restores_rotation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2035,6 +2032,7 @@ def test_a_final_report_write_failure_still_restores_rotation(
     assert hygiene.restored == 1
 
 
+@pytest.mark.slow
 def test_hygiene_restore_failure_does_not_fail_a_finished_run(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2064,6 +2062,7 @@ def test_hygiene_restore_failure_does_not_fail_a_finished_run(
     assert report.ok is True
 
 
+@pytest.mark.slow
 def test_the_balance_in_the_summary_is_read_back_from_the_recorded_shots(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2098,6 +2097,7 @@ def test_the_balance_in_the_summary_is_read_back_from_the_recorded_shots(
     assert payload['shots'] == report.shots
 
 
+@pytest.mark.slow
 def test_a_cold_start_does_not_read_the_balance_from_the_home_feed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2164,6 +2164,7 @@ def test_an_unproven_coin_page_leaves_the_balance_unknown_and_says_why(
     assert '**Balance note:** coins page not proven before the first task' in summary
 
 
+@pytest.mark.slow
 def test_a_proven_coin_page_without_a_readable_balance_says_so(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2355,6 +2356,7 @@ def test_popups_closed_during_discovery_observation_and_cleanup_are_counted(
     )
 
 
+@pytest.mark.slow
 def test_a_broken_webhook_is_logged_after_the_run_and_keeps_the_night_successful(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2458,6 +2460,7 @@ def test_a_failed_run_logs_error_and_sends_one_apprise_message(
     assert finished['failure_code'] == FailureCode.DEVICE_OFFLINE.value
 
 
+@pytest.mark.slow
 def test_a_broken_apprise_endpoint_keeps_the_night_successful_and_redacts_its_url(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2559,6 +2562,7 @@ def test_the_notification_body_has_counts_and_only_an_opted_in_balance_delta(tmp
     assert '1246' not in opted_in
 
 
+@pytest.mark.slow
 def test_a_webhook_password_never_reaches_the_report_or_the_log(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2593,6 +2597,7 @@ def test_a_webhook_password_never_reaches_the_report_or_the_log(
     assert secret not in report.event_log_path.read_text(encoding='utf-8')
 
 
+@pytest.mark.slow
 def test_a_notification_http_status_reaches_the_report_without_its_message(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2636,6 +2641,7 @@ def test_a_notification_http_status_reaches_the_report_without_its_message(
     assert secret not in report.event_log_path.read_text(encoding='utf-8')
 
 
+@pytest.mark.slow
 def test_rotation_is_restored_before_the_notification_is_delivered(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2665,6 +2671,7 @@ def test_rotation_is_restored_before_the_notification_is_delivered(
     assert restored_when_sent == [1]
 
 
+@pytest.mark.slow
 def test_a_night_that_claims_nothing_notifies_only_when_configured(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2704,6 +2711,7 @@ def test_a_night_that_claims_nothing_notifies_only_when_configured(
     assert noisy_report.notification == {'attempted': True, 'ok': True, 'sink': 'webhook', 'error': None}
 
 
+@pytest.mark.slow
 def test_a_completed_run_with_a_task_sends_one_apprise_message(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2744,6 +2752,7 @@ def test_a_completed_run_with_a_task_sends_one_apprise_message(
     assert report.notification == {'attempted': True, 'ok': True, 'sink': 'apprise', 'error': None}
 
 
+@pytest.mark.slow
 def test_retention_prunes_old_runs_after_the_current_report_is_written(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2774,6 +2783,7 @@ def test_retention_prunes_old_runs_after_the_current_report_is_written(
     assert 'runs_not_pruned' in report.event_log_path.read_text(encoding='utf-8')
 
 
+@pytest.mark.slow
 def test_a_run_log_start_failure_does_not_stop_the_report(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3031,6 +3041,7 @@ def test_a_network_pull_mid_walk_is_a_named_failure_and_a_clean_exit(
     assert report.event_log_path.is_file()
 
 
+@pytest.mark.slow
 def test_a_sleeping_device_wakes_and_the_run_completes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3038,7 +3049,7 @@ def test_a_sleeping_device_wakes_and_the_run_completes(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
 ) -> None:
-    runner = _ScriptedRunner(
+    runner = ScriptedAdbRunner(
         _adb_ok('device'),
         _adb_ok('mWakefulness=Asleep'),
         _adb_ok('Physical size: 2000x1200'),
@@ -3098,6 +3109,7 @@ def test_a_sleeping_device_wakes_and_the_run_completes(
         (RuntimeError('bug'), FailureCode.INTERNAL_ERROR, 1, 0.0),
     ],
 )
+@pytest.mark.slow
 def test_device_level_failures_follow_the_retry_table(
     tmp_path: Path,
     catalogue: TaskCatalogue,
@@ -3127,6 +3139,7 @@ def test_device_level_failures_follow_the_retry_table(
     assert code.value in report.summary_path.read_text(encoding='utf-8')
 
 
+@pytest.mark.slow
 def test_a_sleeping_hygiene_pass_is_retried_once_and_then_succeeds(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3191,6 +3204,7 @@ def test_a_logged_out_device_stops_at_the_first_detection(
     assert 'app_logged_out' in notifier.messages[0].tags
 
 
+@pytest.mark.slow
 def test_an_unverified_task_is_retried_once_and_the_second_result_stands(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3236,6 +3250,7 @@ def test_an_unverified_task_is_retried_once_and_the_second_result_stands(
     assert report.status is RunStatus.COMPLETED
 
 
+@pytest.mark.slow
 def test_an_unverified_task_that_stays_unverified_is_reported_and_the_walk_continues(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3276,6 +3291,7 @@ def test_an_unverified_task_that_stays_unverified_is_reported_and_the_walk_conti
     assert 'task_unverified' in report.summary_path.read_text(encoding='utf-8')
 
 
+@pytest.mark.slow
 def test_an_unclosable_popup_aborts_the_run_without_a_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3311,6 +3327,7 @@ def test_an_unclosable_popup_aborts_the_run_without_a_retry(
     assert report.tasks == []
 
 
+@pytest.mark.slow
 def test_a_route_timeout_uses_the_route_policy_without_another_route_cycle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3461,6 +3478,7 @@ def test_a_sign_out_discovered_during_the_balance_proof_is_re_raised(
         )
 
 
+@pytest.mark.slow
 def test_an_unverified_sign_in_is_dispatched_once_and_taps_once(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3522,6 +3540,7 @@ class _UnverifiedSignin:
         return {'streak': {'outcome': 'unverified', 'tapped': True}, 'boost': None}
 
 
+@pytest.mark.slow
 def test_a_sign_out_during_the_walk_stops_the_next_dispatch(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

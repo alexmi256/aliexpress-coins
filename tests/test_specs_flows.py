@@ -132,6 +132,7 @@ def test_every_state_declares_valid_provenance(spec: dict[str, Any]) -> None:
             assert state['status'] in STATE_STATUSES, f'{flow["key"]}/{state["key"]} has status {state["status"]!r}'
 
 
+@pytest.mark.slow
 def test_declared_patterns_and_absences_match_their_fixture(
     spec: dict[str, Any], fixture_text: Callable[[Path, list[float] | None], str]
 ) -> None:

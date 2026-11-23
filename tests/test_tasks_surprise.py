@@ -462,6 +462,7 @@ def test_find_surprise_tiles_splits_the_two_columns_from_the_grid() -> None:
     assert all(tile.box.width > 0 and tile.box.height > 0 for tile in tiles)
 
 
+@pytest.mark.slow
 def test_find_surprise_tiles_on_the_measured_grid_does_not_return_the_header(engine: RapidOcrEngine) -> None:
     frame = _load(DATA / 'flows' / 'surprise_items_round_grid.png', engine)
 
@@ -478,6 +479,7 @@ def test_find_surprise_tiles_on_the_measured_grid_does_not_return_the_header(eng
     assert any('T9 Vintage' in tile.label for tile in merged)
 
 
+@pytest.mark.slow
 def test_the_measured_counter_fixtures_read_through_the_pill_crop(engine: RapidOcrEngine) -> None:
     grid = _load(DATA / 'flows' / 'surprise_items_round_grid.png', engine)
     one = _load(DATA / 'flows' / 'surprise_items_progress_1of3.png', engine)
@@ -491,6 +493,7 @@ def test_the_measured_counter_fixtures_read_through_the_pill_crop(engine: RapidO
     assert read_surprise_counter(complete, ocr=engine).complete  # type: ignore[union-attr]
 
 
+@pytest.mark.slow
 def test_read_surprise_counter_reads_a_slashed_box_and_returns_none_without_a_digit() -> None:
     slashed = _snapshot(_box('1 / 3', 480, 440, 573, 490))
     empty = _snapshot(_box('Browse surprise items', 270, 200, 930, 270))
@@ -499,6 +502,7 @@ def test_read_surprise_counter_reads_a_slashed_box_and_returns_none_without_a_di
     assert read_surprise_counter(empty) is None
 
 
+@pytest.mark.slow
 def test_find_next_round_and_mission_overlay_on_the_measured_frames(engine: RapidOcrEngine) -> None:
     complete = _load(DATA / 'flows' / 'surprise_items_round_complete.png', engine)
     mission = _load(DATA / 'flows' / 'surprise_items_mission_completed.png', engine)
@@ -853,6 +857,7 @@ def test_run_surprise_task_fails_when_the_grid_never_arrives(
     assert result.returned is True
 
 
+@pytest.mark.slow
 def test_run_surprise_task_fails_without_tapping_when_the_counter_is_unreadable(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1322,6 +1327,7 @@ def test_run_surprise_task_returns_before_re_raising_an_unclosable_popup(
     assert world.navigations
 
 
+@pytest.mark.slow
 def test_surprise_surface_settle_handles_loading_popup_and_overlay(
     corpus: PopupCorpus,
     engine: RapidOcrEngine,
@@ -1369,6 +1375,7 @@ def test_surprise_surface_settle_handles_loading_popup_and_overlay(
     assert dismiss is None
 
 
+@pytest.mark.slow
 def test_surprise_surface_settle_times_out_on_loading_and_popup(
     corpus: PopupCorpus,
     engine: RapidOcrEngine,
@@ -1430,6 +1437,7 @@ def test_surprise_surface_settle_times_out_inside_the_loading_wait(corpus: Popup
     assert frame is loading
 
 
+@pytest.mark.slow
 def test_surprise_surface_settle_returns_the_popup_report_on_timeout(
     corpus: PopupCorpus,
     engine: RapidOcrEngine,
@@ -1458,6 +1466,7 @@ def test_surprise_surface_settle_returns_the_popup_report_on_timeout(
     assert dismiss is not None
 
 
+@pytest.mark.slow
 def test_surprise_wait_for_surface_covers_popup_loading_timeout_and_overlay(
     corpus: PopupCorpus,
     engine: RapidOcrEngine,
@@ -1578,6 +1587,7 @@ def test_find_surprise_tiles_skips_non_product_and_out_of_grid_lines() -> None:
     assert [tile.label for tile in tiles] == ['Product C']
 
 
+@pytest.mark.slow
 def test_read_surprise_counter_rejects_a_zero_total_and_a_too_large_digit() -> None:
     zero = _snapshot(_box('0/0', 480, 440, 573, 490))
     too_large = _snapshot(_box('9', 480, 440, 573, 490))
@@ -1659,6 +1669,7 @@ def test_run_surprise_task_appends_an_entry_popup_sweep(
     assert result.verification == 'row_complete'
 
 
+@pytest.mark.slow
 def test_run_surprise_task_sweeps_a_popup_on_arrival_to_the_grid(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1684,6 +1695,7 @@ def test_run_surprise_task_sweeps_a_popup_on_arrival_to_the_grid(
     assert result.round_records[0].complete is True
 
 
+@pytest.mark.slow
 def test_run_surprise_task_stops_when_no_next_round_is_offered(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1889,6 +1901,7 @@ def test_surprise_private_capture_and_return_helpers_cover_objects_and_errors(
     )
 
 
+@pytest.mark.slow
 def test_surprise_run_round_reports_an_unreadable_counter() -> None:
     from aliexpress_coins.tasks.surprise import _run_round, _TriedTiles
 
@@ -1944,6 +1957,7 @@ def _many_tile_grid() -> Snapshot:
     return _snapshot(*boxes)
 
 
+@pytest.mark.slow
 def test_run_surprise_task_stops_at_the_round_tap_budget(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1999,6 +2013,7 @@ def test_run_surprise_task_fails_when_back_returns_to_the_wrong_page(
     assert result.recorded is False
 
 
+@pytest.mark.slow
 def test_run_surprise_task_sweeps_popups_on_the_detail_and_return_waits(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -2317,6 +2332,7 @@ def test_is_card_anchor_rejects_an_empty_line() -> None:
     assert _is_card_anchor(_box('   ', 100, 600, 300, 650)) is False
 
 
+@pytest.mark.slow
 def test_run_surprise_task_sweeps_a_popup_after_next_round(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -2431,6 +2447,7 @@ def test_run_surprise_task_stops_when_next_round_reveals_the_redeem_overlay(
     assert result.returned is True
 
 
+@pytest.mark.slow
 def test_surprise_sweep_does_not_close_the_boost_list_it_was_opened_from(
     corpus: PopupCorpus,
     engine: RapidOcrEngine,
@@ -2485,6 +2502,7 @@ def test_read_surprise_counter_returns_none_when_the_crop_ocr_fails() -> None:
     assert read_surprise_counter(frame, ocr=_FailingOcr()) is None  # type: ignore[arg-type]
 
 
+@pytest.mark.slow
 def test_run_surprise_task_does_not_attribute_a_multi_credit_jump_to_one_tile(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -2532,6 +2550,7 @@ def test_run_surprise_task_does_not_attribute_a_multi_credit_jump_to_one_tile(
     assert 'Product B' not in result.round_records[0].items
 
 
+@pytest.mark.slow
 def test_run_surprise_task_does_not_attribute_a_delayed_credit_to_the_next_tile(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,

@@ -27,30 +27,10 @@ from aliexpress_coins.runner.errors import (
     DeviceUnavailable,
 )
 from aliexpress_coins.tasks.surface import SHORTCUT_DEEP_LINK, SurfaceRoute
+from tests.support.adb import ScriptedAdbRunner, fail, ok
 
-
-class _Runner:
-    def __init__(self, *results: DeviceCommandResult | Exception) -> None:
-        self.results = list(results)
-        self.calls: list[tuple[str, ...]] = []
-        self.timeouts: list[float] = []
-
-    def __call__(self, args: Sequence[str], timeout: float) -> DeviceCommandResult:
-        assert timeout > 0
-        self.calls.append(tuple(args))
-        self.timeouts.append(timeout)
-        result = self.results.pop(0)
-        if isinstance(result, Exception):
-            raise result
-        return result
-
-
-def _ok(text: str = '') -> DeviceCommandResult:
-    return DeviceCommandResult(0, text.encode(), b'')
-
-
-def _fail(text: str = 'failed') -> DeviceCommandResult:
-    return DeviceCommandResult(1, b'', text.encode())
+_ok = ok
+_fail = fail
 
 
 def _prepare_results(
@@ -98,14 +78,14 @@ def _prepare_results(
 def _device(*results: DeviceCommandResult | Exception, settle: list[float] | None = None) -> AdbDevice:
     return AdbDevice(
         'usb-serial',
-        runner=_Runner(*results),
+        runner=ScriptedAdbRunner(*results),
         app_settle_seconds=10.0,
         settle=(settle if settle is not None else []).append,
     )
 
 
 def test_prepare_wakes_dismisses_the_keyguard_and_warms_the_app() -> None:
-    runner = _Runner(*_prepare_results())
+    runner = ScriptedAdbRunner(*_prepare_results())
     sleeps: list[float] = []
     device = AdbDevice('usb-serial', runner=runner, app_settle_seconds=10.0, settle=sleeps.append)
 
@@ -143,7 +123,7 @@ def test_prepare_wakes_dismisses_the_keyguard_and_warms_the_app() -> None:
 
 
 def test_a_sleeping_device_is_recorded_woken_and_then_prepared() -> None:
-    runner = _Runner(*_prepare_results(power='mWakefulness=Asleep', power_after_wake='mWakefulness=Awake'))
+    runner = ScriptedAdbRunner(*_prepare_results(power='mWakefulness=Asleep', power_after_wake='mWakefulness=Awake'))
     sleeps: list[float] = []
     device = AdbDevice('usb-serial', runner=runner, app_settle_seconds=0, settle=sleeps.append)
 
@@ -168,7 +148,7 @@ def daily_commands(calls: list[tuple[str, ...]]) -> list[str]:
 
 
 def test_restore_puts_the_previous_stay_awake_and_rotation_settings_back() -> None:
-    runner = _Runner(*_prepare_results(), _ok(), _ok(), _ok())
+    runner = ScriptedAdbRunner(*_prepare_results(), _ok(), _ok(), _ok())
     device = AdbDevice('usb-serial', runner=runner, app_settle_seconds=0)
     device.prepare()
 
@@ -186,7 +166,7 @@ def test_restore_puts_the_previous_stay_awake_and_rotation_settings_back() -> No
 
 
 def test_an_unreadable_stay_awake_setting_is_left_alone() -> None:
-    runner = _Runner(*_prepare_results(stay_on='null'), _ok(), _ok())
+    runner = ScriptedAdbRunner(*_prepare_results(stay_on='null'), _ok(), _ok())
     device = AdbDevice('usb-serial', runner=runner, app_settle_seconds=0)
 
     report = device.prepare()
@@ -200,7 +180,7 @@ def test_an_unreadable_stay_awake_setting_is_left_alone() -> None:
 
 
 def test_a_network_serial_is_connected_when_get_state_fails_first() -> None:
-    runner = _Runner(
+    runner = ScriptedAdbRunner(
         _fail('not found'),
         _ok('connected to 192.168.8.65:5555'),
         *_prepare_results(),
@@ -215,7 +195,7 @@ def test_a_network_serial_is_connected_when_get_state_fails_first() -> None:
 
 
 def test_a_network_connect_that_does_not_produce_a_device_is_an_error() -> None:
-    runner = _Runner(_fail('not found'), _ok('connected'), _fail('offline'))
+    runner = ScriptedAdbRunner(_fail('not found'), _ok('connected'), _fail('offline'))
     device = AdbDevice('192.168.8.65:5555', runner=runner)
 
     with pytest.raises(DeviceUnavailable, match='adb connect: connected'):
@@ -223,53 +203,53 @@ def test_a_network_connect_that_does_not_produce_a_device_is_an_error() -> None:
 
 
 def test_a_missing_usb_device_is_an_error() -> None:
-    runner = _Runner(_fail('device offline'))
+    runner = ScriptedAdbRunner(_fail('device offline'))
     device = AdbDevice('usb-serial', runner=runner)
     with pytest.raises(DeviceUnavailable, match='device offline'):
         device.prepare()
 
 
 def test_a_failed_wake_is_named_as_sleeping() -> None:
-    runner = _Runner(*_prepare_results(wake=_fail('input failed')))
+    runner = ScriptedAdbRunner(*_prepare_results(wake=_fail('input failed')))
     device = AdbDevice('usb-serial', runner=runner, app_settle_seconds=0)
     with pytest.raises(DeviceSleeping, match='did not wake'):
         device.prepare()
 
 
 def test_a_keyguard_that_survives_wake_is_named_as_locked() -> None:
-    runner = _Runner(*_prepare_results(keyguard='isKeyguardShowing=true'))
+    runner = ScriptedAdbRunner(*_prepare_results(keyguard='isKeyguardShowing=true'))
     device = AdbDevice('usb-serial', runner=runner, app_settle_seconds=0)
     with pytest.raises(DeviceLocked, match='PIN or biometric'):
         device.prepare()
 
 
 def test_an_absent_package_is_named_as_not_installed() -> None:
-    runner = _Runner(*_prepare_results(package=_ok('')))
+    runner = ScriptedAdbRunner(*_prepare_results(package=_ok('')))
     device = AdbDevice('usb-serial', runner=runner, app_settle_seconds=0)
     with pytest.raises(AppNotInstalled, match='not installed'):
         device.prepare()
 
 
 def test_a_launch_that_reports_an_error_is_named_as_a_launch_failure() -> None:
-    runner = _Runner(*_prepare_results(start=_ok('Error: Activity class does not exist')))
+    runner = ScriptedAdbRunner(*_prepare_results(start=_ok('Error: Activity class does not exist')))
     device = AdbDevice('usb-serial', runner=runner, app_settle_seconds=0)
     with pytest.raises(AppLaunchFailed, match='did not start'):
         device.prepare()
 
 
 def test_check_connected_names_a_lost_serial() -> None:
-    device = AdbDevice('usb-serial', runner=_Runner(_fail('device offline')))
+    device = AdbDevice('usb-serial', runner=ScriptedAdbRunner(_fail('device offline')))
     with pytest.raises(DeviceUnavailable, match='device offline'):
         device.check_connected()
 
 
 def test_check_connected_passes_when_the_serial_answers() -> None:
-    device = AdbDevice('usb-serial', runner=_Runner(_ok('device')))
+    device = AdbDevice('usb-serial', runner=ScriptedAdbRunner(_ok('device')))
     device.check_connected()
 
 
 def test_navigate_fires_the_measured_shortcut_intent() -> None:
-    runner = _Runner(_ok())
+    runner = ScriptedAdbRunner(_ok())
     device = AdbDevice('usb-serial', runner=runner)
 
     device.navigate(SurfaceRoute.SHORTCUT)
@@ -291,7 +271,7 @@ def test_navigate_fires_the_measured_shortcut_intent() -> None:
 
 
 def test_the_widget_route_is_refused_rather_than_guessed() -> None:
-    runner = _Runner()
+    runner = ScriptedAdbRunner()
     device = AdbDevice('usb-serial', runner=runner)
     with pytest.raises(DeviceError, match='not implemented'):
         device.navigate(SurfaceRoute.WIDGET)
@@ -299,28 +279,28 @@ def test_the_widget_route_is_refused_rather_than_guessed() -> None:
 
 
 def test_a_failed_navigation_is_a_device_error() -> None:
-    runner = _Runner(_fail('no activity found'))
+    runner = ScriptedAdbRunner(_fail('no activity found'))
     device = AdbDevice('usb-serial', runner=runner)
     with pytest.raises(DeviceError, match='take the measured shortcut route'):
         device.navigate(SurfaceRoute.SHORTCUT)
 
 
 def test_a_timeout_is_a_device_error() -> None:
-    runner = _Runner(subprocess.TimeoutExpired('adb', 1.0))
+    runner = ScriptedAdbRunner(subprocess.TimeoutExpired('adb', 1.0))
     device = AdbDevice('usb-serial', runner=runner)
     with pytest.raises(DeviceError, match='timed out'):
         device.prepare()
 
 
 def test_an_oserror_is_a_device_error() -> None:
-    runner = _Runner(OSError('no adb binary'))
+    runner = ScriptedAdbRunner(OSError('no adb binary'))
     device = AdbDevice('usb-serial', runner=runner)
     with pytest.raises(DeviceError, match='could not run adb'):
         device.prepare()
 
 
 def test_a_long_failure_output_is_previewed_and_bounded() -> None:
-    runner = _Runner(_fail('x' * 400))
+    runner = ScriptedAdbRunner(_fail('x' * 400))
     device = AdbDevice('usb-serial', runner=runner)
     with pytest.raises(DeviceError) as raised:
         device.prepare()
@@ -423,7 +403,7 @@ def test_the_real_subprocess_runner_returns_the_completed_process(monkeypatch: p
 
 
 def test_an_unparseable_panel_size_skips_the_rotation_lock_and_swipe() -> None:
-    runner = _Runner(
+    runner = ScriptedAdbRunner(
         _ok('device'),
         _ok('mWakefulness=Awake'),
         _ok('no dimensions here'),
@@ -444,7 +424,7 @@ def test_an_unparseable_panel_size_skips_the_rotation_lock_and_swipe() -> None:
 
 
 def test_a_missing_previous_setting_leaves_rotation_alone() -> None:
-    runner = _Runner(
+    runner = ScriptedAdbRunner(
         _ok('device'),
         _ok('mWakefulness=Awake'),
         _ok('Physical size: 2000x1200'),
@@ -471,7 +451,7 @@ def test_a_missing_previous_setting_leaves_rotation_alone() -> None:
 
 
 def test_a_failed_rotation_restore_still_attempts_the_stay_awake_restore() -> None:
-    runner = _Runner(
+    runner = ScriptedAdbRunner(
         *_prepare_results(),
         _ok(),
         _fail('settings write failed'),
@@ -501,7 +481,7 @@ def test_a_failed_rotation_restore_still_attempts_the_stay_awake_restore() -> No
 
 
 def test_restore_attempts_the_rotation_even_when_the_stay_awake_write_fails() -> None:
-    runner = _Runner(
+    runner = ScriptedAdbRunner(
         *_prepare_results(),
         _fail('stay-awake write failed'),
         _ok(),
@@ -520,21 +500,21 @@ def test_restore_attempts_the_rotation_even_when_the_stay_awake_write_fails() ->
 
 
 def test_a_launch_command_that_fails_is_named_as_a_launch_failure() -> None:
-    runner = _Runner(*_prepare_results(start=_fail('activity manager died')), _ok('device'))
+    runner = ScriptedAdbRunner(*_prepare_results(start=_fail('activity manager died')), _ok('device'))
     device = AdbDevice('usb-serial', runner=runner, app_settle_seconds=0)
     with pytest.raises(AppLaunchFailed, match='could not be started'):
         device.prepare()
 
 
 def test_a_launch_probe_on_an_offline_serial_is_named_as_offline() -> None:
-    runner = _Runner(*_prepare_results(start=_fail('activity manager died')), _fail('device offline'))
+    runner = ScriptedAdbRunner(*_prepare_results(start=_fail('activity manager died')), _fail('device offline'))
     device = AdbDevice('usb-serial', runner=runner, app_settle_seconds=0)
     with pytest.raises(DeviceUnavailable, match='device offline'):
         device.prepare()
 
 
 def test_a_failed_user_rotation_restore_is_reported_after_the_stay_awake_write() -> None:
-    runner = _Runner(
+    runner = ScriptedAdbRunner(
         *_prepare_results(),
         _ok(),
         _ok(),
@@ -550,7 +530,7 @@ def test_a_failed_user_rotation_restore_is_reported_after_the_stay_awake_write()
 
 
 def test_a_second_prepare_keeps_the_original_restore_values() -> None:
-    runner = _Runner(*_prepare_results(), *_prepare_results())
+    runner = ScriptedAdbRunner(*_prepare_results(), *_prepare_results())
     device = AdbDevice('usb-serial', runner=runner, app_settle_seconds=0)
 
     first = device.prepare()
@@ -564,7 +544,7 @@ def test_a_second_prepare_keeps_the_original_restore_values() -> None:
 def test_a_package_probe_on_an_offline_serial_is_named_as_offline() -> None:
     results = _prepare_results(package=_fail('pm path failed'))
     results.insert(14, _fail('device offline'))
-    runner = _Runner(*results)
+    runner = ScriptedAdbRunner(*results)
     device = AdbDevice('usb-serial', runner=runner, app_settle_seconds=0)
 
     with pytest.raises(DeviceUnavailable, match='device offline'):
@@ -575,7 +555,7 @@ def test_a_failed_stay_awake_write_still_checks_the_serial_and_continues() -> No
     results = _prepare_results()
     results[12] = _fail('svc failed')
     results.insert(13, _ok('device'))
-    runner = _Runner(*results)
+    runner = ScriptedAdbRunner(*results)
     device = AdbDevice('usb-serial', runner=runner, app_settle_seconds=0)
 
     report = device.prepare()
@@ -585,7 +565,7 @@ def test_a_failed_stay_awake_write_still_checks_the_serial_and_continues() -> No
 
 
 def test_a_sleeping_device_that_stays_dark_is_named_as_sleeping_after_the_settle() -> None:
-    runner = _Runner(
+    runner = ScriptedAdbRunner(
         *_prepare_results(power='mWakefulness=Dozing', power_after_wake='mWakefulness=Dozing'),
     )
     sleeps: list[float] = []

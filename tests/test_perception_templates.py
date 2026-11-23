@@ -186,6 +186,7 @@ def test_a_crop_cut_at_1200_still_matches_a_1080_wide_frame(
     assert match.location[1] == pytest.approx(1440, abs=3)
 
 
+@pytest.mark.slow
 def test_a_changed_aspect_ratio_uses_the_vertical_scale_fallback(
     store: TemplateStore,
     launch_frame: Image.Image,
@@ -203,6 +204,7 @@ def test_a_changed_aspect_ratio_uses_the_vertical_scale_fallback(
 
 
 @pytest.mark.parametrize('size', [(1080, 2400), (720, 1600)])
+@pytest.mark.slow
 def test_a_tall_phone_aspect_uses_the_wider_vertical_fallback(
     store: TemplateStore,
     launch_frame: Image.Image,
@@ -218,6 +220,7 @@ def test_a_tall_phone_aspect_uses_the_wider_vertical_fallback(
     assert match.location[1] == pytest.approx(1600 * size[1] / 2000, abs=3)
 
 
+@pytest.mark.slow
 def test_a_wrong_glyph_scores_below_the_threshold(
     store: TemplateStore,
     launch_frame: Image.Image,
@@ -249,6 +252,7 @@ def test_a_uniform_frame_never_matches(value: int, store: TemplateStore) -> None
     assert match_template(frame, store.by_family('launch_welcome_gifts')) is None
 
 
+@pytest.mark.slow
 def test_blanking_the_control_region_removes_the_match(
     store: TemplateStore,
     launch_frame: Image.Image,
@@ -320,6 +324,7 @@ def test_a_family_without_a_crop_is_still_a_lookup_error(store: TemplateStore) -
         store.by_family('missing')
 
 
+@pytest.mark.slow
 def test_match_all_returns_every_acceptable_family_best_first(
     store: TemplateStore,
     launch_frame: Image.Image,
@@ -479,6 +484,7 @@ def test_a_template_that_becomes_flat_after_resizing_is_skipped(
     assert templates_module._search(frame, glyph, (1.0,)) is None
 
 
+@pytest.mark.slow
 def test_a_non_finite_score_map_never_becomes_a_match(
     monkeypatch: pytest.MonkeyPatch,
     store: TemplateStore,
@@ -495,6 +501,7 @@ def test_a_non_finite_score_map_never_becomes_a_match(
     assert match_template(launch_frame, store.by_family('launch_welcome_gifts')) is None
 
 
+@pytest.mark.slow
 def test_a_failed_refinement_falls_back_to_the_full_resolution_search(
     monkeypatch: pytest.MonkeyPatch,
     store: TemplateStore,
@@ -526,6 +533,7 @@ def test_a_failed_refinement_falls_back_to_the_full_resolution_search(
     assert calls >= 3
 
 
+@pytest.mark.slow
 def test_a_coarse_hit_outside_the_frame_falls_back_to_full_search(
     monkeypatch: pytest.MonkeyPatch,
     store: TemplateStore,
@@ -552,6 +560,7 @@ def test_a_coarse_hit_outside_the_frame_falls_back_to_full_search(
     assert match.location == (532, 1600)
 
 
+@pytest.mark.slow
 def test_the_matcher_accepts_pil_colour_arrays_rgba_and_a_snapshot(launch_frame: Image.Image) -> None:
     rgb = _colour_frame(LAUNCH_FIXTURE)
     rgba = np.dstack((rgb, np.full(rgb.shape[:2], 255, dtype=np.uint8)))

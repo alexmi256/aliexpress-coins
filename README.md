@@ -33,6 +33,8 @@ that workflow lands, a local green is the only automated verdict. Other recipes:
 | `just fmt-check` | fail if formatting would change anything |
 | `just typecheck` | mypy strict over `src/` and `tests/` |
 | `just test` | pytest, with the coverage ratchet enforced |
+| `just test-fast` | pytest excluding the `slow` marker; no coverage ratchet |
+| `just check-fast` | the fast lane: lint, format check, mypy and `test-fast` |
 | `just cov` | pytest plus HTML and XML coverage reports |
 | `just clean` | remove `.venv`, caches, coverage output and build artefacts |
 
@@ -113,6 +115,36 @@ drops below the floor.
 The plan and the conventions the build must follow are in [`docs/`](docs/) — start with
 [`docs/03-conventions.md`](docs/03-conventions.md) and
 [`docs/04-delivery-plan.md`](docs/04-delivery-plan.md).
+
+### Simulated-device test harness
+
+The suite never needs the tablet, and a forgotten mock cannot reach it. Two autouse fixtures in
+`tests/conftest.py` refuse socket connections and process spawns, naming the convention in the
+failure; `tests/test_package.py` proves the guards bite, including for `Popen`, `os.system`,
+`os.posix_spawn` and `fork`.
+
+Above those guards sit the two seams from `docs/03-conventions.md`:
+
+- **transport** — `aliexpress_coins.transport` is the one `AdbRunner` contract. The real client
+  (`AdbSnapshotter`, `AdbInputDevice`, `AdbDevice`, `doctor`, the notification probe) is always
+  constructed around it; tests pass `tests/support/adb.py:ScriptedAdbRunner`, which replays a
+  queue, answers by argv, or replays a transcript recorded with `RecordingAdbRunner`. An
+  unscripted call raises `AssertionError` naming the argv instead of falling back to a device.
+  Recording defaults to the gitignored `tests/transcripts/`; binary output such as a screencap is
+  omitted (only its byte count is recorded), never base64-encoded into the transcript.
+- **snapshot** — `tests/support/frames.py:ScriptedSnapshotter` implements the `Snapshotter`
+  protocol and replays a directory of recorded PNGs. `repeat=2` supplies the same frame twice for
+  stability waits, and `override_call()` substitutes one frame without rewriting the sequence.
+
+Recorded frames live under `tests/data/` and are gitignored by set; the regeneration recipe is in
+[`tests/data/README.md`](tests/data/README.md).
+
+`just check` remains the gate and runs every test with the coverage ratchet. `just check-fast` is
+the diagnostic loop: it excludes tests marked `slow` (full-frame OCR, template scans and the long
+engine retry walks) and does not enforce coverage. Measured on 2026-11-22: the full suite is
+**1580 passed in 184 s** (203 tests marked slow, coverage 99.40%); `just check-fast` is
+**1377 passed in 43 s** (44 s with lint, format and type checks). The fast lane is dominated by
+the remaining sub-200 ms frame and parser tests plus collection, not by any single fixture.
 
 ## What was learned before writing any requirements
 
