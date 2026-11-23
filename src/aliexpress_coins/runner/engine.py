@@ -368,7 +368,7 @@ def run_once(
     except Exception as exc:
         log.warning('%s', _event('run_log_failed', detail=f'{type(exc).__name__}: {exc}'))
 
-    safety = context.safety if context.safety is not None else SafetyGuard(catalogue=context.catalogue, logger=log)
+    safety = context.safety if context.safety is not None else SafetyGuard(catalogue=context.catalogue)
     if context.safety is None:
         context.safety = safety
         context.capture = safety.wrap(context.capture)

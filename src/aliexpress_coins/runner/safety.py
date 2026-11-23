@@ -28,7 +28,6 @@ it. The engine reports both and still runs its return-to-coins-page path.
 
 from __future__ import annotations
 
-import logging
 import re
 import unicodedata
 from collections.abc import Callable, Iterator
@@ -152,14 +151,12 @@ class SafetyGuard:
         self,
         *,
         catalogue: TaskCatalogue | None = None,
-        logger: logging.Logger | None = None,
         limit: int = UNEXPECTED_SCREEN_LIMIT,
     ) -> None:
         if limit < 1:
             raise ValueError(f'limit must be positive, got {limit!r}')
         self.limit = limit
         self.catalogue = catalogue
-        self._logger = logger if logger is not None else logging.getLogger(__name__)
         self._task_depth = 0
         self._task_label: str | None = None
         self._streak_fingerprint: str | None = None

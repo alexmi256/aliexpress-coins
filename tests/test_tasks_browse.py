@@ -1084,7 +1084,7 @@ def test_run_browse_task_dwells_on_the_recorded_coin_store_and_returns(
     coin_store: Snapshot,
 ) -> None:
     cleared = _without_timer(coin_store)
-    guard = SafetyGuard(catalogue=catalogue, logger=logging.getLogger('test.browse.safety'))
+    guard = SafetyGuard(catalogue=catalogue)
     world = _World(
         series={
             'boost': (_boost_frame(),),
