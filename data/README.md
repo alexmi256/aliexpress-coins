@@ -35,3 +35,30 @@ from it (case-folded, punctuation-stripped, whitespace-collapsed, with `l`/`1`
 and `o`/`0` folded together so OCR noise does not create duplicates). Entries
 are sorted by `key`, and replaying an unchanged observation does not rewrite the
 file. Questions and options only: no account data belongs here.
+
+## Container persistence
+
+The committed `quiz_bank.json` is the seed. `compose.yaml` mounts the named
+volume `data` at `/app/data`; Docker fills that volume from the image's `data/`
+directory the first time it is created. After that, entries learned at runtime
+live in the volume and survive container restarts, image rebuilds and
+`docker compose up --build`.
+
+A changed committed bank does not automatically replace an existing volume. To
+copy a learned bank back into the repository, with the collector container
+running:
+
+```sh
+docker compose cp collector:/app/data/quiz_bank.json data/quiz_bank.json
+```
+
+To publish a committed bank into an existing volume:
+
+```sh
+docker compose cp data/quiz_bank.json collector:/app/data/quiz_bank.json
+```
+
+Manual rebuild check: let a run learn an entry, run `docker compose up -d
+--build`, then confirm it is still present with `docker compose exec collector
+cat /app/data/quiz_bank.json`. Only `docker compose down -v` removes the volume
+and its learned entries.

@@ -71,6 +71,7 @@ from aliexpress_coins.tasks.quiz_bank import (
     QuestionSource,
     QuizBank,
     QuizBankError,
+    match_option,
 )
 from aliexpress_coins.tasks.surface import (
     COIN_PAGE_MARKERS,
@@ -168,6 +169,9 @@ _PAYOUT = re.compile(r'You got\s*\+\s*(\d+)', re.IGNORECASE)
 
 _CORRECT_ANSWER = re.compile(r'correct\s*answer', re.IGNORECASE)
 """The marker for the learned-answer line (``Correct answer: X``)."""
+
+_YOUR_ANSWER = re.compile(r'your\s*answer', re.IGNORECASE)
+"""The marker that ends a wrapped learned-answer line (``Your answer: Y``)."""
 
 _BARE_NUMBER = re.compile(r'^\s*\d{1,3}\s*$')
 """A standalone digit: a page counter, never an answer option."""
@@ -1100,12 +1104,23 @@ def _record_observation(
     """Learn the result page's answer, without letting a write failure fail the quiz."""
     if question is None or chosen is None or correct is None:
         return
+    option_texts = [option.text for option in options]
+    matched = match_option(correct, option_texts)
+    if matched is None:
+        _warn(
+            logger,
+            'quiz_bank_answer_unmatched',
+            question=question,
+            correct=correct,
+            options=option_texts,
+        )
+        return
     try:
         bank.record(
             question,
-            [option.text for option in options],
+            option_texts,
             chosen,
-            correct,
+            option_texts[matched],
             source=QuestionSource.RESULT_PAGE,
         )
     except (QuizBankError, OSError, ValueError, TypeError) as exc:
@@ -1603,16 +1618,35 @@ def _question_text(snapshot: Snapshot) -> str | None:
 
 
 def _correct_answer(snapshot: Snapshot) -> str | None:
-    """Read the learned answer off the result page (``Correct answer: X``)."""
-    for box in snapshot.boxes:
-        if box.score < DEFAULT_MIN_OCR_SCORE:
-            continue
-        if _CORRECT_ANSWER.search(box.text):
-            value = re.sub(r'^.*correct\s*answer\s*[:.]?\s*', '', box.text, count=1, flags=re.IGNORECASE)
-            value = value.strip()
-            if value:
-                return value
-    return None
+    """Read the learned answer off the result page (``Correct answer: X``).
+
+    Long option text wraps onto following OCR lines; those lines are joined up
+    to the ``Your answer:`` marker so the recorded answer is the option the quiz
+    page actually shows, not just the first physical line.
+    """
+    correct = next(
+        (box for box in snapshot.boxes if box.score >= DEFAULT_MIN_OCR_SCORE and _CORRECT_ANSWER.search(box.text)),
+        None,
+    )
+    if correct is None:
+        return None
+    value = re.sub(r'^.*correct\s*answer\s*[:.]?\s*', '', correct.text, count=1, flags=re.IGNORECASE)
+    value = value.strip()
+    if not value:
+        return None
+    return ' '.join((value, *_answer_continuation(snapshot, correct)))
+
+
+def _answer_continuation(snapshot: Snapshot, correct: TextBox) -> tuple[str, ...]:
+    """The wrapped lines between the learned answer and ``Your answer:``."""
+    boxes = [box for box in snapshot.boxes if box is not correct and box.score >= DEFAULT_MIN_OCR_SCORE]
+    endings = [box for box in boxes if _YOUR_ANSWER.search(box.text) and box.bbox[1] > correct.bbox[1]]
+    if not endings:
+        return ()
+    limit = min(box.bbox[1] for box in endings)
+    lines = [box for box in boxes if correct.bbox[1] < box.bbox[1] < limit]
+    lines.sort(key=lambda box: (box.bbox[1], box.bbox[0]))
+    return tuple(box.text.strip() for box in lines if box.text.strip())
 
 
 def _sweep(

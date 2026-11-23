@@ -809,6 +809,173 @@ def test_run_quiz_task_guesses_and_records_when_the_recorded_option_is_gone(
     assert result.taps[1].label in ('Yes', 'No')
 
 
+def test_run_quiz_task_learns_a_wrapped_four_option_answer(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """The four-option layout's wrapped result line learns the full option text."""
+    from datetime import UTC, datetime
+
+    options = (
+        'All coins credits expire after 12 months',
+        'All coins credits never expire',
+        'Coins credits can only be used on orders over C$10',
+        'All of the above',
+    )
+    question = 'Q : Which statements about coins credits are correct?'
+    wrapped_result = _snapshot(
+        _box('Correct answer: All coins credits', 60, 400, 1100, 450),
+        _box('expire after 12 months', 60, 455, 900, 505),
+        _box('Your answer: False', 60, 520, 700, 570),
+        _box('You got +6', 60, 700, 500, 760),
+        _box('Go back', 400, 1400, 800, 1500),
+    )
+    transitions: dict[tuple[str, str | None], str] = {
+        ('boost', 'GO'): 'question',
+        ('result', 'Go back'): 'coins',
+        ('coins', 'Earn more >'): 'boost_after',
+        **{('question', option): 'result' for option in options},
+    }
+    first_world = _World(
+        series={
+            'boost': (_quiz_boost_frame(),),
+            'question': (_question_frame(options=options, question=question),),
+            'result': (wrapped_result,),
+            'coins': (_coins_frame(),),
+            'boost_after': (_boost_after_frame(action=None),),
+        },
+        transitions=transitions,
+    )
+    bank = QuizBank(tmp_path / 'quiz_bank.json')
+    first = run_quiz_task(
+        _controller(first_world, first_world.frame),
+        first_world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=first_world.navigate,
+        arrival_timeout=1.0,
+        exit_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+        rng=random.Random(3),
+        bank=bank,
+    )
+
+    learned = bank.lookup(question)
+    assert first.correct == options[0]
+    assert learned is not None
+    assert learned.options == options
+    assert learned.correct == options[0]
+    first_bytes = (tmp_path / 'quiz_bank.json').read_bytes()
+
+    second_world = _World(
+        series={
+            'boost': (_quiz_boost_frame(),),
+            'question': (_question_frame(options=options, question=question),),
+            'result': (wrapped_result,),
+            'coins': (_coins_frame(),),
+            'boost_after': (_boost_after_frame(action=None),),
+        },
+        transitions=transitions,
+    )
+    second = run_quiz_task(
+        _controller(second_world, second_world.frame),
+        second_world.capture,
+        corpus,
+        DailyStateStore(tmp_path / 'state-two', clock=lambda: datetime(2026, 11, 22, tzinfo=UTC)),
+        _entry(catalogue),
+        navigate=second_world.navigate,
+        arrival_timeout=1.0,
+        exit_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+        rng=random.Random(999),
+        bank=bank,
+    )
+
+    assert second.bank_hit is True
+    assert second.chosen == options[0]
+    assert (tmp_path / 'quiz_bank.json').read_bytes() == first_bytes
+
+
+def test_run_quiz_task_skips_a_result_answer_not_on_the_screen(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unmatched correct line is warned and not stored as false knowledge."""
+    bank = QuizBank(tmp_path / 'quiz_bank.json')
+    world = _success_world(result_frame=_result_frame(correct='Maybe'))
+
+    result = run_quiz_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        exit_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+        rng=random.Random(3),
+        bank=bank,
+    )
+
+    assert result.outcome is QuizOutcome.COMPLETED
+    assert bank.entries == ()
+    assert 'quiz_bank_answer_unmatched' in caplog.text
+
+
+def test_run_quiz_task_repairs_a_manual_typo_from_the_result_page(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """A manual answer that is not an option cannot block the real result page."""
+    bank = QuizBank(tmp_path / 'quiz_bank.json')
+    bank.record(
+        'Q : Which of the following statements is correct?',
+        ('True', 'False'),
+        'False',
+        'Ture',
+        source=QuestionSource.MANUAL,
+    )
+    world = _success_world()
+
+    result = run_quiz_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        exit_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+        rng=random.Random(3),
+        bank=bank,
+    )
+
+    assert result.outcome is QuizOutcome.COMPLETED
+    entry = bank.lookup(result.question or '')
+    assert entry is not None
+    assert entry.correct == 'True'
+    assert entry.source is QuestionSource.RESULT_PAGE
+
+
 def test_run_quiz_task_guesses_when_the_bank_cannot_be_read_or_written(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1998,6 +2165,29 @@ def test_correct_answer_ignores_a_low_confidence_box() -> None:
     )
 
     assert _correct_answer(frame) is None
+
+
+def test_correct_answer_joins_a_wrapped_result_line() -> None:
+    from aliexpress_coins.tasks.quiz import _correct_answer
+
+    frame = _snapshot(
+        _box('Correct answer: All coins credits', 60, 400, 1100, 450),
+        _box('expire after 12 months', 60, 455, 900, 505),
+        _box('Your answer: False', 60, 520, 700, 570),
+    )
+
+    assert _correct_answer(frame) == 'All coins credits expire after 12 months'
+
+
+def test_correct_answer_joins_nothing_without_a_your_answer_marker() -> None:
+    from aliexpress_coins.tasks.quiz import _correct_answer
+
+    frame = _snapshot(
+        _box('Correct answer: True', 60, 400, 700, 450),
+        _box('unrelated text below', 60, 455, 900, 505),
+    )
+
+    assert _correct_answer(frame) == 'True'
 
 
 @pytest.mark.slow

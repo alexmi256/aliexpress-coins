@@ -272,7 +272,12 @@ class QuizBank:
             same_correct = normalize_question(existing.correct) == normalize_question(raw_correct)
             if same_options and same_correct:
                 return existing
-            if existing.source is QuestionSource.MANUAL and source_value is QuestionSource.RESULT_PAGE and same_options:
+            if (
+                existing.source is QuestionSource.MANUAL
+                and source_value is QuestionSource.RESULT_PAGE
+                and same_options
+                and match_option(existing.correct, raw_options) is not None
+            ):
                 return existing
 
         entry = BankEntry(

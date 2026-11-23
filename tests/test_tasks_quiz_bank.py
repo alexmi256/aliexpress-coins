@@ -211,6 +211,19 @@ def test_a_manual_entry_survives_an_equivalent_result_page(tmp_path: Path) -> No
     assert manual.seen_at == STAMP
 
 
+def test_a_manual_typo_is_repaired_by_the_next_result_page(tmp_path: Path) -> None:
+    bank = _bank(tmp_path / 'quiz_bank.json')
+    typo = _record(bank, correct='Ture', source=QuestionSource.MANUAL)
+    assert bank.resolve(QUESTION, OPTIONS) is None
+
+    repaired = _record(bank, correct='True', source=QuestionSource.RESULT_PAGE)
+
+    assert typo.correct == 'Ture'
+    assert repaired.correct == 'True'
+    assert repaired.source is QuestionSource.RESULT_PAGE
+    assert bank.resolve(QUESTION, OPTIONS) == 0
+
+
 def test_a_manual_entry_is_replaced_when_its_answer_is_gone(tmp_path: Path) -> None:
     bank = _bank(tmp_path / 'quiz_bank.json')
     _record(bank, correct='False', source=QuestionSource.MANUAL)
@@ -434,9 +447,37 @@ def test_entry_as_dict_round_trips_through_the_parser(tmp_path: Path) -> None:
     assert reloaded == entry
 
 
-def test_the_committed_bank_is_an_empty_valid_schema() -> None:
-    path = Path(__file__).resolve().parents[1] / 'data' / 'quiz_bank.json'
-    payload = json.loads(path.read_text())
+def _assert_valid_bank(source: Path, work: Path) -> None:
+    """A committed bank may be empty or full; either way it must load cleanly."""
+    payload = json.loads(source.read_text())
+    assert payload.get('schema') == BANK_SCHEMA
+    questions = payload.get('questions')
+    assert isinstance(questions, list)
+    assert all(isinstance(question, dict) for question in questions)
 
-    assert payload == {'schema': BANK_SCHEMA, 'questions': []}
-    assert _bank(path).entries == ()
+    work.mkdir(parents=True, exist_ok=True)
+    copy = work / 'quiz_bank.json'
+    copy.write_bytes(source.read_bytes())
+    entries = _bank(copy).entries
+
+    assert not list(work.glob('quiz_bank.json.corrupt-*'))
+    assert len(entries) == len(questions)
+    for entry in entries:
+        assert entry.key == question_key(entry.question)
+        assert entry.normalized == normalize_question(entry.question)
+        assert entry.options
+        assert match_option(entry.correct, entry.options) is not None
+        assert isinstance(entry.source, QuestionSource)
+
+
+def test_the_committed_bank_is_a_valid_schema(tmp_path: Path) -> None:
+    path = Path(__file__).resolve().parents[1] / 'data' / 'quiz_bank.json'
+
+    _assert_valid_bank(path, tmp_path / 'committed')
+
+
+def test_a_committed_bank_with_content_still_passes_the_validity_check(tmp_path: Path) -> None:
+    path = tmp_path / 'quiz_bank.json'
+    _record(_bank(path))
+
+    _assert_valid_bank(path, tmp_path / 'seeded')
