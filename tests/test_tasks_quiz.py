@@ -858,6 +858,20 @@ def test_a_question_that_mentions_a_correct_answer_is_still_a_question(question:
     assert is_result_state(frame) is False
 
 
+def test_a_wrapped_question_and_option_copy_are_not_result_evidence() -> None:
+    frame = _snapshot(
+        _box('Coins quiz', 60, 90, 400, 150),
+        _box('Answer quiz questions for more coins!', 60, 170, 600, 210),
+        _box('Q : Which of these is the', 80, 400, 1100, 450),
+        _box('correct answer to this question?', 80, 455, 1100, 505),
+        _box('Correct answer: yes', 80, 600, 900, 650),
+        _box('No', 80, 750, 900, 800),
+    )
+
+    assert is_question_state(frame) is True
+    assert is_result_state(frame) is False
+
+
 @pytest.mark.slow
 def test_run_quiz_task_replays_the_answered_result_without_question_not_arrived(
     catalogue: TaskCatalogue,

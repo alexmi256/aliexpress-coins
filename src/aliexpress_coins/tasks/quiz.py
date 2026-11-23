@@ -1667,9 +1667,12 @@ def _is_question_page(snapshot: Snapshot) -> bool:
     # it prints the learned answer. Without this veto the exit wait mistakes the
     # result page for a second question and then reports that question never
     # arrived after it was already answered (issue #98).
+    partial_result = find_go_back(snapshot) is not None and (
+        _has_result_marker(snapshot, _CORRECT_ANSWER) or _has_result_marker(snapshot, _YOUR_ANSWER)
+    )
     return (
-        not _has_result_marker(snapshot, _CORRECT_ANSWER)
-        and not _has_result_marker(snapshot, _YOUR_ANSWER)
+        not _is_result_page(snapshot)
+        and not partial_result
         and _question_box(snapshot) is not None
         and contains_text(snapshot, 'Coins quiz')
         and contains_text(snapshot, 'Answer quiz questions for')
