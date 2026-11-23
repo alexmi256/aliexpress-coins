@@ -26,6 +26,7 @@ from aliexpress_coins.control.popups import PopupCorpus, load_popup_corpus
 from aliexpress_coins.perception.geometry import DeviceGeometry
 from aliexpress_coins.perception.ocr import RapidOcrEngine
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
+from aliexpress_coins.runner.safety import SafetyGuard
 from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks.catalogue import TaskCatalogue, load_task_catalogue
 from aliexpress_coins.tasks.discovery import RosterEntry, enumerate_roster
@@ -220,6 +221,30 @@ def _question_frame(
         boxes.append(_box(option, 80, top, 800, top + 50))
     boxes.append(_box('1', 700, 1900, 760, 1940))  # page counter
     return _snapshot(*boxes)
+
+
+def _offer_copy_question_frame() -> Snapshot:
+    """The quiz frame from run ``20261123T182244Z`` (issue #92).
+
+    Labels are the recorded ``abort.screen.labels``; boxes follow the measured
+    four-option quiz geometry. The offer sentence is an answer, not a control.
+    """
+    return _snapshot(
+        _box('1:23', 19, 5, 71, 34),
+        _box('Coins quiz', 55, 329, 433, 424),
+        _box('Answer quiz questions for', 60, 436, 608, 487),
+        _box('more coins!', 60, 490, 309, 533),
+        _box('Q : Which statements about coins credits', 70, 783, 1130, 846),
+        _box('are correct?', 441, 855, 757, 910),
+        _box('Coins credits are an extra benefit', 193, 979, 1006, 1048),
+        _box('during the Black Friday event', 170, 1041, 1031, 1103),
+        _box('Can be applied directly at Checkout', 197, 1165, 1004, 1218),
+        _box('with no minimum spend', 202, 1219, 997, 1283),
+        _box('Can be combined with other', 236, 1344, 964, 1398),
+        _box('discounts and coins', 419, 1403, 780, 1462),
+        _box('All of the above', 420, 1552, 779, 1605),
+        _box('23', 370, 1935, 414, 1980),
+    )
 
 
 def _result_frame(
@@ -649,6 +674,60 @@ def test_run_quiz_task_completes_a_normal_visit(
     payload = result.as_dict()
     assert payload['outcome'] == 'completed'
     assert payload['verification'] == 'row_gone'
+
+
+def test_run_quiz_task_proceeds_when_an_answer_mentions_checkout(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """The offer-copy quiz frame passes the real guard and the quiz completes."""
+    question = _offer_copy_question_frame()
+    option_labels = (
+        'Coins credits are an extra benefit',
+        'Can be applied directly at Checkout',
+        'Can be combined with other',
+        'All of the above',
+    )
+    world = _World(
+        series={
+            'boost': (_quiz_boost_frame(),),
+            'question': (question,),
+            'result': (_result_frame(correct='All of the above'),),
+            'coins': (_coins_frame(),),
+            'boost_after': (_boost_after_frame(action=None),),
+        },
+        transitions={
+            ('boost', 'GO'): 'question',
+            **{('question', label): 'result' for label in option_labels},
+            ('result', 'Go back'): 'coins',
+            ('coins', 'Earn more >'): 'boost_after',
+        },
+    )
+    guard = SafetyGuard(catalogue=catalogue)
+    clock = _SteppingClock()
+
+    with guard.task('Take the coins quiz'):
+        result = run_quiz_task(
+            _controller(world, world.frame),
+            guard.wrap(world.capture),
+            corpus,
+            _state(tmp_path),
+            _entry(catalogue),
+            navigate=world.navigate,
+            arrival_timeout=1.0,
+            exit_timeout=1.0,
+            return_timeout=2.0,
+            return_interval=0.5,
+            clock=clock,
+            sleep=clock.sleep,
+            rng=random.Random(7),
+        )
+
+    assert result.outcome is QuizOutcome.COMPLETED
+    assert result.returned is True
+    assert any('Checkout' in option.text for option in result.options)
+    assert guard.task_running is False
 
 
 def test_run_quiz_task_records_a_new_question_in_the_bank(

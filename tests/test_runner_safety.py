@@ -17,6 +17,7 @@ from PIL import Image
 from aliexpress_coins.perception.geometry import DeviceGeometry
 from aliexpress_coins.perception.ocr import RapidOcrEngine
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
+from aliexpress_coins.perception.state import ScreenState, classify
 from aliexpress_coins.runner.failures import FailureCode
 from aliexpress_coins.runner.safety import (
     AbortCode,
@@ -69,6 +70,32 @@ def _danger(label: str = 'Buy now') -> Snapshot:
     return _snapshot(
         _box('Wireless Earbuds', 60, 300, 600, 350),
         _box(label, 400, 1800, 700, 1860),
+    )
+
+
+def _quiz_with_offer_copy() -> Snapshot:
+    """The 2026-11-23 quiz frame that tripped the guard (issue #92).
+
+    The labels are the recorded ``abort.screen.labels`` from run
+    ``20261123T182244Z``; their boxes follow the measured geometry of the
+    reviewed four-option quiz fixture. The offer sentence spans a full answer
+    line, which is exactly what the old substring match mistook for a control.
+    """
+    return _snapshot(
+        _box('1:23', 19, 5, 71, 34),
+        _box('Coins quiz', 55, 329, 433, 424),
+        _box('Answer quiz questions for', 60, 436, 608, 487),
+        _box('more coins!', 60, 490, 309, 533),
+        _box('Q : Which statements about coins credits', 70, 783, 1130, 846),
+        _box('are correct?', 441, 855, 757, 910),
+        _box('Coins credits are an extra benefit', 193, 979, 1006, 1048),
+        _box('during the Black Friday event', 170, 1041, 1031, 1103),
+        _box('Can be applied directly at Checkout', 197, 1165, 1004, 1218),
+        _box('with no minimum spend', 202, 1219, 997, 1283),
+        _box('Can be combined with other', 236, 1344, 964, 1398),
+        _box('discounts and coins', 419, 1403, 780, 1462),
+        _box('All of the above', 420, 1552, 779, 1605),
+        _box('23', 370, 1935, 414, 1980),
     )
 
 
@@ -308,6 +335,36 @@ def test_the_recovery_window_suspends_the_unexpected_streak() -> None:
         inspect_three()
 
     assert raised.value.code is AbortCode.UNEXPECTED_SCREEN
+
+
+def test_the_quiz_offer_copy_is_not_a_dangerous_control() -> None:
+    guard = _guard()
+    frame = _quiz_with_offer_copy()
+
+    assert classify(frame).state is ScreenState.PAGE
+    with guard.task('Take the coins quiz'):
+        guard.inspect(frame)
+        guard.inspect(frame)
+        guard.inspect(frame)
+
+    assert guard.streak == 0
+    assert find_dangerous_controls(frame) == ()
+
+
+@pytest.mark.parametrize(
+    'copy',
+    [
+        'Can be applied directly at Checkout',
+        'Coins credits can only be used on orders over C$10',
+        'Redeemed coins credits have an expiration date',
+        'Each order grants you rewards',
+        'Checkout with no minimum spend',
+    ],
+)
+def test_promotional_copy_mentioning_checkout_is_not_a_control(copy: str) -> None:
+    frame = _snapshot(_box(copy, 100, 1000, 1100, 1060))
+
+    assert find_dangerous_controls(frame) == ()
 
 
 def test_a_dangerous_control_is_only_fatal_while_a_task_is_running() -> None:

@@ -12,7 +12,8 @@ whole run:
   task the engine first spends its bounded recovery (three shortcut entries)
   and fails only that task when the coins page is proven again; if recovery
   fails, the run aborts with the original screen (#83).
-* ``dangerous_control`` — a buy / order / cart / redeem control is visible while
+* ``dangerous_control`` — a short buy / checkout / cart / redeem action label
+  (a button caption, not the same vocabulary inside a sentence) is visible while
   a task is running. The one exception is the measured surprise-item product
   detail page, whose unavoidable ``Add to cart`` / ``Buy now`` buttons are
   documented as never tapped (docs/07 §product detail); the guard still aborts on
@@ -54,6 +55,7 @@ from aliexpress_coins.tasks.surface import (
 
 __all__ = [
     'DANGEROUS_WORDS',
+    'MAX_CONTROL_WORDS',
     'UNEXPECTED_SCREEN_LIMIT',
     'AbortCode',
     'RunAborted',
@@ -65,8 +67,35 @@ __all__ = [
 UNEXPECTED_SCREEN_LIMIT = 3
 """How many identical unexpected frames in a row abort the run."""
 
-DANGEROUS_WORDS = frozenset({'add to cart', 'buy', 'cart', 'checkout', 'order', 'orders', 'purchase', 'redeem'})
-"""The spending/redeem vocabulary that must not be acted on during a task."""
+DANGEROUS_WORDS = frozenset(
+    {
+        'add to bag',
+        'add to cart',
+        'buy',
+        'buy it now',
+        'buy now',
+        'check out',
+        'checkout',
+        'order now',
+        'place an order',
+        'place order',
+        'purchase',
+        'purchase now',
+        'redeem',
+        'redeem now',
+    }
+)
+"""Exact short labels that are spending/redeem *controls*, not vocabulary.
+
+A label is dangerous only when the whole OCR line is one of these action
+phrases. The same words inside a sentence are copy: the quiz page's
+``Can be applied directly at Checkout`` answer is promotional text, not a
+button. Bare ``cart``, ``order`` and ``orders`` are destinations or row titles,
+not actions, so they are deliberately absent.
+"""
+
+MAX_CONTROL_WORDS = 3
+"""A control label is a button caption, never a wrapped sentence."""
 
 _SAFE_REDEEM_LABELS = frozenset({'coins credits to redeem', 'you can now redeem'})
 """The two measured labels that merely name the redeem destination."""
@@ -329,15 +358,23 @@ def find_dangerous_controls(
             continue
         if text == _COIN_REDEEM_LABEL and _is_coin_page(snapshot):
             continue
-        words = text.split()
-        if not any(word in DANGEROUS_WORDS for word in words) and not any(
-            phrase in text for phrase in ('add to cart', 'buy now')
-        ):
+        if not _is_action_control(text):
             continue
         if product_detail and text in _PRODUCT_DETAIL_SAFE:
             continue
         found.append(box)
     return tuple(found)
+
+
+def _is_action_control(text: str) -> bool:
+    """Whether the whole normalised OCR line is a short action-control label.
+
+    Identification is deliberately narrow: a control is a button caption, so
+    the complete line has to be a known action phrase and no longer than
+    :data:`MAX_CONTROL_WORDS`. A sentence that merely contains ``checkout`` or
+    ``redeem`` stays copy and cannot abort the run.
+    """
+    return text in DANGEROUS_WORDS and len(text.split()) <= MAX_CONTROL_WORDS
 
 
 def _screen_report(snapshot: Snapshot, state: ScreenState, surface: Surface) -> ScreenReport:
