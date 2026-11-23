@@ -392,6 +392,34 @@ def test_each_spending_control_aborts_during_a_task(label: str) -> None:
     assert label in raised.value.reason
 
 
+@pytest.mark.parametrize(
+    'label',
+    ['Buy now C$12.99', 'Place order · C$12.99', 'Add to cart (2)', 'Checkout US $0.01'],
+)
+def test_a_control_with_a_price_or_count_suffix_still_aborts(label: str) -> None:
+    guard = _guard()
+
+    with pytest.raises(RunAborted) as raised, guard.task('browse'):
+        guard.inspect(_danger(label))
+
+    assert raised.value.code is AbortCode.DANGEROUS_CONTROL
+    assert label in raised.value.reason
+
+
+def test_a_two_line_spending_caption_still_aborts() -> None:
+    guard = _guard()
+    page = _snapshot(
+        _box('Wireless Earbuds', 60, 300, 600, 350),
+        _box('Place', 400, 1760, 700, 1810),
+        _box('Order', 420, 1810, 680, 1860),
+    )
+
+    with pytest.raises(RunAborted) as raised, guard.task('browse'):
+        guard.inspect(page)
+
+    assert raised.value.code is AbortCode.DANGEROUS_CONTROL
+
+
 def test_the_coin_pages_own_redeem_entry_is_not_a_live_control_during_a_task() -> None:
     guard = _guard()
     page = _snapshot(
@@ -405,17 +433,24 @@ def test_the_coin_pages_own_redeem_entry_is_not_a_live_control_during_a_task() -
     with guard.task('Daily coins'):
         guard.inspect(page)
 
+    assert find_dangerous_controls(page) == ()
+    assert [box.text for box in find_dangerous_controls(_snapshot(_box('Redeem', 940, 340, 1100, 380)))] == ['Redeem']
+
 
 def test_a_refused_task_row_on_the_list_is_not_a_live_purchase_control() -> None:
     guard = _guard()
     boost_list = _snapshot(
         _box('Coins boost', 100, 100, 500, 150),
-        _box('Place an order on this page', 100, 260, 900, 300),
+        _box('Buy now', 100, 260, 900, 300),
         _box('GO', 980, 280, 1040, 320),
-        _box('Add 5 items to your cart', 100, 460, 900, 500),
+        _box('Place an order on this page', 100, 460, 900, 500),
         _box('GO', 980, 480, 1040, 520),
+        _box('Add 5 items to your cart', 100, 660, 900, 700),
+        _box('GO', 980, 680, 1040, 720),
     )
 
+    # The short title would be live without the catalogue; the denied row is exempt.
+    assert [box.text for box in find_dangerous_controls(boost_list)] == ['Buy now']
     with guard.task('Take the coins quiz'):
         guard.inspect(boost_list)
 
@@ -566,6 +601,37 @@ def test_low_confidence_ocr_is_not_a_dangerous_control() -> None:
     assert find_dangerous_controls(_snapshot(_box('Wireless Earbuds', 60, 300, 600, 350), low)) == ()
 
 
+def test_empty_or_zero_height_text_is_not_a_control() -> None:
+    zero_height = TextBox(
+        text='Buy now',
+        box=((400, 500), (700, 500), (700, 500), (400, 500)),
+        score=0.99,
+    )
+
+    frame = _snapshot(_box('Wireless Earbuds', 60, 300, 600, 350), _box('', 60, 400, 600, 450), zero_height)
+
+    assert find_dangerous_controls(frame) == ()
+
+
+def test_a_display_headline_is_not_a_caption_sized_control() -> None:
+    frame = _snapshot(
+        _box('Wireless Earbuds', 60, 300, 600, 350),
+        _box('Buy now', 100, 500, 1100, 700),
+    )
+
+    assert find_dangerous_controls(frame) == ()
+
+
+def test_the_product_detail_split_add_to_cart_caption_is_exempt() -> None:
+    detail = _snapshot(
+        _box('Item 1/3', 500, 120, 700, 170),
+        _box('Add to', 60, 1800, 300, 1850),
+        _box('Cart', 60, 1850, 300, 1900),
+    )
+
+    assert find_dangerous_controls(detail) == ()
+
+
 def test_the_guard_rejects_a_non_positive_limit() -> None:
     with pytest.raises(ValueError, match='limit must be positive'):
         SafetyGuard(limit=0)
@@ -589,10 +655,11 @@ def test_the_abort_record_is_report_safe() -> None:
     assert failure['code'] == 'unexpected_screen'
 
 
-def test_find_dangerous_controls_ignores_the_two_redeem_destination_labels() -> None:
+def test_redeem_destination_copy_is_not_a_control_but_a_bare_redeem_is() -> None:
     frame = _snapshot(
         _box('Coins credits to redeem', 100, 330, 700, 380),
         _box('YOU CAN NOW REDEEM!', 100, 700, 1100, 780),
     )
 
     assert find_dangerous_controls(frame) == ()
+    assert [box.text for box in find_dangerous_controls(_snapshot(_box('Redeem', 940, 340, 1100, 380)))] == ['Redeem']
