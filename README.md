@@ -55,7 +55,11 @@ and the OCR models, and never taps or launches anything.
 `docker compose up -d` starts the nightly daemon (`run --schedule`). Its local start
 time, timezone, jitter and wall-clock budget come from `AECOINS_SCHEDULE_TIME`,
 `AECOINS_TIMEZONE`, `AECOINS_SCHEDULE_JITTER_SECONDS` and
-`AECOINS_RUN_BUDGET_SECONDS` (see `.env.example`); a night that finished its roster
+`AECOINS_RUN_BUDGET_SECONDS` (see `.env.example`). **Set `AECOINS_TIMEZONE` to the device's own
+timezone** (`adb shell getprop persist.sys.timezone`): the schedule and the daily store's day boundary
+both follow it, so a timezone that disagrees with the device fires a run before the device's day has
+rolled — the coins are already claimed, the fresh-day path is never exercised, and the run reports
+success while earning nothing. A night that finished its roster
 walk marks the day complete and is skipped on a retry, while a manual run stopped by
 its budget leaves the nightly window open. Compose retries a failed daemon a bounded
 number of times rather than looping forever on a configuration error. Run one night
