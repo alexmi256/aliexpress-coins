@@ -1001,6 +1001,37 @@ def test_claim_boost_checkin_never_stores_zero_for_an_unreadable_balance(
     assert 'balance_unreadable' in caplog.text
 
 
+def test_claim_boost_checkin_clears_a_stale_unverified_zero_on_an_unreadable_balance(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A read attempt clears a legacy zero even when the claim records no new one."""
+    before = frames['real_boost']
+    after = _boost_without_row(before)
+    state = _state(tmp_path)
+    state.observe_balance(0.0, verified=False)
+    caplog.set_level(logging.WARNING)
+
+    result = claim_boost_checkin(
+        _controller(_RecordingDevice(), before),
+        _Capture([before, after, after, after]),
+        corpus,
+        state,
+        authorization=_signin_authorization(),
+        timeout=2.0,
+        interval=1.0,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.completed is True
+    assert state.snapshot().last_balance is None
+    assert state.snapshot().last_balance_verified is None
+    assert 'balance_zero_unverified_cleared' in caplog.text
+
+
 def test_claim_boost_checkin_ignores_a_zero_from_a_boost_page_baseline(
     frames: dict[str, Snapshot],
     corpus: PopupCorpus,
@@ -1029,6 +1060,7 @@ def test_claim_boost_checkin_ignores_a_zero_from_a_boost_page_baseline(
     assert result.balance_before is None
     assert state.snapshot().last_balance is None
     assert 'balance_zero_unverified' in caplog.text
+    assert 'without a validated coin-page surface' in caplog.text
 
 
 def test_claim_boost_checkin_does_not_store_a_bare_zero_after_an_unreadable_baseline(
@@ -1187,6 +1219,7 @@ def test_claim_streak_clamps_a_post_claim_balance_drop(
     assert result.balance_after == 40.0
     assert state.snapshot().last_balance == 40.0
     assert 'balance_zero_unverified' in caplog.text
+    assert 'validated coin page but the starting balance does not corroborate' in caplog.text
 
 
 def test_claim_boost_checkin_completed_by_a_claimed_row_marker(

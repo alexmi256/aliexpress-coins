@@ -204,9 +204,7 @@ class DailyStateStore:
         """Count one completion of ``task_key`` and return its new total.
 
         ``balance`` is optional so a task that does not read the balance can
-        record without clobbering the last observed value. An unreadable zero of
-        unknown provenance is the exception: keeping it would preserve the bug
-        in issue #94, so it is cleared and the event names why. ``balance_verified``
+        record without clobbering the last observed value. ``balance_verified``
         says whether a supplied value came from a trusted coin-page reading; it
         is only meaningful for a zero, where it separates a new account from a
         misread control numeral. The file is written before the in-memory state
@@ -217,20 +215,8 @@ class DailyStateStore:
         current = self._loaded()
         completions = dict(current.completions)
         completions[key] = completions.get(key, 0) + 1
-        if balance is None:
-            last_balance = current.last_balance
-            last_balance_verified = current.last_balance_verified
-            if last_balance == 0.0 and last_balance_verified is not True:
-                last_balance = None
-                last_balance_verified = None
-                self._warn(
-                    'balance_zero_unverified_cleared',
-                    stored_balance=0.0,
-                    detail='the stored zero had no trusted coin-page provenance and this run could not read a balance',
-                )
-        else:
-            last_balance = _balance(balance)
-            last_balance_verified = balance_verified
+        last_balance = current.last_balance if balance is None else _balance(balance)
+        last_balance_verified = current.last_balance_verified if balance is None else balance_verified
         self._commit(
             replace(
                 current,
@@ -267,14 +253,26 @@ class DailyStateStore:
         current = self._loaded()
         self._commit(replace(current, completed_night=True))
 
-    def observe_balance(self, balance: float, *, verified: bool = True) -> None:
+    def observe_balance(self, balance: float | None, *, verified: bool = True) -> None:
         """Store the last balance seen, without recording a task completion.
 
-        ``verified`` is the provenance of a zero: true only when the reading
-        came from a validated coin page, so a later unreadable run can tell a
-        real new account from a legacy misread zero.
+        ``None`` means this attempt could not read a balance. It keeps a
+        known-good value, but clears a stored zero without trusted provenance,
+        because keeping that would preserve the bug in issue #94. ``verified``
+        is the provenance of a zero: true only when the reading came from a
+        validated coin page, so a later unreadable run can tell a real new
+        account from a legacy misread zero.
         """
         current = self._loaded()
+        if balance is None:
+            if current.last_balance == 0.0 and current.last_balance_verified is not True:
+                self._warn(
+                    'balance_zero_unverified_cleared',
+                    stored_balance=0.0,
+                    detail='the stored zero had no trusted coin-page provenance and this attempt could not read a balance',
+                )
+                self._commit(replace(current, last_balance=None, last_balance_verified=None))
+            return
         self._commit(
             replace(
                 current,
@@ -321,10 +319,22 @@ class DailyStateStore:
             raise StateReadError(f'could not read {path}: {exc}') from exc
 
         try:
-            return _parse(raw, day)
+            state = _parse(raw, day)
         except _CorruptState as exc:
             self._quarantine(path, exc)
             return _fresh(day)
+        if state.last_balance == 0.0 and state.last_balance_verified is not True:
+            # A legacy zero has no provenance. Treat it as unreadable rather
+            # than carrying the #94 bug forever, even on a run that claims
+            # nothing and would otherwise never write the balance.
+            self._warn(
+                'balance_zero_unverified_cleared',
+                stored_balance=0.0,
+                detail='the stored zero had no trusted coin-page provenance',
+            )
+            state = replace(state, last_balance=None, last_balance_verified=None)
+            self._commit(state)
+        return state
 
     def _commit(self, state: DailySnapshot) -> None:
         path = self._path_for(state.day)

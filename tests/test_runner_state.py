@@ -236,7 +236,7 @@ def test_provenance_is_ignored_when_no_balance_is_stored(tmp_path: Path) -> None
     assert snapshot.last_balance_verified is None
 
 
-def test_a_legacy_unverified_zero_is_cleared_when_the_balance_is_unreadable(
+def test_a_legacy_unverified_zero_is_cleared_on_load(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -247,15 +247,22 @@ def test_a_legacy_unverified_zero_is_cleared_when_the_balance_is_unreadable(
     store = _store(tmp_path)
     caplog.set_level(logging.WARNING)
 
-    assert store.snapshot().last_balance == 0.0
-    assert store.snapshot().last_balance_verified is None
-
-    store.record('daily_checkin')
-
     assert store.snapshot().last_balance is None
     assert store.snapshot().last_balance_verified is None
     assert 'balance_zero_unverified_cleared' in caplog.text
     assert json.loads(store.path.read_text(encoding='utf-8'))['last_balance'] is None
+
+
+def test_a_runtime_unverified_zero_is_cleared_on_an_unreadable_balance(
+    tmp_path: Path,
+) -> None:
+    store = _store(tmp_path)
+    store.observe_balance(0.0, verified=False)
+
+    store.observe_balance(None)
+
+    assert store.snapshot().last_balance is None
+    assert store.snapshot().last_balance_verified is None
 
 
 def test_a_verified_zero_survives_an_unreadable_balance(
@@ -267,10 +274,20 @@ def test_a_verified_zero_survives_an_unreadable_balance(
     _write_json(_path(tmp_path), payload)
     store = _store(tmp_path)
 
-    store.record('daily_checkin')
+    store.observe_balance(None)
 
     assert store.snapshot().last_balance == 0.0
     assert store.snapshot().last_balance_verified is True
+
+
+def test_an_unrelated_completion_does_not_clear_a_stored_zero(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.observe_balance(0.0, verified=False)
+
+    store.record('sponsored_items')
+
+    assert store.snapshot().last_balance == 0.0
+    assert store.snapshot().last_balance_verified is False
 
 
 def test_a_readable_balance_replaces_an_unverified_zero(tmp_path: Path) -> None:

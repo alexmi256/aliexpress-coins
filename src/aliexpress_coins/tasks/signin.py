@@ -403,10 +403,21 @@ def read_coin_balance(snapshot: Snapshot) -> float | None:
     """Read the raw coin balance when the frame renders it, else ``None``.
 
     This keeps the measured rule — the only bare number in the top quarter —
-    but drops the surface provenance. Claim paths use :func:`read_balance` so a
-    zero can be trusted only when the frame is a validated coin page.
+    without classifying the surface. Safety and report callers already know
+    their surface; claim paths use :func:`read_balance` so a zero can be trusted
+    only when the frame is a validated coin page.
     """
-    return read_balance(snapshot).value
+    top = snapshot.height * BALANCE_TOP_FRACTION
+    bottom = snapshot.height * BALANCE_BOTTOM_FRACTION
+    for box in sorted(snapshot.boxes, key=lambda item: (item.bbox[1], item.bbox[0])):
+        if box.score < DEFAULT_MIN_OCR_SCORE:
+            continue
+        if not top <= box.center[1] <= bottom:
+            continue
+        match = _BARE_NUMBER.match(box.text)
+        if match is not None:
+            return float(match.group(1).replace(',', ''))
+    return None
 
 
 def read_balance(snapshot: Snapshot) -> BalanceReading:
@@ -418,18 +429,7 @@ def read_balance(snapshot: Snapshot) -> BalanceReading:
     balances return ``None``; a readable bare ``0`` is returned as ``0.0`` but
     is only claim evidence on a positively classified coin page.
     """
-    surface = classify_surface(snapshot)
-    top = snapshot.height * BALANCE_TOP_FRACTION
-    bottom = snapshot.height * BALANCE_BOTTOM_FRACTION
-    for box in sorted(snapshot.boxes, key=lambda item: (item.bbox[1], item.bbox[0])):
-        if box.score < DEFAULT_MIN_OCR_SCORE:
-            continue
-        if not top <= box.center[1] <= bottom:
-            continue
-        match = _BARE_NUMBER.match(box.text)
-        if match is not None:
-            return BalanceReading(value=float(match.group(1).replace(',', '')), surface=surface)
-    return BalanceReading(value=None, surface=surface)
+    return BalanceReading(value=read_coin_balance(snapshot), surface=classify_surface(snapshot))
 
 
 def _require_signin_authorization(authorization: DispatchAuthorization) -> None:
@@ -540,6 +540,9 @@ def claim_streak(
     before = before_reading.claim_value
     if before_reading.code is not None:
         _log_balance(log, key=STREAK_KEY, code=before_reading.code, phase='before', reading=before_reading)
+        state.observe_balance(None)
+    else:
+        state.observe_balance(before, verified=before_reading.trusted)
     tap = controller.tap_box(
         control,
         why='claim the daily sign-in streak once',
@@ -712,6 +715,9 @@ def claim_boost_checkin(
     before = before_reading.claim_value
     if before_reading.code is not None:
         _log_balance(log, key=BOOST_KEY, code=before_reading.code, phase='before', reading=before_reading)
+        state.observe_balance(None)
+    else:
+        state.observe_balance(before, verified=before_reading.trusted)
     tap = controller.tap_box(
         action,
         why='claim the boost Daily check-in row once',
@@ -1251,7 +1257,12 @@ def _log_balance(
                 'detail': (
                     'the frame did not render a bare number in the balance band'
                     if code == BALANCE_UNREADABLE
-                    else 'the frame read 0 without a validated coin-page surface; the previous balance is kept'
+                    else (
+                        'the frame read a zero on a validated coin page but the starting balance does not corroborate it; '
+                        'the previous balance is kept'
+                        if reading.trusted
+                        else 'the frame read 0 without a validated coin-page surface; the previous balance is kept'
+                    )
                 ),
             },
             separators=(',', ':'),
