@@ -20,6 +20,7 @@ mistaken for today's and stays on disk for the report.
       "run_count": 2,
       "last_run_at": "2026-11-21T03:42:11+00:00",
       "completed_night": true,
+      "acted_unverified": [],
       "last_night": {
         "outcome": "exhausted",
         "dispatched": 4,
@@ -33,7 +34,9 @@ nothing dispatched is worth retrying" (issue #97): every dispatched row either
 completed, was skipped/refused, or failed with a taxonomy entry that spends no
 retry. ``last_night`` records that decision so a later run and the report can
 explain it. A run with a retryable failure leaves the day open even when another
-row completed, because the retryable row is still unclaimed work.
+row completed, because the retryable row is still unclaimed work. A task that
+acted without proof is named in ``acted_unverified`` so its next dispatch
+re-reads the fresh row before tapping.
 
 Every update is staged in the same directory, fsynced, then renamed over the
 target (:func:`aliexpress_coins.perception.artifacts.atomic_write_bytes`), so a
@@ -151,6 +154,7 @@ class DailySnapshot:
     run_count: int = 0
     last_run_at: datetime | None = None
     completed_night: bool = False
+    acted_unverified: tuple[str, ...] = ()
     last_night: NightRecord | None = None
 
     def __post_init__(self) -> None:
@@ -167,6 +171,7 @@ class DailySnapshot:
             'run_count': self.run_count,
             'last_run_at': None if self.last_run_at is None else self.last_run_at.isoformat(),
             'completed_night': self.completed_night,
+            'acted_unverified': list(self.acted_unverified),
             'last_night': None if self.last_night is None else self.last_night.as_dict(),
         }
 
@@ -285,6 +290,28 @@ class DailyStateStore:
         current = self._loaded()
         self._commit(replace(current, completed_night=night.complete, last_night=night))
 
+    def is_acted_unverified(self, task_key: str) -> bool:
+        """Whether ``task_key`` failed after acting and still needs a re-check."""
+        return _task_key(task_key) in self._loaded().acted_unverified
+
+    def mark_acted_unverified(self, task_key: str) -> None:
+        """Remember that ``task_key`` acted without proof, so a later run re-reads the row."""
+        key = _task_key(task_key)
+        current = self._loaded()
+        if key in current.acted_unverified:
+            return
+        keys = tuple(sorted((*current.acted_unverified, key)))
+        self._commit(replace(current, acted_unverified=keys))
+
+    def clear_acted_unverified(self, task_key: str) -> None:
+        """Forget the marker once the row completed or was proven already done."""
+        key = _task_key(task_key)
+        current = self._loaded()
+        if key not in current.acted_unverified:
+            return
+        keys = tuple(item for item in current.acted_unverified if item != key)
+        self._commit(replace(current, acted_unverified=keys))
+
     def observe_balance(self, balance: float) -> None:
         """Store the last balance seen, without recording a task completion."""
         current = self._loaded()
@@ -396,6 +423,20 @@ def _parse(raw: bytes, day: date) -> DailySnapshot:
             raise _CorruptState(f'completion count for {key!r} must be a non-negative integer')
         completions[key] = value
 
+    acted_raw = data.get('acted_unverified', [])
+    if not isinstance(acted_raw, list):
+        raise _CorruptState("'acted_unverified' must be a JSON array")
+    acted_unverified: list[str] = []
+    for value in acted_raw:
+        if not isinstance(value, str):
+            raise _CorruptState("'acted_unverified' entries must be strings")
+        key = value.strip()
+        if not key or value != key:
+            raise _CorruptState("'acted_unverified' entries must be non-empty without surrounding whitespace")
+        if key in acted_unverified:
+            raise _CorruptState(f"'acted_unverified' contains duplicate key {key!r}")
+        acted_unverified.append(key)
+
     last_balance_raw = _field(data, 'last_balance')
     if last_balance_raw is None:
         last_balance = None
@@ -436,6 +477,7 @@ def _parse(raw: bytes, day: date) -> DailySnapshot:
         run_count=run_count,
         last_run_at=last_run_at,
         completed_night=completed_night,
+        acted_unverified=tuple(acted_unverified),
         last_night=last_night,
     )
 

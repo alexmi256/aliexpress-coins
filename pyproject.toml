@@ -93,14 +93,15 @@ markers = [
 # (measured 99.43%), then to 99.44 when the dry-run settle wait landed (measured
 # 99.44%), then to 99.45 when the quiz question bank landed (measured 99.45%).
 # The coin-store surface raise left the floor at 99.46; the run lock landed
-# (issue #78) with the suite measured at 99.48, raising it to 99.47.
+# (issue #78) with the suite measured at 99.48, raising it to 99.47. The night
+# completion and acted-row re-check work measured 99.49, raising it to 99.48.
 # See "Quality gate" in README.md.
 [tool.coverage.run]
 branch = true
 source = ["aliexpress_coins"]
 
 [tool.coverage.report]
-fail_under = 99.47
+fail_under = 99.48
 precision = 2
 show_missing = true
 skip_covered = true

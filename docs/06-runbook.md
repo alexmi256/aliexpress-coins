@@ -434,8 +434,13 @@ dispatched is worth retrying: every row either completed, was skipped/refused (p
 or the app reporting it unavailable), or failed with a failure class that spends no retry. Any
 `failed` row whose taxonomy entry is retryable (`task_unverified`, including a timeout or a
 recovered unknown screen) keeps `completed_night` false, even if another row completed, because the
-retryable row is still unclaimed work. The decision is recorded as `last_night` in the daily state
-and printed by the report as one `Night:` line.
+retryable row is still unclaimed work. This is a cross-run retry, not the in-run rule that
+`acted=True` blocks a repeated tap. A task that acted without proof is recorded in
+`acted_unverified`; its next dispatch first re-reads the fresh task surface. A row that still shows
+its unclaimed `GO` may proceed, a row that is gone/checked on a complete surface is reported
+`already_done` with no tap, and an unreadable or partial surface stays retryable rather than
+guessing. The decision is recorded as `last_night` in the daily state and printed by the report as
+one `Night:` line.
 
 A real schedule wait looks like this ✅:
 
@@ -605,9 +610,10 @@ If a night claims nothing, check in this order:
 6. **The device's day.** Open the app and look at the task rows. If they carry the drawn check or
    are absent because the server has already credited them, the day is claimed. Wait for the next
    reset; do not re-press a claimed card.
-7. **State.** Read `state/daily-<YYYY-MM-DD>.json`. `completed_night` is the scheduler's skip flag
-   and `last_night` records the decision behind it (`exhausted` or `retryable_failures`, with the
-   dispatch and failure counts). A file that fails validation is moved aside as
+7. **State.** Read `state/daily-<YYYY-MM-DD>.json`. `completed_night` is the scheduler's skip flag,
+   `last_night` records the decision behind it (`exhausted` or `retryable_failures`, with the
+   dispatch and failure counts), and `acted_unverified` names tasks that acted without proof and
+   still need a fresh-row re-check. A file that fails validation is moved aside as
    `.corrupt-<timestamp>` and the day starts empty with a warning; that is deliberate, but it means
    a resumed run may repeat a task.
 
@@ -682,8 +688,9 @@ Pruning runs after the report is final and after the device settings are restore
 notifier cannot leave rotation pinned.
 
 State files are one per local day: `state/daily-<YYYY-MM-DD>.json`. Each file carries the day's
-completion counts, `completed_night` (the scheduler's skip flag) and `last_night` (the outcome of
-the last finished walk: `exhausted` or `retryable_failures`, with counts). The directory also holds
+completion counts, `completed_night` (the scheduler's skip flag), `last_night` (the outcome of the
+last finished walk: `exhausted` or `retryable_failures`, with counts) and `acted_unverified` (tasks
+that acted without proof and must be re-read before another tap). The directory also holds
 `state/run.lock`, the exclusive run lock described in §6; leave it in place while a run is active.
 Keep at least the days you want to audit; the store does not prune them itself. Do not hand-edit a
 state file while a run is using it. A corrupt file is quarantined, not silently reused.

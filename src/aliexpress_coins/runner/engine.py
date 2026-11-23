@@ -555,23 +555,25 @@ def run_once(
             log.error('%s', _event('run_aborted', code=exc.code.value, detail=detail))
         if status is RunStatus.COMPLETED and not context.config.dry_run:
             night = _night_record(report)
-            report.night = night.as_dict()
             try:
                 context.state.record_night(night)
             except Exception as exc:
+                # The report must not claim a day state the store never accepted.
                 log.warning('%s', _event('state_complete_failed', detail=f'{type(exc).__name__}: {exc}'))
-            log.log(
-                logging.INFO if night.complete else logging.WARNING,
-                '%s',
-                _event(
-                    'night_decided',
-                    outcome=night.outcome.value,
-                    complete=night.complete,
-                    dispatched=night.dispatched,
-                    completed=night.completed,
-                    retryable_failures=night.retryable_failures,
-                ),
-            )
+            else:
+                report.night = night.as_dict()
+                log.log(
+                    logging.INFO if night.complete else logging.WARNING,
+                    '%s',
+                    _event(
+                        'night_decided',
+                        outcome=night.outcome.value,
+                        complete=night.complete,
+                        dispatched=night.dispatched,
+                        completed=night.completed,
+                        retryable_failures=night.retryable_failures,
+                    ),
+                )
         finalized = False
         try:
             used = max(0.0, context.clock() - started)
@@ -1017,11 +1019,18 @@ def _dispatch_with_retry(
     "never re-press a claimed card"). Only an unverified result with no action
     evidence is safe to repeat. A run-level class is re-raised so the top-level
     catch names it and stops the night.
+
+    A row that acted without proof in an earlier run is marked in the daily
+    state. Its next dispatch first re-reads the task surface: a fresh row with
+    its unclaimed ``GO`` affordance may proceed, while a claimed/gone row is
+    reported ``already_done`` without a tap. An unreadable re-check fails the
+    task retryably instead of guessing.
     """
     log = context.logger if context.logger is not None else LOG
     try:
         authorized = _authorize(context, entry)
     except PolicyRefused as exc:
+        _clear_acted_marker(context, entry.key)
         refusal = exc.refusal
         return EngineResult(
             outcome='skipped',
@@ -1030,12 +1039,44 @@ def _dispatch_with_retry(
             completed=False,
             payload=refusal.as_dict(),
         )
+
+    if authorized.key is not None and context.state.is_acted_unverified(authorized.key):
+        readable, fresh = _recheck_acted_row(context, controller, authorized)
+        if not readable:
+            return EngineResult(
+                outcome='failed',
+                verification='acted_recheck_unavailable',
+                detail=(
+                    f'{authorized.title!r} acted without proof in an earlier run and the fresh frame '
+                    'could not prove the row is still claimable; no tap was issued'
+                ),
+                completed=False,
+                payload={'key': authorized.key, 'recheck': 'unreadable'},
+                failure=failure(FailureCode.TASK_UNVERIFIED, detail='the acted-row re-check was unreadable'),
+                acted=False,
+            )
+        if fresh is None:
+            _clear_acted_marker(context, authorized.key)
+            return EngineResult(
+                outcome='skipped',
+                verification='already_done',
+                detail=(
+                    f'{authorized.title!r} acted without proof in an earlier run and the fresh surface '
+                    'shows it already claimed; no tap was issued'
+                ),
+                completed=False,
+                payload={'key': authorized.key, 'recheck': 'claimed'},
+            )
+        authorized = _authorize(context, fresh)
+        log.info('%s', _event('acted_recheck', key=authorized.key, claimable=True))
+
     result = _attempt_dispatch(context, controller, authorized)
     if not result.completed:
         # A failed task is the first place a session that expired mid-walk is
         # visible. Detect it before spending the retry, so a signed-out app
         # stops the run instead of producing more task failures.
         _guard_signed_in(context, _capture(context.capture))
+    _remember_acted_result(context, authorized, result)
     named = result.failure
     if named is None or not named.retryable or named.retry is not RetryScope.TASK or result.acted:
         return result
@@ -1053,7 +1094,100 @@ def _dispatch_with_retry(
         ),
     )
     context.sleep(delay)
-    return _attempt_dispatch(context, controller, authorized)
+    result = _attempt_dispatch(context, controller, authorized)
+    _remember_acted_result(context, authorized, result)
+    return result
+
+
+def _recheck_acted_row(
+    context: RunContext,
+    controller: Controller,
+    entry: RosterEntry,
+) -> tuple[bool, RosterEntry | None]:
+    """Re-read the task surface before re-dispatching an acted-but-unproven row.
+
+    Returns ``(readable, fresh)``. ``fresh`` is the entry to dispatch when the
+    row still shows its unclaimed control. ``None`` with ``readable=True`` means
+    the row is gone or checked on a complete surface, so it is already done.
+    ``readable=False`` means absence is not evidence (an inline/partial surface
+    or a failed read) and the task must stay retryable without a tap.
+    """
+    log = context.logger if context.logger is not None else LOG
+    key = entry.key
+    try:
+        opened = open_boost_list(
+            controller,
+            context.capture,
+            context.corpus,
+            templates=context.templates,
+            timeout=DEFAULT_BOOST_TIMEOUT,
+            interval=DEFAULT_BOOST_INTERVAL,
+            settle=context.config.settle_seconds,
+            clock=context.clock,
+            sleep=context.sleep,
+            logger=log,
+        )
+        _guard_signed_in(context, opened.snapshot)
+    except RunAborted, RunInterrupted:
+        raise
+    except AppLoggedOut:
+        raise
+    except Exception as exc:
+        log.warning('%s', _event('acted_recheck_failed', key=key, detail=f'{type(exc).__name__}: {exc}'))
+        return False, None
+
+    surface = classify_surface(opened.snapshot)
+    fresh = next(
+        (
+            candidate
+            for candidate in enumerate_roster(opened.snapshot, context.catalogue, route=opened.route).entries
+            if candidate.key == key
+        ),
+        None,
+    )
+    if fresh is not None:
+        if fresh.progress is not None and fresh.progress.complete:
+            return True, None
+        return True, fresh
+    if surface is Surface.BOOST_PAGE:
+        # The populated boost list is a complete surface: a missing row there
+        # proves the task is gone/claimed, unlike the inline coin page.
+        return True, None
+    return False, None
+
+
+def _remember_acted_result(context: RunContext, entry: RosterEntry, result: EngineResult) -> None:
+    """Keep the acted-but-unproven marker only while the row is still retryable."""
+    key = entry.key
+    if key is None:  # pragma: no cover - _authorize only returns allowed rows
+        return
+    terminal = (
+        result.completed or result.outcome != 'failed' or (result.failure is not None and not result.failure.retryable)
+    )
+    try:
+        if terminal:
+            context.state.clear_acted_unverified(key)
+        elif result.acted:
+            context.state.mark_acted_unverified(key)
+    except Exception as exc:
+        _log_state_marker_failure(context, key, exc)
+
+
+def _clear_acted_marker(context: RunContext, key: str | None) -> None:
+    if key is None:
+        return
+    try:
+        context.state.clear_acted_unverified(key)
+    except Exception as exc:
+        _log_state_marker_failure(context, key, exc)
+
+
+def _log_state_marker_failure(context: RunContext, key: str, exc: Exception) -> None:
+    log = context.logger if context.logger is not None else LOG
+    log.warning(
+        '%s',
+        _event('state_acted_marker_failed', key=key, detail=f'{type(exc).__name__}: {exc}'),
+    )
 
 
 def _authorize(context: RunContext, entry: RosterEntry) -> RosterEntry:
