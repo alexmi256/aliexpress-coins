@@ -37,6 +37,15 @@ REDEEM_MARKER = 'YOU CAN NOW REDEEM!'
 COIN_PAGE_MARKERS = ('Daily coins', 'Coins credits to redeem')
 """The two labels that identify the coin page rather than the Account card."""
 
+COIN_STORE_MARKER = 'Use coins for discounts'
+"""The header of the sponsored product list that ``Explore sponsored items`` opens.
+
+``Applied`` and a price beside ``Disc:`` corroborate the page, but the header is
+the stable marker: a variant with no discounted tile still carries it, while the
+word ``discounts`` alone is too common in a feed. The page is a browse
+destination with its own right-edge dwell chip, not an interstitial (#83).
+"""
+
 SIGN_IN_MARKERS = ('Sign in', 'Log in', 'Sign in / Sign up', 'Log in / Sign up')
 """The wording a signed-out app shows instead of the account nickname.
 
@@ -72,6 +81,7 @@ class Surface(StrEnum):
     BOOST_PAGE = 'boost_page'
     REDEEM_INTERSTITIAL = 'redeem_interstitial'
     EMPTY_BOOST = 'empty_boost'
+    COIN_STORE = 'coin_store'
     UNKNOWN = 'unknown'
 
 
@@ -108,6 +118,9 @@ def classify_surface(snapshot: Snapshot) -> Surface:
     if contains_text(snapshot, REDEEM_MARKER):
         return Surface.REDEEM_INTERSTITIAL
 
+    if is_coin_store(snapshot):
+        return Surface.COIN_STORE
+
     rows = has_task_rows(snapshot)
 
     if is_boost_page(snapshot):
@@ -126,6 +139,11 @@ def classify_surface(snapshot: Snapshot) -> Surface:
 def is_boost_page(snapshot: Snapshot) -> bool:
     """Whether the ``Coins boost`` header is in the frame."""
     return contains_text(snapshot, BOOST_MARKER)
+
+
+def is_coin_store(snapshot: Snapshot) -> bool:
+    """Whether the frame is the sponsored product list opened from the coin page."""
+    return contains_text(snapshot, COIN_STORE_MARKER)
 
 
 def is_empty_boost(snapshot: Snapshot) -> bool:
@@ -180,6 +198,7 @@ def _is_coin_page(snapshot: Snapshot) -> bool:
 __all__ = [
     'BOOST_MARKER',
     'COIN_PAGE_MARKERS',
+    'COIN_STORE_MARKER',
     'EMPTY_BOOST_MARKER',
     'REDEEM_MARKER',
     'SHORTCUT_DEEP_LINK',
@@ -192,6 +211,7 @@ __all__ = [
     'contains_text',
     'has_task_rows',
     'is_boost_page',
+    'is_coin_store',
     'is_empty_boost',
     'is_logged_out',
 ]

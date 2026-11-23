@@ -8,7 +8,10 @@ whole run:
   three times in a row, during navigation or inside a task. A known screen
   resets the count, and the identity is the classifier state/surface plus a
   coarse layout/marker fingerprint, so OCR jitter does not reset it. The
-  condition is "the same surface", not "three arbitrary failures".
+  condition is "the same surface", not "three arbitrary failures". Inside a
+  task the engine first spends its bounded recovery (three shortcut entries)
+  and fails only that task when the coins page is proven again; if recovery
+  fails, the run aborts with the original screen (#83).
 * ``dangerous_control`` — a buy / order / cart / redeem control is visible while
   a task is running. The one exception is the measured surprise-item product
   detail page, whose unavoidable ``Add to cart`` / ``Buy now`` buttons are
@@ -25,8 +28,6 @@ it. The engine reports both and still runs its return-to-coins-page path.
 
 from __future__ import annotations
 
-import json
-import logging
 import re
 import unicodedata
 from collections.abc import Callable, Iterator
@@ -150,18 +151,17 @@ class SafetyGuard:
         self,
         *,
         catalogue: TaskCatalogue | None = None,
-        logger: logging.Logger | None = None,
         limit: int = UNEXPECTED_SCREEN_LIMIT,
     ) -> None:
         if limit < 1:
             raise ValueError(f'limit must be positive, got {limit!r}')
         self.limit = limit
         self.catalogue = catalogue
-        self._logger = logger if logger is not None else logging.getLogger(__name__)
         self._task_depth = 0
         self._task_label: str | None = None
         self._streak_fingerprint: str | None = None
         self._streak = 0
+        self._recovering = 0
         self._baseline_balance: float | None = None
         self._disarmed = False
         self.failure: Failure | None = None
@@ -193,6 +193,7 @@ class SafetyGuard:
         self._task_depth = 0
         self._task_label = None
         self._disarmed = True
+        self._recovering = 0
         self._reset_streak()
 
     @contextmanager
@@ -213,6 +214,24 @@ class SafetyGuard:
             if self._task_depth == 0:
                 self._task_label = None
             self._reset_streak()
+
+    @contextmanager
+    def recovering(self) -> Iterator[None]:
+        """Suspend the unexpected-screen streak while the engine drives back home.
+
+        A task that hit the limit has already failed; recovery gets the full
+        bounded navigation budget before the run can be called unrecoverable.
+        The balance and dangerous-control checks keep their teeth, and the
+        caller turns a failed recovery into the run-level abort (#83).
+        """
+        self._recovering += 1
+        self._reset_streak()
+        try:
+            yield
+        finally:
+            self._recovering -= 1
+            if self._recovering == 0:
+                self._reset_streak()
 
     def wrap(self, source: CaptureSource | Callable[[], Snapshot]) -> Callable[[], Snapshot]:
         """Wrap a capture seam so every frame is inspected exactly once."""
@@ -239,14 +258,16 @@ class SafetyGuard:
                 label = controls[0].text.strip()
                 reason = f'a {label!r} control appeared while {self._task_label or "a task"} was running'
                 self._abort(AbortCode.DANGEROUS_CONTROL, reason, report)
-            self._track_unexpected(
-                report,
-                unexpected=_is_unexpected_inside_task(snapshot, classification, surface),
-            )
+            if not self._recovering:
+                self._track_unexpected(
+                    report,
+                    unexpected=_is_unexpected_inside_task(snapshot, classification, surface),
+                )
             self._check_balance(snapshot, report)
             return snapshot
 
-        self._track_unexpected(report, unexpected=_is_unexpected(snapshot, classification.state, surface))
+        if not self._recovering:
+            self._track_unexpected(report, unexpected=_is_unexpected(snapshot, classification.state, surface))
         self._check_balance(snapshot, report)
         return snapshot
 
@@ -276,20 +297,6 @@ class SafetyGuard:
 
     def _abort(self, code: AbortCode, reason: str, screen: ScreenReport) -> None:
         self.failure = failure(FailureCode(code.value), detail=f'{reason}; screen={screen.summary}')
-        self._logger.error(
-            '%s',
-            json.dumps(
-                {
-                    'event': 'run_aborted',
-                    'code': code.value,
-                    'reason': reason,
-                    'screen': screen.as_dict(),
-                },
-                separators=(',', ':'),
-                sort_keys=True,
-                default=str,
-            ),
-        )
         raise RunAborted(code=code, reason=reason, screen=screen)
 
     def _reset_streak(self) -> None:

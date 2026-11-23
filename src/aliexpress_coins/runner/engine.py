@@ -23,6 +23,7 @@ import json
 import logging
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -55,7 +56,7 @@ from aliexpress_coins.runner.failures import (
 from aliexpress_coins.runner.levels import SKIPPED_ROW_LOG_LEVEL, run_log_level, task_log_level
 from aliexpress_coins.runner.notify import Notification, NotificationSink, build_notifier
 from aliexpress_coins.runner.report import RunEventLog, RunReport, RunStatus, prune_runs
-from aliexpress_coins.runner.safety import RunAborted, SafetyGuard
+from aliexpress_coins.runner.safety import UNEXPECTED_SCREEN_LIMIT, AbortCode, RunAborted, SafetyGuard
 from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks.browse import return_to_coins_page, run_browse_task
 from aliexpress_coins.tasks.catalogue import AllowedTaskSpec, TaskCatalogue, TaskCategory, load_task_catalogue
@@ -97,6 +98,7 @@ from aliexpress_coins.tasks.surprise import run_surprise_task
 
 __all__ = [
     'DISPATCH_TABLE',
+    'TASK_RECOVERY_ATTEMPTS',
     'EngineResult',
     'RunContext',
     'StopSignal',
@@ -233,6 +235,13 @@ DISPATCH_TABLE: dict[TaskCategory, str] = {
 #27 and a row in those categories is reported as skipped rather than guessed at.
 """
 
+TASK_RECOVERY_ATTEMPTS = UNEXPECTED_SCREEN_LIMIT
+"""How many shortcut entries a task's failed screen gets before the run aborts.
+
+The same number as the sighting limit keeps the rule easy to state: three
+sightings fail the task, three unsuccessful returns fail the night (#83).
+"""
+
 
 def make_live_context(
     config: RunConfig,
@@ -359,7 +368,7 @@ def run_once(
     except Exception as exc:
         log.warning('%s', _event('run_log_failed', detail=f'{type(exc).__name__}: {exc}'))
 
-    safety = context.safety if context.safety is not None else SafetyGuard(catalogue=context.catalogue, logger=log)
+    safety = context.safety if context.safety is not None else SafetyGuard(catalogue=context.catalogue)
     if context.safety is None:
         context.safety = safety
         context.capture = safety.wrap(context.capture)
@@ -1055,8 +1064,13 @@ def _attempt_dispatch(
             return _dispatch_entry(context, controller, entry)
     except RunInterrupted:
         raise
-    except RunAborted:
-        raise
+    except RunAborted as exc:
+        if exc.code is not AbortCode.UNEXPECTED_SCREEN:
+            raise
+        # A task that ran into a screen the classifier cannot name has already
+        # failed. Drive back to the coins page first; only an unrecoverable
+        # screen is the run's problem (#83).
+        return _recover_task_screen(context, controller, entry, exc)
     except Exception as exc:
         named = _task_exception(exc)
         if named.abort_run:
@@ -1071,6 +1085,79 @@ def _attempt_dispatch(
             failure=named,
             acted=True,
         )
+
+
+def _recover_task_screen(
+    context: RunContext,
+    controller: Controller,
+    entry: RosterEntry,
+    abort: RunAborted,
+) -> EngineResult:
+    """Fail one task on its unknown screen, or abort if the coins page is lost.
+
+    The return is the same bounded shortcut route every executor uses, but the
+    guard's unexpected-screen streak is suspended for the window: the screen has
+    already been attributed to this task, and recovery must get all its attempts
+    before the night is called unrecoverable. A successful return records
+    ``task_unverified`` with the screen in the task payload and leaves
+    ``report.abort`` unset; a failed one raises the run-level abort.
+    """
+    log = context.logger if context.logger is not None else LOG
+    window = context.safety.recovering() if context.safety is not None else nullcontext()
+    log.warning(
+        '%s',
+        _event(
+            'task_screen_recovery',
+            key=entry.key,
+            title=entry.title,
+            screen=abort.screen.as_dict(),
+            attempts=TASK_RECOVERY_ATTEMPTS,
+        ),
+    )
+    with window:
+        recovered = return_to_coins_page(
+            controller,
+            context.capture,
+            context.corpus,
+            context.navigate,
+            snapshot=None,
+            templates=context.templates,
+            route=SurfaceRoute.SHORTCUT,
+            attempts=TASK_RECOVERY_ATTEMPTS,
+            settle=context.config.settle_seconds,
+            clock=context.clock,
+            sleep=context.sleep,
+            logger=log,
+        )
+
+    frame = recovered.snapshot
+    recovered_state = classify(frame).state if frame is not None else ScreenState.UNKNOWN
+    if not recovered.returned or frame is None or recovered_state is ScreenState.UNKNOWN:
+        reason = (
+            f'{entry.title!r} hit an unknown screen and the coins page was not recovered '
+            f'after {TASK_RECOVERY_ATTEMPTS} shortcut attempts: {abort.reason}'
+        )
+        if recovered.error:
+            reason = f'{reason}; return error={recovered.error}'
+        raise RunAborted(code=AbortCode.UNEXPECTED_SCREEN, reason=reason, screen=abort.screen)
+
+    screen_detail = abort.screen.summary
+    detail = f'{abort.reason}; screen={screen_detail}; recovered to the coins page'
+    return EngineResult(
+        outcome='failed',
+        verification=AbortCode.UNEXPECTED_SCREEN.value,
+        detail=detail,
+        completed=False,
+        payload={
+            'key': entry.key,
+            'title': entry.title,
+            'error': abort.reason,
+            'screen': abort.screen.as_dict(),
+            'recovery': recovered.as_dict(),
+        },
+        failure=failure(FailureCode.TASK_UNVERIFIED, detail=f'{abort.reason}; screen={screen_detail}'),
+        acted=True,
+    )
 
 
 def _task_exception(exc: BaseException) -> Failure:

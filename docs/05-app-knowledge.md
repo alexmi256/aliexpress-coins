@@ -131,6 +131,10 @@ The boost page has one failure mode that matters, and it is silent: the honest-l
   chip itself (`find_timer_chip` + `wait_for_timer_chip`); 15 s is the catalogue bound for a chip
   that never finishes, not a claim that every task waits 15 s. A page with no chip returns `absent`
   immediately rather than sleeping.
+  * **Explore sponsored items ✅** opens the **coin store** product list headed
+    `Use coins for discounts`, with discounted price tiles (`Disc:C$…`, `Applied`) and the same
+    right-edge chip. It is a browse destination, not an interstitial: the executor waits for its
+    chip and then returns to the coin page (#83).
 * **Launcher items** — the operator completed both tasks simply by **adding** the shortcut and the
   widget. Nothing suggests a launch from the item is required, and the widget/shortcut visits may
   be what credits a *different* (repeatable) task. ❓ one more observation would settle it.

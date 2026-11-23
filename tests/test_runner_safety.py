@@ -7,7 +7,6 @@ prove every frame is inspected exactly once.
 
 from __future__ import annotations
 
-import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -16,6 +15,7 @@ import pytest
 from PIL import Image
 
 from aliexpress_coins.perception.geometry import DeviceGeometry
+from aliexpress_coins.perception.ocr import RapidOcrEngine
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.runner.failures import FailureCode
 from aliexpress_coins.runner.safety import (
@@ -73,7 +73,7 @@ def _danger(label: str = 'Buy now') -> Snapshot:
 
 
 def _guard() -> SafetyGuard:
-    return SafetyGuard(catalogue=CATALOGUE, logger=logging.getLogger('test.safety'))
+    return SafetyGuard(catalogue=CATALOGUE)
 
 
 def test_the_same_unexpected_screen_aborts_on_the_third_frame() -> None:
@@ -250,6 +250,34 @@ def test_a_running_countdown_destination_does_not_count_as_a_stuck_task_screen()
         guard.inspect(destination)
 
 
+@pytest.mark.slow
+def test_the_recorded_coin_store_is_not_an_unexpected_task_screen() -> None:
+    with Image.open(ROOT / 'tests' / 'data' / 'states' / 'coin_store.png') as opened:
+        image = opened.convert('RGB')
+
+    def is_timer(box: TextBox) -> bool:
+        text = box.text.strip().lower()
+        return text.endswith('s') and text[:-1].isdigit()
+
+    # Remove the chip so the countdown exemption cannot hide a missing marker:
+    # the frame must classify as a known page on its own.
+    boxes = tuple(box for box in RapidOcrEngine().read(image) if not is_timer(box))
+    frame = Snapshot(
+        image=image,
+        boxes=boxes,
+        captured_at=CAPTURED_AT,
+        geometry=DeviceGeometry.from_frame(image.width, image.height, density=240, sdk=35),
+    )
+    guard = _guard()
+
+    with guard.task('Explore sponsored items'):
+        guard.inspect(frame)
+        guard.inspect(frame)
+        guard.inspect(frame)
+
+    assert guard.streak == 0
+
+
 def test_disarm_stops_all_inspection_after_an_abort() -> None:
     guard = _guard()
     guard.disarm()
@@ -259,6 +287,27 @@ def test_disarm_stops_all_inspection_after_an_abort() -> None:
     guard.inspect(_unknown())
 
     assert guard.streak == 0
+
+
+def test_the_recovery_window_suspends_the_unexpected_streak() -> None:
+    guard = _guard()
+    unknown = _unknown()
+
+    with guard.recovering():
+        guard.inspect(unknown)
+        guard.inspect(unknown)
+        guard.inspect(unknown)
+
+    assert guard.streak == 0
+
+    def inspect_three() -> None:
+        for _ in range(3):
+            guard.inspect(unknown)
+
+    with pytest.raises(RunAborted) as raised:
+        inspect_three()
+
+    assert raised.value.code is AbortCode.UNEXPECTED_SCREEN
 
 
 def test_a_dangerous_control_is_only_fatal_while_a_task_is_running() -> None:

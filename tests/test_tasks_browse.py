@@ -32,6 +32,7 @@ from aliexpress_coins.perception.matching import normalize
 from aliexpress_coins.perception.ocr import RapidOcrEngine
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.waits import CountdownEnding
+from aliexpress_coins.runner.safety import SafetyGuard
 from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks.browse import (
     MAX_PRESSES,
@@ -369,6 +370,16 @@ def _wrong_page() -> Snapshot:
     )
 
 
+def _without_timer(snapshot: Snapshot) -> Snapshot:
+    """The same frame after the dwell chip cleared; only the chip box is gone."""
+
+    def is_timer(box: TextBox) -> bool:
+        text = normalize(box.text)
+        return text.endswith('s') and text[:-1].isdigit()
+
+    return replace(snapshot, boxes=tuple(box for box in snapshot.boxes if not is_timer(box)))
+
+
 def _loading_frame() -> Snapshot:
     return _snapshot(_box('Loading', 100, 100, 300, 150))
 
@@ -455,6 +466,11 @@ def engine() -> RapidOcrEngine:
 @pytest.fixture(scope='module')
 def launch(engine: RapidOcrEngine) -> Snapshot:
     return _load(DATA / 'popups' / 'launch_welcome_gifts.png', engine)
+
+
+@pytest.fixture(scope='module')
+def coin_store(engine: RapidOcrEngine) -> Snapshot:
+    return _load(DATA / 'states' / 'coin_store.png', engine)
 
 
 def test_find_timer_chip_reads_the_right_edge_countdown() -> None:
@@ -1057,6 +1073,59 @@ def test_run_browse_task_returns_to_coins_when_the_destination_is_wrong(
     assert result.arrival.arrived is True
     assert result.chip is not None
     assert result.chip.status is ChipStatus.ABSENT
+    assert world.current == 'coins'
+
+
+@pytest.mark.slow
+def test_run_browse_task_dwells_on_the_recorded_coin_store_and_returns(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+    coin_store: Snapshot,
+) -> None:
+    cleared = _without_timer(coin_store)
+    guard = SafetyGuard(catalogue=catalogue)
+    world = _World(
+        series={
+            'boost': (_boost_frame(),),
+            'store': (coin_store, coin_store, cleared, cleared),
+            'coins': (_coin_frame(),),
+            'boost_after': (_boost_frame(badge='1/6'),),
+        },
+        transitions={
+            ('boost', 'go'): 'store',
+            ('coins', 'earn more'): 'boost_after',
+        },
+    )
+
+    with guard.task(TITLE):
+        result = run_browse_task(
+            _controller(world, world.frame),
+            guard.wrap(world.capture),
+            corpus,
+            _state(tmp_path),
+            _entry(catalogue),
+            navigate=world.navigate,
+            arrival_timeout=1.0,
+            load_timeout=1.0,
+            chip_interval=0.5,
+            return_timeout=2.0,
+            return_interval=0.5,
+            clock=_SteppingClock(),
+            sleep=_SteppingClock().sleep,
+        )
+
+    assert guard.frames > 0
+    assert guard.task_running is False
+    assert result.outcome is BrowseOutcome.COMPLETED
+    assert result.verification == 'progress_advanced'
+    assert result.presses == 1
+    assert len(result.taps) == 1
+    assert result.arrival is not None
+    assert result.arrival.arrived is True
+    assert result.chip is not None
+    assert result.chip.seen is True
+    assert result.returned is True
     assert world.current == 'coins'
 
 

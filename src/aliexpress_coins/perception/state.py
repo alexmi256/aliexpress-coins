@@ -129,6 +129,14 @@ _ERROR_LABELS: tuple[str, ...] = (
 )
 """The app's dead-page and stuck-list text (docs/07 §5)."""
 
+_COIN_STORE_MARKER = 'Use coins for discounts'
+"""The sponsored product list's own header (#83).
+
+It is a loaded shopping page, not an unknown feed: the header is unique to the
+list ``Explore sponsored items`` opens, and the same frame carries a right-edge
+dwell chip.
+"""
+
 
 class ScreenState(StrEnum):
     """The mutually exclusive states a captured frame can be in."""
@@ -568,6 +576,10 @@ def _page_marker(snapshot: Snapshot) -> Evidence | None:
     surprise = _match(snapshot, 'Browse surprise items')
     if surprise is not None:
         return Evidence('page_marker', surprise.score, f'surprise-items page: {surprise.text!r}')
+
+    coin_store = _match(snapshot, _COIN_STORE_MARKER)
+    if coin_store is not None:
+        return Evidence('page_marker', coin_store.score, f'coin store: {coin_store.text!r}')
 
     # A feed can contain a "Bundle deals" section too, so the header must be
     # near the top before it identifies a product-collection page. The home

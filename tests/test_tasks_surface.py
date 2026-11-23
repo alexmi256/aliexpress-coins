@@ -186,6 +186,7 @@ def frames(engine: RapidOcrEngine) -> dict[str, Snapshot]:
     return {
         'boost': _load(STATES / 'boost.png', engine),
         'coins': _load(STATES / 'coins.png', engine),
+        'coin_store': _load(STATES / 'coin_store.png', engine),
     }
 
 
@@ -195,6 +196,13 @@ def test_classify_surface_distinguishes_the_recorded_variants(frames: dict[str, 
     assert classify_surface(frames['coins']) is Surface.ROWS_PRESENT
     assert has_task_rows(frames['boost'])
     assert has_task_rows(frames['coins'])
+
+
+def test_classify_surface_names_the_recorded_coin_store(frames: dict[str, Snapshot]) -> None:
+    surface = classify_surface(frames['coin_store'])
+
+    assert surface is Surface.COIN_STORE
+    assert not has_task_rows(frames['coin_store'])
 
 
 def test_classify_surface_recognises_the_empty_boost_recording(frames: dict[str, Snapshot]) -> None:
