@@ -614,7 +614,8 @@ All quality gates passed.
 
 ### Branch tree: `issue-37` at `2981b7a`
 
-This tree adds this runbook and the `tests/test_docs.py` enforcement tests.
+This tree adds this runbook and the `tests/test_docs.py` enforcement tests. Later commits only
+update this section and the README counts; the code and tests are unchanged.
 
 ```console
 $ git clone --branch issue-37 git@github.com:alexmi256/aliexpress-coins.git
