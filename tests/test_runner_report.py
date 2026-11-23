@@ -351,6 +351,23 @@ def test_report_helpers_keep_outside_paths_artifact_errors_and_off_notifications
     assert '**Notification:** not attempted (not configured)' in summary
 
 
+def test_a_null_previous_balance_does_not_manufacture_an_increase(tmp_path: Path) -> None:
+    """Without a readable baseline there is no delta, even when the after value is real."""
+    report = _report(tmp_path)
+    report.balance_after = 56.0
+    report.finish(RunStatus.COMPLETED, budget_used_seconds=1.0, finished_at=FINISHED)
+    report.write()
+
+    summary = report.summary_path.read_text(encoding='utf-8')
+    payload = json.loads(report.json_path.read_text(encoding='utf-8'))
+
+    assert report.balance_delta is None
+    assert payload['balance_before'] is None
+    assert payload['balance_delta'] is None
+    assert '**Balance:** unknown -> 56' in summary
+    assert '(+56)' not in summary
+
+
 def test_retention_keeps_the_newest_n_and_never_prunes_the_current_run(tmp_path: Path) -> None:
     for name in ('20260101T000000Z', '20260102T000000Z', '20260103T000000Z', '20260104T000000Z'):
         (tmp_path / name).mkdir()
