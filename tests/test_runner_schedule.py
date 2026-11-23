@@ -14,7 +14,7 @@ from aliexpress_coins.runner.errors import RunLockHeld, StateError
 from aliexpress_coins.runner.lock import RunLock
 from aliexpress_coins.runner.report import RunReport, RunStatus
 from aliexpress_coins.runner.schedule import nightly_trigger, run_schedule, should_skip_night
-from aliexpress_coins.runner.state import DailySnapshot, DailyStateStore
+from aliexpress_coins.runner.state import DailySnapshot, DailyStateStore, NightOutcome, NightRecord
 
 START = datetime(2026, 11, 22, 3, 29, tzinfo=UTC)
 
@@ -92,7 +92,7 @@ class _ReleasingStop(_Stop):
         stopped = super().wait(timeout)
         if self.waits == 2:
             if self.complete:
-                self.store.complete_night()
+                self.store.record_night(NightRecord(NightOutcome.EXHAUSTED, dispatched=1, completed=1))
             self.other.release()
         return stopped
 
@@ -138,8 +138,34 @@ def test_a_real_daily_store_is_the_skip_source(tmp_path: Path) -> None:
     store = DailyStateStore(tmp_path / 'state', clock=lambda: datetime(2026, 11, 22, 4, 0))
 
     assert should_skip_night(store) is False
-    store.complete_night()
+    store.record_night(NightRecord(NightOutcome.RETRYABLE_FAILURES, dispatched=1, retryable_failures=1))
+    assert should_skip_night(store) is False
+    store.record_night(NightRecord(NightOutcome.EXHAUSTED, dispatched=1, completed=1))
     assert should_skip_night(store) is True
+
+
+def test_a_night_left_open_by_retryable_failures_is_started_by_the_daemon(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO)
+    config = _config(tmp_path, jitter=0)
+    clock = _Clock(START)
+    stop = _Stop(clock)
+    store = _store(tmp_path, clock)
+    store.record_night(NightRecord(NightOutcome.RETRYABLE_FAILURES, dispatched=3, retryable_failures=3))
+    calls: list[str] = []
+
+    def night() -> RunReport:
+        calls.append('run')
+        report = RunReport(config.runs_dir, 'run-after-retryable', budget_seconds=60.0, started_at=clock.now)
+        report.finish(RunStatus.COMPLETED, budget_used_seconds=1.0, finished_at=clock.now)
+        return report
+
+    assert run_schedule(config, run_night=night, state=store, clock=clock, stop=stop) == 0
+    assert calls == ['run']
+    assert 'schedule_start' in caplog.text
+    assert 'already completed today' not in caplog.text
 
 
 def test_the_loop_runs_one_night_then_stops_taking_the_next_fire_time(

@@ -353,10 +353,11 @@ touches adb until its report, cleanup and notification are finished. `run --once
 waiting: if the nightly daemon is mid-night, the manual command exits `3`, names the holder's pid,
 host and start time, and sends no tap. The daemon behaves differently when the fire time arrives
 while a manual run holds the lock: it waits up to one run budget plus five minutes, then reads the
-day again. A manual run that walked the roster to the end has marked the night complete, so the
-daemon skips it; a manual run stopped by its budget leaves the night open, so the daemon takes it.
-If the wait expires, the daemon skips that fire with a `run lock held by another run` event and
-tries again at the next fire time. A killed holder cannot lock the collector out: its file descriptor
+day again. A manual run that walked the roster and left nothing worth retrying has marked the night
+complete, so the daemon skips it; a manual run stopped by its budget, or one whose remaining tasks
+failed with retryable reasons, leaves the night open, so the daemon takes it. If the wait expires,
+the daemon skips that fire with a `run lock held by another run` event and tries again at the next
+fire time. A killed holder cannot lock the collector out: its file descriptor
 closes with the process, the kernel releases the lock, and the next run logs a `run_lock_takeover`
 warning naming the stale owner before replacing it.
 
@@ -378,7 +379,7 @@ Local runs write under the current directory:
 ```text
 runs/<UTC timestamp>/          # e.g. runs/20261123T015402Z/
 ├── summary.md                 # the human report
-├── run.json                   # the machine-readable twin (schema 4)
+├── run.json                   # the machine-readable twin (schema 5)
 ├── run.jsonl                  # structured process log, one JSON object per line
 ├── roster.jsonl               # every roster observation and its diff
 └── shots/
@@ -424,7 +425,25 @@ AECOINS_DEVICE=192.168.8.65:5555 AECOINS_TIMEZONE=America/Toronto \
 The daemon waits for `AECOINS_SCHEDULE_TIME` (default `03:30` local) plus jitter from
 `AECOINS_SCHEDULE_JITTER_SECONDS` (default 180 seconds), runs one night synchronously, then asks
 the trigger for the next fire time. A night already marked complete in the daily state is skipped;
-a night that failed is not silently treated as complete, so the next day's fire tries again.
+a night whose walk left a retryable task failure is not marked complete, so the day stays open for a
+later run. A run-level failure is likewise not silently treated as complete, so the next day's fire
+tries again.
+
+**What "complete" means.** A finished roster walk marks the day complete only when nothing
+dispatched is worth retrying: every row either completed, was skipped/refused (policy, daily limit,
+or the app reporting it unavailable), or failed with a failure class that spends no retry. Any
+`failed` row whose taxonomy entry is retryable (`task_unverified`, including a timeout or a
+recovered unknown screen) keeps `completed_night` false, even if another row completed, because the
+retryable row is still unclaimed work. This is a cross-run retry, not the in-run rule that
+`acted=True` blocks a repeated tap. A task that acted without proof is recorded in
+`acted_unverified`; its next dispatch first re-reads the fresh task surface. A row that still shows
+its unclaimed `GO` may proceed, a row that is gone/checked on a complete surface is reported
+`already_done` with no tap, and an unreadable or partial surface stays retryable rather than
+guessing. The marker remains until the row is proven done — a recorded completion or a terminal
+executor outcome — and every dispatch while it remains re-checks instead of tapping from a stale
+roster. The decision is recorded as `last_night` in the daily state and printed by the report as
+one `Night:` line.
+
 A real schedule wait looks like this ✅:
 
 ```console
@@ -511,8 +530,8 @@ A budget stop is a **clean end**, not an error:
   exhausted`;
 - remaining rows appear under `Skipped` with reason `run budget`;
 - the process exits `0`, and the nightly daemon treats the night as finished for scheduling
-  purposes only if the walk reached `completed`. A manual budget stop does **not** mark the day
-  complete, so it does not swallow the nightly window.
+  purposes only if the walk reached `completed` **and** left nothing worth retrying. A manual budget
+  stop does **not** mark the day complete, so it does not swallow the nightly window.
 
 If the budget is routinely exhausted, look at the wall-clock budget
 (`AECOINS_RUN_BUDGET_SECONDS`, default 2700 s), the task cap
@@ -521,11 +540,11 @@ deliberately; a larger budget is not a fix for a slow network or a stuck screen.
 
 ### `run.json`
 
-`run.json` is the same report plus every field a script may need. Schema `4`. The important keys:
+`run.json` is the same report plus every field a script may need. Schema `5`. The important keys:
 
 | key | meaning |
 |---|---|
-| `schema` | report schema; `4` is this build |
+| `schema` | report schema; `5` is this build |
 | `run_id`, `status`, `detail` | identity and terminal sentence |
 | `started_at`, `finished_at`, `budget` | wall-clock evidence |
 | `hygiene`, `geometry` | what the device said before the first capture |
@@ -535,6 +554,7 @@ deliberately; a larger budget is not a fix for a slow network or a stuck screen.
 | `notification` | attempted, sink, ok and a class-plus-status error |
 | `plan`, `plan_note` | the dry-run plan, when there was one |
 | `abort` | safety code, reason and the screen that triggered it |
+| `night` | the completion decision: `outcome`, dispatched/completed counts and retryable failures |
 | `failure` | code, stage, retry scope, retries, `abort_run`, sentence and detail |
 | `error` | the raw exception for a failed run, in addition to the named failure |
 | `tasks[]`, `skipped[]` | the task and skip tables in structured form; each task carries `state` (`in_flight`, `aborted`, or the executor outcome) |
@@ -577,9 +597,10 @@ the roster log, not the exit code.
 
 If a night claims nothing, check in this order:
 
-1. **Status.** `budget` means the walk ran out of time or tasks; `completed` with zero completed
-   tasks means the roster was read but nothing was dispatchable; `aborted` or `failed` means read
-   the code in §10 first.
+1. **Status and night.** `budget` means the walk ran out of time or tasks; `completed` with zero
+   completed tasks means the roster was read but nothing was dispatchable, unless the report's
+   `Night:` line says `open`, which means a retryable task failure kept the day available for a
+   later run; `aborted` or `failed` means read the code in §10 first.
 2. **Balance delta.** If it is `unknown`, the balance frames were not readable; inspect
    `balance_note` and `artifact_errors`. If it is `0`, the app was already claimed or no allowed
    row was available. If it is negative, the run should have aborted with `balance_decreased`.
@@ -595,7 +616,10 @@ If a night claims nothing, check in this order:
 6. **The device's day.** Open the app and look at the task rows. If they carry the drawn check or
    are absent because the server has already credited them, the day is claimed. Wait for the next
    reset; do not re-press a claimed card.
-7. **State.** Read `state/daily-<YYYY-MM-DD>.json`. A file that fails validation is moved aside as
+7. **State.** Read `state/daily-<YYYY-MM-DD>.json`. `completed_night` is the scheduler's skip flag,
+   `last_night` records the decision behind it (`exhausted` or `retryable_failures`, with the
+   dispatch and failure counts), and `acted_unverified` names tasks that acted without proof and
+   still need a fresh-row re-check. A file that fails validation is moved aside as
    `.corrupt-<timestamp>` and the day starts empty with a warning; that is deliberate, but it means
    a resumed run may repeat a task.
 
@@ -669,7 +693,10 @@ operator directories such as `runs/manual` are left alone and logged as `runs_no
 Pruning runs after the report is final and after the device settings are restored, so a slow
 notifier cannot leave rotation pinned.
 
-State files are one per local day: `state/daily-<YYYY-MM-DD>.json`. The directory also holds
+State files are one per local day: `state/daily-<YYYY-MM-DD>.json`. Each file carries the day's
+completion counts, `completed_night` (the scheduler's skip flag), `last_night` (the outcome of the
+last finished walk: `exhausted` or `retryable_failures`, with counts) and `acted_unverified` (tasks
+that acted without proof and must be re-read before another tap). The directory also holds
 `state/run.lock`, the exclusive run lock described in §6; leave it in place while a run is active.
 Keep at least the days you want to audit; the store does not prune them itself. Do not hand-edit a
 state file while a run is using it. A corrupt file is quarantined, not silently reused.
