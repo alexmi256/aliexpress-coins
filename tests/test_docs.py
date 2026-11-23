@@ -1,13 +1,16 @@
-"""The runbook, ADR index and documentation graph are part of the gate (issues #37, #90).
+"""The runbook, ADR index, documentation graph and bank example are part of the gate (issues #37, #89, #90).
 
 A failure class without a troubleshooting row is a document that lies about what the
 operator can do, an ADR that is not in the index is a decision nobody can find, a broken
-link in the README or docs misleads a new user, and an unlinked file in ``docs/`` rots
-silently. All of them are checked here rather than left to review.
+link in the README or docs misleads a new user, an unlinked file in ``docs/`` rots
+silently, and the normalisation example in ``data/README.md`` is a derivation nothing
+executes. All of them are checked here rather than left to review.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import tomllib
 from collections import deque
@@ -16,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from aliexpress_coins.runner.failures import FAILURE_TABLE, FailureCode
+from aliexpress_coins.tasks.quiz_bank import normalize_question, question_key
 from aliexpress_coins.tasks.surface import Surface
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,6 +29,7 @@ RUNBOOK_PATH = DOCS_DIR / '06-runbook.md'
 ADR_DIR = DOCS_DIR / 'adr'
 ADR_INDEX_PATH = ADR_DIR / 'README.md'
 PYPROJECT_PATH = ROOT / 'pyproject.toml'
+DATA_README_PATH = ROOT / 'data' / 'README.md'
 
 _FAILURE_CODES = frozenset(code.value for code in FailureCode)
 _ROW = re.compile(r'^\|\s*`(?P<code>[a-z_]+)`\s*\|(?P<cells>.*)\|\s*$')
@@ -34,6 +39,13 @@ _HTML_SRC = re.compile(r'<(?:img|a)\b[^>]*\b(?:src|href)=["\'](?P<target>[^"\']+
 _FENCED_BLOCK = re.compile(r'```.*?```', re.DOTALL)
 _COVERAGE_LINE = re.compile(r'(?:coverage|floor|ratchet)', re.IGNORECASE)
 _PERCENT = re.compile(r'\b(?P<pct>\d+(?:\.\d+)?)%')
+_JSON_BLOCK = re.compile(r'```json\s*\n(?P<body>.*?)```', re.DOTALL)
+_SHA256_HEX = re.compile(r'[0-9a-f]{64}')
+_UNFOLD_CONFUSABLES = str.maketrans({'1': 'l', '0': 'o'})
+_DERIVATION = (
+    'the documented derivation is, in order: NFKC, case-fold, fold confusables towards the digit '
+    '(l -> 1, o -> 0), strip punctuation, collapse whitespace'
+)
 _TROUBLESHOOTING_START = '## 10. Troubleshooting by failure code'
 _TROUBLESHOOTING_END = '### Run-level statuses that are not failures'
 _SURFACE_MARKER = '**`surface`** is the screen the planner understood:'
@@ -161,6 +173,61 @@ def _coverage_floor_mismatches(readme_text: str, expected: float) -> list[float]
     return [value for value in _quoted_coverage_floors(readme_text) if value != expected]
 
 
+def _bank_example() -> dict[str, object]:
+    """The example entry from the ```json block in ``data/README.md``."""
+    text = DATA_README_PATH.read_text(encoding='utf-8')
+    match = _JSON_BLOCK.search(text)
+    assert match is not None, f'{DATA_README_PATH} has no ```json example block'
+    document: object = json.loads(match.group('body'))
+    assert isinstance(document, dict), f'{DATA_README_PATH} example block is not a JSON object'
+    questions = document['questions']
+    assert isinstance(questions, list), f'{DATA_README_PATH} example questions is not a list'
+    assert questions, f'{DATA_README_PATH} example has no questions'
+    example = questions[0]
+    assert isinstance(example, dict), f'{DATA_README_PATH} example entry is not a JSON object'
+    return example
+
+
+def _example_text(example: dict[str, object], field: str) -> str:
+    """One string field of the README's example entry."""
+    value = example[field]
+    assert isinstance(value, str), f'data/README.md example field {field!r} is not a string: {value!r}'
+    return value
+
+
+def _normalisation_mismatch(question: str, documented: str) -> list[str]:
+    """Every way the example's ``question`` fails to reproduce its ``normalized`` value."""
+    problems: list[str] = []
+    actual = normalize_question(question)
+    if actual != documented:
+        problems.append(f'normalize_question({question!r}) is {actual!r}, the document says {documented!r}')
+
+    unfolded = documented.translate(_UNFOLD_CONFUSABLES)
+    folded = normalize_question(unfolded)
+    if folded != documented:
+        problems.append(
+            f'the letter form {unfolded!r} must share one key with the digit form {documented!r}, '
+            f'got {folded!r}: the fold goes towards the digit, so l -> 1 and o -> 0'
+        )
+
+    upper = normalize_question(question.upper())
+    if upper != documented:
+        problems.append(
+            f'the uppercase form {question.upper()!r} must normalise to {documented!r}, got {upper!r}: '
+            f'case folding runs before the confusable fold, so O -> o -> 0 and L -> l -> 1'
+        )
+    return problems
+
+
+def _normalisation_message(problems: list[str]) -> str:
+    return (
+        f'data/README.md no longer describes normalize_question(): {"; ".join(problems)}. '
+        f'{_DERIVATION}. A clean "following" therefore normalises to "f0110wing", exactly as an OCR '
+        f'"f0110wing" does. If the normaliser changed, update the README example and this test together; '
+        f'if the README was edited, restore it.'
+    )
+
+
 def test_every_failure_code_has_a_troubleshooting_row() -> None:
     rows = _troubleshooting_rows()
     missing, stale = _troubleshooting_mismatches(rows)
@@ -263,3 +330,45 @@ def test_orphaned_doc_is_detected(tmp_path: Path) -> None:
 def test_mismatched_readme_coverage_floor_is_detected() -> None:
     mismatches = _coverage_floor_mismatches('Coverage floor is 98.0% in pyproject.toml.\n', 99.47)
     assert mismatches == [98.0]
+
+
+def test_data_readme_example_matches_the_normaliser() -> None:
+    example = _bank_example()
+    question = _example_text(example, 'question')
+    documented = _example_text(example, 'normalized')
+
+    problems = _normalisation_mismatch(question, documented)
+    assert not problems, _normalisation_message(problems)
+
+    placeholder = _example_text(example, 'key')
+    assert _SHA256_HEX.fullmatch(placeholder) is None, (
+        f'data/README.md pins the key to the literal digest {placeholder!r}; it must describe the rule '
+        f'(SHA-256 of `normalized`) so the example cannot disagree with the entry it labels'
+    )
+    key = question_key(question)
+    digest = hashlib.sha256(documented.encode('utf-8')).hexdigest()
+    assert _SHA256_HEX.fullmatch(key) is not None, f'question_key() returned {key!r}, which is not a SHA-256 digest'
+    assert key == digest, (
+        f'data/README.md says key is the SHA-256 of `normalized`, but question_key({question!r}) is {key!r} '
+        f'while sha256({documented!r}) is {digest!r}'
+    )
+
+
+def test_a_drifted_data_readme_example_is_detected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    text = DATA_README_PATH.read_text(encoding='utf-8')
+    path = tmp_path / 'README.md'
+    path.write_text(text.replace('f0110wing', 'following', 1), encoding='utf-8')
+    monkeypatch.setattr('tests.test_docs.DATA_README_PATH', path)
+
+    example = _bank_example()
+    problems = _normalisation_mismatch(
+        _example_text(example, 'question'),
+        _example_text(example, 'normalized'),
+    )
+
+    assert problems, 'editing the documented normalized value alone must not pass'
+    message = _normalisation_message(problems)
+    assert 'l -> 1' in message
+    assert 'o -> 0' in message
+    assert 'in order' in message
+    assert 'NFKC' in message
