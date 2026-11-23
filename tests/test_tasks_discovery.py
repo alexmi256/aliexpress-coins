@@ -582,6 +582,30 @@ def test_wait_for_coin_page_reads_through_the_skeleton_to_the_page(
     assert arrival.history[-1] is ScreenState.PAGE
 
 
+def test_wait_for_coin_page_waits_out_an_unknown_pre_render_frame(
+    frames: dict[str, Snapshot],
+    engine: RapidOcrEngine,
+) -> None:
+    ambiguous = _load(STATES / 'ambiguous_feed.png', engine)
+    assert classify(ambiguous).state is ScreenState.UNKNOWN
+    clock = _SteppingClock(step=0.5)
+    capture = _Capture((ambiguous, frames['coins']))
+
+    arrival = wait_for_coin_page(
+        capture,
+        timeout=5,
+        interval=0.5,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert arrival.settled is True
+    assert arrival.timed_out is False
+    assert arrival.classification.state is ScreenState.PAGE
+    assert arrival.history[0] is ScreenState.UNKNOWN
+    assert arrival.history[-1] is ScreenState.PAGE
+
+
 def test_wait_for_coin_page_names_a_skeleton_that_never_renders(
     frames: dict[str, Snapshot],
 ) -> None:

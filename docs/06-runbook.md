@@ -311,8 +311,8 @@ run.json: runs/20261123T015402Z/run.json
 Read it like this:
 
 - **`surface`** is the screen the planner understood: `rows_present`, `rows_absent`, `boost_page`,
-  `redeem_interstitial`, `empty_boost`, or `unknown`. A plan built from `unknown` is not evidence
-  about the day.
+  `redeem_interstitial`, `empty_boost`, or `unknown`. `unknown`, `empty_boost`, a redeem interstitial,
+  or a `rows_absent` with no readable task row is an unreadable report, not a plan.
 - **steps** are the rows that would be dispatched, in order, with the catalogue key and executor
   category. `Daily coins` is the streak sign-in; it is allowed but not a boost row.
 - **refusals** are the deny-list decisions. `unrecognised` is default-deny: the row is not in
@@ -320,14 +320,13 @@ Read it like this:
   is a safety feature, not a failure.
 - **`taps_issued: 0`** is the proof that the dry run did not touch the app.
 
-A dry run exits `0` when it produced a plan, even an empty one. **An empty plan can be a timing
-bug, not an empty day.** On 2026-11-22 the same command returned `surface: "unknown"` and
-`0 task(s)` on repeats when it captured the hybrid page immediately after navigating, while a
-capture a second later showed a populated coin page. This is tracked as
-[issue #76](https://github.com/alexmi256/aliexpress-coins/issues/76): the command is safe, but
-treat `surface: unknown` plus zero steps as "retry or inspect", never as "the day is done". The
-`Coins boost` empty page has the same shape and is also a load fault
-([`05-app-knowledge.md`](05-app-knowledge.md) §4b).
+A dry run exits `0` only when it positively read a complete roster. Any unreadable surface — still
+loading, no known coin page, a popup or redeem interstitial, the empty `Coins boost` load fault, or
+coin-page markers without their task rows — ends `failed` with `navigation_failed` and a `surface_*`
+detail (or `aborted` with `unexpected_screen` when the same unreadable frame repeats three times) and
+exits non-zero. Treat any non-zero dry run as "retry or inspect", never as "the day is done"; a clean
+empty day cannot be proven from the inline coin page alone. The `Coins boost` empty page is a load
+fault ([`05-app-knowledge.md`](05-app-knowledge.md) §4b), not evidence about the day.
 
 ---
 
@@ -375,7 +374,7 @@ runs/<UTC timestamp>/          # e.g. runs/20261123T015402Z/
     ├── balance-before.json    # its OCR boxes and geometry sidecar
     ├── balance-after.png
     ├── balance-after.json
-    └── failure.png            # best-effort, failed runs only
+    └── failure.png            # best-effort, failed live runs only
 ```
 
 `AECOINS_RUNS_DIR` overrides the root. In the container it is `/app/runs`, backed by the named
@@ -604,7 +603,7 @@ swipe or page press. A result that may already have acted is reported, never rep
 | `unsupported_geometry` | The frame reports no measured profile or calibration. This is a taxonomy refusal, not the capture path's response to a different portrait geometry; see §14. | `doctor`; `adb shell wm size`, `wm density`, `getprop ro.build.version.sdk`; compare [`02-architecture.md`](02-architecture.md), §14 and #42; add calibration rather than forcing a different size. | none |
 | `frame_undecodable` | A screencap arrived but could not be decoded. | `adb -s <serial> exec-out screencap -p > /tmp/frame.png`; `file /tmp/frame.png`; check free disk, the USB/network path and the screen. A truncated frame is not retried because the device did answer. | none |
 | `app_logged_out` | The app shows a sign-in prompt instead of the account surface. | Sign in on the tablet; confirm the Account tab loads; `adb shell dumpsys window` for the focused app; run again. The run stops at the first detection. | none |
-| `navigation_failed` | The route did not reach the screen it promised; the run records a fallback and may continue from the inline surface. | Read `Route fallback` and `route_error`; start the app normally, settle ~10 s, then send the shortcut intent; check for the empty `Coins boost` page and an app update that changed labels. | none |
+| `navigation_failed` | The route did not reach the screen it promised; a live run records a fallback and may continue from the inline surface, while a dry run has no fallback and exits non-zero with a `surface_*` detail. | Read `Route fallback` and `route_error`; for a dry run, read the `surface_*` detail and retry once the page settles; start the app normally, settle ~10 s, then send the shortcut intent; check for the empty `Coins boost` page and an app update that changed labels. | none |
 | `popup_unclosable` | A popup had no safe dismissal: no known label, no template match and no calibration for this profile. | Open the failure frame in `shots/`; note the app version and the `doctor` profile id; update the popup corpus (#11) or the profile calibration (#42). Never tap a guessed coordinate. | none |
 | `task_unverified` | The task did not prove completion on screen. | Read the task row's `code`, `outcome`, `evidence` and `detail`; inspect `run.jsonl`; check whether `acted` is true. A task that acted is not retried, so verify by hand before the next night. | task ×1 |
 | `unexpected_screen` | The same unrecognised or dead screen was seen three times in a row. | Read `abort.screen` labels and fingerprint, and the `failure` frame; check for an app update, a new popup or a hybrid page that did not render; capture a fixture for #11. | none |
@@ -617,7 +616,7 @@ swipe or page press. A result that may already have acted is reported, never rep
 
 | status | meaning | operator action |
 |---|---|---|
-| `planned` | a dry run wrote its plan | read §5; `unknown` plus zero steps is #76, not a claim about the day |
+| `planned` | a dry run read a complete roster and wrote its plan | read §5; an unreadable surface is `failed` or `aborted`, not `planned` |
 | `completed` | the walk ended normally | read §8; verify the delta and the task evidence |
 | `budget` | the budget stopped the walk cleanly | read §8; the remaining rows are in `Skipped` |
 | `stopped` | SIGTERM/SIGINT ended the run between tasks | the report is valid; restart the daemon if it was not an operator stop |

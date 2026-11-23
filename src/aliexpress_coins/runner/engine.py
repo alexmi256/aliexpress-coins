@@ -37,7 +37,7 @@ from aliexpress_coins.perception.capture import AdbSnapshotter
 from aliexpress_coins.perception.errors import FrameDecodeError, SnapshotError, StateTimeout
 from aliexpress_coins.perception.ocr import RapidOcrEngine
 from aliexpress_coins.perception.snapshot import Snapshot
-from aliexpress_coins.perception.state import CaptureSource
+from aliexpress_coins.perception.state import CaptureSource, ScreenState, classify
 from aliexpress_coins.perception.templates import TemplateStore, load_templates
 from aliexpress_coins.perception.waits import wait_for_text
 from aliexpress_coins.runner.config import RunConfig
@@ -84,7 +84,6 @@ from aliexpress_coins.tasks.quiz import run_quiz_task
 from aliexpress_coins.tasks.signin import claim_daily_signins, read_coin_balance
 from aliexpress_coins.tasks.surface import (
     COIN_PAGE_MARKERS,
-    SURFACE_REFRESH_LIMIT,
     RouteFirer,
     Surface,
     SurfaceRoute,
@@ -525,7 +524,7 @@ def run_once(
                     log,
                     on_dismiss=record_dismissal,
                 )
-            if status is RunStatus.FAILED:
+            if status is RunStatus.FAILED and not context.config.dry_run:
                 _record_failure_frame(context, report, artifacts, log)
         except RunAborted as exc:
             status = RunStatus.ABORTED
@@ -610,14 +609,14 @@ def _plan_dry_run(
     so the CLI exits non-zero instead of telling the operator the day is empty.
     """
     surface = classify_surface(frame)
+    initial_state = classify(frame).state
     routes: list[SurfaceRoute] = []
     waits: list[CoinPageWait] = []
     content_waits: list[dict[str, object]] = []
     settle_note: str | None = None
-    route_failed = False
 
     def fire_route() -> bool:
-        nonlocal settle_note, route_failed
+        nonlocal settle_note
         try:
             context.navigate(SurfaceRoute.SHORTCUT)
         except RunAborted, RunInterrupted:
@@ -625,7 +624,6 @@ def _plan_dry_run(
         except Exception as exc:
             settle_note = f'could not read the coins page: {type(exc).__name__}: {exc}'
             report.plan_note = settle_note
-            route_failed = True
             return False
         routes.append(SurfaceRoute.SHORTCUT)
         return True
@@ -642,13 +640,16 @@ def _plan_dry_run(
         waits.append(arrival)
         frame = arrival.snapshot
         surface = classify_surface(frame)
+        if arrival.classification.state is ScreenState.POPUP or not arrival.settled:
+            # A cover or a still-loading frame is not a readable page. Do not
+            # spend the inline-row wait on it; the scheduler below names it.
+            return
         if surface is Surface.ROWS_ABSENT:
             # The coin-page markers can render before their task rows. The live
             # path waits for the boost list here; a dry run must not tap "Earn
             # more", so it waits on the same #19 text primitive for the inline
-            # rows that are the only surface it may read. A timeout leaves the
-            # last frame in place: a genuinely empty inline page is still
-            # positively identified, not an unreadable one.
+            # rows that are the only surface it may read. A timeout is not an
+            # empty day; the row wait is part of the evidence below.
             content = wait_for_text(
                 context.capture,
                 has_task_rows,
@@ -667,23 +668,35 @@ def _plan_dry_run(
             enumerate_roster(frame, context.catalogue, route=DiscoveryRoute.INLINE),
             surface_variant=surface,
             routes_taken=tuple(routes),
-            refresh_attempted=len(routes) > 1,
         )
 
-    if surface is Surface.UNKNOWN and not _on_coin_page(frame) and fire_route():
+    if (
+        surface is Surface.UNKNOWN
+        or initial_state is ScreenState.POPUP
+        or surface in (Surface.ROWS_ABSENT, Surface.EMPTY_BOOST)
+    ) and fire_route():
+        # A popup may be cleared by the route, and an unclassified or empty
+        # surface gets the one #38 warm re-entry. A populated page is read as is.
         settle()
 
     roster = read_roster()
-    while (
-        not route_failed
-        and roster.empty
-        and surface is not Surface.REDEEM_INTERSTITIAL
-        and len(routes) < SURFACE_REFRESH_LIMIT + 1
-    ):
-        if not fire_route():
-            break
-        settle()
-        roster = read_roster()
+    unreadable = _unreadable_plan_reason(roster, surface, waits, content_waits, settle_note, initial_state)
+    if unreadable is not None:
+        last = waits[-1] if waits else None
+        last_state = last.classification.state if last is not None else initial_state
+        if last_state is ScreenState.POPUP or (last is not None and not last.settled):
+            # The classifier can see coin markers and rows through a modal; a
+            # popup is not a readable coin page, so report it as unread rather
+            # than planning the rows under the scrim.
+            surface = Surface.UNKNOWN
+        roster = Roster(
+            entries=(),
+            route=DiscoveryRoute.INLINE,
+            catalogue_version=context.catalogue.version,
+            default_deny_reason=context.catalogue.default_deny_reason,
+            surface_variant=surface,
+            routes_taken=tuple(routes),
+        )
 
     report.geometry = _geometry(frame)
     report.roster = roster.as_dict()
@@ -773,7 +786,6 @@ def _plan_dry_run(
             },
         )
 
-    unreadable = _unreadable_plan_reason(roster, surface, waits, settle_note)
     if unreadable is not None:
         report.status = RunStatus.FAILED
         report.detail = unreadable
@@ -815,31 +827,41 @@ def _unreadable_plan_reason(
     roster: Roster,
     surface: Surface,
     waits: list[CoinPageWait],
+    content_waits: list[dict[str, object]],
     settle_note: str | None,
+    initial_state: ScreenState,
 ) -> str | None:
     """Name why an empty plan is not evidence about the day, or return ``None``.
 
-    ``ROWS_ABSENT`` is the coin page positively identified with no rows: that is
-    the honest empty day the #38 policy reports as ``nothing available``. A
-    frame that never stopped loading, never produced a page marker, or stayed on
-    the documented empty-boost fault is different: nothing was read, so the plan
-    must fail rather than report a clean zero.
+    A dry run may only exit 0 after it read a complete roster. An unsettled
+    frame, a popup cover, an unclassified page, the empty-boost load fault, or a
+    coin page whose inline rows never appeared is an incomplete read, not an
+    empty day.
     """
-    if not roster.empty:
-        return None
-    if surface not in (Surface.UNKNOWN, Surface.EMPTY_BOOST):
-        return None
-
-    if surface is Surface.EMPTY_BOOST:
-        reason = 'surface_empty_boost: the Coins boost page was still the documented load fault after the warm re-entry'
-    else:
+    last = waits[-1] if waits else None
+    last_state = last.classification.state if last is not None else initial_state
+    if last_state is ScreenState.POPUP:
+        reason = 'surface_popup: a popup covers the coin page and a dry run cannot dismiss it'
+    elif surface is Surface.EMPTY_BOOST:
+        reason = 'surface_empty_boost: the Coins boost page was still the documented load fault'
+    elif surface is Surface.UNKNOWN:
         reason = 'surface_unknown: the coin page did not render'
-    if waits:
-        last = waits[-1]
+    elif not roster.empty:
+        return None
+    elif surface is Surface.ROWS_ABSENT:
+        reason = 'surface_rows_incomplete: the coin page rendered but its task rows did not'
+        if content_waits:
+            reason = f'{reason} (row wait {content_waits[-1]["status"]})'
+        else:
+            reason = f'{reason} (no row wait was possible)'
+    else:
+        reason = 'surface_incomplete: the task surface rendered but no task row could be read'
+
+    if last is not None:
         history = ' -> '.join(state.value for state in last.history)
         reason = f'{reason} (states={history}; settled={last.settled})'
     else:
-        reason = f'{reason} (no settle wait was possible)'
+        reason = f'{reason} (initial state {initial_state.value}; no settle wait)'
     if settle_note is not None:
         reason = f'{reason}; {settle_note}'
     return reason

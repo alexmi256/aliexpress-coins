@@ -1102,6 +1102,7 @@ class CoinPageWait:
         return not self.timed_out and self.classification.state not in (
             ScreenState.LOADING,
             ScreenState.POPUP,
+            ScreenState.UNKNOWN,
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -1132,13 +1133,18 @@ def wait_for_coin_page(
     was the dry-run planner classifying the skeleton once and reporting a clean
     zero-step plan; the same helper now supplies both paths' settled frame.
 
-    ``started`` lets a caller that already read the clock share its deadline;
-    it does not add a clock read on the settled path, so the live path's timing
-    is unchanged. ``dismiss_popup`` is the live path's in-app dismissal. It is
-    ``None`` for a dry run, which returns on the first ``POPUP`` rather than
-    pretending the page settled or spending a tap it must not issue. A deadline
-    returns ``timed_out`` with the last frame and every state on the way, so a
-    caller can name "still loading" instead of treating it as an empty page.
+    ``started`` lets a caller that already read the clock share its deadline
+    without an extra read. ``dismiss_popup`` is the live path's in-app
+    dismissal. It is ``None`` for a dry run, which returns on the first
+    ``POPUP`` rather than pretending the page settled or spending a tap it must
+    not issue. A deadline returns ``timed_out`` with the last frame and every
+    state on the way, so a caller can name "still loading" or "not the coin
+    page" instead of treating it as an empty page.
+
+    ``UNKNOWN`` is deliberately not settled: the measured device sequence starts
+    with the pre-transition frame, and returning on it was the #76 bug. The wait
+    keeps polling until a coin-page or boost marker appears, the deadline ends,
+    or a caller's capture guard names the repeating screen.
     """
     if timeout <= 0:
         raise ValueError('timeout must be positive')
@@ -1151,7 +1157,7 @@ def wait_for_coin_page(
     classification = classify(frame)
     history = [classification.state]
 
-    while classification.state in (ScreenState.LOADING, ScreenState.POPUP):
+    while classification.state in (ScreenState.LOADING, ScreenState.POPUP, ScreenState.UNKNOWN):
         now = clock()
         if now >= deadline:
             return CoinPageWait(
