@@ -36,6 +36,7 @@ __all__ = [
     'RunStatus',
     'SkippedRecord',
     'TaskRecord',
+    'TaskState',
     'prune_runs',
 ]
 
@@ -58,13 +59,24 @@ class RunStatus(StrEnum):
     FAILED = 'failed'
 
 
+class TaskState(StrEnum):
+    """Where one dispatched row got to when the report was written."""
+
+    IN_FLIGHT = 'in_flight'
+    COMPLETED = 'completed'
+    SKIPPED = 'skipped'
+    FAILED = 'failed'
+    ABORTED = 'aborted'
+
+
 @dataclass(frozen=True, slots=True)
 class TaskRecord:
-    """One dispatched row and the executor's own result."""
+    """One dispatched row, from its dispatch until its terminal outcome."""
 
     title: str
     key: str
     category: str
+    state: str
     outcome: str
     verification: str
     detail: str
@@ -87,6 +99,7 @@ class TaskRecord:
             'title': self.title,
             'key': self.key,
             'category': self.category,
+            'state': self.state,
             'code': self.code,
             'outcome': self.outcome,
             'verification': self.verification,
@@ -259,6 +272,60 @@ class RunReport:
         code = self.failure.get('code')
         return str(code) if code is not None else None
 
+    def begin_task(self, *, title: str, key: str, category: str) -> int:
+        """Record a dispatched row before its executor has an outcome.
+
+        Returns the row's index so :meth:`finish_task` can rewrite it in place.
+        A report written while the task is running (or killed before it ends)
+        therefore shows ``in_flight`` rather than pretending nothing was
+        dispatched.
+        """
+        self.tasks.append(
+            TaskRecord(
+                title=title,
+                key=key,
+                category=category,
+                state=TaskState.IN_FLIGHT.value,
+                outcome=TaskState.IN_FLIGHT.value,
+                verification='',
+                detail='the executor is running; no outcome has been recorded yet',
+                duration_seconds=0.0,
+                completed=False,
+                result={},
+            ),
+        )
+        return len(self.tasks) - 1
+
+    def finish_task(
+        self,
+        index: int,
+        *,
+        outcome: str,
+        verification: str,
+        detail: str,
+        duration_seconds: float,
+        completed: bool,
+        result: dict[str, Any],
+        failure: Failure | None = None,
+    ) -> TaskRecord:
+        """Rewrite one in-flight row with the executor's terminal outcome."""
+        pending = self.tasks[index]
+        record = TaskRecord(
+            title=pending.title,
+            key=pending.key,
+            category=pending.category,
+            state=_task_state(outcome, completed),
+            outcome=outcome,
+            verification=verification,
+            detail=detail,
+            duration_seconds=duration_seconds,
+            completed=completed,
+            result=result,
+            failure=None if failure is None else failure.as_dict(),
+        )
+        self.tasks[index] = record
+        return record
+
     def record_task(
         self,
         *,
@@ -273,11 +340,12 @@ class RunReport:
         result: dict[str, Any],
         failure: Failure | None = None,
     ) -> TaskRecord:
-        """Append one dispatched task, with its class when it did not verify."""
+        """Append one already-dispatched task, with its class when it did not verify."""
         record = TaskRecord(
             title=title,
             key=key,
             category=category,
+            state=_task_state(outcome, completed),
             outcome=outcome,
             verification=verification,
             detail=detail,
@@ -288,6 +356,50 @@ class RunReport:
         )
         self.tasks.append(record)
         return record
+
+    def abort_in_flight(
+        self,
+        *,
+        code: str,
+        reason: str,
+        failure: Failure | None = None,
+        screen: dict[str, Any] | None = None,
+        duration_seconds: float = 0.0,
+    ) -> bool:
+        """Mark every task still running as aborted, with the screen that stopped it.
+
+        A run that aborts mid-task must not leave an ``in_flight`` row behind in
+        its final report, and it must not hide that row either. The abort reason,
+        code and screen are copied into the task's own row so the tasks table,
+        the ``abort`` block and the event stream name the same thing.
+        """
+        changed = False
+        detail = reason
+        if screen is not None:
+            detail = f'{reason}; screen={_screen_summary(screen)}'
+        for index, task in enumerate(self.tasks):
+            if task.state != TaskState.IN_FLIGHT.value:
+                continue
+            result = dict(task.result)
+            abort_record: dict[str, Any] = {'code': code, 'reason': reason}
+            if screen is not None:
+                abort_record['screen'] = screen
+            result['abort'] = abort_record
+            self.tasks[index] = TaskRecord(
+                title=task.title,
+                key=task.key,
+                category=task.category,
+                state=TaskState.ABORTED.value,
+                outcome=TaskState.ABORTED.value,
+                verification=code,
+                detail=detail,
+                duration_seconds=max(0.0, duration_seconds),
+                completed=False,
+                result=result,
+                failure=None if failure is None else failure.as_dict(),
+            )
+            changed = True
+        return changed
 
     def skip(self, title: str, *, key: str | None, category: str | None, reason: str, detail: str) -> bool:
         """Record a row that was not dispatched; duplicate reason/title pairs collapse.
@@ -548,6 +660,21 @@ def prune_runs(
     return tuple(pruned)
 
 
+def _task_state(outcome: str, completed: bool) -> str:
+    """The terminal state for one executor outcome."""
+    if completed:
+        return TaskState.COMPLETED.value
+    if outcome in (TaskState.SKIPPED.value, TaskState.FAILED.value):
+        return outcome
+    return TaskState.FAILED.value
+
+
+def _screen_summary(screen: dict[str, Any]) -> str:
+    labels = screen.get('labels') or []
+    shown = ', '.join(str(label) for label in labels[:4]) or 'no readable labels'
+    return f'{screen.get("state", "?")}/{screen.get("surface", "?")}: {shown}'
+
+
 def _cell(value: str) -> str:
     return value.replace('|', '\\|').replace('\n', ' ')
 
@@ -603,9 +730,7 @@ def _abort_summary(abort: dict[str, Any]) -> str:
     code = abort.get('code', 'unknown')
     reason = abort.get('reason', 'no reason recorded')
     screen = abort.get('screen') or {}
-    labels = screen.get('labels') or []
-    shown = ', '.join(str(label) for label in labels[:3]) or 'no readable labels'
-    return f'{code} — {reason} (screen: {screen.get("state", "?")}/{screen.get("surface", "?")}: {shown})'
+    return f'{code} — {reason} (screen: {_screen_summary(screen)})'
 
 
 def _device_summary(hygiene: dict[str, Any] | None) -> str:

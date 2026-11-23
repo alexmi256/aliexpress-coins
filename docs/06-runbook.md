@@ -123,8 +123,8 @@ $ just setup
 Successfully installed aliexpress-coins-0.1.0
 $ just check
 ...
-Required test coverage of 99.47% reached. Total coverage: 99.48%
-======================= 1778 passed in 213.31s (0:03:33) =======================
+Required test coverage of 99.48% reached. Total coverage: 99.48%
+======================= 1782 passed in 213.31s (0:03:33) =======================
 All quality gates passed.
 ```
 
@@ -688,7 +688,7 @@ daemon container and its volumes stayed untouched):
 | `docker compose run --rm collector python -m aliexpress_coins run --once --dry-run` | `run 20261123T170916Z: planned`, `surface: rows_present`, 2 planned / 1 refused, `taps issued: 0`, exit `0` |
 | `docker compose run --rm collector cat /app/runs/20261123T170916Z/summary.md` | report read cleanly from the `runs` volume |
 | `docker logs --tail 5 aliexpress-coins-collector-1` *(live daemon)* | `schedule_wait` for `2026-11-24T03:31:31.431469-05:00` |
-| `just setup && just check` | ruff, format check, mypy strict, **1778 passed**, coverage **99.48%** (floor **99.47%**) |
+| `just setup && just check` | ruff, format check, mypy strict, **1782 passed**, coverage **99.48%** (floor **99.48%**) |
 | `.venv/bin/python -m aliexpress_coins.tools.capture_frames --list` | `states: 11 frames`, `flows: 14 frames`, `popups: 7 frames` |
 
 Deliberately **not** executed here:

@@ -356,6 +356,7 @@ def run_once(
     detail: str | None = None
     attempted: set[str] = set()
     blocked: set[str] = set()
+    task_started: float | None = None
     artifacts = ArtifactStore(report.runs_dir, report.run_id)
     record_dismissal = _popup_recorder(report)
     event_log = RunEventLog(report.event_log_path)
@@ -451,14 +452,18 @@ def run_once(
                     continue
                 identity = _identity(entry)
                 task_started = context.clock()
+                task_index = report.begin_task(
+                    title=entry.title,
+                    key=spec.key,
+                    category=spec.category.value,
+                )
+                report.write()
                 result = _dispatch_with_retry(context, controller, entry)
                 duration = max(0.0, context.clock() - task_started)
                 attempted.add(identity)
                 _record_dismissals(report, result.as_dict())
-                report.record_task(
-                    title=entry.title,
-                    key=spec.key,
-                    category=spec.category.value,
+                report.finish_task(
+                    task_index,
                     outcome=result.outcome,
                     verification=result.verification,
                     detail=result.detail,
@@ -467,6 +472,7 @@ def run_once(
                     result=result.as_dict(),
                     failure=result.failure,
                 )
+                task_started = None
                 log.log(
                     task_log_level(result.outcome),
                     '%s',
@@ -505,10 +511,22 @@ def run_once(
         report.abort = exc.as_dict()
         report.record_failure(exc.failure)
         detail = exc.failure.describe()
+        report.abort_in_flight(
+            code=exc.code.value,
+            reason=exc.reason,
+            failure=exc.failure,
+            screen=exc.screen.as_dict(),
+            duration_seconds=_task_duration(context, task_started),
+        )
         log.error('%s', _event('run_aborted', code=exc.code.value, detail=detail))
     except RunInterrupted as exc:
         status = RunStatus.STOPPED
         detail = f'stop requested: {exc}'
+        report.abort_in_flight(
+            code=RunStatus.STOPPED.value,
+            reason=detail,
+            duration_seconds=_task_duration(context, task_started),
+        )
         log.warning('%s', _event('run_stopped', detail=detail))
     except Exception as exc:
         status = RunStatus.FAILED
@@ -518,6 +536,12 @@ def run_once(
         report.record_failure(named)
         detail = named.describe()
         report.error = f'{type(exc).__name__}: {exc}'
+        report.abort_in_flight(
+            code=named.code.value,
+            reason=detail,
+            failure=named,
+            duration_seconds=_task_duration(context, task_started),
+        )
         log.exception('%s', _event('run_failed', detail=detail))
     finally:
         try:
@@ -552,6 +576,13 @@ def run_once(
             report.abort = exc.as_dict()
             report.record_failure(exc.failure)
             detail = exc.failure.describe()
+            report.abort_in_flight(
+                code=exc.code.value,
+                reason=exc.reason,
+                failure=exc.failure,
+                screen=exc.screen.as_dict(),
+                duration_seconds=_task_duration(context, task_started),
+            )
             log.error('%s', _event('run_aborted', code=exc.code.value, detail=detail))
         if status is RunStatus.COMPLETED and not context.config.dry_run:
             try:
@@ -1913,6 +1944,13 @@ def _geometry(snapshot: Snapshot) -> dict[str, object]:
         'orientation': geometry.orientation,
         'profile_id': geometry.profile_id,
     }
+
+
+def _task_duration(context: RunContext, started: float | None) -> float:
+    """How long the in-flight task ran before the run stopped, when known."""
+    if started is None:
+        return 0.0
+    return max(0.0, context.clock() - started)
 
 
 def _event(name: str, **fields: object) -> str:

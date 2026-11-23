@@ -93,6 +93,7 @@ def test_a_full_report_round_trips_through_json_and_markdown(tmp_path: Path) -> 
     assert payload['run_id'] == '20261122T033000Z'
     assert payload['status'] == 'budget'
     assert payload['budget'] == {'seconds': 2700.0, 'used_seconds': 60.0}
+    assert payload['tasks'][0]['state'] == 'completed'
     assert payload['tasks'][0]['result'] == {'payout': '+6'}
     assert len(payload['skipped']) == 2
     assert payload['roster']['count'] == 4
@@ -140,6 +141,82 @@ def test_a_dry_run_plan_and_an_abort_are_visible_in_the_summary(tmp_path: Path) 
     assert '**Plan note:** read from the visible surface' in summary
     assert "**Abort:** dangerous_control — a 'Buy now' control appeared" in summary
     assert report.ok is False
+
+
+def test_a_task_aborted_in_flight_keeps_its_row_and_the_screen(tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    index = report.begin_task(title='Take the coins quiz', key='coins_quiz', category='quiz')
+    assert report.tasks[index].state == 'in_flight'
+
+    screen = {
+        'state': 'page',
+        'surface': 'unknown',
+        'labels': ['Coins quiz', 'Can be applied directly at Checkout'],
+        'fingerprint': 'page/unknown/quiz',
+    }
+    report.abort = {
+        'code': 'dangerous_control',
+        'reason': "a 'Can be applied directly at Checkout' control appeared",
+        'screen': screen,
+    }
+    report.abort_in_flight(
+        code='dangerous_control',
+        reason=report.abort['reason'],
+        failure=failure(FailureCode.DANGEROUS_CONTROL, detail=report.abort['reason']),
+        screen=screen,
+        duration_seconds=1.5,
+    )
+    report.finish(RunStatus.ABORTED, detail='aborted', budget_used_seconds=1.5, finished_at=FINISHED)
+    report.write()
+
+    payload = json.loads(report.json_path.read_text(encoding='utf-8'))
+    summary = report.summary_path.read_text(encoding='utf-8')
+    task = payload['tasks'][0]
+    assert task['title'] == 'Take the coins quiz'
+    assert task['state'] == 'aborted'
+    assert task['outcome'] == 'aborted'
+    assert task['code'] == 'dangerous_control'
+    assert task['result']['abort']['screen']['labels'][1] == 'Can be applied directly at Checkout'
+    assert 'No task was dispatched.' not in summary
+    assert '| Take the coins quiz | coins_quiz | dangerous_control | aborted |' in summary
+    assert 'Can be applied directly at Checkout' in summary
+
+
+def test_finishing_a_task_maps_its_outcome_and_abort_leaves_terminal_rows_alone(tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    assert report.abort_in_flight(code='dangerous_control', reason='nothing was running') is False
+
+    index = report.begin_task(title='Turn on notifications', key='notifications', category='notification')
+    terminal = report.finish_task(
+        index,
+        outcome='unavailable',
+        verification='state',
+        detail='the notification prompt was already answered',
+        duration_seconds=2.0,
+        completed=False,
+        result={'key': 'notifications'},
+    )
+
+    assert terminal.state == 'failed'
+    assert terminal.outcome == 'unavailable'
+    assert report.abort_in_flight(code='dangerous_control', reason='too late') is False
+    assert report.tasks == [terminal]
+
+
+def test_a_routing_abort_still_writes_an_empty_tasks_table(tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    report.abort = {
+        'code': 'unexpected_screen',
+        'reason': 'the same unexpected screen was seen 3 times in a row',
+        'screen': {'state': 'unknown', 'surface': 'unknown', 'labels': ['For you']},
+    }
+    report.finish(RunStatus.ABORTED, detail='aborted while routing', budget_used_seconds=1.0, finished_at=FINISHED)
+    report.write()
+
+    payload = json.loads(report.json_path.read_text(encoding='utf-8'))
+    summary = report.summary_path.read_text(encoding='utf-8')
+    assert payload['tasks'] == []
+    assert 'No task was dispatched.' in summary
 
 
 def test_a_completed_run_with_no_rows_still_writes_a_report(tmp_path: Path) -> None:
