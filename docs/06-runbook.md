@@ -350,15 +350,30 @@ The command exits when the night ends:
 | `0` | the run completed, ended on its budget, or produced a dry-run plan |
 | `1` | the run failed or was aborted (the report still exists) |
 | `2` | configuration error before the device was touched |
+| `3` | another run holds this state directory's run lock; nothing was dispatched |
 
 A real run claims the daily sign-in, walks the allowed rows, and writes the same report shape as a
-dry run plus screenshots and the roster log. A manual `run --once` does **not** consult
-`completed_night`; only `run --schedule` skips a day already marked complete. It also does not lock
-the state file, so a manual run started around the 03:30 fire time can race the daemon: both can
-read the day as unfinished and overwrite each other's counters. Start a manual real run only well
-away from the fire time, and never claim a night the daemon is about to run. A manual run stopped by
-its budget still leaves the nightly window open. The missing coordination is tracked as
-[issue #78](https://github.com/alexmi256/aliexpress-coins/issues/78).
+dry run plus screenshots and the roster log.
+
+Every run holds an exclusive lock, `state/run.lock` (under `AECOINS_STATE_DIR`), from before it
+touches adb until its report, cleanup and notification are finished. `run --once` takes it without
+waiting: if the nightly daemon is mid-night, the manual command exits `3`, names the holder's pid,
+host and start time, and sends no tap. The daemon behaves differently when the fire time arrives
+while a manual run holds the lock: it waits up to one run budget plus five minutes, then reads the
+day again. A manual run that walked the roster to the end has marked the night complete, so the
+daemon skips it; a manual run stopped by its budget leaves the night open, so the daemon takes it.
+If the wait expires, the daemon skips that fire with a `run lock held by another run` event and
+tries again at the next fire time. A killed holder cannot lock the collector out: its file descriptor
+closes with the process, the kernel releases the lock, and the next run logs a `run_lock_takeover`
+warning naming the stale owner before replacing it.
+
+The lock coordinates runs that share a state directory. The container and a host `.venv` run do not
+share one by default (the named `state` volume versus the checkout's `state/`), so take the manual
+night through the container to share the daemon's lock:
+
+```console
+$ docker compose run --rm collector python -m aliexpress_coins run --once
+```
 
 Do **not** run a real `--once` just to test the installation. It may claim coins and it may be
 impossible to undo. Use `--dry-run` unless you are deliberately taking the night.
@@ -430,9 +445,10 @@ not a second delay.
 Stopping: `docker compose stop` sends SIGTERM; the image's `tini` forwards it, the run raises
 `RunInterrupted` at its next seam, the report is written atomically, and Compose waits up to
 `stop_grace_period: 5s`. `restart: on-failure:5` retries a failed daemon a bounded number of times
-rather than looping forever on a configuration error. **Do not run two schedulers against the same
-state directory**: the completed-night marker is the only coordination, and two starts at the same
-instant can both see it unset.
+rather than looping forever on a configuration error. One daemon is still the intended deployment,
+but two schedulers pointed at the same state directory no longer race: the second waits for the run
+lock, then re-reads the day and skips a night the first one completed. Two runs against **different**
+state directories are not coordinated and would still drive the same tablet.
 
 Before this command waits, it checks the configured zone against the device and refuses on a
 mismatch (§1.3). An unreadable property at startup only warns; the check runs again immediately
@@ -656,9 +672,10 @@ operator directories such as `runs/manual` are left alone and logged as `runs_no
 Pruning runs after the report is final and after the device settings are restored, so a slow
 notifier cannot leave rotation pinned.
 
-State files are one per local day: `state/daily-<YYYY-MM-DD>.json`. Keep at least the days you want
-to audit; the store does not prune them itself. Do not hand-edit a state file while a run is using
-it. A corrupt file is quarantined, not silently reused.
+State files are one per local day: `state/daily-<YYYY-MM-DD>.json`. The directory also holds
+`state/run.lock`, the exclusive run lock described in §6; leave it in place while a run is active.
+Keep at least the days you want to audit; the store does not prune them itself. Do not hand-edit a
+state file while a run is using it. A corrupt file is quarantined, not silently reused.
 
 ---
 
@@ -746,7 +763,7 @@ gets an unattended night.
 | screen geometry | `c9b8f88670e295b5` = 1200×2000 @ 240 dpi, sdk 35, portrait | This is the only profile with measured row positions and popup calibration. A different portrait geometry is **not** refused at capture; only a popup whose calibration is absent for that profile is refused, as `popup_unclosable` rather than a guessed tap. `doctor` prints the new profile and `--dry-run` shows what the planner can read. Forcing a different `wm size` is not a substitute for measuring the new profile (#42). |
 | Android / app | Android 15 (sdk 35), AliExpress `8.180.1` | An update can move a row, change a label or add a popup. The deny list still refuses unknown rows, but the allowed catalogue may stop matching; capture a fixture and update the catalogue rather than tapping a guess. |
 | store region / locale | AliExpress Canada store, `en`, coin values in `C$` | The catalogue and patterns were built from this region. Another region or locale changes labels, row ordering and currency rendering; treat it as unmeasured and re-run recon. |
-| account and device use | one signed-in account, one device, no concurrency | The collector assumes the tablet is unlocked with no PIN/biometric lock, the charger is attached, and no human is using it. Two schedulers or two runs against one state directory can both see a day as unfinished. |
+| account and device use | one signed-in account, one device, no concurrency | The collector assumes the tablet is unlocked with no PIN/biometric lock, the charger is attached, and no human is using it. Runs that share a state directory serialise on `state/run.lock`; runs with different state directories are not coordinated and would each drive the device. |
 | daily reset hour | ❓ unmeasured; schedule is 03:30 local plus up to 180 s jitter | A run before the device's day rolls finds every task already claimed and reports a successful, empty night. Confirm the reset before moving the schedule earlier (§9). |
 | balance and verification | OCR on the shipped frame | Account data is never in git; screenshots contain the nickname, cart and orders. A frame that cannot be read leaves the balance `unknown`, never guessed. |
 
@@ -766,5 +783,8 @@ A user on their own phone must do these in order, with the daemon **not** runnin
    scheduler until this night is understood.
 
 Only then start `run --schedule` (Compose: `docker compose up -d`), and append its first row to
-[`08-stability.md`](08-stability.md). Do not run a manual `--once` beside the daemon: the state
-store has no lock, and `completed_night` is honoured only by the scheduler (#78).
+[`08-stability.md`](08-stability.md). A manual `--once` beside the daemon is safe when both use the
+same state directory: the manual run exits `3` while the daemon holds the day, and the daemon waits
+for a manual run and then re-checks `completed_night` (§6). A host run and the container daemon use
+different state directories by default, so use the container command when you mean to share the
+daemon's day.

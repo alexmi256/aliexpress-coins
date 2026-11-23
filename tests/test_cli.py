@@ -17,10 +17,18 @@ import pytest
 
 import aliexpress_coins
 from aliexpress_coins import cli
-from aliexpress_coins.runner.errors import ConfigError
+from aliexpress_coins.runner.errors import ConfigError, RunLockHeld
+from aliexpress_coins.runner.lock import RunLock
 from aliexpress_coins.runner.report import RunReport, RunStatus
+from aliexpress_coins.runner.state import DailyStateStore
 
 Handler = Callable[[int, FrameType | None], None]
+
+
+@pytest.fixture(autouse=True)
+def _isolate_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep every manual run's state directory, and its lock, out of the repo."""
+    monkeypatch.chdir(tmp_path)
 
 
 def _report(tmp_path: Path, status: RunStatus = RunStatus.COMPLETED) -> RunReport:
@@ -122,9 +130,114 @@ def test_run_once_without_a_device_is_a_configuration_failure(
     capsys: pytest.CaptureFixture[str],
     tmp_path: Path,
 ) -> None:
-    assert cli.run_once_command({'TZ': 'UTC'}, root=str(tmp_path)) == 2
+    state_dir = tmp_path / 'state'
+    assert (
+        cli.run_once_command(
+            {'TZ': 'UTC', 'AECOINS_STATE_DIR': str(state_dir)},
+            root=str(tmp_path),
+        )
+        == 2
+    )
     output = capsys.readouterr()
     assert 'AECOINS_DEVICE is not set' in output.err
+    assert not state_dir.exists()
+
+
+def test_an_invalid_manual_configuration_returns_two(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    state_dir = tmp_path / 'state'
+    assert (
+        cli.run_once_command(
+            {
+                'AECOINS_DEVICE': 'tablet',
+                'TZ': 'UTC',
+                'AECOINS_RUN_BUDGET_SECONDS': '0',
+                'AECOINS_STATE_DIR': str(state_dir),
+            },
+            root=str(tmp_path),
+        )
+        == 2
+    )
+    assert 'configuration: AECOINS_RUN_BUDGET_SECONDS must be positive' in capsys.readouterr().err
+    assert not state_dir.exists()
+
+
+def test_a_manual_run_refuses_when_another_run_holds_the_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state_dir = tmp_path / 'state'
+    holder = DailyStateStore(state_dir, clock=lambda: datetime(2026, 11, 22, 3, 30)).run_lock()
+    holder.try_acquire()
+    built: list[str] = []
+
+    def fake_context(*_args: object, **_kwargs: object) -> object:  # pragma: no cover - must not run
+        built.append('context')
+        return object()
+
+    def unreachable_timezone(_serial: str) -> str:  # pragma: no cover - must not run
+        raise AssertionError('the refused run must not probe the device')
+
+    monkeypatch.setattr(cli, 'make_live_context', fake_context)
+
+    try:
+        result = cli.run_once_command(
+            {
+                'AECOINS_DEVICE': 'tablet',
+                'TZ': 'UTC',
+                'AECOINS_STATE_DIR': str(state_dir),
+            },
+            root=str(tmp_path),
+            device_timezone=unreachable_timezone,
+        )
+    finally:
+        holder.release()
+
+    assert result == cli.RUN_LOCK_HELD_EXIT == 3
+    assert built == []
+    error = capsys.readouterr().err
+    assert 'another run holds' in error
+    assert 'did not touch the device' in error
+
+
+def test_a_manual_run_holds_the_lock_for_the_whole_run_and_releases_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    state_dir = tmp_path / 'state'
+    report = _report(tmp_path)
+    seen: list[str] = []
+
+    def fake_run_once(_context: object) -> RunReport:
+        contender = DailyStateStore(state_dir, clock=lambda: datetime(2026, 11, 22, 3, 30)).run_lock()
+        with pytest.raises(RunLockHeld):
+            contender.try_acquire()
+        seen.append('ran')
+        return report
+
+    monkeypatch.setattr(cli, 'make_live_context', lambda config, stop: object())
+    monkeypatch.setattr(cli, 'run_once', fake_run_once)
+    monkeypatch.setattr(cli, '_install_stop_handlers', lambda stop: None)
+    monkeypatch.setattr(cli, '_restore_stop_handlers', lambda: None)
+
+    assert (
+        cli.run_once_command(
+            {'AECOINS_DEVICE': 'tablet', 'TZ': 'UTC', 'AECOINS_STATE_DIR': str(state_dir)},
+            root=str(tmp_path),
+            device_timezone=lambda _serial: 'UTC',
+        )
+        == 0
+    )
+
+    assert seen == ['ran']
+    assert 'run run-1: completed' in capsys.readouterr().out
+    after = DailyStateStore(state_dir, clock=lambda: datetime(2026, 11, 22, 3, 30)).run_lock()
+    after.try_acquire()
+    after.release()
 
 
 def test_run_once_prints_the_report_and_returns_its_status(
@@ -293,8 +406,9 @@ def test_the_schedule_command_builds_a_night_from_the_same_configuration(
     monkeypatch.setattr(cli, '_install_stop_handlers', lambda stop: None)
     monkeypatch.setattr(cli, '_restore_stop_handlers', lambda: None)
 
-    def fake_schedule(config: Any, *, run_night: Any, state: Any, clock: Any, stop: Any) -> int:
+    def fake_schedule(config: Any, *, run_night: Any, state: Any, clock: Any, stop: Any, lock: Any) -> int:
         assert state.snapshot().run_count == 0
+        assert isinstance(lock, RunLock)
         result = run_night()
         assert result is report
         assert clock() is not None
@@ -382,7 +496,8 @@ def test_the_scheduler_checks_the_zone_again_before_the_night(
 ) -> None:
     refusals: list[str] = []
 
-    def fake_schedule(config: Any, *, run_night: Any, state: Any, clock: Any, stop: Any) -> int:
+    def fake_schedule(config: Any, *, run_night: Any, state: Any, clock: Any, stop: Any, lock: Any) -> int:
+        del config, state, clock, stop, lock
         with pytest.raises(ConfigError) as raised:
             run_night()
         refusals.append(str(raised.value))
@@ -421,7 +536,8 @@ def test_the_pre_night_check_bounds_the_default_reader(
     monkeypatch.setattr(cli, '_install_stop_handlers', lambda stop: None)
     monkeypatch.setattr(cli, '_restore_stop_handlers', lambda: None)
 
-    def fake_schedule(config: Any, *, run_night: Any, state: Any, clock: Any, stop: Any) -> int:
+    def fake_schedule(config: Any, *, run_night: Any, state: Any, clock: Any, stop: Any, lock: Any) -> int:
+        del config, state, clock, stop, lock
         assert run_night() is report
         return 0
 

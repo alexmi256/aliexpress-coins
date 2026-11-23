@@ -66,9 +66,11 @@ success while earning nothing. `doctor` prints both zones; `run --schedule` refu
 differ and re-checks before each night (an unreadable value at startup only warns), while a
 supervised `run --once` warns and continues. A night that finished its roster
 walk marks the day complete and is skipped on a retry, while a manual run stopped by
-its budget leaves the nightly window open. Compose retries a failed daemon a bounded
-number of times rather than looping forever on a configuration error. Run one night
-manually with:
+its budget leaves the nightly window open. Every run takes an exclusive `run.lock` in
+the state directory: a manual run refuses with exit `3` while the daemon holds the day,
+and the daemon waits for a manual run before re-checking the day. Compose retries a
+failed daemon a bounded number of times rather than looping forever on a configuration
+error. Run one night manually with:
 
 ```sh
 docker compose run --rm collector python -m aliexpress_coins run --once
@@ -112,7 +114,8 @@ band was narrowed (measured 99.38%), then to **99.39%** when the wait primitives
 99.40%), then to **99.42%** when the timezone refusal and stability ledger landed (measured
 99.43%), then to **99.44%** when the dry-run settle wait landed (measured 99.44%), then to
 **99.45%** when the quiz question bank landed (measured 99.45%), then to **99.46%** when the
-coin-store surface and task-scoped recovery landed (measured 99.47%).
+coin-store surface and task-scoped recovery landed (measured 99.47%), then to **99.47%** when the
+nightly run lock landed (measured 99.48%).
 The scaffold is fully covered, but a one-statement package makes that 100% an artefact of the
 stub, so the floor starts below the maximum. As real modules land, raise the floor toward the
 measured number; never lower it to make a change pass. The gate fails the build when coverage
@@ -148,7 +151,7 @@ Recorded frames live under `tests/data/` and are gitignored by set; the regenera
 `just check` remains the gate and runs every test with the coverage ratchet. `just check-fast` is
 the diagnostic loop: it excludes tests marked `slow` (full-frame OCR, template scans and the long
 engine retry walks) and does not enforce coverage. Measured on 2026-11-23: the full suite is
-**1700 passed in 196 s** (203 tests marked slow, coverage 99.45%); `just check-fast` is
+**1770 passed in 208 s** (203 tests marked slow, coverage 99.48%); `just check-fast` is
 the same fast lane, dominated by the remaining sub-200 ms frame and parser tests plus collection,
 not by any single fixture.
 

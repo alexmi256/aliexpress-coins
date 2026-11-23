@@ -8,7 +8,14 @@ path, and :func:`~aliexpress_coins.runner.schedule.run_schedule` asks APSchedule
 for the next jittered local fire time until SIGTERM.
 """
 
-from aliexpress_coins.runner.errors import RunnerError, StateError, StateReadError, StateWriteError
+from aliexpress_coins.runner.errors import (
+    RunLockHeld,
+    RunnerError,
+    StateError,
+    StateReadError,
+    StateWriteError,
+)
+from aliexpress_coins.runner.lock import LockHolder, RunLock
 from aliexpress_coins.runner.state import (
     DAILY_STATE_SCHEMA,
     LOGGER_NAME,
@@ -21,6 +28,9 @@ __all__ = [
     'LOGGER_NAME',
     'DailySnapshot',
     'DailyStateStore',
+    'LockHolder',
+    'RunLock',
+    'RunLockHeld',
     'RunnerError',
     'StateError',
     'StateReadError',

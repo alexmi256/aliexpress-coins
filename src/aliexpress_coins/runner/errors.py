@@ -34,6 +34,16 @@ class StateWriteError(StateError):
     """
 
 
+class RunLockHeld(StateError):
+    """Another process is already running against this state directory.
+
+    Two runs that share a state directory would both drive the same device and
+    overwrite each other's completion counters, so the second one refuses
+    instead of racing. The exception text names the holding process when its
+    owner record can be read.
+    """
+
+
 class ConfigError(RunnerError):
     """The runner configuration is missing or invalid."""
 
