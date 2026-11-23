@@ -8,6 +8,7 @@ or a hand-built box list. No test reaches adb.
 from __future__ import annotations
 
 import json
+import logging
 import random
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -15,7 +16,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from aliexpress_coins.control.controller import Controller
 from aliexpress_coins.control.popups import DismissReport, PopupCorpus, load_popup_corpus
@@ -56,7 +57,7 @@ from aliexpress_coins.tasks.discovery import (
     wait_for_coin_page,
 )
 from aliexpress_coins.tasks.errors import RosterLogError
-from aliexpress_coins.tasks.surface import Surface
+from aliexpress_coins.tasks.surface import Surface, classify_surface, has_task_rows
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / 'tests' / 'data'
@@ -131,6 +132,22 @@ def _snapshot(*boxes: TextBox, size: tuple[int, int] = (1200, 2000)) -> Snapshot
     )
 
 
+def _with_image_change(snapshot: Snapshot, rect: tuple[int, int, int, int], fill: tuple[int, int, int]) -> Snapshot:
+    """A distinct capture of the same screen with a changed pixel region.
+
+    The OCR boxes are kept, so the frame still classifies as the same page; only
+    the image signature changes, which is what the re-tap threshold reads.
+    """
+    image = snapshot.image.copy()
+    ImageDraw.Draw(image).rectangle(rect, fill=fill)
+    return Snapshot(
+        image=image,
+        boxes=snapshot.boxes,
+        captured_at=snapshot.captured_at,
+        geometry=snapshot.geometry,
+    )
+
+
 def _load(path: Path, engine: RapidOcrEngine) -> Snapshot:
     with Image.open(path) as opened:
         image = opened.convert('RGB')
@@ -175,6 +192,7 @@ def frames(engine: RapidOcrEngine) -> dict[str, Snapshot]:
     return {
         'boost': _load(DATA / 'boost.png', engine),
         'state_boost': _load(STATES / 'boost.png', engine),
+        'real_boost': _load(STATES / 'boost_daily_checkin.png', engine),
         'coins': _load(STATES / 'coins.png', engine),
         'launch': _load(DATA / 'popups' / 'launch_welcome_gifts.png', engine),
         'sheet': _load(DATA / 'popups' / 'coins_boost_sheet.png', engine),
@@ -863,6 +881,323 @@ def test_open_boost_list_times_out_with_the_states_it_saw(
 
     assert 'history=' in str(raised.value)
     assert len(device.taps) == 1
+
+
+def test_the_recorded_boost_page_is_recognised_as_the_destination(
+    frames: dict[str, Snapshot],
+    catalogue: TaskCatalogue,
+) -> None:
+    """The 2026-11-23 nightly frame: real marker, real Daily check-in row (#84).
+
+    The committed older boost fixtures start with the quiz, so the marker and
+    the first-row control were never proven against the page the run actually
+    opens. This frame records ``Coins boost`` over ``Daily check-in`` with its
+    own ``GO`` and must classify without any hand-built boxes.
+    """
+    snapshot = frames['real_boost']
+
+    classification = classify(snapshot)
+    assert classification.state is ScreenState.PAGE
+    assert 'boost page' in classification.describe()
+    assert classify_surface(snapshot) is Surface.BOOST_PAGE
+    assert is_boost_page(snapshot)
+    assert has_task_rows(snapshot)
+
+    roster = enumerate_roster(snapshot, catalogue, route=DiscoveryRoute.BOOST)
+    assert roster.route is DiscoveryRoute.BOOST
+    assert roster.titles[0] == 'Daily check-in'
+    assert roster.entries[0].key == 'boost_checkin'
+    assert roster.entries[0].action is not None
+    assert roster.entries[0].dispatchable
+
+
+def test_open_boost_list_accepts_an_arrival_that_crosses_the_deadline(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+) -> None:
+    """The destination on screen ends the wait even on the deadline frame.
+
+    This is the #84 false timeout in miniature: the old loop reached the clock
+    check on the first boost frame, saw ``now >= deadline`` and raised while
+    naming the boost page as its "last" frame. A page that is visible is not a
+    page that was not observed.
+    """
+    device = _RecordingDevice()
+    controller = _controller(device, frames['coins'])
+    clock = _SteppingClock()
+    capture = _Capture((frames['coins'], frames['real_boost']))
+
+    opened = open_boost_list(
+        controller,
+        capture,
+        corpus,
+        timeout=1,
+        interval=1,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert opened.route is DiscoveryRoute.BOOST
+    assert opened.snapshot is frames['real_boost']
+    assert opened.history == (ScreenState.PAGE,)
+    assert len(device.taps) == 1
+
+
+def test_open_boost_list_retaps_once_when_the_first_tap_had_no_effect(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A swallowed tap leaves the coin page identical; one bounded retry is allowed.
+
+    The measured cold-start failure was the app ignoring the tap: the frame
+    stayed byte-identical to the pre-tap coin page. The unchanged, stable frame
+    is evidence that nothing happened, so the tap is repeated once. The retry
+    and its frame difference are logged.
+    """
+    device = _RecordingDevice()
+    controller = _controller(device, frames['coins'])
+    clock = _SteppingClock()
+    capture = _Capture((frames['coins'], frames['coins'], frames['coins'], frames['coins'], frames['real_boost']))
+    logger = logging.getLogger('test.boost_retap')
+
+    with caplog.at_level(logging.WARNING, logger='test.boost_retap'):
+        opened = open_boost_list(
+            controller,
+            capture,
+            corpus,
+            timeout=6,
+            interval=1,
+            clock=clock,
+            sleep=clock.sleep,
+            logger=logger,
+        )
+
+    assert opened.route is DiscoveryRoute.BOOST
+    assert opened.tap_attempts == 2
+    assert opened.retap is not None
+    assert opened.retap_difference is not None
+    assert opened.retap_difference <= 0.01
+    assert len(device.taps) == 2
+    assert opened.as_dict()['tap_attempts'] == 2
+    events = [
+        cast('dict[str, object]', json.loads(record.message))
+        for record in caplog.records
+        if record.message.startswith('{')
+    ]
+    retap = next(event for event in events if event.get('event') == 'boost_retap')
+    assert retap['attempt'] == 2
+    assert cast('float', retap['difference']) == 0.0
+    assert cast('float', retap['fresh_difference']) == 0.0
+    assert retap['state'] == 'page'
+
+
+def test_open_boost_list_tolerates_capture_noise_before_retapping(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+) -> None:
+    """Two independent captures that differ only by sensor noise are still "unchanged"."""
+    initial = frames['coins']
+    noisy_a = _with_image_change(initial, (0, 0, 12, 12), (140, 140, 140))
+    noisy_b = _with_image_change(initial, (0, 0, 12, 9), (150, 150, 150))
+    device = _RecordingDevice()
+    controller = _controller(device, initial)
+    clock = _SteppingClock()
+
+    opened = open_boost_list(
+        controller,
+        _Capture((initial, noisy_a, noisy_b, noisy_a, frames['real_boost'])),
+        corpus,
+        timeout=6,
+        interval=1,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert opened.route is DiscoveryRoute.BOOST
+    assert opened.tap_attempts == 2
+    assert opened.retap_difference is not None
+    assert opened.retap_difference <= 0.01
+    assert len(device.taps) == 2
+
+
+def test_open_boost_list_does_not_retap_when_the_fresh_frame_is_the_destination(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+) -> None:
+    """A recheck that sees the boost page (with Earn more still OCR-visible) is the destination."""
+    destination = _rebox(
+        frames['coins'],
+        (*frames['real_boost'].boxes, _box('Earn more >', 916, 926, 1133, 967)),
+    )
+    assert is_boost_page(destination)
+    device = _RecordingDevice()
+    controller = _controller(device, frames['coins'])
+    clock = _SteppingClock()
+
+    opened = open_boost_list(
+        controller,
+        _Capture((frames['coins'], frames['coins'], frames['coins'], destination)),
+        corpus,
+        timeout=10,
+        interval=1,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert opened.route is DiscoveryRoute.BOOST
+    assert opened.snapshot is destination
+    assert opened.tap_attempts == 1
+    assert len(device.taps) == 1
+
+
+def test_open_boost_list_does_not_retap_a_changing_page(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+) -> None:
+    """A visibly changing coin page (the sheet mid-render) is not tapped twice."""
+    initial = frames['coins']
+    changed = _with_image_change(initial, (100, 600, 700, 1200), (0, 0, 0))
+    device = _RecordingDevice()
+    controller = _controller(device, initial)
+    clock = _SteppingClock()
+
+    opened = open_boost_list(
+        controller,
+        _Capture((initial, changed, changed, changed, frames['real_boost'])),
+        corpus,
+        timeout=6,
+        interval=1,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert opened.route is DiscoveryRoute.BOOST
+    assert opened.tap_attempts == 1
+    assert len(device.taps) == 1
+
+
+def test_open_boost_list_skips_the_retap_when_the_fresh_frame_changed(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+) -> None:
+    """The pre-tap re-capture is the safety check: a changed fresh frame cancels the retry."""
+    initial = frames['coins']
+    changed = _with_image_change(initial, (100, 600, 700, 1200), (0, 0, 0))
+    device = _RecordingDevice()
+    controller = _controller(device, initial)
+    clock = _SteppingClock()
+
+    opened = open_boost_list(
+        controller,
+        _Capture((initial, initial, initial, changed, initial, frames['real_boost'])),
+        corpus,
+        timeout=10,
+        interval=1,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert opened.route is DiscoveryRoute.BOOST
+    assert opened.tap_attempts == 1
+    assert len(device.taps) == 1
+
+
+def test_open_boost_list_requires_consecutive_unchanged_polls(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+) -> None:
+    """A loading frame between two coin-page polls breaks the consecutive evidence."""
+    initial = frames['coins']
+    device = _RecordingDevice()
+    controller = _controller(device, initial)
+    clock = _SteppingClock()
+
+    opened = open_boost_list(
+        controller,
+        _Capture((initial, initial, frames['skeleton'], initial, initial, frames['real_boost'])),
+        corpus,
+        timeout=10,
+        interval=1,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert opened.route is DiscoveryRoute.BOOST
+    assert opened.tap_attempts == 1
+    assert len(device.taps) == 1
+
+
+def test_open_boost_list_does_not_retap_more_than_once(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+) -> None:
+    device = _RecordingDevice()
+    controller = _controller(device, frames['coins'])
+    clock = _SteppingClock()
+
+    with pytest.raises(StateTimeout, match='taps=2'):
+        open_boost_list(
+            controller,
+            _Capture((frames['coins'],)),
+            corpus,
+            timeout=6,
+            interval=1,
+            clock=clock,
+            sleep=clock.sleep,
+        )
+
+    assert len(device.taps) == 2
+
+
+def test_open_boost_list_does_not_retap_without_a_fresh_label(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+) -> None:
+    """An unchanged frame whose OCR lost the label is not a licence to tap blind."""
+    initial = frames['coins']
+    unreadable = _rebox(initial, tuple(box for box in initial.boxes if box.text != 'Earn more >'))
+    device = _RecordingDevice()
+    controller = _controller(device, initial)
+    clock = _SteppingClock()
+
+    opened = open_boost_list(
+        controller,
+        _Capture((initial, unreadable, unreadable, frames['real_boost'])),
+        corpus,
+        timeout=6,
+        interval=1,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert opened.route is DiscoveryRoute.BOOST
+    assert opened.tap_attempts == 1
+    assert len(device.taps) == 1
+
+
+def test_open_boost_list_reports_a_popup_that_never_clears(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+) -> None:
+    """A modal that stays after the tap is a timeout with the attempt count in the log."""
+    device = _RecordingDevice()
+    controller = _controller(device, frames['coins'])
+    clock = _SteppingClock()
+
+    with pytest.raises(StateTimeout, match='taps=1') as raised:
+        open_boost_list(
+            controller,
+            _Capture((frames['coins'], frames['launch'], frames['launch'])),
+            corpus,
+            timeout=2,
+            interval=1,
+            clock=clock,
+            sleep=clock.sleep,
+        )
+
+    assert 'last=popup' in str(raised.value)
+    assert len(device.taps) >= 1
 
 
 def test_discover_roster_records_the_route_it_used(

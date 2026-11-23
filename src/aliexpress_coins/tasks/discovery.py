@@ -62,6 +62,7 @@ from aliexpress_coins.perception.state import (
     classify,
 )
 from aliexpress_coins.perception.templates import TemplateStore
+from aliexpress_coins.perception.waits import STABLE_MAX_DIFFERENCE, frame_signature, signature_difference
 from aliexpress_coins.tasks.catalogue import (
     DEFAULT_DENY_REASON,
     AllowedTaskSpec,
@@ -127,6 +128,14 @@ DEFAULT_BOOST_TIMEOUT = 30.0
 
 DEFAULT_BOOST_INTERVAL = 1.0
 """How often to capture while waiting for the boost destination."""
+
+BOOST_RETAP_STABLE_POLLS = 2
+"""Consecutive post-tap frames that must match the pre-tap frame before re-tapping.
+
+Two polls at :data:`DEFAULT_BOOST_INTERVAL` are long enough for the measured
+sheet animation (~2 s) to start, so a page that is merely slow to render is not
+tapped twice. The same rule caps ``Earn more`` at two attempts.
+"""
 
 ROSTER_OBSERVATION_SCHEMA = 1
 """The schema written on every ``roster.jsonl`` line."""
@@ -1034,9 +1043,18 @@ class BoostList:
     detail: str
     classification: Classification | None = None
     tap: TapRecord | None = None
+    retap: TapRecord | None = None
+    retap_difference: float | None = None
     dismiss: DismissReport | None = None
     elapsed: float = 0.0
     history: tuple[ScreenState, ...] = ()
+
+    @property
+    def tap_attempts(self) -> int:
+        """How many ``Earn more`` taps were issued (one, or one plus the re-tap)."""
+        if self.retap is not None:
+            return 2
+        return 1 if self.tap is not None else 0
 
     @property
     def opened(self) -> bool:
@@ -1066,10 +1084,14 @@ class BoostList:
             'state': self.classification.state.value if self.classification is not None else None,
             'empty': self.empty,
             'elapsed': self.elapsed,
+            'tap_attempts': self.tap_attempts,
             'history': [state.value for state in self.history],
         }
         if self.tap is not None:
             record['tap'] = self.tap.as_dict()
+        if self.retap is not None:
+            record['retap'] = self.retap.as_dict()
+            record['retap_difference'] = self.retap_difference
         if self.dismiss is not None:
             record['dismiss'] = self.dismiss.as_dict()
         return record
@@ -1214,6 +1236,20 @@ def open_boost_list(
     polled until the boost marker and the same non-empty task set are visible
     on two consecutive frames (or the empty sentence is visible).
 
+    The destination being visible always ends the wait, including on the frame
+    that crosses the deadline. The two-frame settle is a courtesy for a list
+    still rendering while budget remains; it is not a reason to report a page
+    that is plainly on screen as never observed (#84).
+
+    A tap can be swallowed on a cold transition. When the post-tap frames stay
+    identical to the pre-tap coin page for a bounded interval and no boost
+    marker or popup appears, the tap is retried once (two attempts total). The
+    unchanged frame is the evidence that the first tap had no effect; a frame
+    that is still changing, or a swept popup, is never re-tapped. The attempt
+    count and the measured frame difference are logged. ``timeout`` bounds the
+    pre-tap page wait and, separately, the navigation after the tap, so the
+    error's "after tapping" duration is the time the tap has had.
+
     A frame that already contains the boost destination is *not* swept as a
     popup, and the sweep after a real popup runs with the ``coins_boost_sheet``
     family removed. That family's anchor is the destination's own
@@ -1232,7 +1268,6 @@ def open_boost_list(
         raise ValueError('settle must not be negative')
 
     started = clock()
-    deadline = started + timeout
     dismiss: DismissReport | None = None
 
     def _dismiss_initial_popup(_snapshot: Snapshot) -> None:
@@ -1289,12 +1324,25 @@ def open_boost_list(
         why=f'open the {BOOST_MARKER} task list',
         label=EARN_MORE_LABEL,
     )
+    # The navigation budget starts when the navigation does. Sharing the
+    # pre-tap coin-page wait's clock made an 8 s "after tapping" message cover
+    # time the tap had not been sent for; the failure in #84 spent most of the
+    # budget before the tap.
+    tap_started = clock()
+    deadline = tap_started + timeout
+    tap_signature = frame_signature(initial)
+    retap: TapRecord | None = None
+    retap_difference: float | None = None
+    unchanged_polls = 0
+    popup_seen = False
 
     observations: list[Observation] = []
     previous_signature: tuple[tuple[str, str, tuple[int, int] | None], ...] | None = None
+    pending: Snapshot | None = None
 
     while True:
-        snapshot = _capture(capture)
+        snapshot = pending if pending is not None else _capture(capture)
+        pending = None
         classification = classify(snapshot)
         now = clock()
         observations.append(
@@ -1312,7 +1360,8 @@ def open_boost_list(
                 seen = ' -> '.join(item.classification.state.value for item in observations)
                 raise StateTimeout(
                     f'{BOOST_MARKER!r} was not observed within {timeout:g}s after tapping '
-                    f'{EARN_MORE_LABEL!r} (last={classification.describe()}; history={seen})',
+                    f'{EARN_MORE_LABEL!r} (taps={2 if retap is not None else 1}, last={classification.describe()}; '
+                    f'history={seen})',
                 )
             dismiss = dismiss_after(
                 controller,
@@ -1326,41 +1375,105 @@ def open_boost_list(
             )
             if on_dismiss is not None:
                 on_dismiss(dismiss)
+            # A popup proves the first tap did something; do not re-tap after
+            # sweeping it. The page the modal covered is the one to judge.
+            popup_seen = True
             previous_signature = None
+            unchanged_polls = 0
             continue
 
         if _boost_arrived(snapshot):
-            if is_empty_boost(snapshot):
+            # The destination is on screen, so the wait has ended even if the
+            # clock crossed the deadline on this frame. Rejecting it here was
+            # the #84 false timeout: the report named the boost page as "last"
+            # while claiming it "was not observed within 8s". The signature
+            # check only settles a still-changing list while there is budget
+            # left for another frame.
+            signature = () if is_empty_boost(snapshot) else _task_signature(snapshot)
+            if not signature or signature == previous_signature or now >= deadline:
                 return BoostList(
                     snapshot=snapshot,
                     route=DiscoveryRoute.BOOST,
                     detail=_arrival_detail(snapshot),
                     classification=classification,
                     tap=tap,
-                    dismiss=dismiss,
-                    elapsed=max(0.0, now - started),
-                    history=tuple(item.classification.state for item in observations),
-                )
-
-            signature = _task_signature(snapshot)
-            if not signature or signature == previous_signature:
-                return BoostList(
-                    snapshot=snapshot,
-                    route=DiscoveryRoute.BOOST,
-                    detail=_arrival_detail(snapshot),
-                    classification=classification,
-                    tap=tap,
+                    retap=retap,
+                    retap_difference=retap_difference,
                     dismiss=dismiss,
                     elapsed=max(0.0, now - started),
                     history=tuple(item.classification.state for item in observations),
                 )
             previous_signature = signature
 
+        # A re-tap is allowed only when the frame proves the first tap had no
+        # effect: the same coin page, still and identical to the pre-tap frame,
+        # with the destination absent and no popup swept in between. A frame
+        # that is still changing (the sheet opening) is never re-tapped, and a
+        # non-PAGE frame resets the consecutive-polls evidence.
+        if (
+            retap is None
+            and not popup_seen
+            and not _boost_arrived(snapshot)
+            and classification.state is ScreenState.PAGE
+            and now < deadline
+        ):
+            difference = signature_difference(tap_signature, frame_signature(snapshot))
+            unchanged_polls = unchanged_polls + 1 if difference <= STABLE_MAX_DIFFERENCE else 0
+            if unchanged_polls >= BOOST_RETAP_STABLE_POLLS:
+                # The judged frame is already OCR-age old. Re-capture immediately
+                # before the tap: if the first tap opened the sheet during that
+                # window, the fresh frame either shows the destination (returned
+                # next iteration) or a changed coin page (no re-tap). This keeps
+                # the tap from landing on a task row that moved under the old
+                # coordinate.
+                retry_frame = _capture(capture)
+                retry_target = find_text(retry_frame, EARN_MORE_LABEL)
+                fresh_difference = signature_difference(tap_signature, frame_signature(retry_frame))
+                if (
+                    retry_target is not None
+                    and not _boost_arrived(retry_frame)
+                    and fresh_difference <= STABLE_MAX_DIFFERENCE
+                ):
+                    retap = controller.tap_box(
+                        retry_target.box,
+                        why=f'retry opening the {BOOST_MARKER} task list; the first tap left the coin page unchanged',
+                        label=EARN_MORE_LABEL,
+                    )
+                    retap_difference = difference
+                    unchanged_polls = 0
+                    previous_signature = None
+                    if logger is not None:
+                        logger.warning(
+                            '%s',
+                            json.dumps(
+                                {
+                                    'event': 'boost_retap',
+                                    'attempt': 2,
+                                    'difference': round(difference, 4),
+                                    'fresh_difference': round(fresh_difference, 4),
+                                    'state': classification.state.value,
+                                    'elapsed': round(max(0.0, now - tap_started), 3),
+                                },
+                                separators=(',', ':'),
+                                sort_keys=True,
+                            ),
+                        )
+                    continue
+                # A missing label or a changed fresh frame is not retry
+                # evidence: reset the consecutive count so the next loop waits
+                # its interval instead of re-capturing back-to-back.
+                unchanged_polls = 0
+                pending = retry_frame
+                continue
+        else:
+            unchanged_polls = 0
+
         if now >= deadline:
             seen = ' -> '.join(item.classification.state.value for item in observations)
             raise StateTimeout(
                 f'{BOOST_MARKER!r} was not observed within {timeout:g}s after tapping '
-                f'{EARN_MORE_LABEL!r} (last={classification.describe()}; history={seen})',
+                f'{EARN_MORE_LABEL!r} (taps={2 if retap is not None else 1}, last={classification.describe()}; '
+                f'history={seen})',
             )
 
         sleep(min(interval, max(0.0, deadline - now)))

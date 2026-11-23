@@ -1580,6 +1580,60 @@ def test_signin_normalises_both_claims_into_one_outcome(
     assert context.navigate.routes == [SurfaceRoute.SHORTCUT]
 
 
+def test_signin_fails_when_the_streak_completed_but_the_boost_claim_did_not(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    """A successful streak must not hide an unverified boost check-in (#84)."""
+    context = _context(
+        tmp_path,
+        capture=_Capture(_boost_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    entry = _entry(full_roster, 'boost_checkin')
+    streak = ClaimResult(
+        key='daily_checkin',
+        outcome=SigninOutcome.COMPLETED,
+        detail='streak claimed',
+        verification='absent_control',
+        recorded=True,
+    )
+    boost = ClaimResult(
+        key='boost_checkin',
+        outcome=SigninOutcome.UNVERIFIED,
+        detail='the Coins boost page is empty (a load fault, not an empty day); the boost check-in was not attempted',
+        verification='empty_boost',
+    )
+    monkeypatch.setattr(
+        engine,
+        'claim_daily_signins',
+        lambda *args, **kwargs: SigninReport(streak=streak, boost=boost),
+    )
+    assert context.controller is not None
+    common = {
+        'navigate': context.navigate,
+        'templates': context.templates,
+        'settle': 0.0,
+        'clock': context.clock,
+        'sleep': context.sleep,
+        'logger': context.logger,
+    }
+
+    result = engine._run_signin(context, context.controller, entry, engine._spec(entry), common)
+
+    assert result.outcome == 'failed'
+    assert result.completed is False
+    assert result.failure is not None
+    assert result.failure.code is FailureCode.TASK_UNVERIFIED
+    assert result.verification == 'absent_control,empty_boost'
+    assert 'empty' in result.detail
+    assert 'boost_checkin: unverified' in result.detail
+
+
 def test_signin_does_nothing_when_both_state_keys_are_done(
     tmp_path: Path,
     full_roster: Roster,

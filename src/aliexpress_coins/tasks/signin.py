@@ -55,6 +55,7 @@ from aliexpress_coins.perception.matching import (
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.state import TASK_TITLES, CaptureSource, ScreenState, classify
 from aliexpress_coins.perception.templates import TemplateStore
+from aliexpress_coins.perception.waits import wait_for_text
 from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks.catalogue import DispatchAuthorization, TaskCategory
 from aliexpress_coins.tasks.discovery import DiscoveryRoute, open_boost_list
@@ -73,6 +74,7 @@ __all__ = [
     'BOOST_CLAIMED_LABELS',
     'BOOST_KEY',
     'BOOST_ROW_LABELS',
+    'DEFAULT_OPEN_TIMEOUT',
     'DEFAULT_VERIFY_INTERVAL',
     'DEFAULT_VERIFY_TIMEOUT',
     'REDEEM_INTERSTITIAL',
@@ -119,6 +121,17 @@ REDEEM_INTERSTITIAL = 'redeem_interstitial'
 
 DEFAULT_VERIFY_TIMEOUT = 8.0
 """How long to wait for a fresh frame to prove a claim before calling it unverified."""
+
+DEFAULT_OPEN_TIMEOUT = 10.0
+"""How long to wait for ``Earn more`` to open the boost list after the tap.
+
+Measured on 2026-11-23: the warm destination rendered 2.4-5.4 s after the tap,
+so 10 s is about twice the slowest measured navigation. This is deliberately
+not the route's 30 s budget: the swallowed-tap case is covered by the bounded
+re-tap in :func:`~aliexpress_coins.tasks.discovery.open_boost_list`, not by a
+longer stare. The 8 s claim-verification budget is not a navigation budget, and
+sharing it was the #84 failure.
+"""
 
 DEFAULT_VERIFY_INTERVAL = 1.0
 """How often to capture while waiting for the post-claim frame."""
@@ -413,12 +426,35 @@ def claim_streak(
         _log_result(log, result)
         return result
 
+    # The runner fires the shortcut immediately before this call, but the app
+    # can still be on the boost page for a capture or two. On that frame no
+    # Collect control is visible, and reading that absence as "unavailable" is
+    # how #84 left the streak unclaimed. Wait for the measured streak surface
+    # instead of deciding from whatever happened to be on screen.
+    if not _streak_visible(frame):
+        arrived = wait_for_text(
+            capture,
+            _streak_visible,
+            timeout=timeout,
+            interval=interval,
+            initial=frame,
+            clock=clock,
+            sleep=sleep,
+        )
+        frame = arrived.frame
+
     control = find_streak_control(frame)
     if control is None:
+        detail = (
+            f'the coin page or the {STREAK_MARKER!r} streak card did not appear within {timeout:g}s; '
+            'no claim control was tapped'
+            if not _streak_visible(frame)
+            else f'{STREAK_MARKER!r} has no Collect/Claim/Sign in control in this frame'
+        )
         result = ClaimResult(
             key=STREAK_KEY,
             outcome=SigninOutcome.UNAVAILABLE,
-            detail=f'{STREAK_MARKER!r} has no Collect/Claim/Sign in control in this frame',
+            detail=detail,
             verification='not_found',
             balance_before=read_coin_balance(frame),
         )
@@ -471,8 +507,9 @@ def claim_streak(
     if verdict is not None:
         verification, after = verdict
         interstitial = REDEEM_INTERSTITIAL if verification == 'interstitial' else None
+        recorded_balance = _claim_balance(before, after)
         if interstitial is None:
-            state.record(STREAK_KEY, balance=after if after is not None else before)
+            state.record(STREAK_KEY, balance=recorded_balance)
             detail = f'streak claim verified by {verification.replace("_", " ")}'
         else:
             state.record(STREAK_KEY)
@@ -483,7 +520,7 @@ def claim_streak(
             detail=detail,
             verification=verification,
             balance_before=before,
-            balance_after=after,
+            balance_after=recorded_balance,
             control=control,
             tap=tap,
             dismiss=dismiss,
@@ -620,8 +657,14 @@ def claim_boost_checkin(
     if verdict is not None:
         verification, after = verdict
         interstitial = REDEEM_INTERSTITIAL if verification == 'interstitial' else None
+        # A claimed reward never reduces the balance. The post-claim frame can
+        # be a non-coin surface whose top quarter holds another bare number, so
+        # an ``after`` below ``before`` is a misread, not news: recording it (a
+        # live 2026-11-23 claim wrote 0.0 over a real 54) would poison
+        # ``last_balance``. A genuine balance delta still replaces the value.
+        recorded_balance = _claim_balance(before, after)
         if interstitial is None:
-            state.record(BOOST_KEY, balance=after if after is not None else before)
+            state.record(BOOST_KEY, balance=recorded_balance)
             detail = f'boost check-in verified by {verification.replace("_", " ")}'
         else:
             state.record(BOOST_KEY)
@@ -632,7 +675,7 @@ def claim_boost_checkin(
             detail=detail,
             verification=verification,
             balance_before=before,
-            balance_after=after,
+            balance_after=recorded_balance,
             control=action,
             tap=tap,
             dismiss=dismiss,
@@ -666,6 +709,7 @@ def claim_daily_signins(
     snapshot: Snapshot | None = None,
     templates: TemplateStore | None = None,
     timeout: float = DEFAULT_VERIFY_TIMEOUT,
+    open_timeout: float = DEFAULT_OPEN_TIMEOUT,
     interval: float = DEFAULT_VERIFY_INTERVAL,
     settle: float = 0.0,
     clock: Callable[[], float] = time.monotonic,
@@ -681,12 +725,20 @@ def claim_daily_signins(
     row from that frame. A redeem interstitial after either claim ends the
     executor cleanly: there is nothing safe to do behind an unclosable overlay.
 
+    ``timeout`` bounds each claim's verification and the wait for the streak
+    surface; ``open_timeout`` bounds the navigation to the boost list. They are
+    separate because the measured failure (#84) was a navigation still running
+    when the 8 s verification budget expired, not a claim that needed longer to
+    prove itself.
+
     ``authorization`` is the dispatch gate's sealed token. Without it this
     function refuses before the first capture, so the control cannot be claimed
     by a caller that bypassed the policy decision.
     """
     _require_signin_authorization(authorization)
     log = logger if logger is not None else logging.getLogger(LOGGER_NAME)
+    if open_timeout <= 0:
+        raise ValueError(f'open_timeout must be positive, got {open_timeout!r}')
     streak = claim_streak(
         controller,
         capture,
@@ -721,7 +773,7 @@ def claim_daily_signins(
                 capture,
                 corpus,
                 templates=templates,
-                timeout=timeout,
+                timeout=open_timeout,
                 interval=interval,
                 settle=settle,
                 clock=clock,
@@ -741,21 +793,35 @@ def claim_daily_signins(
                 stop=REDEEM_INTERSTITIAL,
             )
         route = opened.route
-        boost = claim_boost_checkin(
-            controller,
-            capture,
-            corpus,
-            state,
-            authorization=authorization,
-            snapshot=opened.snapshot,
-            templates=templates,
-            timeout=timeout,
-            interval=interval,
-            settle=settle,
-            clock=clock,
-            sleep=sleep,
-            logger=log,
-        )
+        if opened.empty:
+            # ``There's nothing here yet`` is the documented cold-start load
+            # fault, not an empty day. Handing it to claim_boost_checkin would
+            # report an absent row and skip the claim silently; that is exactly
+            # the cold variant the #84 probe measured, so fail with the reason.
+            boost = ClaimResult(
+                key=BOOST_KEY,
+                outcome=SigninOutcome.UNVERIFIED,
+                detail='the Coins boost page is empty (a load fault, not an empty day); '
+                'the boost check-in was not attempted',
+                verification='empty_boost',
+                balance_before=_latest_balance(streak),
+            )
+        else:
+            boost = claim_boost_checkin(
+                controller,
+                capture,
+                corpus,
+                state,
+                authorization=authorization,
+                snapshot=opened.snapshot,
+                templates=templates,
+                timeout=timeout,
+                interval=interval,
+                settle=settle,
+                clock=clock,
+                sleep=sleep,
+                logger=log,
+            )
 
     before = _first_balance(streak, boost)
     latest = _latest_balance(streak, boost)
@@ -827,6 +893,14 @@ def _streak_rows(snapshot: Snapshot) -> tuple[Row, ...]:
     The next task row starts a new section, so the card never absorbs the task
     list below it. A marker-relative band is the second bound: it keeps a later
     row that happens to read ``Claimed`` from proving a claim it did not make.
+
+    The header row is part of the card, not just its title. The card grew taller
+    than the derived row tolerance (``Today`` / day chips / ``Worth C$0.01``),
+    so on the measured 2026-11-23 frame the ``Collect`` control sits in the same
+    OCR band as ``Daily coins`` (issue #84). Searching only the rows below the
+    header was what made ``find_streak_control`` return ``None`` on the real
+    coin page. The task controls are still excluded: matching is against
+    :data:`STREAK_CONTROL_LABELS`, so the neighbouring ``GO`` never qualifies.
     """
     rows = group_rows(snapshot.boxes, snapshot.geometry)
     for section in group_sections(rows, header_labels=(STREAK_MARKER, *TASK_TITLES)):
@@ -834,13 +908,23 @@ def _streak_rows(snapshot: Snapshot) -> tuple[Row, ...]:
         if header is None or not _row_has(header, (STREAK_MARKER,)):
             continue
         limit = header.top + header.height * _STREAK_CARD_HEIGHT_RATIO
-        card: list[Row] = []
+        card: list[Row] = [header]
         for row in section.rows:
             if row.center_y > limit or _is_task_row(row):
                 break
             card.append(row)
         return tuple(card)
     return ()
+
+
+def _streak_visible(snapshot: Snapshot) -> bool:
+    """Whether the frame shows the coin page or the streak card.
+
+    Used as a wait predicate, not as proof of a claim: it answers "has the app
+    finished leaving the previous surface", which is the difference between a
+    control that is absent and one that has not rendered yet (#84).
+    """
+    return bool(_streak_rows(snapshot)) or all(contains_text(snapshot, marker) for marker in COIN_PAGE_MARKERS)
 
 
 def _is_task_row(row: Row) -> bool:
@@ -974,6 +1058,21 @@ def _capture(source: CaptureSource) -> Snapshot:
     if callable(source):
         return source()
     return source.capture()
+
+
+def _claim_balance(before: float | None, after: float | None) -> float | None:
+    """The balance a claim may record: never a post-claim drop.
+
+    A claimed reward cannot reduce the balance, so an ``after`` below ``before``
+    is a misread from a non-coin post-claim surface rather than news. An
+    unreadable ``after`` keeps the balance the claim started from. A real
+    increase (the ``balance_delta`` verdict) still wins.
+    """
+    if after is None:
+        return before
+    if before is not None and after < before:
+        return before
+    return after
 
 
 def _first_balance(*results: ClaimResult) -> float | None:
