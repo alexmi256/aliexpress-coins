@@ -19,7 +19,7 @@ from aliexpress_coins import __version__
 from aliexpress_coins.doctor import run_doctor
 from aliexpress_coins.runner.config import RunConfig
 from aliexpress_coins.runner.engine import make_live_context, run_once
-from aliexpress_coins.runner.errors import ConfigError
+from aliexpress_coins.runner.errors import ConfigError, RunLockHeld
 from aliexpress_coins.runner.report import RunReport
 from aliexpress_coins.runner.schedule import run_schedule
 from aliexpress_coins.runner.state import DailyStateStore
@@ -33,6 +33,9 @@ from aliexpress_coins.runner.timezone import (
 LOGGER_NAME = 'aliexpress_coins.cli'
 PRE_NIGHT_TIMEZONE_TIMEOUT_SECONDS = 2.0
 """Bound each pre-night adb probe so the common outage path fits Compose's 5 s stop grace."""
+
+RUN_LOCK_HELD_EXIT = 3
+"""Exit code when another run already owns this state directory's run lock."""
 
 
 def run_idle() -> int:
@@ -100,17 +103,41 @@ def run_once_command(
     A manual run is supervised, so a timezone disagreement is a loud warning
     rather than a refusal: the operator may deliberately be taking one night
     from another zone. The scheduler, which is unattended, refuses instead.
+
+    The run takes the state directory's exclusive lock before it touches adb.
+    If the nightly daemon (or another manual run) holds it, this command exits
+    :data:`RUN_LOCK_HELD_EXIT` with the holder's identity and starts nothing;
+    two processes never drive the tablet at once.
     """
     try:
         config = _config(environment, dry_run=dry_run, root=root)
-        _warn_timezone(_timezone_check(environment, config.device, device_timezone))
-        stop = threading.Event()
-        _install_stop_handlers(stop)
+    except ConfigError as exc:
+        _error(f'configuration: {exc}')
+        return 2
+    try:
+        if config.device is None:
+            raise ConfigError('AECOINS_DEVICE is not set; a live run needs a device serial')
+        state = DailyStateStore(
+            config.state_dir,
+            clock=lambda: datetime.now(UTC).astimezone(config.timezone),
+        )
+        lock = state.run_lock()
         try:
-            context = make_live_context(config, stop=stop)
-            report = run_once(context)
+            lock.try_acquire()
+        except RunLockHeld as exc:
+            _error(f'{exc}. Wait for that run to finish; this run did not touch the device.')
+            return RUN_LOCK_HELD_EXIT
+        try:
+            _warn_timezone(_timezone_check(environment, config.device, device_timezone))
+            stop = threading.Event()
+            _install_stop_handlers(stop)
+            try:
+                context = make_live_context(config, stop=stop)
+                report = run_once(context)
+            finally:
+                _restore_stop_handlers()
         finally:
-            _restore_stop_handlers()
+            lock.release()
     except ConfigError as exc:
         _error(f'configuration: {exc}')
         return 2
@@ -175,6 +202,7 @@ def run_schedule_command(
                 state=state,
                 clock=wall_clock,
                 stop=stop,
+                lock=state.run_lock(),
             )
         finally:
             _restore_stop_handlers()

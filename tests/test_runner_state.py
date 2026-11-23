@@ -178,6 +178,18 @@ def test_complete_night_is_the_schedulers_skip_flag_and_survives_a_restart(tmp_p
     assert _store(tmp_path).snapshot().completed_night is True
 
 
+def test_reload_replaces_a_cached_snapshot_written_by_another_store(tmp_path: Path) -> None:
+    waiter = _store(tmp_path)
+    other = _store(tmp_path)
+    assert waiter.snapshot().completed_night is False
+
+    other.complete_night()
+
+    assert waiter.snapshot().completed_night is False
+    waiter.reload()
+    assert waiter.snapshot().completed_night is True
+
+
 def test_an_old_state_file_without_the_night_flag_still_loads(tmp_path: Path) -> None:
     payload = _valid_payload()
     payload.pop('completed_night')

@@ -29,6 +29,12 @@ not valid JSON, has the wrong schema or fails validation is moved aside as
 ``daily-<date>.json.corrupt-<timestamp>`` and the day starts empty with a
 warning, because losing a night to a half-written file is worse than losing the
 few counters it held.
+
+Atomic writes protect one file, not one day: a manual run and the nightly daemon
+would still both read the day as unfinished and dispatch work at the same tablet.
+:meth:`DailyStateStore.run_lock` supplies the exclusive ``run.lock`` that each
+entry point holds for the whole run (issue #78); see
+:mod:`aliexpress_coins.runner.lock`.
 """
 
 from __future__ import annotations
@@ -45,13 +51,17 @@ from types import MappingProxyType
 from typing import Any, cast
 
 from aliexpress_coins.perception.artifacts import atomic_write_bytes
-from aliexpress_coins.runner.errors import StateError, StateReadError, StateWriteError
+from aliexpress_coins.runner.errors import RunLockHeld, StateError, StateReadError, StateWriteError
+from aliexpress_coins.runner.lock import LOCK_FILENAME, RunLock
 
 __all__ = [
     'DAILY_STATE_SCHEMA',
     'LOGGER_NAME',
+    'RUN_LOCK_FILENAME',
     'DailySnapshot',
     'DailyStateStore',
+    'RunLock',
+    'RunLockHeld',
     'StateError',
     'StateReadError',
     'StateWriteError',
@@ -62,6 +72,9 @@ LOGGER_NAME = 'aliexpress_coins.runner.state'
 
 DAILY_STATE_SCHEMA = 1
 """The only on-disk schema this module reads or writes."""
+
+RUN_LOCK_FILENAME = LOCK_FILENAME
+"""The exclusive run lock's name inside the state directory (issue #78)."""
 
 _DEFAULT_STATE_DIR = 'state'
 """Fallback when ``AECOINS_STATE_DIR`` is unset, as runs/ is for artifacts."""
@@ -149,6 +162,29 @@ class DailyStateStore:
         """The file today's state is written to (it may not exist yet)."""
         return self._path_for(self._clock().date())
 
+    @property
+    def run_lock_path(self) -> Path:
+        """The exclusive run lock shared by every run on this state directory."""
+        return self.state_dir / RUN_LOCK_FILENAME
+
+    def run_lock(
+        self,
+        *,
+        clock: Clock | None = None,
+        logger: logging.Logger | None = None,
+    ) -> RunLock:
+        """Build the lock a run must hold for its whole duration.
+
+        The lock is per state directory, not per day: a run that crosses
+        midnight still owns the device, and the next day's fire waits for it
+        just like the same day's would.
+        """
+        return RunLock(
+            self.run_lock_path,
+            clock=self._clock if clock is None else clock,
+            logger=self._logger if logger is None else logger,
+        )
+
     def record(self, task_key: str, *, balance: float | None = None) -> int:
         """Count one completion of ``task_key`` and return its new total.
 
@@ -199,6 +235,18 @@ class DailyStateStore:
     def snapshot(self) -> DailySnapshot:
         """Give #31 the whole day: counters, balance, run count and timestamp."""
         return self._loaded()
+
+    def reload(self) -> None:
+        """Drop the cached snapshot so the next query reads the file again.
+
+        A long-lived scheduler caches the day after its first completed-night
+        check. Another process (a manual run, or a second daemon) can change the
+        file while that scheduler waits for the run lock, so the post-lock
+        re-check must not reuse the cache. Ordinary state updates stay in memory
+        because they are this store's own writes.
+        """
+        self._day = None
+        self._state = None
 
     def _path_for(self, day: date) -> Path:
         return self.state_dir / f'daily-{day.isoformat()}.json'
