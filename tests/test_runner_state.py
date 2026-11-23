@@ -214,6 +214,14 @@ def test_record_carries_the_last_balance_without_clobbering_it(tmp_path: Path) -
     assert _store(tmp_path).snapshot().last_balance == 99.5
 
 
+def test_a_balance_that_was_never_read_is_null_not_zero(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.record('daily_checkin')
+
+    assert store.snapshot().last_balance is None
+    assert json.loads(store.path.read_text(encoding='utf-8'))['last_balance'] is None
+
+
 def test_snapshot_gives_the_report_the_whole_day(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.begin_run(at=NOW)

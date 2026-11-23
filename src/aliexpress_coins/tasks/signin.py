@@ -71,6 +71,8 @@ from aliexpress_coins.tasks.surface import (
 __all__ = [
     'BALANCE_BOTTOM_FRACTION',
     'BALANCE_TOP_FRACTION',
+    'BALANCE_UNREADABLE',
+    'BALANCE_ZERO_UNVERIFIED',
     'BOOST_CLAIMED_LABELS',
     'BOOST_KEY',
     'BOOST_ROW_LABELS',
@@ -118,6 +120,22 @@ BOOST_CLAIMED_LABELS: tuple[str, ...] = ('Claimed', 'Collected', 'Checked in')
 
 REDEEM_INTERSTITIAL = 'redeem_interstitial'
 """The corpus family name of the unclosable reward interstitial."""
+
+BALANCE_UNREADABLE = 'balance_unreadable'
+"""The named event and reason for a frame with no readable coin balance.
+
+A failed read is ``None``, never ``0``: the claim leaves the stored value alone
+and records this code instead of inventing a number.
+"""
+
+BALANCE_ZERO_UNVERIFIED = 'balance_zero_unverified'
+"""The named event and reason for a lone ``0`` the claim could not corroborate.
+
+A genuine zero is a bare number on the coin surface, and a claim that started
+from a readable zero keeps it. A ``0`` read after an unreadable or positive
+starting balance is a control numeral or a redacted post-claim surface, so it
+is treated as unreadable rather than persisted.
+"""
 
 DEFAULT_VERIFY_TIMEOUT = 8.0
 """How long to wait for a fresh frame to prove a claim before calling it unverified."""
@@ -342,7 +360,9 @@ def read_coin_balance(snapshot: Snapshot) -> float | None:
     page (docs/01-recon-findings.md §3). The status-bar band is excluded, and a
     currency amount or reward badge is not a bare number. Masked or unreadable
     balances return ``None`` rather than a guess; verification then relies on
-    the control and the card state.
+    the control and the card state. A readable bare ``0`` is returned as ``0.0``
+    so a brand-new account is representable; :func:`_claim_balance` refuses a
+    lone zero that the claim cannot corroborate.
     """
     top = snapshot.height * BALANCE_TOP_FRACTION
     bottom = snapshot.height * BALANCE_BOTTOM_FRACTION
@@ -462,6 +482,8 @@ def claim_streak(
         return result
 
     before = read_coin_balance(frame)
+    if before is None:
+        _log_balance(log, key=STREAK_KEY, code=BALANCE_UNREADABLE, phase='before')
     tap = controller.tap_box(
         control,
         why='claim the daily sign-in streak once',
@@ -508,6 +530,17 @@ def claim_streak(
         verification, after = verdict
         interstitial = REDEEM_INTERSTITIAL if verification == 'interstitial' else None
         recorded_balance = _claim_balance(before, after)
+        balance_code = _balance_code(before, after, recorded_balance)
+        if balance_code is not None:
+            _log_balance(
+                log,
+                key=STREAK_KEY,
+                code=balance_code,
+                phase='after',
+                before=before,
+                after=after,
+                recorded=recorded_balance,
+            )
         if interstitial is None:
             state.record(STREAK_KEY, balance=recorded_balance)
             detail = f'streak claim verified by {verification.replace("_", " ")}'
@@ -614,6 +647,8 @@ def claim_boost_checkin(
         return result
 
     before = read_coin_balance(frame)
+    if before is None:
+        _log_balance(log, key=BOOST_KEY, code=BALANCE_UNREADABLE, phase='before')
     tap = controller.tap_box(
         action,
         why='claim the boost Daily check-in row once',
@@ -663,6 +698,17 @@ def claim_boost_checkin(
         # live 2026-11-23 claim wrote 0.0 over a real 54) would poison
         # ``last_balance``. A genuine balance delta still replaces the value.
         recorded_balance = _claim_balance(before, after)
+        balance_code = _balance_code(before, after, recorded_balance)
+        if balance_code is not None:
+            _log_balance(
+                log,
+                key=BOOST_KEY,
+                code=balance_code,
+                phase='after',
+                before=before,
+                after=after,
+                recorded=recorded_balance,
+            )
         if interstitial is None:
             state.record(BOOST_KEY, balance=recorded_balance)
             detail = f'boost check-in verified by {verification.replace("_", " ")}'
@@ -1061,18 +1107,68 @@ def _capture(source: CaptureSource) -> Snapshot:
 
 
 def _claim_balance(before: float | None, after: float | None) -> float | None:
-    """The balance a claim may record: never a post-claim drop.
+    """The balance a claim may record: never an unreadable or dropped value.
 
     A claimed reward cannot reduce the balance, so an ``after`` below ``before``
     is a misread from a non-coin post-claim surface rather than news. An
     unreadable ``after`` keeps the balance the claim started from. A real
     increase (the ``balance_delta`` verdict) still wins.
+
+    A zero is trustworthy only when the claim started from a readable zero: a
+    lone ``0`` on a redacted or post-claim surface is a control numeral, not the
+    balance. That is why ``_claim_balance(None, 0.0)`` is ``None`` while
+    ``_claim_balance(0.0, 0.0)`` keeps a brand-new account's genuine zero.
     """
     if after is None:
+        return before
+    if after == 0.0 and before != 0.0:
         return before
     if before is not None and after < before:
         return before
     return after
+
+
+def _balance_code(before: float | None, after: float | None, recorded: float | None) -> str | None:
+    """Name why a claim did not simply record ``after``, or ``None`` when it did."""
+    if after is None:
+        return BALANCE_UNREADABLE
+    if after == 0.0 and recorded != after:
+        return BALANCE_ZERO_UNVERIFIED
+    return None
+
+
+def _log_balance(
+    logger: logging.Logger,
+    *,
+    key: str,
+    code: str,
+    phase: str,
+    before: float | None = None,
+    after: float | None = None,
+    recorded: float | None = None,
+) -> None:
+    """Record a balance that was unknown or refused, with the frame's reason."""
+    logger.warning(
+        '%s',
+        json.dumps(
+            {
+                'event': code,
+                'code': code,
+                'task': key,
+                'phase': phase,
+                'balance_before': before,
+                'balance_after': after,
+                'balance_recorded': recorded,
+                'detail': (
+                    'the frame did not render a bare number in the balance band'
+                    if code == BALANCE_UNREADABLE
+                    else 'the frame read 0 without a readable zero to corroborate it; the previous balance is kept'
+                ),
+            },
+            separators=(',', ':'),
+            sort_keys=True,
+        ),
+    )
 
 
 def _first_balance(*results: ClaimResult) -> float | None:

@@ -7,6 +7,7 @@ device, and time is injected. No test reaches adb.
 
 from __future__ import annotations
 
+import logging
 import random
 from collections.abc import Sequence
 from dataclasses import replace
@@ -966,21 +967,116 @@ def test_claim_boost_checkin_keeps_the_recorded_frame_from_poisoning_the_balance
     assert state.snapshot().last_balance == 54.0
 
 
+def test_claim_boost_checkin_never_stores_zero_for_an_unreadable_balance(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A claim that could not read either balance leaves ``last_balance`` null."""
+    before = frames['real_boost']
+    after = _boost_without_row(before)
+    state = _state(tmp_path)
+    caplog.set_level(logging.WARNING)
+
+    assert read_coin_balance(before) is None
+    assert read_coin_balance(after) is None
+
+    result = claim_boost_checkin(
+        _controller(_RecordingDevice(), before),
+        _Capture([before, after, after, after]),
+        corpus,
+        state,
+        authorization=_signin_authorization(),
+        timeout=2.0,
+        interval=1.0,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.completed is True
+    assert result.balance_before is None
+    assert result.balance_after is None
+    assert state.snapshot().last_balance is None
+    assert 'balance_unreadable' in caplog.text
+
+
+def test_claim_boost_checkin_records_a_readable_balance_when_none_was_stored(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    before = _with_box(frames['boost'], _box('55', 200, 120, 300, 180))
+    after = _with_box(_boost_without_row(frames['boost']), _box('56', 200, 120, 300, 180))
+    state = _state(tmp_path)
+    assert state.snapshot().last_balance is None
+
+    result = claim_boost_checkin(
+        _controller(_RecordingDevice(), before),
+        _Capture([before, after, after, after]),
+        corpus,
+        state,
+        authorization=_signin_authorization(),
+        timeout=2.0,
+        interval=1.0,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.balance_before == 55.0
+    assert result.balance_after == 56.0
+    assert state.snapshot().last_balance == 56.0
+
+
+def test_claim_streak_keeps_a_genuine_zero_balance(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """A brand-new account's readable zero is a value, not an unreadable frame."""
+    before = _streak_frame(frames['coins'], balance='0')
+    after = _streak_frame(frames['coins'], balance='0', collect=False, tomorrow=True)
+    state = _state(tmp_path)
+
+    result = claim_streak(
+        _controller(_RecordingDevice(), before),
+        _Capture([before, after, after, after]),
+        corpus,
+        state,
+        authorization=_signin_authorization(),
+        timeout=2.0,
+        interval=1.0,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.completed is True
+    assert result.verification == 'absent_control'
+    assert result.balance_before == 0.0
+    assert result.balance_after == 0.0
+    assert state.snapshot().last_balance == 0.0
+
+
 def test_claim_balance_never_records_a_post_claim_drop() -> None:
     assert _claim_balance(54.0, 0.0) == 54.0
+    assert _claim_balance(54.0, 53.0) == 54.0
     assert _claim_balance(54.0, 55.0) == 55.0
     assert _claim_balance(54.0, None) == 54.0
-    assert _claim_balance(None, 0.0) == 0.0
+    assert _claim_balance(0.0, None) == 0.0
+    assert _claim_balance(None, 0.0) is None
+    assert _claim_balance(0.0, 0.0) == 0.0
 
 
 def test_claim_streak_clamps_a_post_claim_balance_drop(
     frames: dict[str, Snapshot],
     corpus: PopupCorpus,
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     before = _streak_frame(frames['coins'], balance='40')
     after = _streak_frame(frames['coins'], balance='0', collect=False, tomorrow=True)
     state = _state(tmp_path)
+    caplog.set_level(logging.WARNING)
 
     result = claim_streak(
         _controller(_RecordingDevice(), before),
@@ -999,6 +1095,7 @@ def test_claim_streak_clamps_a_post_claim_balance_drop(
     assert result.balance_before == 40.0
     assert result.balance_after == 40.0
     assert state.snapshot().last_balance == 40.0
+    assert 'balance_zero_unverified' in caplog.text
 
 
 def test_claim_boost_checkin_completed_by_a_claimed_row_marker(
