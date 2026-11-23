@@ -784,8 +784,7 @@ def run_quiz_task(
             current_result = correct is not None or your_answer is not None
             if current_result:
                 result_observed = True
-            answer_correct = _answer_correct(correct, your_answer, chosen, options)
-            if current_result:
+                answer_correct = _answer_correct(correct, your_answer, chosen, options)
                 last_result = _ResultEvidence(
                     question=question,
                     options=options,
@@ -797,6 +796,10 @@ def run_quiz_task(
                     answer_source=answer_source,
                     rounds=rounds,
                 )
+            else:
+                # A recognised result page with no readable value must not
+                # replace the last result that did have one.
+                settle_from_last_result()
             _record_observation(
                 quiz_bank,
                 question,
@@ -1666,7 +1669,7 @@ def _is_question_page(snapshot: Snapshot) -> bool:
     # result page for a second question and then reports that question never
     # arrived after it was already answered (issue #98).
     return (
-        not _has_result_evidence(snapshot)
+        not _is_result_page(snapshot)
         and _question_box(snapshot) is not None
         and contains_text(snapshot, 'Coins quiz')
         and contains_text(snapshot, 'Answer quiz questions for')
@@ -1679,12 +1682,17 @@ def _is_result_page(snapshot: Snapshot) -> bool:
 
 
 def _has_result_marker(snapshot: Snapshot, pattern: re.Pattern[str]) -> bool:
-    return any(box.score >= DEFAULT_MIN_OCR_SCORE and pattern.search(box.text) for box in snapshot.boxes)
+    return _result_marker_box(snapshot, pattern) is not None
 
 
-def _has_result_evidence(snapshot: Snapshot) -> bool:
-    """Whether either result-page marker is visible, even on a partly-read frame."""
-    return _has_result_marker(snapshot, _CORRECT_ANSWER) or _has_result_marker(snapshot, _YOUR_ANSWER)
+def _result_marker_box(snapshot: Snapshot, pattern: re.Pattern[str]) -> TextBox | None:
+    """The first result marker line, never the question's own ``Q :`` copy."""
+    for box in snapshot.boxes:
+        if box.score < DEFAULT_MIN_OCR_SCORE or QUESTION_PREFIX.match(box.text):
+            continue
+        if pattern.search(box.text):
+            return box
+    return None
 
 
 def _is_redeem(snapshot: Snapshot) -> bool:
@@ -1746,10 +1754,7 @@ def _correct_answer(snapshot: Snapshot) -> str | None:
     to the ``Your answer:`` marker so the recorded answer is the option the quiz
     page actually shows, not just the first physical line.
     """
-    correct = next(
-        (box for box in snapshot.boxes if box.score >= DEFAULT_MIN_OCR_SCORE and _CORRECT_ANSWER.search(box.text)),
-        None,
-    )
+    correct = _result_marker_box(snapshot, _CORRECT_ANSWER)
     if correct is None:
         return None
     value = re.sub(r'^.*correct\s*answer\s*[:.]?\s*', '', correct.text, count=1, flags=re.IGNORECASE)
@@ -1762,7 +1767,11 @@ def _correct_answer(snapshot: Snapshot) -> str | None:
 def _answer_continuation(snapshot: Snapshot, correct: TextBox) -> tuple[str, ...]:
     """The wrapped lines between the learned answer and ``Your answer:``."""
     boxes = [box for box in snapshot.boxes if box is not correct and box.score >= DEFAULT_MIN_OCR_SCORE]
-    endings = [box for box in boxes if _YOUR_ANSWER.search(box.text) and box.bbox[1] > correct.bbox[1]]
+    endings = [
+        box
+        for box in boxes
+        if not QUESTION_PREFIX.match(box.text) and _YOUR_ANSWER.search(box.text) and box.bbox[1] > correct.bbox[1]
+    ]
     if not endings:
         return ()
     limit = min(box.bbox[1] for box in endings)
@@ -1773,10 +1782,7 @@ def _answer_continuation(snapshot: Snapshot, correct: TextBox) -> tuple[str, ...
 
 def _your_answer(snapshot: Snapshot) -> str | None:
     """Read the submitted answer off the result page (``Your answer: Y``)."""
-    anchor = next(
-        (box for box in snapshot.boxes if box.score >= DEFAULT_MIN_OCR_SCORE and _YOUR_ANSWER.search(box.text)),
-        None,
-    )
+    anchor = _result_marker_box(snapshot, _YOUR_ANSWER)
     if anchor is None:
         return None
     value = re.sub(r'^.*your\s*answer\s*[:.]?\s*', '', anchor.text, count=1, flags=re.IGNORECASE).strip()

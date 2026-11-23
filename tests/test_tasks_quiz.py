@@ -768,8 +768,16 @@ def test_a_result_page_that_keeps_the_question_is_not_a_question_page() -> None:
     assert is_question_state(frame) is False
 
 
-def test_a_question_that_mentions_a_correct_answer_is_still_a_question() -> None:
-    frame = _question_frame(question='Q : Which is the correct answer?')
+@pytest.mark.parametrize(
+    'question',
+    [
+        'Q : Which is the correct answer?',
+        'Q : Which is the correct answer: A or B?',
+        'Q : Which is the correct answer. A or B?',
+    ],
+)
+def test_a_question_that_mentions_a_correct_answer_is_still_a_question(question: str) -> None:
+    frame = _question_frame(question=question)
 
     assert is_question_state(frame) is True
     assert is_result_state(frame) is False
@@ -1165,6 +1173,75 @@ def test_run_quiz_task_keeps_the_first_result_when_the_follow_up_result_never_ar
     assert [tap.label for tap in result.taps] == ['GO', 'True', 'Go back', 'Yes']
 
 
+@pytest.mark.slow
+def test_run_quiz_task_keeps_the_first_result_when_the_follow_up_result_is_unreadable(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """A recognised second result without values does not erase the first evidence."""
+
+    def on_tap(screen: str, label: str | None, _count: int) -> str | None:
+        if screen == 'result' and label == 'Go back':
+            return 'second'
+        return None
+
+    second = _question_frame(options=('Yes', 'No'), question='Q : Second question?')
+    unreadable = _snapshot(
+        _box('Correct answer:', 60, 400, 700, 450),
+        _box('Your answer:', 60, 520, 700, 570),
+        _box('You got +6', 60, 700, 500, 760),
+        _box('Go back', 400, 1400, 800, 1500),
+    )
+    world = _World(
+        series={
+            'boost': (_quiz_boost_frame(),),
+            'question': (_question_frame(),),
+            'result': (_result_frame(your_answer='True'),),
+            'second': (second,),
+            'result_2': (unreadable,),
+            'coins': (_coins_frame(),),
+            'boost_after': (_boost_after_frame(with_row=True, action='GO'),),
+        },
+        transitions={
+            ('boost', 'GO'): 'question',
+            ('question', 'True'): 'result',
+            ('question', 'False'): 'result',
+            ('second', 'Yes'): 'result_2',
+            ('second', 'No'): 'result_2',
+            ('result_2', 'Go back'): 'coins',
+            ('coins', 'Earn more >'): 'boost_after',
+        },
+        on_tap=on_tap,
+    )
+
+    result = run_quiz_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        exit_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+        rng=random.Random(3),
+    )
+
+    assert result.outcome is QuizOutcome.COMPLETED
+    assert result.verification == 'result_page'
+    assert result.rounds == 1
+    assert result.chosen == 'True'
+    assert result.correct == 'True'
+    assert result.your_answer == 'True'
+    assert result.answer_correct is True
+    assert 'None' not in result.detail
+    assert [tap.label for tap in result.taps] == ['GO', 'True', 'Go back', 'Yes', 'Go back']
+
+
 def test_result_markers_with_an_ocr_prefix_are_still_read() -> None:
     from aliexpress_coins.tasks.quiz import _correct_answer, _your_answer
 
@@ -1178,6 +1255,20 @@ def test_result_markers_with_an_ocr_prefix_are_still_read() -> None:
     assert is_question_state(frame) is False
     assert _correct_answer(frame) == 'True'
     assert _your_answer(frame) == 'False'
+
+
+def test_a_retained_question_line_is_not_read_as_the_result_answer() -> None:
+    from aliexpress_coins.tasks.quiz import _correct_answer
+
+    frame = _snapshot(
+        _box('Q : Which is the correct answer: A or B?', 70, 300, 1130, 360),
+        _box('Correct answer: True', 60, 1100, 1100, 1150),
+        _box('Your answer: True', 60, 1220, 1100, 1270),
+        _box('You got +6', 60, 1450, 500, 1510),
+    )
+
+    assert is_result_state(frame) is True
+    assert _correct_answer(frame) == 'True'
 
 
 def test_your_answer_reads_a_wrapped_value_and_stops_at_the_row_gap() -> None:
