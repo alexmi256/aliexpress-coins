@@ -587,15 +587,56 @@ it. A corrupt file is quarantined, not silently reused.
 
 ## 13. What was executed for this revision
 
-Everything below was run on 2026-11-22 from a clean clone of the `issue-37` branch at `0231196`
-(the code and tests are identical to this revision; the later commit `332fa4a` only updated this
-timing line); the device was `192.168.8.65:5555`, app `8.180.1`, timezone `America/Toronto` ✅.
+All commands were run on 2026-11-22 against device `192.168.8.65:5555`, app `8.180.1`, timezone
+`America/Toronto`. Two clean trees were used.
+
+### Base tree: `origin/main` at `10b23d5`
+
+This is the reproduction the issue asked for. It does not contain `tests/test_docs.py`, so its
+suite is 1580 tests.
+
+```console
+$ git clone git@github.com:alexmi256/aliexpress-coins.git
+Cloning into 'aliexpress-coins'...
+$ cd aliexpress-coins
+$ just setup
+...
+Successfully installed aliexpress-coins-0.1.0
+$ just check
+...
+Required test coverage of 99.39% reached. Total coverage: 99.40%
+======================= 1580 passed in 211.75s (0:03:31) =======================
+All quality gates passed.
+```
+
+`doctor` and `--dry-run` were also run on this tree. The dry run returned `planned` with
+`surface: unknown` and zero steps because of #76; that is the timing defect, not an empty day.
+
+### Branch tree: `issue-37` at `2981b7a`
+
+This tree adds this runbook and the `tests/test_docs.py` enforcement tests.
+
+```console
+$ git clone --branch issue-37 git@github.com:alexmi256/aliexpress-coins.git
+Cloning into 'aliexpress-coins'...
+$ cd aliexpress-coins
+$ just setup
+...
+Successfully installed aliexpress-coins-0.1.0
+$ just check
+...
+Required test coverage of 99.39% reached. Total coverage: 99.40%
+======================= 1586 passed in 185.36s (0:03:05) =======================
+All quality gates passed.
+```
+
+The command table below records the remaining commands from the base tree; the branch adds only
+documentation and tests, not different runtime behaviour.
 
 | command | result |
 |---|---|
-| `git clone git@github.com:alexmi256/aliexpress-coins.git` | fresh clone, no `runs/`, `state/` or `.venv/` |
+| `git clone git@github.com:alexmi256/aliexpress-coins.git` | fresh base clone, no `runs/`, `state/` or `.venv/` |
 | `just setup` | `.venv` created, package installed |
-| `just check` | 1584 passed in 185.67 s, coverage 99.40% |
 | `python -m aliexpress_coins doctor` (local and container) | four `[ok]` lines, exit 0 |
 | `adb ... exec-out screencap -p` | 1200×2000 PNG |
 | `python -m aliexpress_coins.tools.capture_frames --list` | three fixture sets listed |

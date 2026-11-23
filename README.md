@@ -143,8 +143,8 @@ Recorded frames live under `tests/data/` and are gitignored by set; the regenera
 `just check` remains the gate and runs every test with the coverage ratchet. `just check-fast` is
 the diagnostic loop: it excludes tests marked `slow` (full-frame OCR, template scans and the long
 engine retry walks) and does not enforce coverage. Measured on 2026-11-22: the full suite is
-**1584 passed in 186 s** (203 tests marked slow, coverage 99.40%); `just check-fast` is
-**1381 passed in 44 s** (45 s with lint, format and type checks). The fast lane is dominated by
+**1586 passed in 186 s** (203 tests marked slow, coverage 99.40%); `just check-fast` is
+**1383 passed in 44 s** (45 s with lint, format and type checks). The fast lane is dominated by
 the remaining sub-200 ms frame and parser tests plus collection, not by any single fixture.
 
 ## What was learned before writing any requirements
