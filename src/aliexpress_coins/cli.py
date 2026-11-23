@@ -32,7 +32,7 @@ from aliexpress_coins.runner.timezone import (
 
 LOGGER_NAME = 'aliexpress_coins.cli'
 PRE_NIGHT_TIMEZONE_TIMEOUT_SECONDS = 2.0
-"""Bound the pre-night adb probes inside Compose's five-second stop grace."""
+"""Bound each pre-night adb probe so the common outage path fits Compose's 5 s stop grace."""
 
 
 def run_idle() -> int:
