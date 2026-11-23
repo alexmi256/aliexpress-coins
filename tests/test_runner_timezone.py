@@ -35,6 +35,28 @@ def test_read_device_timezone_treats_an_empty_property_as_unknown() -> None:
     assert read_device_timezone('serial', runner=runner) is None
 
 
+def test_read_device_timezone_connects_a_network_serial_once_then_retries() -> None:
+    runner = ScriptedAdbRunner(
+        fail('not found'),
+        ok('connected to 192.0.2.10:5555\n'),
+        ok('America/Toronto\n'),
+    )
+
+    assert read_device_timezone('192.0.2.10:5555', runner=runner) == 'America/Toronto'
+    assert runner.calls == [
+        ('adb', '-s', '192.0.2.10:5555', 'shell', 'getprop', 'persist.sys.timezone'),
+        ('adb', 'connect', '192.0.2.10:5555'),
+        ('adb', '-s', '192.0.2.10:5555', 'shell', 'getprop', 'persist.sys.timezone'),
+    ]
+
+
+def test_read_device_timezone_does_not_retry_when_the_connect_fails() -> None:
+    runner = ScriptedAdbRunner(fail('not found'), fail('failed to connect'))
+
+    assert read_device_timezone('192.0.2.10:5555', runner=runner) is None
+    assert len(runner.calls) == 2
+
+
 def test_read_device_timezone_treats_a_failed_probe_as_unknown() -> None:
     runner = ScriptedAdbRunner(fail('offline'))
 

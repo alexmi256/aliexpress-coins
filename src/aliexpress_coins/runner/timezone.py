@@ -93,17 +93,36 @@ def read_device_timezone(
     The caller is a startup guard, not the run: an offline device must produce
     a loud refusal or warning, not an exception from a probe. A non-zero exit,
     an empty property or a spawn failure therefore reads as ``None``.
+
+    A container has its own adb server, so a network serial that was connected
+    by an earlier process is not connected in this one. The read repairs that
+    the same way ``doctor`` and the run hygiene do: one ``adb connect``, then
+    one retry. A USB serial is never connected this way.
     """
-    command = ('adb', '-s', serial, 'shell', 'getprop', DEVICE_TIMEZONE_PROPERTY)
     run = runner if runner is not None else SubprocessAdbRunner()
     try:
-        result = run(command, timeout)
+        result = run(
+            ('adb', '-s', serial, 'shell', 'getprop', DEVICE_TIMEZONE_PROPERTY),
+            timeout,
+        )
+        if result.returncode != 0 and _is_network_serial(serial):
+            connected = run(('adb', 'connect', serial), timeout)
+            if connected.returncode == 0:
+                result = run(
+                    ('adb', '-s', serial, 'shell', 'getprop', DEVICE_TIMEZONE_PROPERTY),
+                    timeout,
+                )
     except OSError, subprocess.TimeoutExpired:
         return None
     if result.returncode != 0:
         return None
     value = result.stdout.decode('utf-8', errors='replace').strip()
     return value or None
+
+
+def _is_network_serial(serial: str) -> bool:
+    host, separator, port = serial.rpartition(':')
+    return bool(host) and separator == ':' and port.isdigit()
 
 
 def compare_timezone(configured: str, device: str | None) -> TimezoneCheck:
