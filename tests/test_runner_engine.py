@@ -4619,6 +4619,7 @@ def test_retryable_task_failure_comes_from_the_taxonomy(
         title='Take the coins quiz',
         key='coins_quiz',
         category='quiz',
+        state=outcome,
         outcome=outcome,
         verification='test',
         detail='test',
