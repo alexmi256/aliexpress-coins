@@ -39,11 +39,11 @@ breaks one of them is wrong even if its tests pass.
   is not in its issue, write the issue (or stop and ask) rather than smuggling it into a scaffold
   or refactor commit.
 - The documents in `docs/` are authoritative where they disagree with a prompt. Read
-  `docs/00-brief.md`, `docs/03-conventions.md` and `docs/04-delivery-plan.md` before changing the
-  toolchain, layout or conventions.
+  `docs/00-brief.md` and `docs/03-conventions.md` before changing the toolchain, layout or
+  conventions.
 - Do not delete or rewrite `docs/`. Corrections are made by editing the document that owns the
   claim, and only when the task says so.
-- Do not implement an issue's neighbours. The dependency graph in `docs/04-delivery-plan.md` says
+- Do not implement an issue's neighbours. The GitHub issue's `Depends on` / `blocked by` edges say
   what is allowed to land together.
 
 ## Testing and artifacts

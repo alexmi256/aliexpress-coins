@@ -1,248 +1,137 @@
 # 00 — Requirements brief
 
-What this project is for, what it must do, and where the edges are. Written from the
-operator's brief and narrowed by what was measured on the device (see
-[`01-recon-findings.md`](01-recon-findings.md)).
-
-Status: **draft v1** — the open questions in §9 need answers before the task engine is
-finished.
-
----
+**Status: requirements of record.** What this project is for, what it must do, and where its edges
+are, narrowed by measurements on the reference device ([`01-recon-findings.md`](01-recon-findings.md)).
+Remaining app unknowns live in [`05-app-knowledge.md`](05-app-knowledge.md) §8.
 
 ## 1. Purpose
 
-Collect AliExpress "coins" automatically, once a night, without supervision. The app offers
-coins for a handful of repeatable actions; this project performs the ones that pay and skips
-the ones that cost money, cost minutes, or draw attention (reviews, referrals, purchases).
+Collect AliExpress "coins" automatically, once a night, without supervision. Coins are worth little
+(≈ C$0.01 each); the value is not spending twenty minutes a night tapping a phone, and doing it
+reliably.
 
-The coin balance itself is nearly worthless (≈ C$0.01 per coin). The value is in not
-spending twenty minutes a night tapping a phone, and in doing it reliably.
+- **In scope:** daily sign-ins, browse-and-wait tasks, coins quiz (with a learning question bank),
+  surprise items, notifications, popup dismissal, run reporting, and nightly scheduling. Launcher
+  shortcut and widget tasks are catalogued in `specs/tasks.yaml` but descoped (#27 — skipped as
+  `no executor`).
+- **Out of scope (refused by policy):** mini-games (Play & Earn, Merge Boss, GoGo Match, Prize
+  Land, Shelf Shuffle), currency conversion (water, diamonds, energy), purchases, order placement,
+  cart building, coin redemption, reviews, and sharing/referrals.
 
-**In scope:** the daily sign-in, the easy browse-and-wait tasks, the quiz, the surprise-item
-task, the shortcut/widget/notification tasks, popup handling, run reporting.
-
-**Out of scope:** mini-games, currency conversion (water/diamonds), purchases, reviews,
-sharing, order placement, cart building. These are refused by policy, not merely unhandled.
-
----
-
-## 2. Environment (verified on 2026-11-19)
+## 2. Reference environment (verified 2026-11-19)
 
 | fact | value |
 |---|---|
-| device | `192.168.8.65:5555`, wireless adb, model `T3_US` |
-| Android | 15 (SDK 35), `userdebug`, `ro.adb.secure=0` (no adb key authorisation) |
-| adb | `adb root` restarts adbd as **root**; a plain shell is `uid=2000` (no `su` binary on the image) |
-| screen | 2000×1200 physical, 240 dpi, portrait screenshots are **1200×2000** |
-| app | `com.alibaba.aliexpresshd` 8.180.1 (versionCode 80005998) |
-| launcher | `com.android.launcher3`, single page, 6×5 grid |
-| region/locale | en, CA — coin values render in `C$` |
+| device | wireless adb (`AECOINS_DEVICE`, reference `192.168.8.65:5555`), model `T3_US` |
+| Android | 15 (SDK 35), `userdebug`, `ro.adb.secure=0`; runtime uses plain `adb shell` (`uid=2000`) |
+| screen | 2000×1200 physical, 240 dpi; portrait screenshots **1200×2000** (`c9b8f88670e295b5`) |
+| app & locale | `com.alibaba.aliexpresshd` `8.180.1` (versionCode `80005998`), Canada store, `en` (`C$`) |
 
-Portrait-only, single account, single device. 1200×2000 is the reference recording geometry;
-other portrait sizes and densities are supported by deriving targets from the frame and keying
-last-resort popup calibration by the profile id `doctor` prints. A popup without calibration for
-the measured profile is reported `popup_unclosable`, not tapped at a guessed coordinate (see FR-14
-and #42).
-
----
+Portrait-only, single account, single device. `1200×2000` is the measured reference geometry; other
+portrait sizes derive row layout and template scale from the frame and key last-resort popup
+calibration by `doctor`'s profile id. An uncalibrated popup reports `popup_unclosable` rather than
+tapping a guessed coordinate ([`06-runbook.md`](06-runbook.md) §14).
 
 ## 3. Functional requirements
 
-### 3.1 Reaching the coins page
+### 3.1 Reaching the coins page & task engine
 
-- **FR-1** Bring the app to a usable state: wake the device, dismiss the keyguard, cold-start
-  the app, wait for the screen to stop changing.
-- **FR-2** Dismiss every popup before acting. The app shows a promotional modal on cold launch
-  and interposes one after most navigations. A popup that cannot be dismissed fails the run
-  loudly — never by tapping blind at coordinates in the hope it closes.
-- **FR-3** Reach the coins page. The **shortcut deep link is the primary route** (verified): one
-  `am start` of `aliexpress://goto?url=<m.aliexpress.com/p/coin-index/index.html>` lands on the
-  native coin page with no home-feed detour. The Account-page promo card is a fallback only — it
-  rotates between a coins card and a coupon card, so it cannot be the plan. See
-  [`05-app-knowledge.md`](05-app-knowledge.md) §2.
-- **FR-4** Stop before the first in-app tap when `--dry-run` is set, and still produce a report.
+- **FR-1 / FR-2** Wake the device, dismiss the keyguard (stop with `device_locked` if a PIN or
+  biometric lock remains), warm-start `FirstActivity`, and sweep popups before acting. An unclosable
+  popup fails loudly as `popup_unclosable`, never by blind tapping.
+- **FR-3 / FR-4** Reach the coins page via the shortcut deep link
+  `aliexpress://goto?url=https%3A%2F%2Fm.aliexpress.com%2Fp%2Fcoin-index%2Findex.html` after the
+  app is warm ([`05-app-knowledge.md`](05-app-knowledge.md) §2). `--dry-run` stops before the first
+  in-app tap (`taps_issued: 0`) and writes a report.
+- **FR-5 / FR-6** Claim both independent daily sign-ins (streak `Collect` and boost `Daily check-in`)
+  once per local day, verify positively on screen, and record completion in atomic daily state.
+- **FR-7** Enumerate tasks from `Coins boost` (`Earn more`), falling back to inline rows. An empty
+  boost list ("There's nothing here yet") is a load fault that triggers warm re-entry, never an
+  empty day.
+- **FR-8 / FR-9** Classify every row against `specs/tasks.yaml` before dispatch. Unknown labels are
+  skipped (`unrecognised`, default-deny). Refuse and log: any game (Play & Earn, Merge Boss, GoGo
+  Match, Prize Land, Shelf Shuffle), currency conversion (water, diamonds, energy), buying, placing
+  an order, adding to cart, leaving a review, or sharing/inviting.
+- **FR-10** Enforce per-task daily limits, `AECOINS_MAX_TASKS_PER_RUN` (default 12), and
+  `AECOINS_RUN_BUDGET_SECONDS` (default 2700 s).
+- **FR-11** Dedicated executors: **11a browse-and-wait** (sponsored items, recently viewed,
+  shopping-credits check-in, learn to save — watch the right-edge timer chip, 15 s catalogue bound);
+  **11b quiz** (+ **FR-22** — OCR options, answer from `data/quiz_bank.json`, learn
+  `Correct answer: X`, absorb `YOU CAN NOW REDEEM!`); **11c surprise items** (3 distinct products
+  per round, BACK increments); **11d/11e shortcut & widget** (catalogued, automation descoped #27);
+  **11f notifications** (immediate credit, app pre-prompt, Android runtime dialog, or stop at OS
+  settings without toggling).
+- **FR-12 / FR-13** Sweep popups after every navigation and verify completion positively (progress
+  badge, completed control, balance delta, or row gone from a complete surface).
 
-### 3.2 Daily sign-in
+### 3.2 Unattended operation & packaging
 
-- **FR-5** Take the daily check-in once per local day by tapping the `Collect` control in the
-  streak row of the coins page (not the Account page's "Daily rewards" card, which opens a
-  coupon page). Verify with the balance delta; the control disappears on success and there is no
-  confirmation dialog. Never re-press a claimed card: that is what raises "already collected"
-  modals.
-- **FR-6** Record the completion in persistent state so a restart does not repeat it.
-
-### 3.3 Task discovery and selection
-
-- **FR-7** Enumerate the tasks from the **`Coins boost` page** (opened by `Earn more` in the Daily
-  coins card), which lists all of them, falling back to the inline rows on the coin page. The boost
-  page loads **empty on its first load after a cold start** ("There's nothing here yet"); that is a
-  load failure, not an empty day — the list always contains the refused tasks. An empty list
-  triggers a reset (re-enter the coin page), never an end to the run.
-- **FR-8** Classify each task by title against the spec catalogue
-  (`src/aliexpress_coins/specs/tasks.yaml`). Unknown titles are **skipped** (default-deny) —
-  a new easy task is a missed coin, an unknown "free trial" is a charge.
-- **FR-9** Refuse, with the reason logged: any game (Play & Earn, Merge Boss, GoGo Match,
-  Prize Land, Shelf Shuffle), any currency conversion (water, diamonds, energy), anything that
-  buys/orders/adds to cart, any review, any sharing/invite, any order placement.
-- **FR-10** Respect per-task and per-run limits: repeatable tasks have a daily maximum, and
-  the run has a hard task cap (`AECOINS_MAX_TASKS_PER_RUN`, default 12) and a wall-clock budget.
-
-### 3.4 Task execution
-
-Each task family gets its own executor, because each fails differently:
-
-- **FR-11a Browse-and-wait** (sponsored items, recently viewed, check-in to win): open, wait
-  out the countdown (15 s per the operator's brief; not yet timed), collect if a collect control
-  appears, return to the coins page, verify the row's progress badge moved or the row disappeared.
-- **FR-11b Quiz**: answer from the question bank when the question is recognised (a correct answer
-  pays +6 coins); otherwise choose an option and learn the answer the result page prints
-  (`Correct answer: X`). Must survive the result page and the "YOU CAN NOW REDEEM!" interstitial.
-- **FR-11c Surprise items**: open the page, tap *n* distinct items (three, per the brief),
-  returning between taps, absorbing any multi-round popups afterwards.
-- **FR-11d Shortcut**: add the coins shortcut, then remove it. Whether the reward triggers on
-  creation or on first launch **from** the shortcut is unknown (open question Q3).
-- **FR-11e Widget**: same shape as FR-11d for the 2×2 coins widget.
-- **FR-11f Notifications**: enable notifications if the task is offered; the permission prompt
-  is a system dialog, not an app dialog, and needs its own handling.
-
-- **FR-12** After **every** action, run a popup sweep before the next action. This is the
-  single most repeated behaviour in the project and belongs in the runner, not in tasks.
-- **FR-13** Verify completion against something observable (balance delta, progress badge,
-  row disappearing). "The taps were sent" is not a completion.
-
-### 3.5 Unattended operation
-
-- **FR-14** Run nightly from a container on a schedule, and refuse to run when the device is
-  unreachable or not rooted. Record the screen geometry as a device profile; do not refuse a
-  different portrait geometry, but refuse a popup whose calibration is absent for that profile
-  rather than tapping a guessed coordinate.
-- **FR-15** Write a run report every time, including on failure: `runs/<timestamp>/summary.md`,
-  `run.json`, screenshots and their OCR sidecars, and a JSONL decision log.
-- **FR-16** Notify on failure (optional webhook), because a silent week of no coins is the
-  main failure mode of an unattended collector.
-- **FR-17** Recover from a crash: state is written atomically, and a resumed run does not
-  repeat completed tasks.
-- **FR-18** Keep artifacts for a bounded number of runs (disk on the host is finite).
-
-### 3.6 Packaging and delivery
-
-- **FR-19** Python 3.14, typed (mypy strict on `src/` and `tests/`), ruff formatting/linting,
-  pytest with a coverage ratchet, `just` as the single entry point.
-- **FR-20** Docker image built from Debian trixie + distribution packages (adb, tesseract-free
-  OCR via RapidOCR wheels), running unprivileged, `tini` as PID 1.
-- **FR-21** CI on every push/PR: lint, format check, mypy, tests with coverage. A new image on
-  every merge to `main`, pushed to GHCR with provenance and SBOM.
-
----
+- **FR-14 / FR-17** Run nightly from a container (`run --schedule`); refuse unreachable/locked
+  devices and timezone mismatches (`AECOINS_TIMEZONE` ≠ `persist.sys.timezone`). Persist daily state
+  atomically and serialise runs sharing a state directory with `state/run.lock`.
+- **FR-15 / FR-18** Always write `runs/<UTC timestamp>/` (`summary.md`, `run.json`, `run.jsonl`,
+  `roster.jsonl`, `shots/*.png` + OCR sidecars) and prune to `AECOINS_KEEP_RUNS` (default 30).
+- **FR-16 / FR-23** Emit structured log levels and deliver optional notifications via Apprise
+  (primary) or legacy webhook/ntfy; delivery failure never fails the run.
+- **FR-19 / FR-20 / FR-21** Python 3.14, ruff + mypy strict (`src/` and `tests/`) + pytest coverage
+  ratchet via `just check`; non-root `python:3.14-slim-trixie` container (`tini`, `adb`, RapidOCR);
+  CI runs `just check` on every PR and publishes to GHCR with provenance and SBOM on `main`.
 
 ## 4. Task taxonomy
 
-| task | do | executor | notes |
+| task | policy | category / executor | notes |
 |---|---|---|---|
-| Daily coins / check-in | ✅ | `daily` (runner) | once per day, verified by balance |
-| Take the coins quiz | ✅ | `quiz` | asks one True/False question; result page reveals the answer, so the bank learns |
-| Explore sponsored items | ✅ | `browse_wait` | 15 s countdown (per brief), repeatable `1/6` |
-| Browse surprise items | ✅ | `surprise_items` | "Tap 3 items on this page", progress `0/2` |
-| Browse recently viewed items | ✅ | `browse_wait` | 15 s countdown |
-| Check in to win shopping credits | ✅ | `browse_wait` | wait, then collect |
-| Add a coins shortcut | ⚠️ | `shortcut` | remove after; reward trigger unknown |
-| Add & start using our widget | ⚠️ | `widget` | remove after; reward trigger unknown |
-| Turn on notifications | ✅ | `notifications` | system permission dialog |
-| Play games (Prize Land, Play & Earn, Merge Boss, GoGo Match) | ❌ | — | refused |
-| Convert water/diamonds/energy | ❌ | — | refused |
-| Buy / place an order / add 5 items to cart | ❌ | — | refused |
-| Leave a review | ❌ | — | refused |
-| Share coins with friends | ❌ | — | refused |
-| Water to win a US prize | ❌ | — | refused |
+| Daily coins (streak `Collect`) & `Daily check-in` | ✅ allowed | `sign_in` (`signin.py`) | two independent claims per day |
+| Take the coins quiz | ✅ allowed | `quiz` (`quiz.py`) | 2 or 4 options; learns into `data/quiz_bank.json` |
+| Explore sponsored items | ✅ allowed | `browse_wait` (`browse.py`) | timer chip (15 s bound), repeatable `6/day` |
+| Learn to save money with Coins Credits | ✅ allowed | `browse_wait` (`browse.py`) | timer chip (15 s bound) |
+| Browse recently viewed items | ✅ allowed | `browse_wait` (`browse.py`) | timer chip (15 s bound), opportunistic |
+| Check in to win Shopping credits | ✅ allowed | `browse_wait` (`browse.py`) | timer chip (15 s bound) |
+| Browse surprise items | ✅ allowed | `item_tap` (`surprise.py`) | 3 distinct products per round, `2` rounds |
+| Turn on notifications | ✅ allowed | `notification` (`notifications.py`) | handles system dialog / settings redirect |
+| Add a coins shortcut | ⏭️ descoped | `shortcut` (descoped, #27) | skipped as `no executor` |
+| Add & start using our widget | ⏭️ descoped | `widget` (descoped, #27) | skipped as `no executor` |
+| Search for what you love | ❌ refused | — | default-deny (`unrecognised`) |
+| Play games (Prize Land, Play & Earn, Merge Boss, GoGo Match, Shelf Shuffle) | ❌ refused | — | refused by policy |
+| Convert water / diamonds / energy; Water to win | ❌ refused | — | refused by policy |
+| Buy / checkout / purchase / place an order / add to cart | ❌ refused | — | refused by policy |
+| Leave or write a review | ❌ refused | — | refused by policy |
+| Share coins / invite friends | ❌ refused | — | refused by policy |
 
----
+## 5. Constraints & assumptions
 
-## 5. Non-functional requirements
+- `AdcActivity` and its modals expose no usable `uiautomator` nodes → screenshot + OCR perception
+  ([`adr/0002`](adr/0002-screenshot-ocr-perception.md)). Bare `/p/coin-index/` URLs without
+  `aliexpress://goto?url=` render a blank WebView.
+- Device stays powered on LAN, signed in (`app_logged_out` stops at first detection), and unlocked
+  (`device_locked` stops without tapping). One device, one account, no parallelism.
+- UI-first ships first ([`adr/0001`](adr/0001-drive-the-ui-not-the-api.md)); HTTP API replayability
+  remains an open spike (#9).
 
-- **Unattended:** a run must survive popups, a slow network, a half-loaded page, and a device
-  that rebooted. Failures are reported, not retried forever.
-- **Idempotent within a day:** re-running does not double-tap completed tasks or re-claim the
-  sign-in.
-- **Safe by default:** dry-run is one flag away; the deny list is enforced before any task
-  executor sees a row; no action may spend money.
-- **Observable:** every decision (allowed/skipped/why) is a log field and appears in the
-  report. Debugging a silent night means reading `run.jsonl`, not re-playing the phone.
-- **Small blast radius:** the device is shared with a human. Nothing may leave the app in a
-  broken state; tasks return to the coins page.
+## 6. Decisions of record (answered 2026-11-20)
 
----
-
-## 6. Constraints
-
-- The coins page is rendered by the app's hybrid container (`AdcActivity`): **no accessibility
-  nodes**, so no resource ids and no `uiautomator` text. Perception is screenshot + OCR.
-- Modals are drawn inside the same surface and are invisible to the accessibility tree.
-- The app's deep link for coins (`https://www.aliexpress.com/p/coin-index/…`) resolves to a
-  **web** page inside the container and renders blank on this build. Not a route.
-- The 1200×2000 portrait geometry is assumed by stored coordinates and templates.
-- One device, one account. No concurrency, no parallelism.
-
-## 7. Assumptions
-
-- The device stays powered and on the LAN overnight (charger attached).
-- The account stays logged in. A signed-out app is detected from the account surface, reported as
-  `app_logged_out`, and stops the run at the first detection — every remaining task would fail for
-  the same reason, so pretending each one failed would misreport the night.
-- The device is left unlocked (see Q2). The run wakes the screen, dismisses the keyguard and checks
-  it is gone; a keyguard that survives that is reported as `device_locked` and stops the run.
-- Coin values and task rewards can change at any time; the project asserts on UI state, not on
-  reward amounts.
-
-## 8. Out of scope (deliberate)
-
-- Any server-side/API-only approach. Recorded as a spike (see the issue tracker): if the coin
-  endpoints are plain HTTP and replayable, a later version could skip the UI — but a UI-only
-  baseline is what ships first, because it cannot be broken by a signature or a token change.
-- Multiple devices or accounts.
-- Earning beyond the coin programme (coupons, affiliate, referrals).
-
-## 9. Decisions (answered 2026-11-20)
-
-The operator answered the open questions; the answers are now requirements, not assumptions.
-
-| # | question | decision |
+| # | topic | decision |
 |---|---|---|
-| Q1 | Repository visibility | **Private now.** Open-source only once a developer can get it running in ≤5 minutes *and* it has been stable for a couple of weeks. |
-| Q2 | Device lock | **Assume no PIN/biometric lock.** Any user of this tool is expected to leave the device unlocked. The run still asks: after `KEYCODE_WAKEUP`, a keyguard dismiss and an upward swipe, it reads the keyguard state. If the screen is still locked it reports `device_locked` and stops without tapping — the collector cannot enter a PIN or biometric and must never guess at one. |
-| Q3 | Shortcut/widget reward trigger | **Answered by observation**: the operator completed both tasks by *adding* the items. Treat "creation is enough" as the default, with the caveat that a widget/shortcut visit may credit a separate repeatable task (❓ one more observation). |
-| Q4 | Quiz accuracy | **Accuracy is rewarded** (+6 on a correct answer) but a wrong answer still pays. The result page prints `Correct answer: X`, so the project will **build a question bank**: record question → options → correct answer → answer from the bank next time. |
-| Q5 | Notifications | **Apprise** (`caronc/apprise`) is the notification layer; users configure their own targets. The project emits proper Python log levels and an Apprise message; it does not own the transport. |
-| Q6 | Run window / retries | **Manual runs first.** One retry per stage. Scheduling is deferred until the manual runs are reliable — a later milestone, not v1. |
-| Q7 | Missed task vs risky action | **Miss the task.** The policy stays default-deny; each refusal is logged so a too-strict rule is visible in the report rather than guessed at. |
+| Q1 | Repository visibility | **Private now.** Open-source only after the #41 release gate (§7). |
+| Q2 | Device lock | **Assume no PIN/biometric lock.** Wake + dismiss keyguard; if still locked, report `device_locked` and stop without tapping. |
+| Q3 | Shortcut/widget trigger | **Answered & descoped (#27, 2026-11-23):** adding earns the boost task reward and a widget visit rendered `Collect`/inline rows in session 2, but automation is descoped because the shortcut URI works without launcher items. |
+| Q4 | Quiz accuracy | **Build `data/quiz_bank.json`:** learn `Correct answer: X` from the result page and answer from the bank next time. |
+| Q5 | Notifications | **Apprise** owns downstream transports; the collector emits structured log levels and one report message. |
+| Q6 | Run window & retries | **One retry per safe stage**; manual runs were built first and nightly scheduling (`run --schedule`) has since landed. |
+| Q7 | Missed task vs risky action | **Miss the task.** Default-deny stays strict and every refusal is logged in the report. |
 
-Two new requirements follow from the answers:
+## 7. Acceptance criteria & open-source gate
 
-- **FR-22 (question bank)** — every quiz attempt records `{question, options, chosen, correct}`;
-  the next encounter answers from the bank when the question is recognised, and guesses otherwise.
-  The bank is data (a JSON/CSV file), not code, and grows without a release.
-- **FR-23 (Apprise)** — run outcomes are logged with standard levels and delivered through
-  Apprise; a failed notification never fails a run.
+**v1 baseline:** `just check` green from a clean clone; `doctor` reports `adb`, `device`, `geometry`,
+`timezone`, and `ocr` all `ok`; a manual run collects sign-ins and tasks with a verified `summary.md`;
+popups are dismissed and counted; zero refused tasks tapped; quiz uses and updates `data/quiz_bank.json`.
 
-## 10. Acceptance criteria for v1
-
-1. `just check` green from a clean clone (lint, format, mypy, tests with coverage ≥ ratchet).
-2. `docker run … doctor` reports the device, the app version and an OCR box count on the real phone.
-3. A **manual** run on the reference device collects the daily sign-in and at least two tasks,
-   with a `summary.md` showing a positive balance delta.
-4. Popups and interstitials encountered during a run are closed, and the count appears in the report.
-5. No refused task type is ever tapped: the deny rules are covered by tests, and the run log
-   shows each refusal with its reason.
-6. The quiz answers from the question bank when it recognises the question, and records the
-   answer it learned either way.
-
-## 11. Definition of "ready to open source"
-
-Not v1 — a later gate, deliberately stated so the roadmap has an end:
+**Ready to open source (#41):**
 
 | criterion | measure |
 |---|---|
-| onboarding | a developer with Docker and the app installed reaches a first successful run in **≤5 minutes** from `git clone` |
-| stability | **two consecutive weeks** of unattended runs with no unrecoverable failure |
-| failure behaviour | every known failure class has a documented, tested response, and none leaves the app in a broken state |
-| safety | the deny list is verified against a live task list, and a refused task is never tapped in a full week of logs |
-| portability | the device serial, screen geometry assumptions and store region are documented, with what breaks if they differ |
+| onboarding | user with Docker + device reaches a first run in **≤5 minutes** from `git clone` |
+| stability | **two consecutive weeks** of unattended runs in [`08-stability.md`](08-stability.md) with no unrecoverable failure |
+| failure behaviour | every failure class has a documented, tested response and leaves the app clean |
+| safety | deny list verified against a live roster; zero refused tasks tapped |
+| portability | serial, screen geometry, app version and store region limits documented ([`06-runbook.md`](06-runbook.md) §14) |

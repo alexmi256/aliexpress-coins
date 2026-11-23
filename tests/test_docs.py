@@ -1,13 +1,16 @@
-"""The runbook and ADR index are part of the gate (issue #37).
+"""The runbook, ADR index and documentation graph are part of the gate (issues #37, #90).
 
 A failure class without a troubleshooting row is a document that lies about what the
-operator can do, and an ADR that is not in the index is a decision nobody can find.
-Both are checked here rather than left to review.
+operator can do, an ADR that is not in the index is a decision nobody can find, a broken
+link in the README or docs misleads a new user, and an unlinked file in ``docs/`` rots
+silently. All of them are checked here rather than left to review.
 """
 
 from __future__ import annotations
 
 import re
+import tomllib
+from collections import deque
 from pathlib import Path
 
 import pytest
@@ -16,13 +19,21 @@ from aliexpress_coins.runner.failures import FAILURE_TABLE, FailureCode
 from aliexpress_coins.tasks.surface import Surface
 
 ROOT = Path(__file__).resolve().parents[1]
-RUNBOOK_PATH = ROOT / 'docs' / '06-runbook.md'
-ADR_DIR = ROOT / 'docs' / 'adr'
+README_PATH = ROOT / 'README.md'
+DOCS_DIR = ROOT / 'docs'
+RUNBOOK_PATH = DOCS_DIR / '06-runbook.md'
+ADR_DIR = DOCS_DIR / 'adr'
 ADR_INDEX_PATH = ADR_DIR / 'README.md'
+PYPROJECT_PATH = ROOT / 'pyproject.toml'
 
 _FAILURE_CODES = frozenset(code.value for code in FailureCode)
 _ROW = re.compile(r'^\|\s*`(?P<code>[a-z_]+)`\s*\|(?P<cells>.*)\|\s*$')
-_LINK = re.compile(r'\]\((?P<target>[a-zA-Z0-9_-]+\.md)\)')
+_ADR_LINK = re.compile(r'\]\((?P<target>[a-zA-Z0-9_-]+\.md)\)')
+_MD_LINK = re.compile(r'!?\[[^\]]*\]\((?P<target>[^)]+)\)')
+_HTML_SRC = re.compile(r'<(?:img|a)\b[^>]*\b(?:src|href)=["\'](?P<target>[^"\']+)["\']', re.IGNORECASE)
+_FENCED_BLOCK = re.compile(r'```.*?```', re.DOTALL)
+_COVERAGE_LINE = re.compile(r'(?:coverage|floor|ratchet)', re.IGNORECASE)
+_PERCENT = re.compile(r'\b(?P<pct>\d+(?:\.\d+)?)%')
 _TROUBLESHOOTING_START = '## 10. Troubleshooting by failure code'
 _TROUBLESHOOTING_END = '### Run-level statuses that are not failures'
 _SURFACE_MARKER = '**`surface`** is the screen the planner understood:'
@@ -64,6 +75,90 @@ def _expected_retry(code: FailureCode) -> str:
     if spec.retries == 0:
         return 'none'
     return f'{spec.retry.value} {chr(215)}{spec.retries}'
+
+
+def _strip_code_blocks(text: str) -> str:
+    return _FENCED_BLOCK.sub('', text)
+
+
+def _local_targets(source: Path) -> list[Path]:
+    """Resolve every local link or image target in a markdown file."""
+    text = _strip_code_blocks(source.read_text(encoding='utf-8'))
+    raw_targets = [*_MD_LINK.findall(text), *_HTML_SRC.findall(text)]
+    resolved: list[Path] = []
+    for raw in raw_targets:
+        target = raw.strip().strip('<>').split(None, 1)[0]
+        target = target.split('#', 1)[0].split('?', 1)[0]
+        if not target or '://' in target or target.startswith('mailto:'):
+            continue
+        resolved.append((source.parent / target).resolve())
+    return resolved
+
+
+def _display_path(path: Path, root: Path) -> str:
+    try:
+        return path.relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def _missing_links(source: Path, *, root: Path = ROOT) -> list[str]:
+    """Return sorted relative paths of local links in ``source`` that do not exist."""
+    missing = {_display_path(target, root) for target in _local_targets(source) if not target.exists()}
+    return sorted(missing)
+
+
+def _orphaned_docs(readme: Path, docs_dir: Path, *, root: Path = ROOT) -> list[str]:
+    """Return sorted relative paths of ``docs/*.md`` files unreachable from ``readme``."""
+    resolved_root = root.resolve()
+    start = readme.resolve()
+    visited: set[Path] = {start}
+    queue: deque[Path] = deque([start])
+
+    while queue:
+        current = queue.popleft()
+        if not current.is_file():
+            continue
+        for target in _local_targets(current):
+            if not target.exists():
+                continue
+            if target.is_dir():
+                index = target / 'README.md'
+                if index.is_file():
+                    target = index.resolve()
+                else:
+                    continue
+            if target.suffix != '.md' or target in visited:
+                continue
+            try:
+                target.relative_to(resolved_root)
+            except ValueError:
+                continue
+            visited.add(target)
+            queue.append(target)
+
+    all_docs = {path.resolve() for path in docs_dir.rglob('*.md')}
+    orphans = all_docs - visited
+    return sorted(_display_path(path, resolved_root) for path in orphans)
+
+
+def _pyproject_coverage_floor(pyproject: Path = PYPROJECT_PATH) -> float:
+    data = tomllib.loads(pyproject.read_text(encoding='utf-8'))
+    return float(data['tool']['coverage']['report']['fail_under'])
+
+
+def _quoted_coverage_floors(readme_text: str) -> list[float]:
+    quoted: list[float] = []
+    for paragraph in re.split(r'\n\s*\n', _strip_code_blocks(readme_text)):
+        if not _COVERAGE_LINE.search(paragraph):
+            continue
+        for match in _PERCENT.finditer(paragraph):
+            quoted.append(float(match.group('pct')))
+    return quoted
+
+
+def _coverage_floor_mismatches(readme_text: str, expected: float) -> list[float]:
+    return [value for value in _quoted_coverage_floors(readme_text) if value != expected]
 
 
 def test_every_failure_code_has_a_troubleshooting_row() -> None:
@@ -115,8 +210,56 @@ def test_every_adr_is_listed_in_the_index() -> None:
 
 def test_every_adr_link_in_the_index_exists() -> None:
     index = ADR_INDEX_PATH.read_text(encoding='utf-8')
-    links = _LINK.findall(index)
+    links = _ADR_LINK.findall(index)
 
     assert links, 'the ADR index has no records'
     missing = [link for link in links if not (ADR_DIR / link).is_file()]
     assert not missing, f'the ADR index links to missing files: {", ".join(missing)}'
+
+
+def test_every_document_linked_from_readme_exists() -> None:
+    missing = _missing_links(README_PATH)
+    assert not missing, f'README.md links to missing paths: {", ".join(missing)}'
+
+
+def test_every_document_in_docs_is_reachable_from_readme() -> None:
+    orphans = _orphaned_docs(README_PATH, DOCS_DIR)
+    assert not orphans, f'unreachable documents in docs/: {", ".join(orphans)}'
+
+
+def test_every_local_link_in_docs_exists() -> None:
+    broken: dict[str, list[str]] = {}
+    for doc in sorted(DOCS_DIR.rglob('*.md')):
+        missing = _missing_links(doc)
+        if missing:
+            broken[_display_path(doc, ROOT)] = missing
+    assert not broken, f'broken local links in docs/: {broken}'
+
+
+def test_readme_coverage_floor_matches_pyproject() -> None:
+    expected = _pyproject_coverage_floor()
+    mismatches = _coverage_floor_mismatches(README_PATH.read_text(encoding='utf-8'), expected)
+    assert not mismatches, f'README.md quotes coverage floor {mismatches}, pyproject.toml has {expected}'
+
+
+def test_missing_readme_link_is_detected(tmp_path: Path) -> None:
+    readme = tmp_path / 'README.md'
+    readme.write_text('See [missing](docs/does-not-exist.md).\n', encoding='utf-8')
+
+    assert _missing_links(readme, root=tmp_path) == ['docs/does-not-exist.md']
+
+
+def test_orphaned_doc_is_detected(tmp_path: Path) -> None:
+    docs = tmp_path / 'docs'
+    docs.mkdir()
+    (docs / 'linked.md').write_text('# Linked\n', encoding='utf-8')
+    (docs / 'orphan.md').write_text('# Orphan\n', encoding='utf-8')
+    readme = tmp_path / 'README.md'
+    readme.write_text('See [linked](docs/linked.md).\n', encoding='utf-8')
+
+    assert _orphaned_docs(readme, docs, root=tmp_path) == ['docs/orphan.md']
+
+
+def test_mismatched_readme_coverage_floor_is_detected() -> None:
+    mismatches = _coverage_floor_mismatches('Coverage floor is 98.0% in pyproject.toml.\n', 99.47)
+    assert mismatches == [98.0]

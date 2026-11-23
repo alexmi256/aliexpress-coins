@@ -1,224 +1,211 @@
 # aliexpress-coins
 
-Planning repository for an unattended collector of the AliExpress in-app **coins** programme:
-daily sign-in, the easy browse-and-wait tasks, the quiz, the surprise-items task — and a
-refusal of everything that costs money, costs minutes, or leaves a review.
+## What it is
 
-**Status: scaffold, perception, task executors, the nightly runner and the operator runbook in
-place.** This repository holds the brief, the device recon that constrains the design, the issue
-plan the build is broken into, the toolchain every issue is built on, the `run --once` /
-`run --schedule` engine, and the runbook an operator follows from a clean clone.
+An unattended collector for the AliExpress in-app **coins** programme. It drives the Android app
+over wireless `adb` using screenshots and OCR — claiming daily sign-ins, browse-and-wait tasks,
+the coins quiz, surprise items and notification tasks — and it never spends money, adds to cart,
+places orders or redeems coins.
+
+<img src="tests/data/states/coins.png" width="320" alt="AliExpress Coins page (balance redacted)">
+
+## Why it exists
+
+AliExpress coins are worth little individually (≈ C$0.01 per coin). The value is not spending
+twenty minutes every night tapping through promos and popups, and having a clear report when
+something breaks.
+
+## Requirements
+
+- **Docker + Docker Compose** (the image bundles `adb`, `tini`, Python 3.14 and RapidOCR — no
+  host Android SDK or Python needed).
+- **An Android device on the same LAN with wireless `adb` enabled**, signed in to AliExpress,
+  plugged into a charger, and **unlocked** (no PIN or biometric lock; the collector cannot enter
+  one and stops with `device_locked` if the keyguard stays up).
+- **Measured baseline:** AliExpress `com.alibaba.aliexpresshd` **`8.180.1`** on Android 15 (SDK
+  35), `1200×2000` portrait @ 240 dpi (profile `c9b8f88670e295b5`), Canada / `en` store (`C$`).
+  Another portrait phone is not refused at capture, but any popup lacking calibration for its
+  profile fails safely as `popup_unclosable` instead of tapping a guess; another app version or
+  store locale may change labels. See [`docs/06-runbook.md`](docs/06-runbook.md) §14 for the full
+  portability limits.
+- **Timezone rule:** `AECOINS_TIMEZONE` **must equal the device's `persist.sys.timezone`**. Both
+  the nightly schedule and the daily state boundary follow it; if it disagrees with the device,
+  the schedule can fire before the device's day rolls and report a successful, empty night.
+  `doctor` prints both zones and fails on mismatch; `run --schedule` refuses to start (exit `2`).
 
 ## Quick start
 
-The toolchain is Python 3.14 with plain `venv` + pip, plus [`just`](https://github.com/casey/just)
-for the recipes. There is no uv, poetry, hatch or pdm. Install `just` first; `just setup` does not
-install it. Keep the checkout path free of braces: setuptools reads `{...}` as a format field during
-install. The worktree supervisor already creates brace-free paths.
+### 1. Clone and configure `.env`
 
 ```sh
 git clone git@github.com:alexmi256/aliexpress-coins.git
 cd aliexpress-coins
-just setup   # creates .venv and installs the pinned requirements
-just check   # the gate: lint, format check, mypy, tests with coverage
+cp .env.example .env
 ```
 
-`just check` is the gate CI (#35) will run, so a local green is the green CI should report. Until
-that workflow lands, a local green is the only automated verdict. Other recipes:
+Edit `.env` and set your device serial (`host:port`) and its IANA timezone (if you have `adb` on
+the host, read it with `adb -s <host:port> shell getprop persist.sys.timezone`; otherwise leave
+`AECOINS_TIMEZONE=UTC` for step 2 and `doctor` will print the device's timezone for you):
 
-| recipe | what it does |
-|---|---|
-| `just setup` | create `.venv` and install `requirements-dev.txt` plus the package |
-| `just lint` | ruff lint |
-| `just fmt` | format in place with ruff |
-| `just fmt-check` | fail if formatting would change anything |
-| `just typecheck` | mypy strict over `src/` and `tests/` |
-| `just test` | pytest, with the coverage ratchet enforced |
-| `just test-fast` | pytest excluding the `slow` marker; no coverage ratchet |
-| `just check-fast` | the fast lane: lint, format check, mypy and `test-fast` |
-| `just cov` | pytest plus HTML and XML coverage reports |
-| `just clean` | remove `.venv`, caches, coverage output and build artefacts |
+```dotenv
+AECOINS_DEVICE=192.168.8.65:5555
+AECOINS_TIMEZONE=America/Toronto
+```
 
-### Container
-
-The collector image carries `adb`, `tini` and the RapidOCR runtime, so the host needs
-neither Android tooling nor Python. Copy `.env.example` to `.env`, set
-`AECOINS_DEVICE=<host>:<port>`, then:
+### 2. Build and run `doctor`
 
 ```sh
 docker compose build
 docker compose run --rm collector python -m aliexpress_coins doctor
 ```
 
-A container runs its own adb server, so its connection to a wireless device does not
-inherit the host's; `doctor` connects a `host:port` serial itself. `doctor` is
-read-only: it checks adb, the device named by `AECOINS_DEVICE` (skipped when unset)
-and the OCR models, and never taps or launches anything.
+Expected output (all five checks `ok`, exit `0`):
 
-`docker compose up -d` starts the nightly daemon (`run --schedule`). Its local start
-time, timezone, jitter and wall-clock budget come from `AECOINS_SCHEDULE_TIME`,
-`AECOINS_TIMEZONE`, `AECOINS_SCHEDULE_JITTER_SECONDS` and
-`AECOINS_RUN_BUDGET_SECONDS` (see `.env.example`). **Set `AECOINS_TIMEZONE` to the device's own
-timezone** (`adb shell getprop persist.sys.timezone`): the schedule and the daily store's day boundary
-both follow it, so a timezone that disagrees with the device fires a run before the device's day has
-rolled — the coins are already claimed, the fresh-day path is never exercised, and the run reports
-success while earning nothing. `doctor` prints both zones; `run --schedule` refuses when they
-differ and re-checks before each night (an unreadable value at startup only warns), while a
-supervised `run --once` warns and continues. A night that finished its roster
-walk marks the day complete and is skipped on a retry, while a manual run stopped by
-its budget leaves the nightly window open. Every run takes an exclusive `run.lock` in
-the state directory: a manual run refuses with exit `3` while the daemon holds the day,
-and the daemon waits for a manual run before re-checking the day. Compose retries a
-failed daemon a bounded number of times rather than looping forever on a configuration
-error. Run one night manually with:
+```text
+[ok] adb: Android Debug Bridge version 1.0.41 (/usr/bin/adb)
+[ok] device: 192.168.8.65:5555 (device)
+[ok] geometry: 192.168.8.65:5555: 1200x2000 @ 240 dpi, sdk 35, portrait, profile c9b8f88670e295b5
+[ok] timezone: configured timezone America/Toronto; device timezone America/Toronto (192.168.8.65:5555)
+[ok] ocr: RapidOCR loaded and read 'COINS' from its probe image
+```
+
+`doctor` is read-only: it connects the container's own `adb` server to `AECOINS_DEVICE`, checks
+geometry, compares timezones, and probes OCR without tapping or launching the app. If a check
+fails:
+
+- **`device`** — confirm wireless debugging is enabled and `AECOINS_DEVICE` matches the current
+  `host:port` (the wireless port rotates on reconnect).
+- **`timezone`** — `doctor` prints `configured timezone ...; device timezone ...`; copy the
+  device timezone into `AECOINS_TIMEZONE` in `.env` and re-run `doctor`.
+- **`geometry`** — a profile id other than `c9b8f88670e295b5` is normal on another phone (still
+  `[ok]`), meaning popup fallbacks are uncalibrated for that device.
+
+### 3. Dry run (zero in-app taps)
+
+```sh
+docker compose run --rm collector python -m aliexpress_coins run --once --dry-run
+```
+
+Expected output (`taps issued: 0`, exit `0`):
+
+```text
+run 20261123T170916Z: planned
+detail: dry run: 2 task(s) planned, 1 refusal(s); no tap was issued
+plan: dry run: 2 task(s) planned, 1 refusal(s); no tap was issued
+  1. Daily coins [daily_checkin] category=sign_in rule=daily_checkin
+  2. Explore sponsored items [sponsored_items] category=browse_wait rule=sponsored_items
+  refused: Browse surprise items code=game_play_and_earn rule=game_play_and_earn reason=game: Play & Earn is a mini-game and is never played
+  taps issued: 0
+summary: /app/runs/20261123T170916Z/summary.md
+run.json: /app/runs/20261123T170916Z/run.json
+```
+
+A refusal is expected safety behaviour, not an error. A non-zero dry run means the surface did not
+settle cleanly (`surface_*` / `navigation_failed`) — retry or inspect before going live.
+
+### 4. Take one supervised night
+
+Run one real night manually (well outside the scheduled window) and read its report:
 
 ```sh
 docker compose run --rm collector python -m aliexpress_coins run --once
+docker compose run --rm collector cat /app/runs/<run-id>/summary.md
 ```
 
-Each night writes `runs/<UTC timestamp>/` with `summary.md`, `run.json`,
-`run.jsonl`, `roster.jsonl` and the balance frames under `shots/` (each PNG with
-its OCR sidecar). Retention keeps the newest `AECOINS_KEEP_RUNS` directories
-(default 30). Notifications are optional and go through an Apprise API server:
-set `AECOINS_APPRISE_URL` (and optionally `AECOINS_APPRISE_KEY` and
-`AECOINS_APPRISE_TAG`) to receive one message per run. The message contains the
-run status, the failure code when it failed, counts by task outcome and the
-report path; it never contains the account name, an absolute balance or order
-details. Set `AECOINS_NOTIFY_BALANCE_DELTA=true` to add the balance delta. A
-broken Apprise endpoint is logged with its exception class and HTTP status only,
-and never changes the run's exit status. The older `AECOINS_WEBHOOK_URL` and
-`AECOINS_NTFY_TOPIC` settings still work with the failure-only selection and
-`AECOINS_NOTIFY_ON_EMPTY`; use only one transport so a run sends one message. A
-stop signal ends the daemon within the compose grace period and still leaves the
-report written atomically.
+Confirm `Status: completed`, positive task evidence, and `Back on coins page: yes`.
 
-### Quality gate
+### 5. Start the nightly daemon
 
-Configuration lives in `pyproject.toml`, not in scattered `setup.cfg`/`pytest.ini`/`mypy.ini`
-files. Ruff uses a 120-character line length and single quotes; mypy is strict on both `src/`
-and `tests/`. Ruff checks those two trees only: `tools/` is excluded because its pre-scaffold
-issue-filing scripts contain intentional prose punctuation and are not package code.
+```sh
+docker compose up -d
+docker compose logs --tail 5 collector
+```
 
-Coverage is a **ratchet** with a starting floor of **85%**, raised to **98%** when the perception
-capture module landed (measured 98.45%), to **98.8%** when the daily state store landed
-(measured 98.87%), to **99.0%** when the daily sign-in executor landed (measured 99.01%), to
-**99.1%** when the browse-and-wait executor landed (measured 99.11%), to **99.15%** when the
-notifications executor landed (measured 99.20%), to **99.2%** when the roster observation log
-landed (measured 99.25%), to **99.25%** when the nightly runner landed (measured 99.31%), to
-**99.3%** when the failure taxonomy, retries and device hygiene landed (measured 99.31%), to
-**99.31%** when Apprise notifications and log levels landed (measured 99.32%), to **99.32%**
-when geometry independence landed (measured 99.33%), to **99.33%** when the dispatch gate and
-abort conditions landed (measured 99.33%), to **99.35%** when abort propagation through executor
-and cleanup handlers landed (measured 99.36%), and to **99.37%** when the inside-task countdown
-band was narrowed (measured 99.38%), then to **99.39%** when the wait primitives landed (measured
-99.40%), then to **99.42%** when the timezone refusal and stability ledger landed (measured
-99.43%), then to **99.44%** when the dry-run settle wait landed (measured 99.44%), then to
-**99.45%** when the quiz question bank landed (measured 99.45%), then to **99.46%** when the
-coin-store surface and task-scoped recovery landed (measured 99.47%), then to **99.47%** when the
-nightly run lock landed (measured 99.48%).
-The scaffold is fully covered, but a one-statement package makes that 100% an artefact of the
-stub, so the floor starts below the maximum. As real modules land, raise the floor toward the
-measured number; never lower it to make a change pass. The gate fails the build when coverage
-drops below the floor.
+Expected log line (`03:30` local default via `AECOINS_SCHEDULE_TIME`, plus up to 180 s jitter via
+`AECOINS_SCHEDULE_JITTER_SECONDS`):
 
-The plan and the conventions the build must follow are in [`docs/`](docs/) — start with
-[`docs/03-conventions.md`](docs/03-conventions.md) and
-[`docs/04-delivery-plan.md`](docs/04-delivery-plan.md).
+```text
+2026-11-23 16:31:14,439 INFO {"event":"schedule_wait","next_fire":"2026-11-24T03:31:31.431469-05:00","seconds":57616.992}
+```
 
-### Simulated-device test harness
+Stop cleanly with `docker compose stop` (`tini` forwards `SIGTERM` and writes the report within
+the 5 s grace period). Runs sharing the `state` volume coordinate on `state/run.lock`: a manual
+`run --once` exits `3` while the daemon is mid-night, and the daemon waits for a manual run before
+re-checking whether the day is already done.
 
-The suite never needs the tablet, and a forgotten mock cannot reach it. Two autouse fixtures in
-`tests/conftest.py` refuse socket connections and process spawns, naming the convention in the
-failure; `tests/test_package.py` proves the guards bite, including for `Popen`, `os.system`,
-`os.posix_spawn` and `fork`.
+## What a run does
 
-Above those guards sit the two seams from `docs/03-conventions.md`:
-
-- **transport** — `aliexpress_coins.transport` is the one `AdbRunner` contract. The real client
-  (`AdbSnapshotter`, `AdbInputDevice`, `AdbDevice`, `doctor`, the notification probe) is always
-  constructed around it; tests pass `tests/support/adb.py:ScriptedAdbRunner`, which replays a
-  queue, answers by argv, or replays a transcript recorded with `RecordingAdbRunner`. An
-  unscripted call raises `AssertionError` naming the argv instead of falling back to a device.
-  Recording defaults to the gitignored `tests/transcripts/`; binary output such as a screencap is
-  omitted (only its byte count is recorded), never base64-encoded into the transcript.
-- **snapshot** — `tests/support/frames.py:ScriptedSnapshotter` implements the `Snapshotter`
-  protocol and replays a directory of recorded PNGs. `repeat=2` supplies the same frame twice for
-  stability waits, and `override_call()` substitutes one frame without rewriting the sequence.
-
-Recorded frames live under `tests/data/` and are gitignored by set; the regeneration recipe is in
-[`tests/data/README.md`](tests/data/README.md).
-
-`just check` remains the gate and runs every test with the coverage ratchet. `just check-fast` is
-the diagnostic loop: it excludes tests marked `slow` (full-frame OCR, template scans and the long
-engine retry walks) and does not enforce coverage. Measured on 2026-11-23: the full suite is
-**1771 passed in 218 s** (203 tests marked slow, coverage 99.48%); `just check-fast` is
-the same fast lane, dominated by the remaining sub-200 ms frame and parser tests plus collection,
-not by any single fixture.
-
-## What was learned before writing any requirements
-
-The device was inspected (read-only) on 2026-11-19, and three findings reshaped the design:
-
-1. **The coins page exposes no accessibility nodes.** `uiautomator dump` of that page is
-   ~6.4 KB of empty scaffolding while a screenshot yields 40 OCR labels. Perception has to be
-   screenshot + OCR, not the accessibility tree.
-2. **Popups are invisible to the accessibility tree too** — they are drawn inside the app's
-   own surface. A collector that only reads nodes will happily tap a dimmed scrim all night.
-3. **The advertised coins deep link does not reach the coins page.** It resolves to a blank
-   web view inside the app's hybrid container.
-
-Full evidence, with the commands that produced it:
-[`docs/01-recon-findings.md`](docs/01-recon-findings.md).
-
-## The plan
-
-| document | what it settles |
-|---|---|
-| [`docs/00-brief.md`](docs/00-brief.md) | requirements, task taxonomy (do / don't), the answered decisions |
-| [`docs/01-recon-findings.md`](docs/01-recon-findings.md) | what was measured on the device and what it changed |
-| [`docs/02-architecture.md`](docs/02-architecture.md) | layers, invariants, perception and control strategy |
-| [`docs/03-conventions.md`](docs/03-conventions.md) | engineering conventions the build must follow |
-| [`docs/04-delivery-plan.md`](docs/04-delivery-plan.md) | milestones, issue map, dependency order |
-| [`docs/05-app-knowledge.md`](docs/05-app-knowledge.md) | how the app actually works: entry points, pages, tasks, rewards |
-| [`docs/06-runbook.md`](docs/06-runbook.md) | the operator's quickstart, reports, failure codes and daily-reset caveat |
-| [`docs/07-navigation-map.md`](docs/07-navigation-map.md) | the screen graph: entry points, markers per screen, stuck states and recovery |
-| [`docs/08-stability.md`](docs/08-stability.md) | the nightly outcomes ledger and its append rule, for the #41 stability gate |
-| [`docs/adr/README.md`](docs/adr/README.md) | the ADR index: every decision with a one-line summary |
-
-## How the work is organised
-
-Six milestones, from "decide what is possible" to "runs nightly in a container":
-
-| milestone | goal |
-|---|---|
-| **M0 Recon & decisions** | answer the questions that change the architecture (launcher entry points, API feasibility, task catalogue, popup corpus) — two of six answered |
-| **M1 Perception & control** | see the screen reliably, tap it safely, close what interrupts |
-| **M2 Task engine** | one executor per task family, plus the policy that refuses the bad ones |
-| **M3 Reliability & manual operation** | state, reports, retries, Apprise — a manual run has to be trustworthy before anything runs alone |
-| **M4 Delivery & release gate** | container, CI, test harness, runbook, and the criteria for going public |
-| **M5 Scheduled operation** | nightly runs, once the manual ones are boring |
-
-Issue labels: `area:*` (recon, perception, control, tasks, ops, delivery), `type:*` (spike,
-feature, test, infra, docs), `priority:p0|p1|p2`, `needs-device`, `blocked`. Dependencies are
-stated in each issue body (`Depends on #N`), and the epics carry their children as GitHub
-sub-issues.
+1. **Hygiene & route** — wakes the screen, checks the keyguard is clear, locks portrait rotation,
+   enables `stayon`, warm-starts AliExpress (`FirstActivity`), fires the coins shortcut deep link,
+   sweeps popups, and opens `Coins boost` (`Earn more`), recovering with a warm re-entry if the
+   empty-boost load fault appears.
+2. **Roster & policy** — reads visible task rows via OCR and classifies every row against
+   `specs/tasks.yaml` before dispatch (default-deny).
+3. **Executors** — claims both independent daily sign-ins (streak `Collect` and boost
+   `Daily check-in`), then walks allowed rows within `AECOINS_MAX_TASKS_PER_RUN` (default 12) and
+   `AECOINS_RUN_BUDGET_SECONDS` (default 2700 s): browse-and-wait (timer chip), coins quiz
+   (answers from and learns into [`data/quiz_bank.json`](data/README.md)), surprise items (3
+   distinct products per round), and notifications. Every task requires positive on-screen
+   verification.
+4. **Report & retention** — returns to the coins page, restores device settings, writes
+   `/app/runs/<UTC timestamp>/` (`summary.md`, `run.json`, `run.jsonl`, `roster.jsonl`,
+   `shots/*.png` + OCR sidecars) in the `runs` Docker volume, and prunes beyond
+   `AECOINS_KEEP_RUNS` (default 30). Daily state lives in the `state` volume; learned quiz
+   answers persist in the `data` volume.
+5. **Notifications (optional)** — set `AECOINS_APPRISE_URL` (plus optional `AECOINS_APPRISE_KEY`
+   and `AECOINS_APPRISE_TAG`) in `.env` for one Apprise message per run (or use the legacy
+   `AECOINS_WEBHOOK_URL` / `AECOINS_NTFY_TOPIC` settings; configure only one transport). Messages
+   never contain the account name, an absolute balance, or order details (`AECOINS_NOTIFY_BALANCE_DELTA=true`
+   opts in to the delta only), and a failed notification never fails a run.
 
 ## Safety posture
 
-The collector may tap a phone that a human is also using. Three rules are fixed before any code
-exists:
+The collector drives a device that a human may also use. Four rules are enforced in code:
 
-- the deny list (games, purchases, reviews, sharing, currency conversion) is enforced **before**
-  a task executor ever sees a row;
-- no raw coordinate taps outside a documented popup fallback — every tap follows a label
-  assertion on a fresh screenshot;
-- `--dry-run` suppresses in-app taps entirely.
+- **Default-deny before dispatch:** the deny list is enforced by `DispatchGate` **before** any
+  task executor sees a row (sealed authorization token), and unknown task labels are skipped as
+  `unrecognised`.
+- **Refused by policy (never tapped):** mini-games (`Play & Earn`, `Merge Boss`, `GoGo Match`,
+  `Prize Land`, `Shelf Shuffle`), currency conversion (`water`, `diamonds`, `energy`), purchases,
+  checkout, order placement, adding to cart, coin redemption, leaving reviews, and
+  sharing/referrals.
+- **No blind coordinate taps:** every tap comes from a matched OCR box on a fresh screenshot,
+  except per-profile calibrated popup fallbacks guarded by an OCR anchor.
+- **Runtime abort guard & dry-run:** `SafetyGuard` aborts immediately on a live `dangerous_control`
+  (buy/order/cart/redeem), a `balance_decreased` reading, or three identical unrecognised screens
+  that fail recovery; `--dry-run` suppresses in-app taps entirely (`taps_issued: 0`).
 
-## Out of scope
+## How it works
 
-Mini-games, currency conversion (water/diamonds), purchases, order placement, cart building,
-reviews, referrals. These are refused by policy rather than merely unhandled.
+The AliExpress coins container (`AdcActivity`) and its popups expose no usable accessibility tree,
+so perception is **screenshot → RapidOCR → `TextBox[]`**. Row pairing uses frame-proportional
+tolerances (`2.25 × median` box height), scrolling is search-based, popup close glyphs scale from
+frame width, and last-resort popup fallbacks are keyed by `doctor`'s geometry profile id. Every
+dispatched row crosses `DispatchGate`, concurrent runs coordinate on `state/run.lock`, and every
+error maps to one of 16 typed failure codes with an explicit retry policy (`stage ×1`, `task ×1`
+only when `acted=False`, or `none`).
 
-## Licence
+| document | contents |
+|---|---|
+| [`docs/06-runbook.md`](docs/06-runbook.md) | operator reference: local setup, reports, failure codes, portability limits |
+| [`docs/02-architecture.md`](docs/02-architecture.md) | package layout (`src/aliexpress_coins/`), data flow, invariants, ADRs |
+| [`docs/05-app-knowledge.md`](docs/05-app-knowledge.md) | measured AliExpress behaviour, task surface, navigation map, open unknowns |
+| [`docs/03-conventions.md`](docs/03-conventions.md) | enforced engineering rules, testing seams, requirements & decisions of record |
 
-Private project, no licence granted.
+## Troubleshooting
+
+See [`docs/06-runbook.md`](docs/06-runbook.md) §9 (*When a night claims nothing*) and §10
+(*Troubleshooting by failure code*), which lists the meaning, operator check, and retry rule for
+every failure code and is verified against the code by `tests/test_docs.py`.
+
+## Licence and contributors
+
+**Licence:** Private project, no licence granted.
+
+**Contributing:** local development uses Python 3.14, plain `venv` + `pip`, and
+[`just`](https://github.com/casey/just) (no uv, poetry, hatch or pdm; keep the checkout path free
+of `{` and `}`). Run `just setup`, use `just check-fast` while iterating, and run `just check`
+(ruff lint, ruff format check, mypy strict over `src/` and `tests/`, and pytest with the coverage
+ratchet — current floor **99.47%** in `pyproject.toml`) before opening a PR. Read
+[`AGENTS.md`](AGENTS.md) and [`docs/03-conventions.md`](docs/03-conventions.md) first; recorded
+test fixtures are documented in [`tests/data/README.md`](tests/data/README.md).

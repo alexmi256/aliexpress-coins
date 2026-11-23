@@ -1,25 +1,27 @@
 # 03 — Engineering conventions
 
-The conventions the build must follow, decided before the first line of code so they are not
-negotiated later. Each one exists because of something measured on the device or a failure mode
-this kind of project hits.
-
-Nothing here describes code that exists yet — this repo is the plan.
+Enforced engineering rules for this repository. Every rule below has an automated check in
+`just check` or `.gitignore`; anything unverified is not a rule.
 
 ---
 
-## Non-negotiables
+## Enforced invariants
 
-| rule | why |
-|---|---|
-| The deny list is enforced **before** a task executor sees a row | a task that "almost" touches an order is an order |
-| No raw coordinate taps outside a documented popup fallback | a blind three-tap sequence during recon landed on a product page |
-| A task counts as completed only if the screen agrees (balance, progress badge, row gone) | "the taps were sent" is how a run reports ten successes and earns nothing |
-| Sweep popups after **every** navigation | the modal is invisible to the accessibility tree; the next tap silently hits the scrim |
-| Never `su -c` on this device | there is no `su` binary; use `adb root` (a plain shell is `uid=2000`) |
-| Screenshots and OCR dumps never enter git | they contain the account nickname, orders and cart |
-| Tests never spawn a process or open a socket | a test that reaches the real phone "passes" while testing nothing |
-| Unknown task labels are skipped, not attempted | default-deny is the only safe default |
+| rule | why | enforced by |
+|---|---|---|
+| Deny list enforced **before** any executor sees a row (sealed `TaskAuthorization` token) | a task that "almost" touches an order is an order | `tests/test_tasks_dispatch.py` (`test_a_raw_row_cannot_reach_any_executor`, `test_every_denied_family_is_refused_with_its_code_and_audit_line`) |
+| Unknown task labels are skipped (`unrecognised`, default-deny) | a missed coin is cheap; an unknown trial or purchase is not | `tests/test_tasks_catalogue.py`, `tests/test_tasks_dispatch.py` (`test_an_unrecognised_label_is_refused_by_default`) |
+| No stored device pixels; targets come from OCR boxes or profile-calibrated popup fallbacks | blind coordinates hit product tiles ([`01-recon-findings.md`](01-recon-findings.md) §4) | `tests/test_geometry_constants.py`, `tests/test_geometry_independence.py`, `tests/test_control_controller.py`, `tests/test_control_popups.py` |
+| Sweep popups after every navigation | modals are invisible to `uiautomator` | `tests/test_control_dismiss.py`, `tests/test_tasks_discovery.py` |
+| One abort event per aborted run (`SafetyGuard.disarm()`) and aborts propagate through cleanup | cleanup must never overwrite or swallow a safety abort | `tests/test_runner_safety.py` (`test_disarm_stops_all_inspection_after_an_abort`), `tests/test_safety_propagation.py`, `tests/test_runner_engine.py` |
+| Positive completion verification only (absence on the partial inline page is not evidence) | a false `completed` poisons daily state for the rest of the day | `tests/test_tasks_browse.py` (`test_run_browse_task_does_not_trust_row_absence_on_the_inline_coin_page`), `tests/test_tasks_signin.py` (`test_claim_daily_signins_fails_named_on_the_empty_boost_page`) |
+| Never repeat an action whose effect is unknown (`acted=True` blocks retry) | a duplicate press can double-claim or trigger modals | `tests/test_runner_engine.py` (`test_an_unverified_sign_in_is_dispatched_once_and_taps_once`, `test_acted_evidence_includes_keys_and_taps`), `tests/test_runner_failures.py` |
+| Bounded retry (2 attempts) allowed only for a proven swallowed tap (unchanged frame diff logged) | unchanged settled frame is `unverified_pre_action`, not unknown side effect | `tests/test_tasks_discovery.py` (`test_open_boost_list_retaps_once_when_the_first_tap_had_no_effect`) |
+| Tests never spawn a process or open a socket; time is injected (`clock` + `sleep`) | a forgotten mock must fail, not reach the real tablet | `tests/conftest.py`, `tests/test_package.py` |
+| Atomic daily state and exclusive `state/run.lock` | crashes resume cleanly; manual runs cannot race the daemon | `tests/test_runner_state.py`, `tests/test_runner_lock.py` |
+| Report written on every path; failed notification never fails the run | failure frames and logs must survive errors and broken webhooks | `tests/test_runner_report.py`, `tests/test_runner_notify.py`, `tests/test_runner_engine.py` |
+| Screenshots, OCR dumps, `runs/`, `state/` and transcripts never enter git | they contain account nickname, orders and cart | `.gitignore` (reviewed fixture exceptions in `tests/data/README.md`) |
+| Failure codes, surfaces, ADRs, links, doc reachability and quoted coverage floor stay in sync | stale docs lie to the operator | `tests/test_docs.py` |
 
 ---
 
@@ -27,87 +29,51 @@ Nothing here describes code that exists yet — this repo is the plan.
 
 | concern | choice | note |
 |---|---|---|
-| language | Python 3.14 | `requires-python = ">=3.14"`; 3.13 support is not attempted |
-| layout | `src/aliexpress_coins/` | flat package import, no implicit namespace tricks |
-| environment | `.venv` created by the `just` recipe | never a bare `python`/`python3` in a recipe |
-| dependencies | `requirements.txt` (runtime) + `requirements-dev.txt` (`-r requirements.txt` on top) | every line pinned, with a comment saying what it is for |
-| lint/format | ruff, line length 120, single quotes | the formatter owns wrapping, so `E501` is off |
-| types | mypy, `disallow_untyped_defs`, `warn_unused_ignores` | green on `src/` **and** `tests/`; a stale `# type: ignore` fails the build |
-| tests | pytest + pytest-cov | coverage is a ratchet: 85% starting floor on the stub, raised to just below the measured number as modules land, never lowered to pass |
-| task runner | `just` | `just check` must equal what CI runs |
-| container | `python:3.14-slim-trixie` + distribution packages (`adb`, `tzdata`, opencv's `libgl*`) | nothing compiled from source |
-| CI | GitHub Actions, latest majors | lint → format check → mypy → tests; image built and pushed to GHCR on every merge to `main` |
-| image hygiene | non-root user, `tini` as PID 1, provenance + SBOM | the collector runs unattended, so a clean SIGTERM matters |
+| language & layout | Python 3.14, `src/aliexpress_coins/` | `requires-python = ">=3.14"`, flat package, `pyproject.toml` is the sole tool config |
+| environment & pins | plain `python3 -m venv .venv` + `requirements.txt` / `requirements-dev.txt` | no uv, poetry, hatch or pdm; setuptools reads `requirements.txt` |
+| lint & format | ruff (`line-length = 120`, single quotes, `E501` off) | checks `src/` and `tests/` (`tools/` exempted for pre-scaffold scripts) |
+| types | mypy strict over `src/` and `tests/` | `disallow_untyped_defs`, `warn_unused_ignores` (stale ignores fail) |
+| tests & coverage | pytest + pytest-cov | coverage ratchet in `pyproject.toml`; never lower the floor to pass |
+| gate & CI | `just check` = GitHub Actions CI | lint → format check → mypy → tests; GHCR image built on `main` (`python:3.14-slim-trixie`, non-root, `tini`, provenance + SBOM) |
 
-## Testing strategy
+---
 
-The device is simulated at one of two seams, never mocked ad hoc:
+## Testing seams
 
-- **transport seam** — a scripted `adb` runner feeds a real client, so argv construction,
-  output parsing and error paths are genuinely exercised;
-- **snapshot seam** — a scripted snapshotter feeds a real controller, so waits, taps and popup
-  logic run against a frame sequence.
+The device is simulated at two seams, never mocked ad hoc:
 
-Two autouse fixtures must remain: one refuses any socket connect, one refuses any process
-spawn. Without them a forgotten mock can *succeed* against the live phone.
+- **transport seam** (`aliexpress_coins.transport.AdbRunner`) — `tests/support/adb.py:ScriptedAdbRunner`
+  replays scripted responses or recorded transcripts into the real clients (`AdbSnapshotter`,
+  `AdbInputDevice`, `AdbDevice`, `doctor`); unscripted calls raise `AssertionError`.
+- **snapshot seam** (`Snapshotter`) — `tests/support/frames.py:ScriptedSnapshotter` replays
+  reviewed PNG directories (`tests/data/`) into the real controller and executors.
 
-Time is injected (`clock` + `sleep`), because `wait_until_stable` and countdowns otherwise make
-the suite take minutes and flake under load.
+Row-parsing fixtures use the measured geometry (`docs/01-recon-findings.md` §7b), not invented boxes.
 
-Row-parsing fixtures use the **measured** coins-page geometry (label at x≈180, its `GO` button
-at x≈980 and ~31 px lower). If a fixture is invented rather than measured, a real layout change
-looks like a test bug.
+---
 
-## Verification: absence is not evidence
+## Verification & retry semantics
 
-A task is `completed` only when a **positive** signal says so: the progress badge advanced, the row's action
-flipped to a completed state, or the row disappeared from a surface that is *known to be complete*.
+- **Absence is not evidence:** a task completes only on a positive signal (progress badge advanced,
+  control flipped to completed, balance delta, or row gone from a complete surface such as the
+  populated `Coins boost` list). The inline coin page is a partial subset; a missing row there
+  proves nothing. A false `completed` is worse than `unverified`.
+- **No effect observed ≠ effect unknown:** an unchanged, settled frame after a tap proves the tap
+  was swallowed (`unverified_pre_action`) and may be retried once (two attempts total) with the
+  frame difference logged. Any tap whose effect may have applied (`acted=True`) is never repeated;
+  only side-effect-free stages (re-reading, re-navigating) may retry.
 
-Two surfaces are complete and can be trusted for a "gone" verdict: the populated boost list, and a page the
-`Surface` classifier positively identifies. The **inline coin page is a partial subset** — rows come and go
-with the variant and the entry route — so a missing row there proves nothing on its own.
+---
 
-Corollary, learned three times over (#23 streak scoping, #24 row-gone, the #23 interstitial): **a false
-`completed` is worse than `unverified`.** `unverified` costs one night and retries tomorrow; a false
-`completed` is recorded in daily state and silently skips the task for the rest of the day.
+## Logging, documentation & decisions of record
 
-### No effect observed is not the same as effect unknown
-
-The rule above forbids repeating an action whose effect is unknown. It does **not** forbid repeating an action
-whose effect the screen proves did not happen: a tap followed by an unchanged, settled frame is evidence that
-nothing occurred, which is the `unverified_pre_action` case, not `unverified_post_action`.
-
-So a swallowed tap may be retried — bounded (two attempts), with the frame difference recorded as the evidence,
-and a log line naming why the retry was safe. Without that distinction, a device that intermittently ignores the
-first tap fails a task that a single re-tap would have completed, and the retry rule gets blamed for it.
-
-## Retries: never repeat an unknown action
-
-A retry may re-read the screen, re-navigate, or re-open a page. It must **never** repeat an action whose effect
-is unknown but possibly already applied. A tap that has been sent is not re-sent, because the app's reaction to a
-second press — "already collected", a duplicate claim, a second order — is a *new* side effect rather than a
-second attempt at the first.
-
-So a failure is retryable only when its stage can be re-entered without repeating a side effect. Where an
-executor cannot prove what an action did, it reports `unverified` and the run moves on: a missed claim costs one
-night, a double claim costs the day.
-
-## Logging and reporting
-
-- Structured events, not sentences: `task_skipped` with `reason` is groupable; a prose line is not.
-- One run = one directory: `runs/<UTC timestamp>/` with `summary.md`, `run.json`, `shots/*.png`
-  and each frame's OCR sidecar, plus `run.jsonl` for the process log.
-- A run writes its report on **every** path, including failure. On the failure path the final
-  screenshot is best-effort: it must never mask the original error.
-- A run that silently stops earning is the main unattended failure mode; the notification hook
-  exists for that, and a failed notification must never fail the run.
-
-## Documentation rules
-
-- Every claim about the device is marked ✅ verified / ⬜ inferred / ❓ unknown, with the command
-  that produced it. An inference presented as a measurement is worse than no document.
-- Numbers that came from a device session (geometry, timings, label positions) are recorded in
-  the recon findings, not scattered through the code.
-- A superseded decision is replaced, not appended to; ADRs record why, not the history of drafts.
-- No document names a file that does not exist. The plan describes the target layout explicitly,
-  so paths are marked as *planned* until the corresponding issue lands.
+- **Structured events:** `run.jsonl` emits JSON events (`task_skipped`, `policy_refusal`,
+  `task_outcome`, `failure_retry`, `run_aborted`, etc.) with standard Python log levels.
+- **Evidence legend:** every device/app claim is marked ✅ verified / ⬜ inferred / ❓ unknown,
+  citing the command or session that produced it. Raw measurements live in
+  [`01-recon-findings.md`](01-recon-findings.md); open app unknowns live in
+  [`05-app-knowledge.md`](05-app-knowledge.md) §8.
+- **Decisions of record:** architectural decisions live in [`adr/`](adr/README.md). Product and
+  operational decisions Q1–Q7 (private repo until the #41 gate, unlocked-device assumption,
+  question bank, Apprise, default-deny over risk) are recorded in
+  [`00-brief.md`](00-brief.md) §6–§7.

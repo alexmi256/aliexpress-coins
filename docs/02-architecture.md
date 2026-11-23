@@ -2,131 +2,91 @@
 
 ## The shape of the problem
 
-The phone is a black-box GUI with no API contract, no accessibility tree on the pages that
-matter, and interruptions that arrive without warning. So the project is a **perception →
-decision → action → verify** loop, and everything else is plumbing around it.
+The device is a black-box GUI with no API contract, no accessibility tree on the coins surface, and
+popups that arrive without warning. The collector is a **perception → decision → action → verify**
+loop wrapped in safety guards, daily state, and structured reporting.
 
-```
-                 ┌──────────────────────────────┐
-  adb  ─────────▶│ screencap                    │
-                 └──────────────┬───────────────┘
-                                ▼
-                 ┌──────────────────────────────┐
-                 │ OCR (RapidOCR)  → TextBox[]  │        perception/
-                 └──────────────┬───────────────┘
-                                ▼
-                 ┌──────────────────────────────┐
-                 │ Snapshot: image + boxes      │
-                 └──────────────┬───────────────┘
-                                ▼
-        ┌────────────────────────────────────────────┐
-        │ flows: launch → popups → coins → tasks     │   flows/, runner/
-        └───────────────┬────────────────────────────┘
-                        ▼
-        ┌────────────────────────────────────────────┐
-        │ Controller: tap / wait / verify            │   control/
-        └───────────────┬────────────────────────────┘
-                        ▼
-                 adb input tap x y   ──▶  popup sweep  ──▶  next step
+```text
+  adb screencap ─▶ RapidOCR ─▶ Snapshot (image + TextBox[] + geometry)     perception/
+                                         │
+                                         ▼
+              SafetyGuard ─▶ route / discovery ─▶ DispatchGate (policy)     runner/, tasks/
+                                         │
+                                         ▼
+              Controller (clamp, jitter, dry-run) ─▶ PopupDismisser         control/
+                                         │
+                                         ▼
+              executors (signin, browse, quiz, surprise, notifications)     tasks/
+                                         │
+                                         ▼
+              DailyStateStore + RunReport + Apprise / webhook / ntfy        runner/
 ```
 
-## Layers, and why the seams are where they are
+## Modules (`src/aliexpress_coins/`)
 
-| layer | module | responsibility | depends on |
-|---|---|---|---|
-| transport | `adb/transport.py` | spawn `adb`, return bytes | nothing |
-| device | `adb/client.py` | typed commands: tap, key, screencap, `am start` | transport |
-| perception | `perception/*` | image → `TextBox[]`, matching, frame diff, templates | device (read-only) |
-| control | `control/*` | taps with jitter and logging, waits, popup dismissal | perception, device |
-| flows | `flows/*` | named journeys: launch, reach coins | control |
-| tasks | `tasks/*` | one executor per task family + the policy | control, flows |
-| runner | `runner/*` | the loop, state, reports | everything above |
-| cli | `cli.py` | `doctor`, `snapshot`, `run` | runner |
+| layer | modules | responsibility |
+|---|---|---|
+| transport | `transport.py` | shared `AdbRunner` protocol and `SubprocessAdbRunner` |
+| perception | `perception/{capture,ocr,snapshot,geometry,layout,matching,templates,state,waits,scroll,artifacts,errors}.py` | screencap, RapidOCR, frame geometry profiles, row grouping, fuzzy matching, scaled templates, screen classification, waits, search-scrolling, artifact sidecars |
+| control | `control/{device,controller,popups,errors}.py` | typed adb input (`AdbInputDevice`), clamped/jittered/dry-run `Controller`, layered popup dismissal (`PopupDismisser`, `specs/popups.yaml`) |
+| tasks | `tasks/{catalogue,dispatch,surface,discovery,signin,browse,quiz,quiz_bank,surprise,notifications,errors}.py` | Pydantic task policy (`specs/tasks.yaml`), sealed `DispatchGate`, surface routing & roster observation, and the five task executors + `data/quiz_bank.json` |
+| runner | `runner/{config,device,engine,safety,failures,state,lock,report,notify,levels,schedule,timezone,errors}.py` | env config, device hygiene & routes (`AdbDevice`), nightly walk (`engine`), `SafetyGuard`, failure taxonomy, atomic daily state, exclusive `run.lock`, reports, notifications, scheduler, timezone check |
+| entry & tools | `cli.py`, `doctor.py`, `tools/capture_frames.py` | `version`, `doctor`, `idle`, `run` (`--once` / `--schedule`, `--dry-run`); developer fixture capture |
 
-Every arrow points one way. `tasks/` never imports `runner/`; a task receives a
-`TaskContext` with exactly the capabilities it should have.
+Runtime specs and data live beside the package: `specs/` (`tasks.yaml`, `popups.yaml`, `flows.yaml`),
+`assets/templates/` (popup close glyphs), and `data/quiz_bank.json` (learning quiz bank).
 
-**The seams exist so tests can be honest.** `Runner` (transport) is a callable, so an
-`AdbClient` can be driven by a scripted device; `OcrEngine` is a protocol, so a fake returns
-hand-written boxes; `Snapshotter` is a protocol, so a test scripts a sequence of frames. That
-means the popup logic, the row parser and the run loop are all tested without a phone — and
-the two autouse guards in `tests/conftest.py` make an accidental real connection or process
-spawn a failure instead of a false pass.
+Dependencies point one way (`tasks/` never imports `runner/`). Tests substitute two seams —
+`AdbRunner` (`tests/support/adb.py`) and `Snapshotter` (`tests/support/frames.py`) — beneath two
+autouse guards in `tests/conftest.py` that forbid real sockets and process spawns.
 
 ## Invariants
 
-1. **A tap is never a raw coordinate** outside the popup fallback. It comes from a matched
-   `TextBox` (or a configured fallback guarded by a promo headline).
-2. **A popup sweep follows every navigation.** The modal is invisible to the accessibility
-   tree, so nothing else in the stack can detect it.
-3. **Completion is observable.** Balance delta, progress badge movement, or the row
-   disappearing. The report says `failed` when the screen disagrees with the taps.
-4. **The deny list is checked before a task is dispatched**, and the reason is logged.
-5. **State is written whole and atomically**, so a killed container resumes rather than
-   repeats.
-6. **A run always leaves a report** — including the failure path, where the final-frame
-   screenshot is itself best-effort.
+1. **No raw coordinate taps** outside a profile-calibrated popup fallback guarded by an OCR anchor.
+2. **Popup sweep after every navigation**, because modals are invisible to `uiautomator`.
+3. **Single dispatch gate:** `DispatchGate` checks the deny list before any executor sees a row and
+   mints a sealed `TaskAuthorization` token.
+4. **Structural abort guard:** `SafetyGuard` inspects every frame for `dangerous_control`,
+   `balance_decreased`, and three identical `unexpected_screen` sightings; `RunAborted` propagates
+   through executors and cleanup, and the guard disarms after the first abort.
+5. **Positive verification:** a task completes only when the screen proves it (balance delta,
+   progress badge, completed control, or row gone from a complete surface).
+6. **Atomic state, exclusive lock, always-written report:** `state/daily-<date>.json` writes
+   atomically, `state/run.lock` serialises runs sharing a state dir, and `runs/<UTC timestamp>/`
+   (`summary.md`, `run.json`, `run.jsonl`, `roster.jsonl`, `shots/`) is written on every path.
 
-## Data flow of one run
+## Data flow of one night
 
+```text
+acquire run.lock → timezone check → hygiene (wake, keyguard check, portrait lock, stayon)
+  → warm start FirstActivity (~10 s settle) → shortcut deep link → popup sweep
+  → read balance-before [shots/balance-before.{png,json}]
+  → open Coins boost ("Earn more"; warm re-entry if empty_boost) → enumerate roster
+  → claim daily sign-ins (streak Collect + boost Daily check-in)
+  → for each row: DispatchGate → budget/daily-limit check → executor → verify → roster diff
+  → return to coins page → read balance-after → restore device settings
+  → write run.json + summary.md → prune old runs → notify → release run.lock
 ```
-doctor → require_device → wake → force-stop → start FirstActivity
-      → wait_until_stable → popup sweep          [01-launch.png]
-      → Account tab → coins card → assert "Daily coins"
-      → read balance                             [02-coins.png]
-      → tap Collect/Claim if offered → sweep     [03-daily-claimed.png]
-      → tap "Earn more" → wait → sweep → parse task rows
-      → for each row: policy → spec → executor → verify → sweep
-      → read balance → write run.json + summary.md → notify
-```
-
-Artifacts per run live in `runs/<UTC timestamp>/`:
-
-```
-summary.md            human summary (status, balance delta, task table)
-run.json              the same, plus every event and OCR labels
-shots/01-launch.png   frame
-shots/01-launch.json  the OCR boxes for that frame
-run.jsonl             the structured log of the whole process
-```
-
-## Geometry assumptions
-
-Portrait **1200×2000** at 240 dpi. Stored coordinates (popup fallbacks) and templates are for
-that geometry. `doctor` reports the screen size and `Controller` clamps every tap to it; a
-different device is a supported future change only after re-measuring — see
-[`adr/`](adr/).
 
 ## Geometry independence
 
-The reference device is a tablet; users will run this on phones. Measured by driving the same device
-at a simulated phone geometry (`wm size 1080x1920`, density 320):
+The reference profile is `c9b8f88670e295b5` (`1200×2000 @ 240 dpi, sdk 35, portrait`; raw
+measurements in [`01-recon-findings.md`](01-recon-findings.md) §7b, portability limits in
+[`06-runbook.md`](06-runbook.md) §14). The perception layer derives layout from the frame:
 
-| assumption | 1200×2000 | 1080×1920 | verdict |
-|---|---|---|---|
-| `Earn more` found by label | (1025,946) | (922,851) | label lookup ports |
-| coin-page markers | present | present | text ports |
-| title → `GO` offset | ≈100 px | ≈68–70 px | a fixed tolerance is wrong at both |
-| modal close control as a fraction of height | 0.826 | 0.789 | even fractions drift with aspect ratio |
-| scroll distance | absolute swipe | overshoots/shorter | not portable |
-| close-button template crop | 1200-wide | wrong scale | not portable |
+1. **No stored pixels:** enforced by `tests/test_geometry_constants.py`.
+2. **Proportional tolerances:** row pairing uses `2.25 × median(box height)`, not a fixed pixel gap.
+3. **Search-based scrolling:** swipe a fraction of content height, re-capture, stop on match or
+   stability.
+4. **Scale-aware templates:** close-button glyphs scale from frame width (with vertical fallback).
+5. **Profile-keyed calibration:** last-resort popup fallbacks are keyed by `doctor`'s profile id;
+   missing calibration reports `popup_unclosable` instead of guessing.
 
-Rules the perception layer implements (#42):
+Architecture decisions are recorded in [`adr/`](adr/README.md).
 
-1. **No stored pixels.** Targets come from the current frame's OCR boxes.
-2. **Proportional tolerances.** Row pairing tolerance derives from the median text-box height, not a
-   constant.
-3. **Scrolling is a search.** Swipe a fraction of the content height, re-capture, look again; stop on
-   found or on a stable frame. Never a fixed distance.
-4. **Scale-aware templates**, or structural detection that needs no template (a circular control on
-   the modal's centre axis below the panel).
-5. **Per-device calibration** for the last-resort popup coordinates, keyed by a profile id that
-   `doctor` prints. No calibration means `unclosable`, not a guess.
+## Not built / descoped
 
-## What is deliberately not built yet
-
-* Executors for quiz / surprise items / shortcut / widget / notifications (the policy and
-  catalogue know them; only `browse_wait` is implemented end to end).
-* The launcher entry points (shortcut, widget) as a navigation route.
-* An API-first path. It may well be the right long-term answer; it needs a capture spike
-  first, and the UI path is the fallback that survives a token change.
+- `shortcut` and `widget` task executors and widget-route fallback (catalogued in `specs/tasks.yaml`,
+  skipped as `no executor`; descoped in #27 because the shortcut URI needs no launcher item).
+- An executor for `Search for what you love` (refused as `unrecognised` by default-deny).
+- An HTTP/API-first spike (#9; see [`adr/0001`](adr/0001-drive-the-ui-not-the-api.md)).
