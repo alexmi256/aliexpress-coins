@@ -129,7 +129,8 @@ The boost page has one failure mode that matters, and it is silent: the honest-l
   Measured on one run: `12s` at t=1 s, `1s` at t=3 s, green check from t≈6 s. The timer starts
   during page load, so the first reading can be well under 15 s. The implementation waits for the
   chip itself (`find_timer_chip` + `wait_for_timer_chip`); 15 s is the catalogue bound for a chip
-  that never appears, not a claim that every task waits 15 s.
+  that never finishes, not a claim that every task waits 15 s. A page with no chip returns `absent`
+  immediately rather than sleeping.
 * **Launcher items** — the operator completed both tasks simply by **adding** the shortcut and the
   widget. Nothing suggests a launch from the item is required, and the widget/shortcut visits may
   be what credits a *different* (repeatable) task. ❓ one more observation would settle it.

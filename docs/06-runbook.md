@@ -87,13 +87,15 @@ proven. See §9 for what to check when a night claims nothing.
 
 ## 2. Quickstart from a clean clone
 
-These are the commands that were executed for this revision, in a fresh clone with no `runs/`,
-`state/` or `.venv/` copied in ✅.
+The documented commands were run from two clean trees on 2026-11-22. Neither had `runs/`, `state/`
+or `.venv/` copied in.
+
+The **base tree**, `origin/main` at `10b23d5` (the commit this issue starts from), does not yet
+contain `tests/test_docs.py`, so its suite is 1580 tests:
 
 ```console
 $ git clone git@github.com:alexmi256/aliexpress-coins.git
 Cloning into 'aliexpress-coins'...
-remote: Enumerating objects: ...
 $ cd aliexpress-coins
 $ just setup
 ...
@@ -101,14 +103,16 @@ Successfully installed aliexpress-coins-0.1.0
 $ just check
 ...
 Required test coverage of 99.39% reached. Total coverage: 99.40%
-======================= 1584 passed in 185.67s (0:03:05) =======================
+======================= 1580 passed in 211.75s (0:03:31) =======================
 All quality gates passed.
 ```
 
+The **branch tree** adds the runbook and its enforcement tests, so the suite is 1586 tests. The
+exact clean-clone transcript and the commit it came from are in §13.
+
 `just check` is the gate: ruff lint, ruff format check, mypy strict over `src/` and `tests/`, then
 pytest with the coverage ratchet. A green test run without the lint, format and type checks is not
-a green gate. Measured on 2026-11-22: **1584 passed**, coverage **99.40%** against a **99.39%**
-floor.
+a green gate. Both trees reached coverage **99.40%** against the **99.39%** floor.
 
 The clean clone has no device configuration yet. For a local run, export the two values that name
 the device and its timezone:
@@ -241,8 +245,9 @@ run.json: runs/20261123T015402Z/run.json
 
 Read it like this:
 
-- **`surface`** is the screen the planner understood: `rows_present`, `boost_page`, `coin_page`, or
-  `unknown`. A plan built from `unknown` is not evidence about the day.
+- **`surface`** is the screen the planner understood: `rows_present`, `rows_absent`, `boost_page`,
+  `redeem_interstitial`, `empty_boost`, or `unknown`. A plan built from `unknown` is not evidence
+  about the day.
 - **steps** are the rows that would be dispatched, in order, with the catalogue key and executor
   category. `Daily coins` is the streak sign-in; it is allowed but not a boost row.
 - **refusals** are the deny-list decisions. `unrecognised` is default-deny: the row is not in
@@ -279,9 +284,13 @@ The command exits when the night ends:
 | `2` | configuration error before the device was touched |
 
 A real run claims the daily sign-in, walks the allowed rows, and writes the same report shape as a
-dry run plus screenshots and the roster log. It is safe to start manually while the nightly daemon
-exists: a night already marked complete is skipped, and a manual run stopped by its budget leaves
-the nightly window open.
+dry run plus screenshots and the roster log. A manual `run --once` does **not** consult
+`completed_night`; only `run --schedule` skips a day already marked complete. It also does not lock
+the state file, so a manual run started around the 03:30 fire time can race the daemon: both can
+read the day as unfinished and overwrite each other's counters. Start a manual real run only well
+away from the fire time, and never claim a night the daemon is about to run. A manual run stopped by
+its budget still leaves the nightly window open. The missing coordination is tracked as
+[issue #78](https://github.com/alexmi256/aliexpress-coins/issues/78).
 
 Do **not** run a real `--once` just to test the installation. It may claim coins and it may be
 impossible to undo. Use `--dry-run` unless you are deliberately taking the night.
@@ -578,8 +587,9 @@ it. A corrupt file is quarantined, not silently reused.
 
 ## 13. What was executed for this revision
 
-Everything below was run on 2026-11-22 from a clean clone of `origin/main` at `10b23d5`; the
-device was `192.168.8.65:5555`, app `8.180.1`, timezone `America/Toronto` ✅.
+Everything below was run on 2026-11-22 from a clean clone of the `issue-37` branch at `0231196`
+(the code and tests are identical to this revision; the later commit `332fa4a` only updated this
+timing line); the device was `192.168.8.65:5555`, app `8.180.1`, timezone `America/Toronto` ✅.
 
 | command | result |
 |---|---|
