@@ -100,7 +100,7 @@ branch = true
 source = ["aliexpress_coins"]
 
 [tool.coverage.report]
-fail_under = 99.47
+fail_under = 99.48
 precision = 2
 show_missing = true
 skip_covered = true

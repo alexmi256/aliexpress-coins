@@ -206,6 +206,6 @@ every failure code and is verified against the code by `tests/test_docs.py`.
 [`just`](https://github.com/casey/just) (no uv, poetry, hatch or pdm; keep the checkout path free
 of `{` and `}`). Run `just setup`, use `just check-fast` while iterating, and run `just check`
 (ruff lint, ruff format check, mypy strict over `src/` and `tests/`, and pytest with the coverage
-ratchet — current floor **99.47%** in `pyproject.toml`) before opening a PR. Read
+ratchet — current floor **99.48%** in `pyproject.toml`) before opening a PR. Read
 [`AGENTS.md`](AGENTS.md) and [`docs/03-conventions.md`](docs/03-conventions.md) first; recorded
 test fixtures are documented in [`tests/data/README.md`](tests/data/README.md).
