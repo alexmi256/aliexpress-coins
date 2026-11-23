@@ -10,6 +10,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+import pytest
+
 from aliexpress_coins.runner.failures import FAILURE_TABLE, FailureCode
 from aliexpress_coins.tasks.surface import Surface
 
@@ -72,11 +74,14 @@ def test_every_failure_code_has_a_troubleshooting_row() -> None:
     assert not stale, f'the troubleshooting table names a code that is not in the taxonomy: {", ".join(stale)}'
 
 
-def test_a_stale_troubleshooting_row_is_detected() -> None:
-    rows: dict[str, tuple[str, ...]] = {code.value: () for code in FailureCode}
-    rows['renamed_failure'] = ()
+def test_a_stale_troubleshooting_row_is_detected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    text = RUNBOOK_PATH.read_text(encoding='utf-8')
+    stale_row = '| `renamed_failure` | stale | inspect | none |\n'
+    path = tmp_path / '06-runbook.md'
+    path.write_text(text.replace(_TROUBLESHOOTING_END, stale_row + _TROUBLESHOOTING_END), encoding='utf-8')
+    monkeypatch.setattr('tests.test_docs.RUNBOOK_PATH', path)
 
-    missing, stale = _troubleshooting_mismatches(rows)
+    missing, stale = _troubleshooting_mismatches(_troubleshooting_rows())
 
     assert missing == []
     assert stale == ['renamed_failure']
