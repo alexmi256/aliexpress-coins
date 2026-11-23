@@ -1044,6 +1044,142 @@ def test_run_quiz_task_keeps_the_first_result_when_a_follow_up_has_no_options(
     assert result.rounds == 1
 
 
+@pytest.mark.slow
+def test_run_quiz_task_keeps_the_first_result_when_the_follow_up_is_unreadable(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """An unreadable follow-up page cannot become exit_not_reached after a result."""
+
+    def on_tap(screen: str, label: str | None, _count: int) -> str | None:
+        if screen == 'result' and label == 'Go back':
+            return 'second'
+        return None
+
+    unreadable = _snapshot(
+        _box('Coins quiz', 60, 90, 400, 150),
+        _box('Answer quiz questions for more coins!', 60, 170, 600, 210),
+        _box('Yes', 80, 600, 800, 650),
+        _box('No', 80, 750, 800, 800),
+    )
+    world = _World(
+        series={
+            'boost': (_quiz_boost_frame(),),
+            'question': (_question_frame(),),
+            'result': (_result_frame(),),
+            'second': (unreadable,),
+            'coins': (_coins_frame(),),
+            'boost_after': (_boost_after_frame(with_row=True, action='GO'),),
+        },
+        transitions={
+            ('boost', 'GO'): 'question',
+            ('question', 'True'): 'result',
+            ('question', 'False'): 'result',
+            ('coins', 'Earn more >'): 'boost_after',
+        },
+        on_tap=on_tap,
+    )
+
+    result = run_quiz_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        exit_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+        rng=random.Random(3),
+    )
+
+    assert result.outcome is QuizOutcome.COMPLETED
+    assert result.verification == 'result_page'
+    assert result.verification != 'exit_not_reached'
+    assert result.rounds == 1
+    assert result.correct == 'True'
+    assert result.your_answer == 'False'
+
+
+@pytest.mark.slow
+def test_run_quiz_task_keeps_the_first_result_when_the_follow_up_result_never_arrives(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """A second answer whose result is missing does not discard the first result."""
+
+    def on_tap(screen: str, label: str | None, _count: int) -> str | None:
+        if screen == 'result' and label == 'Go back':
+            return 'second'
+        return None
+
+    second = _question_frame(options=('Yes', 'No'), question='Q : Second question?')
+    world = _World(
+        series={
+            'boost': (_quiz_boost_frame(),),
+            'question': (_question_frame(),),
+            'result': (_result_frame(),),
+            'second': (second,),
+            'no_result': (_wrong_page(),),
+            'coins': (_coins_frame(),),
+            'boost_after': (_boost_after_frame(with_row=True, action='GO'),),
+        },
+        transitions={
+            ('boost', 'GO'): 'question',
+            ('question', 'True'): 'result',
+            ('question', 'False'): 'result',
+            ('second', 'Yes'): 'no_result',
+            ('second', 'No'): 'no_result',
+            ('coins', 'Earn more >'): 'boost_after',
+        },
+        on_tap=on_tap,
+    )
+
+    result = run_quiz_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        exit_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+        rng=random.Random(3),
+    )
+
+    assert result.outcome is QuizOutcome.COMPLETED
+    assert result.verification == 'result_page'
+    assert result.verification != 'result_not_arrived'
+    assert result.rounds == 1
+    assert result.chosen == 'True'
+    assert result.correct == 'True'
+    assert [tap.label for tap in result.taps] == ['GO', 'True', 'Go back', 'Yes']
+
+
+def test_result_markers_with_an_ocr_prefix_are_still_read() -> None:
+    from aliexpress_coins.tasks.quiz import _correct_answer, _your_answer
+
+    frame = _snapshot(
+        _box('Answer feedback - Correct answer: True', 60, 400, 1100, 450),
+        _box('Answer feedback - Your answer: False', 60, 520, 1100, 570),
+        _box('You got +6', 60, 700, 500, 760),
+    )
+
+    assert is_result_state(frame) is True
+    assert is_question_state(frame) is False
+    assert _correct_answer(frame) == 'True'
+    assert _your_answer(frame) == 'False'
+
+
 def test_your_answer_reads_a_wrapped_value_and_stops_at_the_row_gap() -> None:
     from aliexpress_coins.tasks.quiz import _your_answer
 
@@ -1879,16 +2015,22 @@ def test_run_quiz_task_fails_when_go_back_is_missing(
 
 
 @pytest.mark.slow
-def test_run_quiz_task_fails_when_the_exit_never_arrives(
+def test_run_quiz_task_fails_when_the_result_is_unreadable_and_the_exit_never_arrives(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
     tmp_path: Path,
 ) -> None:
+    unreadable = _snapshot(
+        _box('Correct answer:', 60, 400, 700, 450),
+        _box('Your answer:', 60, 520, 700, 570),
+        _box('You got +6', 60, 700, 500, 760),
+        _box('Go back', 400, 1400, 800, 1500),
+    )
     world = _World(
         series={
             'boost': (_quiz_boost_frame(),),
             'question': (_question_frame(),),
-            'result': (_result_frame(),),
+            'result': (unreadable,),
             'wrong': (_wrong_page(),),
             'coins': (_coins_frame(),),
         },
@@ -1917,6 +2059,53 @@ def test_run_quiz_task_fails_when_the_exit_never_arrives(
 
     assert result.outcome is QuizOutcome.FAILED
     assert result.verification == 'exit_not_reached'
+
+
+@pytest.mark.slow
+def test_run_quiz_task_completes_from_the_result_when_the_exit_is_unrecognised(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """A readable result survives an exit page the quiz executor cannot name."""
+    world = _World(
+        series={
+            'boost': (_quiz_boost_frame(),),
+            'question': (_question_frame(),),
+            'result': (_result_frame(),),
+            'wrong': (_wrong_page(),),
+            'coins': (_coins_frame(),),
+            'boost_after': (_boost_after_frame(with_row=True, action='GO'),),
+        },
+        transitions={
+            ('boost', 'GO'): 'question',
+            ('question', 'True'): 'result',
+            ('question', 'False'): 'result',
+            ('result', 'Go back'): 'wrong',
+            ('coins', 'Earn more >'): 'boost_after',
+        },
+    )
+
+    result = run_quiz_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        exit_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+        rng=random.Random(3),
+    )
+
+    assert result.outcome is QuizOutcome.COMPLETED
+    assert result.verification == 'result_page'
+    assert result.correct == 'True'
+    assert result.your_answer == 'False'
 
 
 def test_run_quiz_task_fails_when_fewer_than_two_options_are_detected(

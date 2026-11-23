@@ -167,10 +167,10 @@ QUESTION_PREFIX = re.compile(r'^\s*Q\s*[:.)]', re.IGNORECASE)
 _PAYOUT = re.compile(r'You got\s*\+\s*(\d+)', re.IGNORECASE)
 """The result page's payout line (``You got +6``)."""
 
-_CORRECT_ANSWER = re.compile(r'^\s*correct\s*answer\b', re.IGNORECASE)
+_CORRECT_ANSWER = re.compile(r'(?:^\s*correct\s*answer\b|correct\s*answer\s*[:.])', re.IGNORECASE)
 """The marker for the learned-answer line (``Correct answer: X``)."""
 
-_YOUR_ANSWER = re.compile(r'^\s*your\s*answer\b', re.IGNORECASE)
+_YOUR_ANSWER = re.compile(r'(?:^\s*your\s*answer\b|your\s*answer\s*[:.])', re.IGNORECASE)
 """The marker that ends a wrapped learned-answer line (``Your answer: Y``)."""
 
 _BARE_NUMBER = re.compile(r'^\s*\d{1,3}\s*$')
@@ -322,6 +322,21 @@ class _Verdict:
     status: str
     decisive: bool
     detail: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ResultEvidence:
+    """The last result page that was read, kept against later recognition failures."""
+
+    question: str | None
+    options: tuple[AnswerOption, ...]
+    chosen: str | None
+    correct: str | None
+    your_answer: str | None
+    answer_correct: bool | None
+    payout: str | None
+    answer_source: str | None
+    rounds: int
 
 
 def find_answer_options(snapshot: Snapshot) -> tuple[AnswerOption, ...]:
@@ -558,12 +573,28 @@ def run_quiz_task(
     payout: str | None = None
     stop: str | None = None
     answer_source: str | None = None
-    answered = False
     result_observed = False
+    last_result: _ResultEvidence | None = None
     dismissals: list[DismissReport] = []
     if entry_sweep is not None:
         dismissals.append(entry_sweep)
     current = frame
+
+    def settle_from_last_result() -> bool:
+        """Restore a result page already read, so a follow-up cannot fail the visit."""
+        nonlocal question, options, chosen, correct, your_answer, answer_correct, payout, answer_source, rounds
+        if last_result is None:
+            return False
+        question = last_result.question
+        options = last_result.options
+        chosen = last_result.chosen
+        correct = last_result.correct
+        your_answer = last_result.your_answer
+        answer_correct = last_result.answer_correct
+        payout = last_result.payout
+        answer_source = last_result.answer_source
+        rounds = last_result.rounds
+        return True
 
     try:
         taps.append(
@@ -592,7 +623,7 @@ def run_quiz_task(
             if stop is not None:
                 break
             if not arrived:
-                if answered:
+                if settle_from_last_result():
                     # An answer was already submitted and its result read. A
                     # second question that does not settle is not proof the
                     # quiz failed, so let the result page and return decide.
@@ -632,7 +663,7 @@ def run_quiz_task(
                 )
             options = find_answer_options(current)
             if len(options) < MIN_OPTIONS:
-                if answered:
+                if settle_from_last_result():
                     # The previous answer's result is still the evidence; do
                     # not fail the visit on an unreadable follow-up round.
                     break
@@ -691,7 +722,6 @@ def run_quiz_task(
                     label=chosen_option.box.text,
                 ),
             )
-            answered = True
             current, arrived, dismiss, stop = _wait_for_surface(
                 controller,
                 capture,
@@ -710,6 +740,8 @@ def run_quiz_task(
             if stop is not None:
                 break
             if not arrived:
+                if settle_from_last_result():
+                    break
                 return _finish_failed(
                     controller=controller,
                     capture=capture,
@@ -747,9 +779,24 @@ def run_quiz_task(
             correct = _correct_answer(current)
             your_answer = _your_answer(current)
             # Markers without a readable value are not proof of which answer was
-            # submitted; the row/payout still gets to decide that case.
-            result_observed = correct is not None or your_answer is not None
+            # submitted; the row/payout still gets to decide that case. Never
+            # clear an earlier readable result on a later unreadable one.
+            current_result = correct is not None or your_answer is not None
+            if current_result:
+                result_observed = True
             answer_correct = _answer_correct(correct, your_answer, chosen, options)
+            if current_result:
+                last_result = _ResultEvidence(
+                    question=question,
+                    options=options,
+                    chosen=chosen,
+                    correct=correct,
+                    your_answer=your_answer,
+                    answer_correct=answer_correct,
+                    payout=payout,
+                    answer_source=answer_source,
+                    rounds=rounds,
+                )
             _record_observation(
                 quiz_bank,
                 question,
@@ -822,6 +869,8 @@ def run_quiz_task(
                 # take the interstitial completion path.
                 break
             if not arrived:
+                if settle_from_last_result():
+                    break
                 return _finish_failed(
                     controller=controller,
                     capture=capture,
@@ -832,7 +881,7 @@ def run_quiz_task(
                     done_before=done_before,
                     limit=limit,
                     verification='exit_not_reached',
-                    detail='the quiz stayed on the result page past the exit timeout',
+                    detail='the quiz did not reach a recognised exit before the timeout',
                     rounds=rounds,
                     question=question,
                     options=options,
