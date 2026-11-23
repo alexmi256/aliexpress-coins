@@ -2224,7 +2224,6 @@ def test_run_quiz_task_fails_when_an_unreadable_result_has_no_go_back(
     unreadable = _snapshot(
         _box('Correct answer:', 60, 400, 700, 450),
         _box('Your answer:', 60, 520, 700, 570),
-        _box('You got +6', 60, 700, 500, 760),
     )
     world = _World(
         series={
@@ -2257,6 +2256,55 @@ def test_run_quiz_task_fails_when_an_unreadable_result_has_no_go_back(
 
     assert result.outcome is QuizOutcome.FAILED
     assert result.verification == 'go_back_not_found'
+
+
+@pytest.mark.slow
+def test_run_quiz_task_completes_a_payout_result_without_go_back(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """The payout is the app's acknowledgement when the answer values are unreadable."""
+    unreadable = _snapshot(
+        _box('Correct answer:', 60, 400, 700, 450),
+        _box('Your answer:', 60, 520, 700, 570),
+        _box('You got +6', 60, 700, 500, 760),
+    )
+    world = _World(
+        series={
+            'boost': (_quiz_boost_frame(),),
+            'question': (_question_frame(),),
+            'result': (unreadable,),
+            'coins': (_coins_frame(),),
+            'broken': (_wrong_page(),),
+        },
+        transitions={
+            ('boost', 'GO'): 'question',
+            ('question', 'True'): 'result',
+            ('question', 'False'): 'result',
+            ('coins', 'Earn more >'): 'broken',
+        },
+    )
+
+    result = run_quiz_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        exit_timeout=1.0,
+        return_timeout=1.0,
+        clock=_SteppingClock(step=1.0),
+        sleep=_SteppingClock().sleep,
+        rng=random.Random(3),
+    )
+
+    assert result.outcome is QuizOutcome.COMPLETED
+    assert result.verification == 'result_reward'
+    assert result.payout == '+6'
+    assert result.recorded is True
 
 
 @pytest.mark.slow

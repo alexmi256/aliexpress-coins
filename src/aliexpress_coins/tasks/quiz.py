@@ -809,7 +809,7 @@ def run_quiz_task(
             )
             go_back = find_go_back(current)
             if go_back is None:
-                if settle_from_last_result():
+                if settle_from_last_result() or payout is not None:
                     # The result has already proved the submission; the
                     # shortcut return can leave without the result-page control.
                     break
