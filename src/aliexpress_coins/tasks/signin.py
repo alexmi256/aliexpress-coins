@@ -100,7 +100,7 @@ BOOST_KEY = 'boost_checkin'
 """The catalogue key of the boost page's ``Daily check-in`` row."""
 
 STREAK_MARKER = 'Daily coins'
-"""The section marker above the streak card (docs/06 §3)."""
+"""The section marker above the streak card (docs/07 §3)."""
 
 STREAK_CONTROL_LABELS: tuple[str, ...] = ('Collect', 'Claim', 'Sign in')
 """The label variants the streak claim control has been seen with."""

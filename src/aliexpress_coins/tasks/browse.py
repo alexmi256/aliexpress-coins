@@ -33,7 +33,7 @@ Three rules keep the executor safe while it is on an ordinary shopping page:
 
 The run always leaves the app on the coins page. The destination page's back
 stack is not trustworthy (two BACK presses leave the app), so the return is the
-measured shortcut route (docs/06-navigation-map.md §1), followed by a poll for
+measured shortcut route (docs/07-navigation-map.md §1), followed by a poll for
 the coin-page markers. The same route is fired again after the verification
 surface has been read.
 """

@@ -22,9 +22,11 @@ The 2026-11-20 session with the launcher items installed moved three things:
   question bank is buildable for free.
 
 The screens and the transitions between them are drawn in
-[`06-navigation-map.md`](06-navigation-map.md) — entry points, the marker each screen is recognised
+[`07-navigation-map.md`](07-navigation-map.md) — entry points, the marker each screen is recognised
 by, and the stuck states with their recovery. The perception (#16) and task (#38) issues reference
-it directly.
+it directly. The operator-facing counterpart is [`06-runbook.md`](06-runbook.md): prerequisites,
+the clean-clone quickstart, how to read a report, and the troubleshooting table keyed by the
+failure code.
 
 ## The project board
 

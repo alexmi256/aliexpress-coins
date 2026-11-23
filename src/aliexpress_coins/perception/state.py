@@ -127,7 +127,7 @@ _ERROR_LABELS: tuple[str, ...] = (
     'Network error',
     "There's nothing here yet",
 )
-"""The app's dead-page and stuck-list text (docs/06 §5)."""
+"""The app's dead-page and stuck-list text (docs/07 §5)."""
 
 
 class ScreenState(StrEnum):

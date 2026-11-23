@@ -1,4 +1,4 @@
-# 06 — Navigation map
+# 07 — Navigation map
 
 The app as a state machine: how a run enters, which screens it can reach, how each screen is
 recognised from a screenshot, and where it gets stuck. This is the document the perception and

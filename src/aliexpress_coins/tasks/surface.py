@@ -7,7 +7,7 @@ one warm re-entry. The variants therefore have names of their own, so #24/#25
 can branch on what they need instead of treating every surprise as a failure.
 
 Only text markers are used here. The red background on the boost page is a
-style, not a marker (docs/06 §3), and there are no stored pixel constants.
+style, not a marker (docs/07 §3), and there are no stored pixel constants.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ prompt stays ``UNKNOWN`` rather than becoming a false ``app_logged_out``.
 """
 
 SHORTCUT_DEEP_LINK = 'aliexpress://goto?url=https%3A%2F%2Fm.aliexpress.com%2Fp%2Fcoin-index%2Findex.html'
-"""The app's own coins route (docs/06 §1).
+"""The app's own coins route (docs/07 §1).
 
 The flow layer fires this; this module only names it, because a task module
 must not learn how to spawn adb. It is a *navigation* command, not a launch

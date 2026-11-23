@@ -6,8 +6,9 @@ and what is still unknown.
 
 Legend: ✅ observed · ⬜ inferred from an observation · ❓ unknown.
 
-Measured 2026-11-19/20. Frames and OCR sidecars live in the research workspace
-(`aliexpress-coins-spike/tools/notes/`), not in this repository.
+Measured 2026-11-19/20, updated 2026-11-22. The reviewed full-frame fixtures for the quiz,
+surprise-items and notification flows live under `tests/data/flows/` (see its README); earlier
+drafts referred to the research workspace, which is not what the tests replay.
 
 ---
 
@@ -28,11 +29,12 @@ So a task's worth is two numbers, and the balance alone does not show credit pro
 | **shortcut deep link** ✅ | `adb shell am start -a android.intent.action.VIEW -d 'aliexpress://goto?url=https%3A%2F%2Fm.aliexpress.com%2Fp%2Fcoin-index%2Findex.html'` | `AdcActivity`, `adc_manifest=coinindex` | one command, no home feed, no account detour. **The route.** |
 | **launcher shortcut** ✅ | the pinned deep shortcut `coinsPromotion` | same | its intent adds `from=shortcut&user_growth_type=shortcut&homescreen_src=coinD11&shortcutId=coinsPromotion`. Replaying that exact URI is indistinguishable in the resulting intent, and **works with the shortcut removed** — the item is a convenience, not a dependency |
 | **widget** ✅ | `AECoin2x2NormalWidget`, tap "Check in now" | same, plus `from=widget&user_growth_scene=widget&aewidget_*` | the only visit that produced a **Collect** button and a task list |
-| **Account page card** ⚠️ | Account tab → the promo card | varies | the card rotates: it was "Coins +10 / Collect" once, then "Daily rewards are ready! / Claim now" which opens a **coupon** page, not coins |
+| **Account page card** ⚠️ | Account tab → the promo card | varies | the card rotates: it was "Coins +10 / Collect" once, then "Daily rewards are ready! / Claim now" which opens a **coupon** page, not coins. Not implemented as a runner route. |
 | advertised `/p/coin-index/` without the `aliexpress://goto?url=` wrapper ❌ | `am start -d https://www.aliexpress.com/p/coin-index/...` | blank web view | the wrapper is what routes into the app's container |
 
 **Design consequence:** the shortcut deep link is the primary route, because it is the only one
-that does not depend on a rotating promo slot. The Account-page card is a fallback, not the plan.
+that does not depend on a rotating promo slot. The Account-page card remains a fallback idea, not a
+plan or an implemented route.
 
 ## 3. Page variants
 
@@ -73,7 +75,7 @@ Full list observed on one page (2026-11-20), in order:
 | Turn on notifications | Stay informed when rewards drop | +1 | — | system dialog |
 | Add a coins shortcut | One tap away from your daily rewards | +1 | — | launcher item |
 | Add & start using our widget | Add our widget to your homescreen to use | +1 | — | launcher item |
-| Search for what you love | Earn by using keywords to explore items | +1 | `0/2` | browse-and-wait (search page) |
+| Search for what you love | Earn by using keywords to explore items | +1 | `0/2` | **refused** (`unrecognised`; no executor yet, #24/#38) |
 | Take the coins quiz | — | +3~6 coins, +0~US$0.01 | — | quiz |
 | *coin page only:* Merge Boss / Play & Earn / Prize Land | — | +30 / +900 | — | **refused** (games) |
 
@@ -83,9 +85,10 @@ between loads**: at a second geometry `Browse surprise items` was replaced by `S
 love` on the same account, minutes later. The catalogue must therefore match by pattern and treat
 any missing task as normal.
 
-Five of the twelve rows are refusals, all on the page the executor must open. That is the argument
-for enforcing the deny list at dispatch rather than per-executor: the order, cart, water and share
-tasks are *rendered next to* the ones we want, with identical `GO` buttons.
+Four of the twelve boost rows are refusals, all on the page the executor must open (the coin page
+also renders the game tiles). That is the argument for enforcing the deny list at dispatch rather
+than per-executor: the order, cart, water and share tasks are *rendered next to* the ones we want,
+with identical `GO` buttons.
 
 ## 4b. The stuck state
 
@@ -124,7 +127,10 @@ The boost page has one failure mode that matters, and it is silent: the honest-l
   **red `Ns` pill** while the timer runs, then a **green pill with a white check**. OCR reads the
   digits (`12s`, `1s`), so the executor polls for `\b\d+s\b` and proceeds when it disappears.
   Measured on one run: `12s` at t=1 s, `1s` at t=3 s, green check from t≈6 s. The timer starts
-  during page load, so the first reading can be well under 15 s.
+  during page load, so the first reading can be well under 15 s. The implementation waits for the
+  chip itself (`find_timer_chip` + `wait_for_timer_chip`); 15 s is the catalogue bound for a chip
+  that never finishes, not a claim that every task waits 15 s. A page with no chip returns `absent`
+  immediately rather than sleeping.
 * **Launcher items** — the operator completed both tasks simply by **adding** the shortcut and the
   widget. Nothing suggests a launch from the item is required, and the widget/shortcut visits may
   be what credits a *different* (repeatable) task. ❓ one more observation would settle it.
@@ -163,6 +169,9 @@ page counter counts products in the current round.
    at `1/2` rounds, so finishing the round ended the task (2/2) and no round boundary with rounds
    remaining could be observed. The pressure-cooker tile's inertness is consistent with a product
    opened in the earlier round still being excluded, but its earlier-round history was not recorded.
+   Until #63 settles it, the executor starts with the **per-round** interpretation (a product may
+   count again in a later round) and falls back to whole-task exclusion after two fresh products in
+   a row fail to move the counter; both paths are recorded in the round evidence.
 5. At `3/3` all three tick icons fill, a **`Mission Completed`** overlay drops over the grid (three
    gold coins, no control), and the page stays on `3/3`. The overlay did **not** auto-dismiss within
    10 s; a tap anywhere on it dismissed it immediately. On a task with rounds remaining a
@@ -187,11 +196,15 @@ server-side and exposed in the intent — useful for logging, not required for d
 
 ### Search for what you love ⚠️
 
+**Not dispatched in this build.** The row is not in `specs/tasks.yaml`: it has no timer chip and no
+proven verification contract, so the default-deny policy reports it `unrecognised` until it gets
+its own executor (#24/#38). The observations below are still the recon evidence that work needs.
+
 `GO` opens a **search landing page** (a pre-filled query, `Search history`, "Discover more" and
 category cards such as `Man Shoes` with "81k+ items"). Tapping a card opens search results. There is
 **no timer chip** on either screen, and progress stayed `0/2` after one search, so the scoring rule
 is not "wait on a page" — most likely one progress unit per search performed, which needs one more
-session to confirm.
+session to confirm. ❓
 
 **Navigation hazard:** from the results page the back stack is *results → landing → exit*. Two BACKs
 take you out of the app to the home feed. Returning to the boost list after this task needs an
@@ -246,7 +259,7 @@ open shortcut deep link
 |---|---|---|
 | Is a widget/shortcut *visit* needed for those two tasks, or is creation enough? | decides whether the executor must fake an entry point | wait for the task to reappear, then visit vs not |
 | Why were task rows absent on some loads? | the executor's "nothing available" branch | observe across a day boundary; check whether rows return after the daily reset |
-| The 15 s countdown on browse tasks | per-task wait time | time one sponsored-items task from GO to progress change |
+| The exact dwell per browse task | the executor waits for the chip, so a wrong fixed 15 s would be a hidden assumption | the chip is authoritative; time one sponsored-items task only to confirm the 15 s catalogue bound is generous |
 | Does the surprise-items round counter reset its product set between rounds? | the round-2 rule in #26 | #63: one day starting at `0/2`, with the same product opened in both rounds |
 | The quiz result and the notification denial frames | #25/#28 fixtures | one day when the quiz and the notification row are still unclaimed |
 | Whether the quiz question set is finite | question bank size | capture over several days |
