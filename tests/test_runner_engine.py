@@ -61,6 +61,7 @@ from aliexpress_coins.tasks.discovery import (
     RosterObservation,
     RosterObserver,
     enumerate_roster,
+    read_roster_log,
 )
 from aliexpress_coins.tasks.dispatch import DispatchGate
 from aliexpress_coins.tasks.signin import ClaimResult, SigninOutcome, SigninReport, read_coin_balance
@@ -522,11 +523,12 @@ def test_the_dispatch_table_covers_every_implemented_category(catalogue: TaskCat
     }
     assert TaskCategory.SHORTCUT not in engine.DISPATCH_TABLE
     assert TaskCategory.WIDGET not in engine.DISPATCH_TABLE
+    assert set(engine._CATEGORY_COST) == set(TaskCategory)
     assert catalogue.allowed
 
 
 @pytest.mark.slow
-def test_a_full_walk_dispatches_in_reading_order_and_reports_the_task_budget(
+def test_a_full_walk_dispatches_in_policy_order_and_reports_the_task_budget(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     boost_frame: Snapshot,
@@ -568,11 +570,165 @@ def test_a_full_walk_dispatches_in_reading_order_and_reports_the_task_budget(
     assert report.observations >= 3
     assert context.state.snapshot().completed_night is False
     assert any(skip.key == 'notifications' and skip.reason == 'run budget' for skip in report.skipped)
+    summary = report.summary_path.read_text(encoding='utf-8')
+    assert '| Turn on notifications | run budget | task budget of 2 dispatch(es) exhausted |' in summary
+    assert 'no dispatchable row remains' not in summary
     assert report.summary_path.is_file()
     assert report.json_path.is_file()
     assert report.roster_log_path.is_file()
     assert report.failure_code == FailureCode.BUDGET_EXHAUSTED.value
     assert _report_payload(tmp_path)['status'] == 'budget'
+
+
+@pytest.mark.slow
+def test_roster_permutations_make_the_same_dispatch_choices_and_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boost_frame: Snapshot,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    wanted = {'boost_checkin', 'coins_quiz', 'surprise_items', 'sponsored_items', 'notifications'}
+    entries = tuple(entry for entry in full_roster.entries if entry.key in wanted or entry.denied)
+    permutations = [entries, tuple(reversed(entries))]
+    seen = {tuple(entry.title for entry in order) for order in permutations}
+    rng = random.Random(131)
+    while len(permutations) < 7:
+        candidate = tuple(rng.sample(entries, len(entries)))
+        titles = tuple(entry.title for entry in candidate)
+        if titles not in seen:
+            permutations.append(candidate)
+            seen.add(titles)
+
+    def fingerprint(report: RunReport, context: RunContext) -> tuple[object, ...]:
+        payload = dict(report.as_dict())
+        roster = dict(cast(dict[str, Any], payload['roster'] or {}))
+        payload['roster'] = roster
+        roster['entries'] = sorted(
+            cast(list[dict[str, Any]], roster.get('entries') or []),
+            key=lambda entry: str(entry['title']),
+        )
+        payload['roster_log'] = 'roster.jsonl'
+        payload['skipped'] = sorted(
+            cast(list[dict[str, Any]], payload['skipped']),
+            key=lambda skip: (str(skip['title']), str(skip['reason']), str(skip['detail'])),
+        )
+        summary = report.summary_path.read_text(encoding='utf-8').splitlines()
+        policy_events = tuple(
+            sorted(
+                json.dumps({key: value for key, value in event.items() if key != 'time'}, sort_keys=True)
+                for event in _events(report)
+                if event.get('event') in {'policy_decision', 'policy_refusal'}
+            )
+        )
+        return (
+            json.dumps(payload, sort_keys=True),
+            tuple(line for line in summary if not line.startswith('|')),
+            tuple(sorted(line for line in summary if line.startswith('|'))),
+            context.state.path.read_bytes(),
+            policy_events,
+        )
+
+    fingerprints: set[tuple[object, ...]] = set()
+    orders: set[tuple[str, ...]] = set()
+    expected = ('boost_checkin', 'coins_quiz', 'surprise_items')
+    for index, shuffled in enumerate(permutations):
+        roster = replace(full_roster, entries=shuffled)
+        _surface(monkeypatch, roster, boost_frame)
+        # Keep the real observer and JSONL writer, but replay this permutation on
+        # every re-enumeration instead of restoring the fixture frame's order.
+        monkeypatch.setattr(
+            'aliexpress_coins.tasks.discovery.enumerate_roster',
+            lambda *_args, _roster=roster, **_kwargs: _roster,
+        )
+        context = _context(
+            tmp_path / f'permutation-{index}',
+            capture=_Capture(boost_frame, _coin_frame()),
+            catalogue=catalogue,
+            corpus=corpus,
+            max_tasks=len(expected),
+        )
+
+        def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+            if entry.key is not None:
+                _context.state.record(entry.key)
+            return EngineResult('completed', 'fake', 'done', True, {'key': entry.key})
+
+        monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+        report = engine.run_once(context)
+
+        assert report.status is RunStatus.BUDGET
+        assert {(skip.key, skip.reason) for skip in report.skipped} >= {
+            ('surprise_items', 'run budget'),
+            ('sponsored_items', 'run budget'),
+            ('notifications', 'run budget'),
+        }
+        summary = report.summary_path.read_text(encoding='utf-8')
+        assert '| Browse surprise items | run budget |' in summary
+        assert '| Explore sponsored items | run budget |' in summary
+        assert '| Turn on notifications | run budget |' in summary
+        orders.add(tuple(task.key for task in report.tasks))
+        fingerprints.add(fingerprint(report, context))
+        expected_titles = tuple(entry.title for entry in shuffled)
+        reported_roster = cast(dict[str, Any], report.as_dict()['roster'] or {})
+        reported_entries = cast(list[dict[str, Any]], reported_roster.get('entries') or [])
+        assert tuple(entry['title'] for entry in reported_entries) == expected_titles
+        observations = read_roster_log(report.roster_log_path)
+        assert observations
+        for observation in observations:
+            rows = cast(list[dict[str, Any]], observation['rows'])
+            assert tuple(row['label'] for row in rows) == expected_titles
+
+    assert orders == {expected}
+    assert len(fingerprints) == 1
+
+
+@pytest.mark.slow
+def test_a_pass_bound_lists_the_still_allowed_row_with_the_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    roster = replace(full_roster, entries=(_entry(full_roster, 'surprise_items'),))
+    frame = _boost_frame('surprise_items')
+    _surface(monkeypatch, roster, frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, max_passes=1)
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        if entry.key is not None:
+            _context.state.record(entry.key)
+        return EngineResult('completed', 'fake', 'done', True, {'key': entry.key})
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.BUDGET
+    assert report.detail is not None
+    assert 'pass budget of 1 exhausted' in report.detail
+    still_allowed = [skip for skip in report.skipped if skip.key == 'surprise_items']
+    assert len(still_allowed) == 1
+    skip = next(skip for skip in report.skipped if skip.key == 'surprise_items')
+    assert skip.reason == 'pass budget'
+    assert 'pass budget of 1 exhausted' in skip.detail
+    summary = report.summary_path.read_text(encoding='utf-8')
+    assert '| Browse surprise items | pass budget | pass budget of 1 exhausted' in summary
+
+
+def test_roster_signature_ignores_reading_order(full_roster: Roster) -> None:
+    reordered = replace(full_roster, entries=tuple(reversed(full_roster.entries)))
+
+    assert full_roster.titles != reordered.titles
+    assert engine._roster_signature(full_roster) == engine._roster_signature(reordered)
 
 
 @pytest.mark.slow
@@ -661,6 +817,9 @@ def test_a_wall_clock_budget_stops_before_the_first_task_and_lists_why(
     assert report.tasks == []
     assert context.state.snapshot().completed_night is False
     assert any(skip.key == 'coins_quiz' and skip.reason == 'run budget' for skip in report.skipped)
+    summary = report.summary_path.read_text(encoding='utf-8')
+    assert '| Take the coins quiz | run budget | wall-clock budget of 5s exhausted |' in summary
+    assert 'no dispatchable row remains' not in summary
 
 
 @pytest.mark.slow
@@ -2070,8 +2229,10 @@ def test_one_tasks_unknown_screen_fails_the_task_and_the_run_continues(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
 ) -> None:
-    # The three rows from night 2026-11-23, in the order the roster showed them.
+    # The three rows from night 2026-11-23, in the order they were enumerated.
     keys = ('boost_checkin', 'sponsored_items', 'surprise_items')
+    # Selection is by cost, not by that reading order: sign-in, item taps, then the dwell.
+    selected = ('boost_checkin', 'surprise_items', 'sponsored_items')
     frame_rows = ('daily_checkin', 'sponsored_items', 'surprise_items')
     roster = replace(
         full_roster,
@@ -2118,12 +2279,12 @@ def test_one_tasks_unknown_screen_fails_the_task_and_the_run_continues(
 
     report = engine.run_once(context)
 
-    assert order == list(keys)
+    assert order == list(selected)
     assert report.status is RunStatus.BUDGET
     assert report.abort is None
     assert report.failure_code == FailureCode.BUDGET_EXHAUSTED.value
-    assert [task.key for task in report.tasks] == list(keys)
-    failed = report.tasks[1]
+    assert [task.key for task in report.tasks] == list(selected)
+    failed = next(task for task in report.tasks if task.key == 'sponsored_items')
     assert failed.outcome == 'failed'
     assert failed.code == FailureCode.TASK_UNVERIFIED.value
     assert failed.verification == 'unexpected_screen'
@@ -3015,7 +3176,9 @@ def test_next_entry_skips_denied_unsupported_no_action_blocked_and_daily_limit_r
     )
 
     assert entry is not None
-    assert entry.key == 'sponsored_items'
+    # Item taps cost less than a dwell, so cost order picks surprise items even
+    # though the sponsored row was enumerated above it.
+    assert entry.key == 'surprise_items'
 
 
 def test_a_successful_cleanup_reads_the_final_balance(
@@ -6230,6 +6393,9 @@ def test_a_retryable_row_left_after_the_last_pass_ends_as_budget(
     assert report.passes == 1
     assert report.detail is not None
     assert 'pass budget of 1 exhausted' in report.detail
+    summary = report.summary_path.read_text(encoding='utf-8')
+    assert '| Browse surprise items | pass budget | pass budget of 1 exhausted' in summary
+    assert 'no dispatchable row remains' not in summary
 
 
 def test_an_unknown_surface_at_the_last_pass_ends_as_budget(
@@ -6379,6 +6545,8 @@ def test_a_one_attempt_bound_skips_the_taxonomy_retry_and_blacklists_immediately
     assert len(attempts) == 1
     assert report.blacklist == {'coins_quiz': 1}
     assert any(skip.reason == 'blacklisted after 1 attempts' for skip in report.skipped)
+    summary = report.summary_path.read_text(encoding='utf-8')
+    assert '| Take the coins quiz | blacklisted after 1 attempts |' in summary
     assert report.attempts == {'coins_quiz': 1}
 
 
