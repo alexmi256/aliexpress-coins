@@ -1,5 +1,8 @@
 # aliexpress-coins
 
+**Operator overview:** [What a claim run does](#what-a-claim-run-does) — the route, current loop,
+bounds, refusals and evidence.
+
 ## What it is
 
 An unattended collector for the AliExpress in-app **coins** programme. It drives the Android app
@@ -133,31 +136,109 @@ the 5 s grace period). Runs sharing the `state` volume coordinate on `state/run.
 `run --once` exits `3` while the daemon is mid-night, and the daemon waits for a manual run before
 re-checking whether the day is already done.
 
-## What a run does
+## What a claim run does
 
-1. **Hygiene & route** — wakes the screen, checks the keyguard is clear, locks portrait rotation,
-   enables `stayon`, warm-starts AliExpress (`FirstActivity`), fires the coins shortcut deep link,
-   sweeps popups, and opens `Coins boost` (`Earn more`), recovering with a warm re-entry if the
-   empty-boost load fault appears.
-2. **Roster & policy** — reads visible task rows via OCR and classifies every row against
-   `specs/tasks.yaml` before dispatch (default-deny).
-3. **Executors** — claims both independent daily sign-ins (streak `Collect` and boost
-   `Daily check-in`), then walks allowed rows within `AECOINS_MAX_TASKS_PER_RUN` (default 12) and
-   `AECOINS_RUN_BUDGET_SECONDS` (default 2700 s): browse-and-wait (timer chip), coins quiz
-   (answers from and learns into [`data/quiz_bank.json`](data/README.md)), surprise items (3
-   distinct products per round), search landing (one `Discover more` category per round,
-   `0/2 → 1/2`, then the row is gone at `2/2`), and notifications. Every task requires positive
-   on-screen verification.
-4. **Report & retention** — returns to the coins page, restores device settings, writes
-   `/app/runs/<UTC timestamp>/` (`summary.md`, `run.json`, `run.jsonl`, `roster.jsonl`,
-   `shots/*.png` + OCR sidecars) in the `runs` Docker volume, and prunes beyond
-   `AECOINS_KEEP_RUNS` (default 30). Daily state lives in the `state` volume; learned quiz
-   answers persist in the `data` volume.
-5. **Notifications (optional)** — set `AECOINS_APPRISE_URL` (plus optional `AECOINS_APPRISE_KEY`
-   and `AECOINS_APPRISE_TAG`) in `.env` for one Apprise message per run (or use the legacy
-   `AECOINS_WEBHOOK_URL` / `AECOINS_NTFY_TOPIC` settings; configure only one transport). Messages
-   never contain the account name, an absolute balance, or order details (`AECOINS_NOTIFY_BALANCE_DELTA=true`
-   opts in to the delta only), and a failed notification never fails a run.
+The executable contract is [`run_once()`](src/aliexpress_coins/runner/engine.py); it coordinates the
+route, roster, budgets, daily state and report. Task-specific behaviour — sign-ins, browse-and-wait,
+quiz, surprise items, search and notifications — lives in the executors under
+[`src/aliexpress_coins/tasks/`](src/aliexpress_coins/tasks/), selected by
+[`_dispatch_entry()`](src/aliexpress_coins/runner/engine.py).
+
+### Route and the current loop
+
+1. **Reach the tasks.** After device hygiene, the engine fires the coins shortcut URI
+   ([`SHORTCUT_DEEP_LINK`](src/aliexpress_coins/tasks/surface.py)) to reach the coins page.
+   [`discover_roster()`](src/aliexpress_coins/tasks/discovery.py) taps `Earn more` and enumerates the
+   `Coins boost` task rows, falling back to the coin page's inline rows if that list cannot be opened.
+2. **Dispatch one allowed row.** [`_next_entry()`](src/aliexpress_coins/runner/engine.py) selects a row
+   with an executor, a dispatch target and daily allowance left.
+   [`DispatchGate`](src/aliexpress_coins/tasks/dispatch.py) re-checks it against
+   [`specs/tasks.yaml`](specs/tasks.yaml) before an executor can act.
+3. **Re-enumerate and continue.** After a verified completion,
+   [`_observe()`](src/aliexpress_coins/runner/engine.py) re-opens the task surface and logs a fresh
+   roster to `roster.jsonl`; the loop then selects the next row. A row that does not complete is
+   blocked by identity for the rest of that run (the `blocked` set), while other rows can still run.
+   When no dispatchable row remains, the run exits.
+
+Today this is **one roster walk, then exit**. It claims every allowed row it can dispatch from that
+walk, and sees rows that appear during the re-enumerations after successful tasks, but a row that
+fails is not offered again in the same night. Once the current roster has no dispatchable row the run
+exits instead of starting another full pass.
+
+Bounded shortcut recovery does ship, but only at two points:
+[`discover_roster()`](src/aliexpress_coins/tasks/discovery.py) may make one warm re-entry when the
+surface has no usable rows (`SURFACE_REFRESH_LIMIT` in
+[`surface.py`](src/aliexpress_coins/tasks/surface.py)), and a task that hits an unknown screen gets
+three shortcut attempts back to the coins page (`TASK_RECOVERY_ATTEMPTS` in
+[`engine.py`](src/aliexpress_coins/runner/engine.py)) before the run aborts. Neither starts a new
+roster walk. The repeating collect → dispatch → re-enumerate loop, with its passes and per-task
+attempts, is planned in [#123](https://github.com/alexmi256/aliexpress-coins/issues/123), not
+shipped.
+
+### Bounds and unfinished nights
+
+- **Shipped bounds:** [`RunConfig`](src/aliexpress_coins/runner/config.py) defaults to a 2700-second
+  wall-clock budget and 12 dispatched rows per run (`AECOINS_RUN_BUDGET_SECONDS` and
+  `AECOINS_MAX_TASKS_PER_RUN`). The engine checks both before each dispatch; an internal safe retry
+  does not consume another row slot. Each task also has its own `max_per_run` daily limit in
+  `specs/tasks.yaml`. There is no separate pass-count bound yet.
+- **Shipped retry bounds:** [`_dispatch_with_retry()`](src/aliexpress_coins/runner/engine.py) allows at
+  most two attempts for `task_unverified`, and only when the first attempt took no action. A row that
+  acted without proof is not repeated within the run. The exact stage/task retry policy is in
+  [`src/aliexpress_coins/runner/failures.py`](src/aliexpress_coins/runner/failures.py).
+- **Honest completion:** when a roster walk finishes,
+  [`_night_record()`](src/aliexpress_coins/runner/engine.py) leaves `completed_night: false` if a task
+  failure is still retryable or the roster was incomplete. Only an `exhausted` decision records
+  `completed_night: true` through [`DailyStateStore.record_night()`](src/aliexpress_coins/runner/state.py),
+  so the scheduler does not mistake an unfinished night for success.
+- **Planned bounds and blacklist (#123):** maximum passes, a configurable per-task attempt limit, and
+  a self-clearing per-day blacklist after repeated failures are **not implemented**. The current
+  `blocked` set is only a remainder-of-this-run block after a failed dispatch, not a failure-count
+  blacklist. The planned outer loop will also restart from the shortcut when a pass ends on an unknown
+  surface or an allowed row cannot be dispatched.
+
+### Permanent refusals
+
+The catalogue permanently refuses placing an order or buying (`spending_order`), adding to cart
+(`spending_cart`), playing a game (`game_play_and_earn` and the other `game_*` rules), sharing or
+inviting (`social`), leaving a review (`review`), and converting currency (`currency_*`). These are
+not retryable failures: [`DispatchGate`](src/aliexpress_coins/tasks/dispatch.py) emits a
+`policy_refusal` event to `run.jsonl`, the row appears under `Skipped` in `summary.md`, and no
+executor receives it. A policy refusal is permanent by design — it is never retried and must not be
+counted as a failed attempt or blacklisted. Unknown labels are refused as `unrecognised`
+(default-deny).
+
+There is no redeem executor. Separately, an unexpected redeem control encountered during a task trips
+[`SafetyGuard`](src/aliexpress_coins/runner/safety.py) and aborts the run as `dangerous_control`; that
+is a runtime guard, not a catalogue refusal code.
+
+### What is recorded
+
+Every run writes `runs/<UTC timestamp>/summary.md`, `run.json` and `run.jsonl`. A live run also
+attempts `roster.jsonl` and retained `shots/*.png` with OCR `.json` sidecars (balance frames,
+surprise-item grids, and a best-effort final frame when the run status is `failed`). Artifact write
+errors are reported rather than ending the run. [`RunReport`](src/aliexpress_coins/runner/report.py)
+and [`ArtifactStore`](src/aliexpress_coins/perception/artifacts.py) define those artifacts; runs are
+pruned to `AECOINS_KEEP_RUNS` (default 30). A successful dry run writes its plan and reports but no
+roster log or screenshots; a failed dry run may also retain the best-effort failure frame described
+above. The atomic daily file `state/daily-<YYYY-MM-DD>.json` records completion counts,
+`acted_unverified`, the last balance and `last_night`/`completed_night` through
+[`DailyStateStore`](src/aliexpress_coins/runner/state.py). Learned quiz answers persist separately in
+[`data/quiz_bank.json`](data/README.md), not in the run directory.
+
+Per-attempt video or dense frame sequences for failed/unverified tasks are **planned, not shipped**
+([#124](https://github.com/alexmi256/aliexpress-coins/issues/124)). Today a failed task is not guaranteed
+a screenshot of its tap and aftermath; diagnose it from the task outcome and failure code in the
+report, plus whichever frames that executor retained.
+
+### Notifications (optional)
+
+Set `AECOINS_APPRISE_URL` (plus optional `AECOINS_APPRISE_KEY` and `AECOINS_APPRISE_TAG`) in
+`.env` for one Apprise message per run, or use the legacy `AECOINS_WEBHOOK_URL` /
+`AECOINS_NTFY_TOPIC` settings; configure only one transport. Messages never contain the account
+name, an absolute balance, or order details (`AECOINS_NOTIFY_BALANCE_DELTA=true` opts in to the
+delta only), and a failed notification never fails a run. Delivery is handled in
+[`src/aliexpress_coins/runner/notify.py`](src/aliexpress_coins/runner/notify.py).
 
 ## Safety posture
 
@@ -168,8 +249,7 @@ The collector drives a device that a human may also use. Four rules are enforced
   `unrecognised`.
 - **Refused by policy (never tapped):** mini-games (`Play & Earn`, `Merge Boss`, `GoGo Match`,
   `Prize Land`, `Shelf Shuffle`), currency conversion (`water`, `diamonds`, `energy`), purchases,
-  checkout, order placement, adding to cart, coin redemption, leaving reviews, and
-  sharing/referrals.
+  checkout, order placement, adding to cart, leaving reviews, and sharing/referrals.
 - **No blind coordinate taps:** every tap comes from a matched OCR box on a fresh screenshot,
   except per-profile calibrated popup fallbacks guarded by an OCR anchor.
 - **Runtime abort guard & dry-run:** `SafetyGuard` aborts immediately on a live `dangerous_control`

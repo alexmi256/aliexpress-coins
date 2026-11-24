@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from aliexpress_coins.runner.config import DEFAULT_MAX_TASKS, DEFAULT_RUN_BUDGET_SECONDS
 from aliexpress_coins.runner.failures import FAILURE_TABLE, FailureCode
 from aliexpress_coins.tasks.quiz_bank import normalize_question, question_key
 from aliexpress_coins.tasks.surface import Surface
@@ -49,6 +50,9 @@ _DERIVATION = (
 _TROUBLESHOOTING_START = '## 10. Troubleshooting by failure code'
 _TROUBLESHOOTING_END = '### Run-level statuses that are not failures'
 _SURFACE_MARKER = '**`surface`** is the screen the planner understood:'
+_CLAIM_SECTION_START = '## What a claim run does'
+_CLAIM_SECTION_END = '\n## '
+_REQUIRED_REFUSAL_CODES = ('spending_order', 'spending_cart', 'game_play_and_earn')
 
 
 def _troubleshooting_rows() -> dict[str, tuple[str, ...]]:
@@ -91,6 +95,14 @@ def _expected_retry(code: FailureCode) -> str:
 
 def _strip_code_blocks(text: str) -> str:
     return _FENCED_BLOCK.sub('', text)
+
+
+def _claim_section() -> str:
+    """The README's operator section about the claim loop, without its trailing heading."""
+    text = README_PATH.read_text(encoding='utf-8')
+    _, found, after = text.partition(_CLAIM_SECTION_START)
+    assert found, f'{README_PATH} has no {_CLAIM_SECTION_START!r} section'
+    return after.partition(_CLAIM_SECTION_END)[0]
 
 
 def _local_targets(source: Path) -> list[Path]:
@@ -287,6 +299,29 @@ def test_every_adr_link_in_the_index_exists() -> None:
 def test_every_document_linked_from_readme_exists() -> None:
     missing = _missing_links(README_PATH)
     assert not missing, f'README.md links to missing paths: {", ".join(missing)}'
+
+
+def test_readme_links_the_claim_section_from_the_top() -> None:
+    head = README_PATH.read_text(encoding='utf-8').partition('## What it is')[0]
+    assert '](#what-a-claim-run-does)' in head, 'README.md does not link the claim section from its opening lines'
+
+
+def test_readme_claim_section_pins_the_shipped_bounds() -> None:
+    section = _claim_section()
+    checks = {
+        'wall-clock default': rf'\b{DEFAULT_RUN_BUDGET_SECONDS:g}\b',
+        'task default': rf'\b{DEFAULT_MAX_TASKS}\b',
+        'wall-clock setting': re.escape('AECOINS_RUN_BUDGET_SECONDS'),
+        'task setting': re.escape('AECOINS_MAX_TASKS_PER_RUN'),
+    }
+    absent = [name for name, pattern in checks.items() if re.search(pattern, section) is None]
+    assert not absent, f'README.md claim section does not name the shipped bounds: {", ".join(absent)}'
+
+
+def test_readme_claim_section_names_the_required_refusal_codes() -> None:
+    section = _claim_section()
+    absent = [code for code in _REQUIRED_REFUSAL_CODES if f'`{code}`' not in section]
+    assert not absent, f'README.md claim section does not name the permanent refusal codes: {", ".join(absent)}'
 
 
 def test_every_document_in_docs_is_reachable_from_readme() -> None:
