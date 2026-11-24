@@ -2533,6 +2533,42 @@ def test_a_successful_cleanup_reads_the_final_balance(
     assert report.returned_to_coins_page is True
     assert report.balance_after == 1240.0
     assert report.shots['balance-after'] == 'shots/balance-after.png'
+    assert context.state.snapshot().last_balance == 1240.0
+
+
+def test_a_balance_state_write_failure_does_not_hide_the_verified_final_reading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    context = _context(
+        tmp_path,
+        capture=_Capture(_coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    assert context.controller is not None
+    report = RunReport(tmp_path, 'run-1', budget_seconds=60.0, started_at=CAPTURED_AT)
+
+    def broken(_balance: float | None) -> None:
+        raise OSError('state volume read-only')
+
+    monkeypatch.setattr(context.state, 'observe_balance', broken)
+    caplog.set_level(logging.WARNING)
+
+    engine._finish_on_coins_page(
+        context,
+        context.controller,
+        report,
+        ArtifactStore(report.runs_dir, report.run_id),
+        _logger(),
+    )
+
+    assert report.returned_to_coins_page is True
+    assert report.balance_after == 1240.0
+    assert 'state_balance_failed' in caplog.text
 
 
 @pytest.mark.parametrize('error', [RunInterrupted('stop'), RuntimeError('boom')])
@@ -2952,6 +2988,8 @@ def test_the_balance_in_the_summary_is_read_back_from_the_recorded_shots(
     summary = report.summary_path.read_text(encoding='utf-8')
     assert '**Balance:** 1240 -> 1246 (+6)' in summary
     assert report.balance_delta == 6.0
+    assert context.state.snapshot().last_balance == 1246.0
+    assert context.state.snapshot().last_balance_verified is True
     store = ArtifactStore(report.runs_dir, report.run_id)
     before = read_coin_balance(store.load('balance-before'))
     after = read_coin_balance(store.load('balance-after'))
@@ -2963,6 +3001,40 @@ def test_the_balance_in_the_summary_is_read_back_from_the_recorded_shots(
     payload = _report_payload(tmp_path)
     assert payload['balance_delta'] == 6.0
     assert payload['shots'] == report.shots
+
+
+@pytest.mark.slow
+def test_the_day_state_replaces_a_stale_balance_with_the_final_verified_reading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _boost_header_frame()
+    _surface(monkeypatch, replace(full_roster, entries=()), frame)
+    unreadable = _snapshot(
+        _box('Coins', 100, 220, 300, 280),
+        _box('Coins credits to redeem', 100, 330, 700, 380),
+        _box('Daily coins', 100, 560, 500, 610),
+    )
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, unreadable, _coin_frame('80')),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.state.observe_balance(70.0)
+
+    report = engine.run_once(context)
+
+    assert report.balance_before is None
+    assert report.balance_after == 80.0
+    assert '**Balance:** unknown -> 80' in report.summary_path.read_text(encoding='utf-8')
+    snapshot = context.state.snapshot()
+    assert snapshot.last_balance == 80.0
+    assert snapshot.last_balance_verified is True
+    assert json.loads(context.state.path.read_text(encoding='utf-8'))['last_balance'] == 80.0
 
 
 @pytest.mark.slow
@@ -3060,8 +3132,79 @@ def test_a_proven_coin_page_without_a_readable_balance_says_so(
     assert report.balance_delta is None
     assert report.balance_note == 'the coins page did not render a readable balance before the first task'
     assert 'balance-before' in report.shots
+    assert context.state.snapshot().last_balance is None
+    assert json.loads(context.state.path.read_text(encoding='utf-8'))['last_balance'] is None
     summary = report.summary_path.read_text(encoding='utf-8')
     assert '**Balance note:** the coins page did not render a readable balance before the first task' in summary
+
+
+@pytest.mark.slow
+def test_an_unreadable_final_balance_keeps_the_last_verified_reading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _boost_header_frame()
+    _surface(monkeypatch, replace(full_roster, entries=()), frame)
+    unreadable = _snapshot(
+        _box('Coins', 100, 220, 300, 280),
+        _box('Coins credits to redeem', 100, 330, 700, 380),
+        _box('Daily coins', 100, 560, 500, 610),
+    )
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame('70'), unreadable),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+
+    report = engine.run_once(context)
+
+    assert report.balance_before == 70.0
+    assert report.balance_after is None
+    snapshot = context.state.snapshot()
+    assert snapshot.last_balance == 70.0
+    assert snapshot.last_balance_verified is True
+
+
+@pytest.mark.slow
+def test_both_unreadable_reads_keep_the_last_verified_balance_from_an_earlier_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    """An unreadable run preserves the last verified value rather than inventing or erasing one (#94).
+
+    The issue's ``null`` means no verified balance has ever been read, not that
+    a run with no readable frame should erase a value an earlier run proved.
+    """
+    frame = _boost_header_frame()
+    _surface(monkeypatch, replace(full_roster, entries=()), frame)
+    unreadable = _snapshot(
+        _box('Coins', 100, 220, 300, 280),
+        _box('Coins credits to redeem', 100, 330, 700, 380),
+        _box('Daily coins', 100, 560, 500, 610),
+    )
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, unreadable, unreadable),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.state.observe_balance(70.0)
+
+    report = engine.run_once(context)
+
+    assert report.balance_before is None
+    assert report.balance_after is None
+    snapshot = context.state.snapshot()
+    assert snapshot.last_balance == 70.0
+    assert snapshot.last_balance_verified is True
+    assert json.loads(context.state.path.read_text(encoding='utf-8'))['last_balance'] == 70.0
 
 
 def test_a_balance_capture_route_error_is_named_without_failing_the_run(
