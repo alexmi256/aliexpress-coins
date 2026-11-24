@@ -685,6 +685,7 @@ def _plan_dry_run(
     waits: list[CoinPageWait] = []
     stable_waits: list[dict[str, object]] = []
     content_waits: list[dict[str, object]] = []
+    roster_waits: list[dict[str, object]] = []
     settle_note: str | None = None
 
     def fire_route() -> bool:
@@ -744,7 +745,7 @@ def _plan_dry_run(
             # used to become a confident surface_incomplete (#120).
             content = wait_for_text(
                 context.capture,
-                lambda candidate: _has_plan_rows(candidate, context.catalogue),
+                lambda candidate: _row_wait_target(candidate, context.catalogue),
                 timeout=DEFAULT_BOOST_TIMEOUT,
                 interval=DEFAULT_BOOST_INTERVAL,
                 initial=frame,
@@ -762,6 +763,47 @@ def _plan_dry_run(
             routes_taken=tuple(routes),
         )
 
+    def confirm_roster(current: Roster) -> Roster:
+        """Read until two fresh captures agree on the non-empty row set.
+
+        A list can paint row 1 before row 2. One enumerable row is not proof
+        that the roster finished rendering, so compare the actual titles,
+        actions and badges before planning. A popup or error frame ends the
+        wait immediately and is named by the scheduler below instead of being
+        polled until the safety guard aborts.
+        """
+        nonlocal frame, surface
+        previous: tuple[tuple[str, str | None, tuple[int, int] | None, str | None], ...] | None = None
+        if current.empty:
+            return current
+
+        def settled(candidate: Snapshot) -> Snapshot | None:
+            nonlocal previous
+            if classify(candidate).state in (ScreenState.POPUP, ScreenState.ERROR):
+                return candidate
+            candidate_roster = enumerate_roster(candidate, context.catalogue, route=DiscoveryRoute.INLINE)
+            if candidate_roster.empty:
+                previous = None
+                return None
+            signature = _roster_signature(candidate_roster)
+            if signature == previous:
+                return candidate
+            previous = signature
+            return None
+
+        result = wait_for_text(
+            context.capture,
+            settled,
+            timeout=DEFAULT_BOOST_TIMEOUT,
+            interval=DEFAULT_BOOST_INTERVAL,
+            clock=context.clock,
+            sleep=context.sleep,
+        )
+        roster_waits.append(result.as_dict())
+        frame = result.frame
+        surface = classify_surface(frame)
+        return read_roster()
+
     initial_roster = read_roster()
     needs_route = (
         (surface is Surface.UNKNOWN and initial_roster.empty)
@@ -776,14 +818,18 @@ def _plan_dry_run(
             roster = read_roster()
         else:
             roster = initial_roster
-    elif initial_roster.empty and surface in (Surface.ROWS_ABSENT, Surface.ROWS_PRESENT, Surface.BOOST_PAGE):
+    elif surface in (Surface.ROWS_ABSENT, Surface.ROWS_PRESENT, Surface.BOOST_PAGE):
         # The probe can arrive directly on a boost page whose header and titles
-        # rendered before its controls. Settle that page in place instead of
-        # reporting the first partial frame or needlessly re-navigating.
+        # rendered before its controls, or with only the first row painted.
+        # Settle that page in place instead of reporting the first partial frame
+        # or needlessly re-navigating.
         settle(await_page=False)
         roster = read_roster()
     else:
         roster = initial_roster
+
+    if surface in (Surface.ROWS_ABSENT, Surface.ROWS_PRESENT, Surface.BOOST_PAGE):
+        roster = confirm_roster(roster)
 
     frame_state = classify(frame).state
     unreadable = _unreadable_plan_reason(
@@ -792,6 +838,7 @@ def _plan_dry_run(
         waits,
         stable_waits,
         content_waits,
+        roster_waits,
         settle_note,
         initial_state,
         frame_state,
@@ -922,6 +969,7 @@ def _plan_dry_run(
         'waits': [wait.as_dict() for wait in waits],
         'stable_waits': stable_waits,
         'content_waits': content_waits,
+        'roster_waits': roster_waits,
         'detail': plan_detail,
     }
     log.log(
@@ -947,12 +995,38 @@ def _has_plan_rows(snapshot: Snapshot, catalogue: TaskCatalogue) -> bool:
     return not enumerate_roster(snapshot, catalogue, route=DiscoveryRoute.INLINE).empty
 
 
+def _row_wait_target(snapshot: Snapshot, catalogue: TaskCatalogue) -> Snapshot | None:
+    """Return a frame that has rows or names a terminal surface.
+
+    The row wait must stop on a popup or an error page as well as on rows. A
+    false-only matcher would keep capturing the same dead screen until the
+    safety guard aborted the run before the planner could name it.
+    """
+    if classify(snapshot).state in (ScreenState.POPUP, ScreenState.ERROR):
+        return snapshot
+    return snapshot if _has_plan_rows(snapshot, catalogue) else None
+
+
+def _roster_signature(roster: Roster) -> tuple[tuple[str, str | None, tuple[int, int] | None, str | None], ...]:
+    """The title/key/badge/action set that must stay unchanged before planning."""
+    return tuple(
+        (
+            entry.title,
+            entry.key,
+            (entry.progress.completed, entry.progress.total) if entry.progress is not None else None,
+            entry.action.text if entry.action is not None else None,
+        )
+        for entry in roster.entries
+    )
+
+
 def _unreadable_plan_reason(
     roster: Roster,
     surface: Surface,
     waits: list[CoinPageWait],
     stable_waits: list[dict[str, object]],
     content_waits: list[dict[str, object]],
+    roster_waits: list[dict[str, object]],
     settle_note: str | None,
     initial_state: ScreenState,
     frame_state: ScreenState,
@@ -979,6 +1053,8 @@ def _unreadable_plan_reason(
     elif not roster.empty:
         if stable_waits and stable_waits[-1]['status'] != 'satisfied':
             reason = 'surface_unverified: task rows were read but the surface never settled'
+        elif roster_waits and roster_waits[-1]['status'] != 'satisfied':
+            reason = 'surface_unverified: task rows were read but the row set never settled'
         else:
             return None
     elif surface is Surface.ROWS_ABSENT:
@@ -1010,6 +1086,12 @@ def _unreadable_plan_reason(
             f'{reason}; stability wait {stable_waits[-1]["status"]} after '
             f'{cast(float, stable_waits[-1]["elapsed"]):g}s of '
             f'{cast(float, stable_waits[-1]["bound"]):g}s'
+        )
+    if roster_waits:
+        reason = (
+            f'{reason}; row-set wait {roster_waits[-1]["status"]} after '
+            f'{cast(float, roster_waits[-1]["elapsed"]):g}s of '
+            f'{cast(float, roster_waits[-1]["bound"]):g}s'
         )
     if settle_note is not None:
         reason = f'{reason}; {settle_note}'

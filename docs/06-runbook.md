@@ -282,8 +282,8 @@ A dry run starts the app normally, may fire the shortcut navigation once (an `am
 in-app tap), and applies the same deny list as a live run. When the page or its rows are still
 rendering, it settles the frame with `wait_until_stable` and performs a bounded row re-read before
 planning. It sends **no in-app taps** (`taps_issued: 0`) and still writes a report. The plan records
-the page wait, frame-stability evidence (`stable_waits`) and row re-read (`content_waits`) so a
-partial render cannot be mistaken for an empty day.
+the page wait, frame-stability evidence (`stable_waits`), row re-read (`content_waits`) and the
+row-set confirmation (`roster_waits`) so a partial render cannot be mistaken for an empty day.
 
 ```console
 $ AECOINS_DEVICE=192.168.8.65:5555 AECOINS_TIMEZONE=America/Toronto \
@@ -567,7 +567,7 @@ deliberately; a larger budget is not a fix for a slow network or a stuck screen.
 | `balance_before`, `balance_after`, `balance_delta`, `balance_note` | the two recorded frames, or why one is unknown |
 | `popups_closed`, `shots`, `artifact_errors` | artifacts and best-effort write failures |
 | `notification` | attempted, sink, ok and a class-plus-status error |
-| `plan`, `plan_note` | the dry-run plan, when there was one; `plan.probe_failed` distinguishes an unreadable probe from evidence about the day, and `stable_waits` / `content_waits` record settling and row re-reads |
+| `plan`, `plan_note` | the dry-run plan, when there was one; `plan.probe_failed` distinguishes an unreadable probe from evidence about the day, and `stable_waits` / `content_waits` / `roster_waits` record settling, row re-reads and row-set confirmation |
 | `abort` | safety code, reason and the screen that triggered it |
 | `night` | the completion decision: `outcome`, dispatched/completed counts and retryable failures |
 | `failure` | code, stage, retry scope, retries, `abort_run`, sentence and detail |

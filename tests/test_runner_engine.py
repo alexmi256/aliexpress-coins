@@ -1192,6 +1192,119 @@ def test_a_dry_run_rereads_rows_that_appear_after_the_frame_settles(
     assert device.taps == []
 
 
+def test_a_dry_run_waits_for_the_rest_of_a_partially_painted_roster(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    partial = _boost_frame('coins_quiz')
+    blank = _rendering_boost_frame()
+    complete = _boost_frame('coins_quiz', 'sponsored_items')
+    context = _context(
+        tmp_path,
+        capture=_Capture(partial, partial, partial, blank, complete, complete),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+    device = _RecordingDevice()
+    context.controller = Controller.from_frame(device, partial, rng=random.Random(0))
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.PLANNED
+    assert report.plan is not None
+    assert [step['key'] for step in report.plan['steps']] == ['coins_quiz', 'sponsored_items']
+    roster_waits = report.plan['roster_waits']
+    assert isinstance(roster_waits, list)
+    assert roster_waits[-1]['status'] == 'satisfied'
+    assert context.controller.tap_count == 0
+    assert device.taps == []
+
+
+def test_a_dry_run_names_a_terminal_state_that_arrives_during_the_row_reread(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    partial = _boost_frame('coins_quiz')
+    terminal = _empty_boost_frame()
+    context = _context(
+        tmp_path,
+        capture=_Capture(partial, partial, partial, terminal, terminal, terminal),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+    device = _RecordingDevice()
+    context.controller = Controller.from_frame(device, partial, rng=random.Random(0))
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.FAILED
+    assert report.failure_code == FailureCode.NAVIGATION_FAILED.value
+    assert report.detail is not None
+    assert report.detail.startswith('surface_empty_boost')
+    assert report.plan is not None
+    assert report.plan['surface'] == 'empty_boost'
+    assert report.plan['probe_failed'] is True
+    assert report.plan['steps'] == []
+    assert report.plan['taps_issued'] == 0
+    assert context.controller.tap_count == 0
+    assert device.taps == []
+
+
+def test_a_dry_run_names_a_terminal_state_that_arrives_during_the_row_wait(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    rendering = _rendering_boost_frame()
+    terminal = _empty_boost_frame()
+    context = _context(
+        tmp_path,
+        capture=_Capture(rendering, rendering, rendering, terminal, terminal, terminal),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+    device = _RecordingDevice()
+    context.controller = Controller.from_frame(device, rendering, rng=random.Random(0))
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.FAILED
+    assert report.failure_code == FailureCode.NAVIGATION_FAILED.value
+    assert report.detail is not None
+    assert report.detail.startswith('surface_empty_boost')
+    assert report.plan is not None
+    assert report.plan['surface'] == 'empty_boost'
+    assert report.plan['probe_failed'] is True
+    assert report.plan['steps'] == []
+    assert report.plan['taps_issued'] == 0
+    assert context.controller.tap_count == 0
+    assert device.taps == []
+
+
+def test_a_dry_run_fails_when_the_row_set_never_settles(
+    full_roster: Roster,
+) -> None:
+    reason = engine._unreadable_plan_reason(
+        full_roster,
+        Surface.BOOST_PAGE,
+        [],
+        [{'status': 'satisfied', 'elapsed': 1.0, 'bound': 10.0}],
+        [],
+        [{'status': 'timed_out', 'elapsed': 30.0, 'bound': 30.0}],
+        None,
+        ScreenState.PAGE,
+        ScreenState.PAGE,
+    )
+
+    assert reason is not None
+    assert reason.startswith('surface_unverified: task rows were read but the row set never settled')
+
+
 def test_a_dry_run_does_not_plan_rows_from_a_surface_that_never_settles(
     tmp_path: Path,
     catalogue: TaskCatalogue,
