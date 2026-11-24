@@ -555,3 +555,31 @@ def test_a_completed_task_has_no_code_and_a_run_without_a_failure_has_none(tmp_p
     payload = json.loads(report.json_path.read_text(encoding='utf-8'))
     assert payload['failure'] is None
     assert payload['tasks'][0]['code'] is None
+
+
+def test_the_retry_loop_bounds_and_attempts_reach_both_report_files(tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    report.passes = 2
+    report.max_passes = 4
+    report.max_task_attempts = 2
+    report.attempts = {'coins_quiz': 2, 'notifications': 1}
+    report.blacklist = {'coins_quiz': 2}
+    report.finish(
+        RunStatus.COMPLETED, detail='no dispatchable row remains', budget_used_seconds=12.0, finished_at=FINISHED
+    )
+    report.write()
+
+    payload = json.loads(report.json_path.read_text(encoding='utf-8'))
+    summary = report.summary_path.read_text(encoding='utf-8')
+
+    assert payload['passes'] == 2
+    assert payload['max_passes'] == 4
+    assert payload['max_task_attempts'] == 2
+    assert payload['attempts'] == {'coins_quiz': 2, 'notifications': 1}
+    assert payload['blacklist'] == {'coins_quiz': 2}
+    assert '**Passes:** 2 of 4' in summary
+    assert (
+        '**Attempts per task:** coins_quiz: 2, notifications: 1 (blacklist after 2 failed attempt(s) per task)'
+        in summary
+    )
+    assert '**Blacklist:** coins_quiz: blacklisted after 2 attempt(s)' in summary

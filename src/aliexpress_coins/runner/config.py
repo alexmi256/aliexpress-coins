@@ -27,7 +27,9 @@ __all__ = [
     'DEFAULT_CORPUS_PATH',
     'DEFAULT_JITTER_SECONDS',
     'DEFAULT_KEEP_RUNS',
+    'DEFAULT_MAX_PASSES',
     'DEFAULT_MAX_TASKS',
+    'DEFAULT_MAX_TASK_ATTEMPTS',
     'DEFAULT_NTFY_SERVER',
     'DEFAULT_RUNS_DIR',
     'DEFAULT_RUN_BUDGET_SECONDS',
@@ -66,6 +68,18 @@ DEFAULT_RUN_BUDGET_SECONDS = 2700.0
 DEFAULT_MAX_TASKS = 12
 """The default number of task dispatches one run may make."""
 
+DEFAULT_MAX_PASSES = 4
+"""How many full re-enumerated roster sweeps one night may make (issue #123)."""
+
+DEFAULT_MAX_TASK_ATTEMPTS = 2
+"""How many failed attempts of one task a night may spend before blacklisting it.
+
+A successful dispatch resets that task's failure streak, so repeatable rows are
+bounded by their daily ``max_per_run`` rather than by this blacklist limit. A
+task that keeps failing is skipped for the rest of the night after this many
+failures.
+"""
+
 DEFAULT_APP_SETTLE_SECONDS = 10.0
 """The measured warm-up after starting the app normally (docs/07 §1)."""
 
@@ -97,6 +111,8 @@ class RunConfig:
     settle_seconds: float
     app_settle_seconds: float
     dry_run: bool = False
+    max_passes: int = DEFAULT_MAX_PASSES
+    max_task_attempts: int = DEFAULT_MAX_TASK_ATTEMPTS
     keep_runs: int = DEFAULT_KEEP_RUNS
     apprise_url: str | None = None
     apprise_key: str | None = None
@@ -140,6 +156,8 @@ class RunConfig:
                 DEFAULT_APP_SETTLE_SECONDS,
             ),
             dry_run=_flag(env.get('AECOINS_DRY_RUN', ''), 'AECOINS_DRY_RUN'),
+            max_passes=_positive_int(env, 'AECOINS_MAX_PASSES', DEFAULT_MAX_PASSES),
+            max_task_attempts=_positive_int(env, 'AECOINS_MAX_TASK_ATTEMPTS', DEFAULT_MAX_TASK_ATTEMPTS),
             keep_runs=_positive_int(env, 'AECOINS_KEEP_RUNS', DEFAULT_KEEP_RUNS),
             apprise_url=_optional(env, 'AECOINS_APPRISE_URL') or _optional(env, 'APPRISE_URL'),
             apprise_key=_optional(env, 'AECOINS_APPRISE_KEY') or _optional(env, 'APPRISE_KEY'),

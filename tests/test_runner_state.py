@@ -834,3 +834,85 @@ def test_an_invalid_balance_is_refused(tmp_path: Path, balance: object) -> None:
 
     assert store.count('daily_checkin') == 0
     assert not store.path.exists()
+
+
+def test_a_blacklist_is_day_keyed_and_clears_when_the_task_really_completes(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+
+    store.blacklist_task('coins_quiz', 2)
+    store.blacklist_task('coins_quiz', 2)
+
+    assert store.is_blacklisted('coins_quiz') is True
+    assert store.blacklist_attempts('coins_quiz') == 2
+    assert store.snapshot().blacklist == {'coins_quiz': 2}
+    assert _store(tmp_path).is_blacklisted('coins_quiz') is True
+    assert json.loads(store.path.read_text(encoding='utf-8'))['blacklist'] == {'coins_quiz': 2}
+
+    store.record('coins_quiz')
+
+    assert store.is_blacklisted('coins_quiz') is False
+    assert store.blacklist_attempts('coins_quiz') is None
+    assert store.snapshot().blacklist == {}
+    assert 'blacklist' not in store.snapshot().as_dict()
+
+    store.blacklist_task('coins_quiz', 2)
+    later = _store(tmp_path, clock=_fixed_clock(datetime(2026, 11, 22, 3, 30)))
+
+    assert later.is_blacklisted('coins_quiz') is False
+    assert later.path.name == 'daily-2026-11-22.json'
+
+
+def test_a_state_file_records_blacklisted_tasks_with_their_attempts(tmp_path: Path) -> None:
+    payload = _valid_payload()
+    payload['blacklist'] = {'coins_quiz': 2, 'surprise_items': 3}
+    _write_json(_path(tmp_path), payload)
+
+    snapshot = _store(tmp_path).snapshot()
+
+    assert snapshot.blacklist == {'coins_quiz': 2, 'surprise_items': 3}
+    assert snapshot.as_dict()['blacklist'] == {'coins_quiz': 2, 'surprise_items': 3}
+
+
+@pytest.mark.parametrize(
+    'blacklist',
+    [
+        ['coins_quiz'],
+        {'coins_quiz': 0},
+        {'coins_quiz': True},
+        {' coins_quiz': 2},
+        {'': 2},
+    ],
+)
+def test_a_bad_blacklist_is_quarantined_and_the_day_starts_empty(
+    tmp_path: Path,
+    blacklist: Any,
+) -> None:
+    payload = _valid_payload()
+    payload['blacklist'] = blacklist
+    _write_json(_path(tmp_path), payload)
+
+    store = _store(tmp_path)
+
+    assert store.snapshot().blacklist == {}
+    assert list(tmp_path.glob('daily-2026-11-21.json.corrupt-*'))
+
+
+@pytest.mark.parametrize('attempts', [0, -1, True, 1.5])
+def test_blacklist_attempts_must_be_a_positive_integer(tmp_path: Path, attempts: Any) -> None:
+    store = _store(tmp_path)
+
+    with pytest.raises(StateError, match='positive integer'):
+        store.blacklist_task('coins_quiz', attempts)
+
+
+def test_clear_blacklist_is_idempotent_and_forgets_only_one_task(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    store.blacklist_task('coins_quiz', 2)
+    store.blacklist_task('surprise_items', 3)
+
+    store.clear_blacklist('missing')
+    store.clear_blacklist('coins_quiz')
+    store.clear_blacklist('coins_quiz')
+
+    assert store.snapshot().blacklist == {'surprise_items': 3}
+    assert _store(tmp_path).snapshot().blacklist == {'surprise_items': 3}
