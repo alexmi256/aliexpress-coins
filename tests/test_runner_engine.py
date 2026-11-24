@@ -3140,6 +3140,44 @@ def test_an_unreadable_final_balance_keeps_the_last_verified_reading(
     assert snapshot.last_balance_verified is True
 
 
+@pytest.mark.slow
+def test_both_unreadable_reads_keep_the_last_verified_balance_from_an_earlier_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    """An unreadable run preserves the last verified value rather than inventing or erasing one (#94).
+
+    The issue's ``null`` means no verified balance has ever been read, not that
+    a run with no readable frame should erase a value an earlier run proved.
+    """
+    frame = _boost_header_frame()
+    _surface(monkeypatch, replace(full_roster, entries=()), frame)
+    unreadable = _snapshot(
+        _box('Coins', 100, 220, 300, 280),
+        _box('Coins credits to redeem', 100, 330, 700, 380),
+        _box('Daily coins', 100, 560, 500, 610),
+    )
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, unreadable, unreadable),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.state.observe_balance(70.0)
+
+    report = engine.run_once(context)
+
+    assert report.balance_before is None
+    assert report.balance_after is None
+    snapshot = context.state.snapshot()
+    assert snapshot.last_balance == 70.0
+    assert snapshot.last_balance_verified is True
+    assert json.loads(context.state.path.read_text(encoding='utf-8'))['last_balance'] == 70.0
+
+
 def test_a_balance_capture_route_error_is_named_without_failing_the_run(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

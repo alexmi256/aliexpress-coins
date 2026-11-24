@@ -1683,7 +1683,8 @@ def test_the_issue_117_scroll_reveal_without_a_tile_proves_no_round(
     record = result.round_records[0]
     assert result.outcome is SurpriseOutcome.FAILED
     assert result.completed is False
-    assert result.verification == 'counter_stalled'
+    assert result.verification == 'tile_not_opened'
+    assert 'no tile was opened' in result.detail
     assert record.counter_change == '0/3 -> 3/3'
     assert record.taps == 0
     assert record.scrolls == 1

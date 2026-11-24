@@ -1845,7 +1845,11 @@ def _popup_recorder(report: RunReport) -> Callable[[DismissReport], None]:
 
 
 def _observe_balance(context: RunContext, balance: float | None, log: logging.Logger) -> None:
-    """Persist a verified coin-page reading without making a balance write fail the run."""
+    """Persist a verified coin-page reading without making a balance write fail the run.
+
+    ``None`` means this attempt could not read the balance. The store keeps a
+    previously verified value rather than inventing or erasing one (#94).
+    """
     try:
         context.state.observe_balance(balance)
     except Exception as exc:

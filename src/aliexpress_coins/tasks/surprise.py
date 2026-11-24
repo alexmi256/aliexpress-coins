@@ -413,9 +413,9 @@ class SurpriseResult:
     ``verification`` names the proof: ``counter_complete`` on the success path;
     ``daily_limit``, ``row_complete`` or ``row_vanished`` when no work was
     possible; ``not_settled``, ``task_surface_unavailable``, ``grid_not_arrived``,
-    ``counter_unreadable``, ``counter_stalled``, ``grid_disappeared``,
-    ``back_not_reached``, ``next_round_not_arrived``, ``return_failed``,
-    ``redeem_interstitial`` or ``no_observation`` on the others.
+    ``counter_unreadable``, ``counter_stalled``, ``tile_not_opened``,
+    ``grid_disappeared``, ``back_not_reached``, ``next_round_not_arrived``,
+    ``return_failed``, ``redeem_interstitial`` or ``no_observation`` on the others.
     """
 
     key: str
@@ -1354,7 +1354,11 @@ def _run_round(
         counter = read_surprise_counter(current)
         if counter is not None and counter.complete:
             before = counter.completed
-            detail = 'the round counter advanced to its target'
+            detail = (
+                'the round counter was complete but no tile was opened; no completion was proven'
+                if round_taps == 0
+                else 'the round counter advanced to its target'
+            )
             break
 
         if round_taps >= MAX_TAPS_PER_ROUND:
@@ -2218,6 +2222,8 @@ def _failure_verification(record: RoundRecord) -> str:
     detail = record.detail.lower()
     if 'progress_unchanged' in detail:
         return 'progress_unchanged'
+    if 'no tile was opened' in detail:
+        return 'tile_not_opened'
     if 'counter could not be read' in detail:
         return 'counter_unreadable'
     if 'grid disappeared' in detail:
