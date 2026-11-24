@@ -341,12 +341,16 @@ def test_the_search_row_capture_enumerates_the_card_and_every_task_separately(
     assert daily.subtitle is not None
     assert daily.subtitle.endswith('Worth C$0.01')
     assert 'Search for what you love' not in daily.subtitle
-    assert search.denied
-    assert search.reason == 'unrecognised'
+    assert search.allowed
+    assert search.key == 'search_for_what_you_love'
+    assert search.category is TaskCategory.BROWSE
     assert search.progress_text == '0/2'
     assert search.action is not None
     assert search.action.text == 'GO'
-    assert search.dispatch_target is None
+    assert search.dispatch_target is not None
+    authorized_search = DispatchGate(catalogue, surface='rows_present').authorize(search)
+    assert authorized_search.key == 'search_for_what_you_love'
+    assert authorized_search.category is TaskCategory.BROWSE
     assert order.rule == 'spending_order'
     assert order.progress_text == '0/3'
     # `View Super discounts` is a timed view, not a mini-game. The strip of

@@ -266,7 +266,7 @@ Fixture capture is a developer tool, not an operator step:
 
 ```console
 $ .venv/bin/python -m aliexpress_coins.tools.capture_frames --list
-states: 11 frames
+states: 12 frames
   coins.png
   account.png
   ...
@@ -304,7 +304,8 @@ run.json: runs/20261123T015402Z/run.json
 Read it like this:
 
 - **`surface`** is the screen the planner understood: `rows_present`, `rows_absent`, `boost_page`,
-  `redeem_interstitial`, `empty_boost`, `coin_store`, `surprise_grid`, `product_detail`, or `unknown`. `unknown`,
+  `redeem_interstitial`, `empty_boost`, `coin_store`, `surprise_grid`, `search_landing`, `product_detail`,
+  or `unknown`. `unknown`,
   `empty_boost`, a redeem interstitial, or a `rows_absent` with no readable task row is an unreadable report, not a
   plan.
 - **steps** are the rows that would be dispatched, in order, with the catalogue key and executor
@@ -725,7 +726,7 @@ daemon container and its volumes stayed untouched):
 | `docker compose run --rm collector cat /app/runs/20261123T170916Z/summary.md` | report read cleanly from the `runs` volume |
 | `docker logs --tail 5 aliexpress-coins-collector-1` *(live daemon)* | `schedule_wait` for `2026-11-24T03:31:31.431469-05:00` |
 | `just setup && just check` | ruff, format check, mypy strict, **1880 passed**, coverage **99.52%** (floor **99.50%**) |
-| `.venv/bin/python -m aliexpress_coins.tools.capture_frames --list` | `states: 11 frames`, `flows: 14 frames`, `popups: 7 frames` |
+| `.venv/bin/python -m aliexpress_coins.tools.capture_frames --list` | `states: 12 frames`, `flows: 14 frames`, `popups: 7 frames` |
 
 Deliberately **not** executed here:
 

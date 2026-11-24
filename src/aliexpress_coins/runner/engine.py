@@ -82,6 +82,7 @@ from aliexpress_coins.tasks.dispatch import (
 )
 from aliexpress_coins.tasks.notifications import run_notifications_task
 from aliexpress_coins.tasks.quiz import run_quiz_task
+from aliexpress_coins.tasks.search import run_search_task
 from aliexpress_coins.tasks.signin import claim_daily_signins, read_coin_balance
 from aliexpress_coins.tasks.surface import (
     COIN_PAGE_MARKERS,
@@ -216,6 +217,7 @@ _EXECUTORS: frozenset[TaskCategory] = frozenset(
     {
         TaskCategory.SIGN_IN,
         TaskCategory.QUIZ,
+        TaskCategory.BROWSE,
         TaskCategory.BROWSE_WAIT,
         TaskCategory.ITEM_TAP,
         TaskCategory.NOTIFICATION,
@@ -225,6 +227,7 @@ _EXECUTORS: frozenset[TaskCategory] = frozenset(
 DISPATCH_TABLE: dict[TaskCategory, str] = {
     TaskCategory.SIGN_IN: 'sign-in',
     TaskCategory.QUIZ: 'quiz',
+    TaskCategory.BROWSE: 'search',
     TaskCategory.BROWSE_WAIT: 'browse-and-wait',
     TaskCategory.ITEM_TAP: 'surprise-items',
     TaskCategory.NOTIFICATION: 'notifications',
@@ -1024,6 +1027,10 @@ def _dispatch_entry(context: RunContext, controller: Controller, entry: RosterEn
     if category is TaskCategory.QUIZ:
         return _from_executor(
             run_quiz_task(controller, context.capture, context.corpus, context.state, entry, **common)
+        )
+    if category is TaskCategory.BROWSE:
+        return _from_executor(
+            run_search_task(controller, context.capture, context.corpus, context.state, entry, **common),
         )
     if category is TaskCategory.BROWSE_WAIT:
         return _from_executor(

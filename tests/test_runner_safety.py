@@ -17,7 +17,8 @@ from PIL import Image
 from aliexpress_coins.perception.geometry import DeviceGeometry
 from aliexpress_coins.perception.ocr import RapidOcrEngine
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
-from aliexpress_coins.perception.state import ScreenState, classify
+from aliexpress_coins.perception.state import Classification, ScreenState, classify
+from aliexpress_coins.runner import safety
 from aliexpress_coins.runner.failures import FailureCode
 from aliexpress_coins.runner.safety import (
     AbortCode,
@@ -26,6 +27,7 @@ from aliexpress_coins.runner.safety import (
     find_dangerous_controls,
 )
 from aliexpress_coins.tasks.catalogue import TaskCatalogue, load_task_catalogue
+from aliexpress_coins.tasks.surface import Surface
 
 ROOT = Path(__file__).resolve().parents[1]
 CATALOGUE: TaskCatalogue = load_task_catalogue(ROOT / 'specs' / 'tasks.yaml')
@@ -612,6 +614,34 @@ def test_a_scrolled_surprise_grid_is_expected_only_for_the_surprise_task() -> No
     with pytest.raises(RunAborted) as raised, other.task('Explore sponsored items', key='sponsored_items'):
         inspect_other()
     assert raised.value.code is AbortCode.UNEXPECTED_SCREEN
+
+
+def test_the_search_landing_is_expected_only_for_the_search_task() -> None:
+    landing = _snapshot(
+        _box('Discover more', 60, 660, 400, 710),
+        _box('Sneakers', 200, 800, 460, 850),
+        _box('74k+ items', 200, 860, 380, 900),
+    )
+    unknown = Classification(state=ScreenState.UNKNOWN, score=0.0, evidence=())
+
+    assert (
+        safety._is_unexpected_inside_task(
+            landing,
+            unknown,
+            Surface.SEARCH_LANDING,
+            task_key='search_for_what_you_love',
+        )
+        is False
+    )
+    assert (
+        safety._is_unexpected_inside_task(
+            landing,
+            unknown,
+            Surface.SEARCH_LANDING,
+            task_key='sponsored_items',
+        )
+        is True
+    )
 
 
 def test_the_product_detail_suffixed_purchase_captions_are_exempt() -> None:

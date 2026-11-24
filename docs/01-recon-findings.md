@@ -1,7 +1,7 @@
 # 01 — Recon findings
 
 Verified device evidence from the reference tablet (`T3_US`, Android 15, AliExpress `8.180.1`,
-`1200×2000` portrait @ 240 dpi), measured **2026-11-19** through **2026-11-22**, and the design
+`1200×2000` portrait @ 240 dpi), measured **2026-11-19** through **2026-11-24**, and the design
 constraints each measurement imposed.
 
 Legend: ✅ verified by observation · ⬜ inferred, not verified · ❓ unknown.
@@ -111,6 +111,26 @@ fallback up to 20:9).
 - **Notifications:** row credited `+1` while `POST_NOTIFICATION` stayed `ignore` (`granted=false`).
   App settings' `Allow phone notifications` deep-linked to the OS notification page (no runtime
   dialog); the runtime dialog (`Allow` / `Don't allow`) is in the #11 popup corpus.
+
+## 7d. Session 4 findings — search landing (2026-11-24) ✅
+
+- **The search row is a two-round category task.** At 01:48 EST the `Coins boost` row read
+  `Search for what you love`, `+1`, `0/2`, `GO`. The landing page carried a search field, an
+  account-specific `Search history` section and a server-rendered `Discover more` category grid.
+- **Landing alone did not advance the badge.** A 6 s dwell and a return to the boost list left the
+  row at `0/2`; the legacy note “progress stayed `0/2` after one search” was this case.
+- **A history tap did not advance it either.** Tapping the `Search history` entry `Smartphone`
+  filled the search field, opened no results and left the row at `0/2`.
+- **A `Discover more` category tap did.** `Woman Clothing` advanced `0/2 → 1/2` and paid +1
+  (balance `67 → 68`). A second category (`Sneakers`) completed the task; the row was gone from the
+  populated boost list on the next read and the balance moved `68 → 69`. The app removes the row at
+  `2/2`, so the final badge was not visible on a returned frame.
+- **The landing has no timer chip and no item visit is required.** The page marker is
+  `Discover more` together with the category grid's item-count lines; search-history text is
+  account data and is not a marker. The reviewed frame is
+  [`tests/data/states/search_landing.png`](../tests/data/states/search_landing.png).
+  The executor's live verification is deferred to #114 because this recon had already completed
+  the task for the app day; the replay uses the captured landing frame.
 
 Reviewed flow fixtures live under `tests/data/flows/` and `specs/flows.yaml`; open app questions
 are tracked in [`05-app-knowledge.md`](05-app-knowledge.md) §8.

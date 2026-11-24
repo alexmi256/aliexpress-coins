@@ -473,6 +473,7 @@ def test_the_dispatch_table_covers_every_implemented_category(catalogue: TaskCat
     assert set(engine.DISPATCH_TABLE) == {
         TaskCategory.SIGN_IN,
         TaskCategory.QUIZ,
+        TaskCategory.BROWSE,
         TaskCategory.BROWSE_WAIT,
         TaskCategory.ITEM_TAP,
         TaskCategory.NOTIFICATION,
@@ -1820,6 +1821,7 @@ def test_dispatch_routes_each_category_to_its_executor(
 
     monkeypatch.setattr(engine, 'run_quiz_task', fake('quiz'))
     monkeypatch.setattr(engine, 'run_browse_task', fake('browse'))
+    monkeypatch.setattr(engine, 'run_search_task', fake('search'))
     monkeypatch.setattr(engine, 'run_surprise_task', fake('surprise'))
     monkeypatch.setattr(engine, 'run_notifications_task', fake('notifications'))
 
@@ -1846,6 +1848,17 @@ def test_dispatch_routes_each_category_to_its_executor(
         result = engine._dispatch_entry(context, controller, _entry(full_roster, key))
         assert result.completed is True
         assert called[-1] == name
+
+    search_frame = _snapshot(
+        _box('Coins boost', 100, 100, 500, 150),
+        _box('Search for what you love', 100, 260, 900, 300),
+        _box('Earn by using keywords to explore items', 100, 305, 1000, 335),
+        _box('GO', 980, 280, 1040, 320),
+    )
+    search_entry = _entry(enumerate_roster(search_frame, catalogue), 'search_for_what_you_love')
+    result = engine._dispatch_entry(context, controller, search_entry)
+    assert result.completed is True
+    assert called[-1] == 'search'
 
     with pytest.raises(ValueError, match='no executor'):
         engine._dispatch_entry(context, controller, _entry(full_roster, 'coins_shortcut'))

@@ -25,7 +25,7 @@ from aliexpress_coins.perception.matching import (
     normalize,
 )
 from aliexpress_coins.perception.snapshot import Snapshot
-from aliexpress_coins.perception.state import TASK_TITLES
+from aliexpress_coins.perception.state import TASK_TITLES, has_search_landing_markers
 
 BOOST_MARKER = 'Coins boost'
 """The header shared by the populated boost page and its empty state."""
@@ -39,6 +39,15 @@ REDEEM_MARKER = 'YOU CAN NOW REDEEM!'
 SURPRISE_GRID_TITLE = 'Browse surprise items'
 SURPRISE_GRID_SUBTITLE = 'Tap 3 items on this page'
 """The surprise grid's header and instruction (docs/07 §3)."""
+
+SEARCH_LANDING_MARKER = 'Discover more'
+"""The category-card section on the search landing (#108).
+
+The landing also carries a search field and an account-specific
+``Search history`` section. The history is never used as an identifier. The
+heading alone is ordinary copy, so :func:`is_search_landing` also requires the
+category grid's item-count lines below it.
+"""
 
 PRODUCT_DETAIL_ITEM = re.compile(r'\bitem\s+\d+\s*/\s*\d+\b', re.IGNORECASE)
 """The product page's own item counter; the stable detail-page marker."""
@@ -108,6 +117,7 @@ class Surface(StrEnum):
     EMPTY_BOOST = 'empty_boost'
     COIN_STORE = 'coin_store'
     SURPRISE_GRID = 'surprise_grid'
+    SEARCH_LANDING = 'search_landing'
     PRODUCT_DETAIL = 'product_detail'
     UNKNOWN = 'unknown'
 
@@ -166,6 +176,9 @@ def classify_surface(snapshot: Snapshot) -> Surface:
     if is_surprise_grid(snapshot):
         return Surface.SURPRISE_GRID
 
+    if is_search_landing(snapshot):
+        return Surface.SEARCH_LANDING
+
     return Surface.UNKNOWN
 
 
@@ -207,6 +220,16 @@ def is_surprise_grid(snapshot: Snapshot) -> bool:
         and contains_text(snapshot, SURPRISE_GRID_TITLE)
         and contains_text(snapshot, SURPRISE_GRID_SUBTITLE)
     )
+
+
+def is_search_landing(snapshot: Snapshot) -> bool:
+    """Whether the frame is the search landing opened by the search task.
+
+    The boost row repeats the title ``Search for what you love``, so the boost
+    page is explicitly excluded. ``Discover more`` is only ordinary copy by
+    itself; the landing must also show the category grid's item-count lines.
+    """
+    return not is_boost_page(snapshot) and has_search_landing_markers(snapshot)
 
 
 def is_empty_boost(snapshot: Snapshot) -> bool:
@@ -266,6 +289,7 @@ __all__ = [
     'PRODUCT_DETAIL_ITEM',
     'PRODUCT_DETAIL_MARKERS',
     'REDEEM_MARKER',
+    'SEARCH_LANDING_MARKER',
     'SHORTCUT_DEEP_LINK',
     'SIGN_IN_MARKERS',
     'STREAK_CARD_HEIGHT_RATIO',
@@ -285,5 +309,6 @@ __all__ = [
     'is_empty_boost',
     'is_logged_out',
     'is_product_detail',
+    'is_search_landing',
     'is_surprise_grid',
 ]

@@ -86,6 +86,7 @@ class TaskCategory(StrEnum):
 
     SIGN_IN = 'sign_in'
     QUIZ = 'quiz'
+    BROWSE = 'browse'
     BROWSE_WAIT = 'browse_wait'
     ITEM_TAP = 'item_tap'
     SHORTCUT = 'shortcut'

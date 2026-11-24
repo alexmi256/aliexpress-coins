@@ -126,6 +126,9 @@ _COUNTDOWN_BOTTOM_FRACTION = 0.88
 _SURPRISE_TASK_KEY = 'surprise_items'
 """The one executor that may legitimately sit on a headerless surprise grid."""
 
+_SEARCH_TASK_KEY = 'search_for_what_you_love'
+"""The only task that may legitimately sit on the search landing."""
+
 
 class AbortCode(StrEnum):
     """The three structural abort conditions."""
@@ -506,6 +509,8 @@ def _is_unexpected_inside_task(
     if _is_product_detail(snapshot) or is_logged_out(snapshot):
         return False
     if surface is Surface.EMPTY_BOOST:
+        return False
+    if task_key == _SEARCH_TASK_KEY and surface is Surface.SEARCH_LANDING:
         return False
     if task_key == _SURPRISE_TASK_KEY:
         # Only the surprise executor navigates to a headerless scrolled grid.

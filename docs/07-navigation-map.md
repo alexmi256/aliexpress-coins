@@ -86,6 +86,7 @@ flowchart TD
 | coin store (sponsored) | `Use coins for discounts` + `Disc:` / `Applied` + right-edge dwell chip | require header, not feed `discount` |
 | surprise grid | `Browse surprise items` + `Tap 3 items on this page` + `N /3` | boost row shares title; grid adds `N /3` |
 | surprise grid (scrolled) | two columns of card titles with price lines for the guard; the executor matches labels already read this round | header and pill are above the viewport; generic discount copy is not enough, and the executor restores the top before reading the counter (#100) |
+| **search landing** | `Discover more` + category cards with item-count lines (a `Search history` section may sit above it) | the heading alone is generic feed copy; boost row shares `Search for what you love`, and history text is account data, not an identifier |
 | product detail | `Item 1/n` or `Add to cart` + `Buy now` | BACK only; never tap purchase controls |
 | mission overlay / coupon | `Mission Completed` over dimmed grid / `Sale coupons` + `Collect all: C$…` | — |
 
@@ -100,6 +101,7 @@ coordinates, scroll distances, and unscaled crops do not (modal close fraction d
 | boost list | tap row's `GO` | task page | coin page left (`is_coins_page` false) |
 | coin / boost | quiz `GO` → option → `Go back` | quiz → result → redeem / coin | `Coins quiz` → `Correct answer:` → BACK on redeem |
 | boost list | surprise `GO` → tile → BACK | grid → detail → grid | `N /3` advances on distinct product; tap `Mission Completed` at `3/3` |
+| boost list | search `GO` → category card | landing → results | returning row badge `0/2 → 1/2`; after the second category the row is gone from the populated list |
 | boost list | notifications `GO` | claimed / pre-prompt / dialog / OS settings | check + balance, `Allow`, or stop at `All AliExpress notifications` |
 
 ## 5. Stuck states, change detection & recovery ✅

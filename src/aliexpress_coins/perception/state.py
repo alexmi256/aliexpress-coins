@@ -156,6 +156,23 @@ list ``Explore sponsored items`` opens, and the same frame carries a right-edge
 dwell chip.
 """
 
+_SEARCH_LANDING_MARKER = 'Discover more'
+"""The category-card section on the search landing (#108).
+
+The page also carries a search field and, on this account, a search-history
+section. The history is account data and is never an identifier; the
+``Discover more`` section heading is the stable, reusable marker for the landing
+the ``Search for what you love`` row opens.
+"""
+
+_SEARCH_CATEGORY_ANCHOR = re.compile(r'\b\d[\d,.]*\s*[kKmM]?\+?\s*items?\b', re.IGNORECASE)
+"""A category card's item-count line under ``Discover more``.
+
+The heading alone is ordinary feed copy; the category grid is what identifies
+this landing. Requiring an item-count line below the heading keeps a search
+results page or an unrelated ``Discover more`` section out of the surface.
+"""
+
 
 class ScreenState(StrEnum):
     """The mutually exclusive states a captured frame can be in."""
@@ -370,6 +387,16 @@ def classify_state(snapshot: Snapshot) -> ScreenState:
     return classify(snapshot).state
 
 
+def has_search_landing_markers(snapshot: Snapshot) -> bool:
+    """Whether the frame carries the search landing's heading and category grid.
+
+    ``Discover more`` alone is not enough: the same copy can appear in a feed or
+    below search results. The landing is only identified when at least one
+    item-count line sits below that heading.
+    """
+    return _search_landing_marker(snapshot) is not None
+
+
 def modal_bounds(snapshot: Snapshot) -> tuple[float, float, float, float] | None:
     """Measure the modal dialog as ``(left, top, right, bottom)`` frame pixels.
 
@@ -572,6 +599,18 @@ def _popup_marker(snapshot: Snapshot) -> _Match | None:
     return _first_match(snapshot, _POPUP_LABELS)
 
 
+def _search_landing_marker(snapshot: Snapshot) -> _Match | None:
+    discover = _match(snapshot, _SEARCH_LANDING_MARKER)
+    if discover is None:
+        return None
+    for box in snapshot.boxes:
+        if box.score < DEFAULT_MIN_OCR_SCORE or box.bbox[1] <= discover.top:
+            continue
+        if _SEARCH_CATEGORY_ANCHOR.search(unicodedata.normalize('NFKC', box.text)):
+            return discover
+    return None
+
+
 def _page_marker(snapshot: Snapshot) -> Evidence | None:
     coin = _require(snapshot, 'Daily coins', 'Coins credits to redeem')
     if coin is not None:
@@ -599,6 +638,10 @@ def _page_marker(snapshot: Snapshot) -> Evidence | None:
     coin_store = _match(snapshot, _COIN_STORE_MARKER)
     if coin_store is not None:
         return Evidence('page_marker', coin_store.score, f'coin store: {coin_store.text!r}')
+
+    search_landing = _search_landing_marker(snapshot)
+    if search_landing is not None:
+        return Evidence('page_marker', search_landing.score, f'search landing: {search_landing.text!r}')
 
     detail = _product_detail_marker(snapshot)
     if detail is not None:
