@@ -45,7 +45,6 @@ from aliexpress_coins.perception.matching import (
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.state import CaptureSource, ScreenState, classify
 from aliexpress_coins.perception.templates import TemplateStore
-from aliexpress_coins.perception.waits import wait_for_text_gone
 from aliexpress_coins.runner.errors import RunInterrupted
 from aliexpress_coins.runner.safety import RunAborted
 from aliexpress_coins.runner.state import DailyStateStore
@@ -152,7 +151,10 @@ _ITEMS_ANCHOR = re.compile(r'\b\d[\d,.]*\s*[kKmM]?\+?\s*items?\b', re.IGNORECASE
 _PRICE = re.compile(r'(?:C\$|US\s*\$|CS|\$)\s*\d', re.IGNORECASE)
 
 _NON_CATEGORY_PARTS: tuple[str, ...] = (
+    'add to cart',
     'black friday',
+    'buy now',
+    'checkout',
     'choice',
     'coupons eligible',
     'disc',
@@ -160,10 +162,12 @@ _NON_CATEGORY_PARTS: tuple[str, ...] = (
     'items',
     'low price',
     'off',
+    'order now',
+    'shop now',
     'sold',
     'welcome deal',
 )
-"""Card decoration, prices and shipping copy that is not a category title."""
+"""Card decoration, prices, shipping and action copy that is not a category title."""
 
 
 class SearchOutcome(StrEnum):
@@ -385,17 +389,6 @@ def find_search_categories(snapshot: Snapshot) -> tuple[SearchCategory, ...]:
         seen.add(label)
         selected.append(SearchCategory(label=title.text, box=title))
 
-    if selected:
-        return tuple(selected)
-
-    # Some layouts omit the item-count line. Fall back to title-sized lines
-    # below `Discover more`; the history entries above it remain excluded.
-    for title in sorted(titles, key=lambda item: (item.bbox[1], item.bbox[0])):
-        label = normalize(title.text)
-        if not label or label in seen:
-            continue
-        seen.add(label)
-        selected.append(SearchCategory(label=title.text, box=title))
     return tuple(selected)
 
 
@@ -739,16 +732,53 @@ def run_search_task(
                     label=category.label,
                 ),
             )
-            transition = wait_for_text_gone(
+            transition, left, dismiss, stop = _wait_for_landing_gone(
+                controller,
                 capture,
-                is_search_landing,
+                corpus,
+                initial=landing,
                 timeout=transition_timeout,
                 interval=interval,
-                initial=landing,
+                settle=settle,
                 clock=clock,
                 sleep=sleep,
+                logger=log,
+                templates=templates,
             )
-            if transition.found:
+            if dismiss is not None:
+                dismissals.append(dismiss)
+            if stop is not None:
+                return _finish_failed(
+                    controller,
+                    capture,
+                    corpus,
+                    navigate,
+                    spec,
+                    entry,
+                    done_before,
+                    limit,
+                    verification='redeem_interstitial',
+                    done_after=state.count(spec.key),
+                    detail='the unclosable reward interstitial appeared after the category tap; the round was not claimed',
+                    rounds=len(round_records),
+                    round_records=round_records,
+                    badge_before=badge_before,
+                    badge_after=current_badge,
+                    taps=taps,
+                    return_state=return_state,
+                    dismissals=dismissals,
+                    stop=stop,
+                    route=route,
+                    templates=templates,
+                    return_timeout=return_timeout,
+                    return_interval=return_interval,
+                    return_attempts=return_attempts,
+                    settle=settle,
+                    clock=clock,
+                    sleep=sleep,
+                    logger=log,
+                )
+            if not left:
                 return _finish_failed(
                     controller,
                     capture,
@@ -784,7 +814,7 @@ def run_search_task(
                 capture,
                 corpus,
                 navigate,
-                snapshot=transition.frame,
+                snapshot=transition,
                 templates=templates,
                 route=route,
                 timeout=return_timeout,
@@ -849,7 +879,7 @@ def run_search_task(
                 or (previous_badge is None and after.complete)
             )
             if advanced and after is not None:
-                count = _advanced_count(previous_badge, after)
+                count = min(_advanced_count(previous_badge, after), limit - state.count(spec.key))
                 record = RoundRecord(
                     index=round_index,
                     category=category.label,
@@ -870,7 +900,7 @@ def run_search_task(
                     break
                 continue
 
-            if not row_present and _trusted_surface(opened) and previous_badge is not None:
+            if not row_present and _trusted_surface(opened, current) and previous_badge is not None:
                 expected = min(previous_badge.completed + 1, previous_badge.total)
                 if expected >= previous_badge.total:
                     record = RoundRecord(
@@ -1087,13 +1117,20 @@ def _badge_text(badge: ProgressBadge | None) -> str | None:
     return badge.text if badge is not None else None
 
 
-def _trusted_surface(opened: BoostList) -> bool:
-    """Whether a missing row on this surface proves the search task is finished."""
+def _trusted_surface(opened: BoostList, current: Snapshot) -> bool:
+    """Whether the frame the missing row was read from proves the task finished.
+
+    The route comes from ``open_boost_list``, but the *evidence* must be the
+    frame that actually omitted the row. A transient blank or partially rendered
+    frame is not a populated boost list and cannot turn an unread badge into a
+    completion.
+    """
     return (
         not opened.empty
         and opened.route is DiscoveryRoute.BOOST
-        and is_boost_page(opened.snapshot)
-        and has_task_rows(opened.snapshot)
+        and is_boost_page(current)
+        and has_task_rows(current)
+        and classify(current).state is ScreenState.PAGE
     )
 
 
@@ -1117,11 +1154,13 @@ def _is_coin_page(snapshot: Snapshot) -> bool:
     return all(contains_text(snapshot, marker) for marker in COIN_PAGE_MARKERS)
 
 
-def _wait_for_landing(
+def _wait_for_surface(
     controller: Controller,
     capture: CaptureSource,
     corpus: PopupCorpus,
     *,
+    target: Callable[[Snapshot], bool],
+    initial: Snapshot | None = None,
     timeout: float,
     interval: float,
     settle: float,
@@ -1130,12 +1169,12 @@ def _wait_for_landing(
     logger: logging.Logger,
     templates: TemplateStore | None,
 ) -> tuple[Snapshot, bool, DismissReport | None, str | None]:
-    """Poll until the search landing is visible, sweeping popups on the way."""
+    """Poll until ``target`` is true, sweeping popups on the way."""
     deadline = clock() + timeout
-    current = _capture(capture)
+    current = initial if initial is not None else _capture(capture)
     dismiss: DismissReport | None = None
     while True:
-        if is_search_landing(current):
+        if target(current):
             return current, True, dismiss, None
         state = classify(current).state
         if state is ScreenState.POPUP:
@@ -1159,6 +1198,73 @@ def _wait_for_landing(
             return current, False, dismiss, None
         sleep(min(interval, max(0.0, deadline - now)))
         current = _capture(capture)
+
+
+def _wait_for_landing(
+    controller: Controller,
+    capture: CaptureSource,
+    corpus: PopupCorpus,
+    *,
+    timeout: float,
+    interval: float,
+    settle: float,
+    clock: Callable[[], float],
+    sleep: Callable[[float], None],
+    logger: logging.Logger,
+    templates: TemplateStore | None,
+) -> tuple[Snapshot, bool, DismissReport | None, str | None]:
+    """Poll until the search landing is visible, sweeping popups on the way."""
+    return _wait_for_surface(
+        controller,
+        capture,
+        corpus,
+        target=is_search_landing,
+        timeout=timeout,
+        interval=interval,
+        settle=settle,
+        clock=clock,
+        sleep=sleep,
+        logger=logger,
+        templates=templates,
+    )
+
+
+def _left_landing(snapshot: Snapshot) -> bool:
+    """Whether the landing has been replaced by a settled non-landing page."""
+    if is_search_landing(snapshot):
+        return False
+    return classify(snapshot).state in (ScreenState.PAGE, ScreenState.UNKNOWN)
+
+
+def _wait_for_landing_gone(
+    controller: Controller,
+    capture: CaptureSource,
+    corpus: PopupCorpus,
+    *,
+    initial: Snapshot,
+    timeout: float,
+    interval: float,
+    settle: float,
+    clock: Callable[[], float],
+    sleep: Callable[[float], None],
+    logger: logging.Logger,
+    templates: TemplateStore | None,
+) -> tuple[Snapshot, bool, DismissReport | None, str | None]:
+    """Poll until the landing is left, sweeping popups on the way."""
+    return _wait_for_surface(
+        controller,
+        capture,
+        corpus,
+        target=_left_landing,
+        initial=initial,
+        timeout=timeout,
+        interval=interval,
+        settle=settle,
+        clock=clock,
+        sleep=sleep,
+        logger=logger,
+        templates=templates,
+    )
 
 
 def _skipped(

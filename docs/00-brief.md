@@ -61,7 +61,8 @@ tapping a guessed coordinate ([`06-runbook.md`](06-runbook.md) §14).
   per round, BACK increments); **11d/11e shortcut & widget** (catalogued, automation descoped #27);
   **11f notifications** (immediate credit, app pre-prompt, Android runtime dialog, or stop at OS
   settings without toggling); **11g search landing** (one `Discover more` category card per round,
-  badge `0/2 → 1/2 → 2/2`, never a search-history entry or typed account text).
+  badge `0/2 → 1/2`, then the row disappears at `2/2`; never a search-history entry or typed
+  account text).
 - **FR-12 / FR-13** Sweep popups after every navigation and verify completion positively (progress
   badge, completed control, balance delta, or row gone from a complete surface).
 

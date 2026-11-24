@@ -16,7 +16,7 @@ loop wrapped in safety guards, daily state, and structured reporting.
               Controller (clamp, jitter, dry-run) ─▶ PopupDismisser         control/
                                          │
                                          ▼
-              executors (signin, browse, quiz, surprise, notifications)     tasks/
+              executors (signin, browse, search, quiz, surprise, notifications) tasks/
                                          │
                                          ▼
               DailyStateStore + RunReport + Apprise / webhook / ntfy        runner/
@@ -29,7 +29,7 @@ loop wrapped in safety guards, daily state, and structured reporting.
 | transport | `transport.py` | shared `AdbRunner` protocol and `SubprocessAdbRunner` |
 | perception | `perception/{capture,ocr,snapshot,geometry,layout,matching,templates,state,waits,scroll,artifacts,errors}.py` | screencap, RapidOCR, frame geometry profiles, row grouping, fuzzy matching, scaled templates, screen classification, waits, search-scrolling, artifact sidecars |
 | control | `control/{device,controller,popups,errors}.py` | typed adb input (`AdbInputDevice`), clamped/jittered/dry-run `Controller`, layered popup dismissal (`PopupDismisser`, `specs/popups.yaml`) |
-| tasks | `tasks/{catalogue,dispatch,surface,discovery,signin,browse,quiz,quiz_bank,surprise,notifications,errors}.py` | Pydantic task policy (`specs/tasks.yaml`), sealed `DispatchGate`, surface routing & roster observation, and the five task executors + `data/quiz_bank.json` |
+| tasks | `tasks/{catalogue,dispatch,surface,discovery,signin,browse,search,quiz,quiz_bank,surprise,notifications,errors}.py` | Pydantic task policy (`specs/tasks.yaml`), sealed `DispatchGate`, surface routing & roster observation, and the six task executors + `data/quiz_bank.json` |
 | runner | `runner/{config,device,engine,safety,failures,state,lock,report,notify,levels,schedule,timezone,errors}.py` | env config, device hygiene & routes (`AdbDevice`), nightly walk (`engine`), `SafetyGuard`, failure taxonomy, atomic daily state, exclusive `run.lock`, reports, notifications, scheduler, timezone check |
 | entry & tools | `cli.py`, `doctor.py`, `tools/capture_frames.py` | `version`, `doctor`, `idle`, `run` (`--once` / `--schedule`, `--dry-run`); developer fixture capture |
 
@@ -91,5 +91,4 @@ Architecture decisions are recorded in [`adr/`](adr/README.md).
 
 - `shortcut` and `widget` task executors and widget-route fallback (catalogued in `specs/tasks.yaml`,
   skipped as `no executor`; descoped in #27 because the shortcut URI needs no launcher item).
-- An executor for `Search for what you love` (refused as `unrecognised` by default-deny).
 - An HTTP/API-first spike (#9; see [`adr/0001`](adr/0001-drive-the-ui-not-the-api.md)).

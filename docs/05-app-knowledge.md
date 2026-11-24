@@ -111,6 +111,8 @@ category-tap executor (#108).
   product visit are involved; the executor taps one untried category per round and verifies the
   badge after returning. The landing is now classified as `PAGE` / `search_landing`; two BACKs
   still exit to the home feed (docs/07 §1), so the measured shortcut route is used for every return.
+  The executor's own live verification is deferred to #114; the replay below is from the captured
+  landing frame, and the live sequence here is the measured round semantics.
 - **`View Super discounts` ✅ (2026-11-24 00:35 EST, run `20261124T053441Z`):** a timed view task.
   The row reads `View Super discounts`, subtitle `Check out this page for 15 seconds`, `GO`, and
   `+1`; there is no purchase step. The `GO` opens a destination page; the live run read the

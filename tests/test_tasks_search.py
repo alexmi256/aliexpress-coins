@@ -361,28 +361,24 @@ def test_find_search_categories_returns_nothing_without_the_landing_heading() ->
     assert find_search_categories(_snapshot(_box('Search history', 60, 320, 400, 370))) == ()
 
 
-def test_find_search_categories_falls_back_to_title_sized_cards_without_anchors() -> None:
+def test_find_search_categories_does_not_tap_unanchored_titles() -> None:
     landing = _snapshot(
         _box('Discover more', 60, 660, 400, 710),
         _box('Sneakers', 200, 800, 460, 850),
         _box('brand', 210, 870, 300, 890),
     )
 
-    categories = find_search_categories(landing)
-
-    assert [category.label for category in categories] == ['Sneakers']
+    assert find_search_categories(landing) == ()
 
 
-def test_find_search_categories_dedupes_a_repeated_fallback_title() -> None:
+def test_find_search_categories_excludes_an_anchored_action_label() -> None:
     landing = _snapshot(
         _box('Discover more', 60, 660, 400, 710),
-        _box('Sneakers', 200, 800, 460, 850),
-        _box('Sneakers', 780, 800, 1040, 850),
+        _box('Buy now', 200, 800, 460, 850),
+        _box('10k+ items', 200, 860, 380, 900),
     )
 
-    categories = find_search_categories(landing)
-
-    assert [category.label for category in categories] == ['Sneakers']
+    assert find_search_categories(landing) == ()
 
 
 @pytest.mark.slow
@@ -541,11 +537,13 @@ def test_an_unreadable_entry_badge_can_complete_on_a_two_of_two_after_round(
         on_tap=on_tap,
     )
     state = _state(tmp_path)
+    state.record('search_for_what_you_love')
 
     result = _run(world, catalogue, corpus, state, _entry(catalogue, world.frame))
 
     assert result.outcome is SearchOutcome.COMPLETED
     assert result.verification == 'progress_complete'
+    assert result.done_today_before == 1
     assert state.count('search_for_what_you_love') == 2
 
 
@@ -652,6 +650,48 @@ def test_a_row_absent_on_the_inline_coin_page_is_not_trusted_as_completion(
     assert 'saw the row gone before the final round' in result.detail
 
 
+def test_a_transient_blank_final_frame_does_not_prove_the_row_is_gone(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aliexpress_coins.tasks import search
+
+    world = _World(
+        series={
+            'boost1': (_boost_frame(badge='1/2'),),
+            'landing': (_landing_frame(),),
+            'results': (_results_frame(),),
+            'coins': (_coin_frame(),),
+            'blank': (_snapshot(),),
+        },
+        transitions={
+            ('boost1', 'go'): 'landing',
+            ('landing', 'sneakers'): 'results',
+        },
+    )
+    opened = BoostList(
+        snapshot=_boost_frame(badge='1/2'),
+        route=DiscoveryRoute.BOOST,
+        detail='test',
+    )
+
+    def open_list(*_args: object, **_kwargs: object) -> BoostList:
+        world.go('blank')
+        return opened
+
+    monkeypatch.setattr(search, 'open_boost_list', open_list)
+    state = _state(tmp_path)
+
+    result = _run(world, catalogue, corpus, state, _entry(catalogue, world.frame))
+
+    assert result.outcome is SearchOutcome.FAILED
+    assert result.verification == 'progress_unchanged'
+    assert 'saw the row gone before the final round' in result.detail
+    assert state.count('search_for_what_you_love') == 0
+
+
 def test_a_missing_landing_fails_with_the_return_guaranteed(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -693,13 +733,29 @@ def test_a_landing_without_an_untried_category_fails(
     corpus: PopupCorpus,
     tmp_path: Path,
 ) -> None:
+    landing = _snapshot(
+        _box('Discover more', 60, 660, 400, 710),
+        _box('Sneakers', 200, 800, 460, 850),
+        _box('74k+ items', 200, 860, 380, 900),
+    )
+
+    def on_tap(screen: str, label: str | None, _count: int) -> str | None:
+        return 'boost1' if screen == 'coins' and label == 'earn more' else None
+
     world = _World(
         series={
-            'boost0': (_boost_frame(),),
-            'landing': (_snapshot(_box('Discover more', 60, 660, 400, 710)),),
+            'boost0': (_boost_frame(badge='0/2'),),
+            'landing': (landing,),
+            'results': (_results_frame(),),
             'coins': (_coin_frame(),),
+            'boost1': (_boost_frame(badge='1/2'),),
         },
-        transitions={('boost0', 'go'): 'landing'},
+        transitions={
+            ('boost0', 'go'): 'landing',
+            ('boost1', 'go'): 'landing',
+            ('landing', 'sneakers'): 'results',
+        },
+        on_tap=on_tap,
     )
 
     result = _run(world, catalogue, corpus, _state(tmp_path), _entry(catalogue, world.frame))
@@ -728,6 +784,89 @@ def test_a_category_tap_that_does_not_leave_the_landing_fails(
     assert result.outcome is SearchOutcome.FAILED
     assert result.verification == 'transition_not_observed'
     assert result.returned is True
+
+
+def test_a_popup_after_the_category_tap_is_swept_before_the_return(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aliexpress_coins.tasks import search
+
+    landing = _snapshot(
+        _box('Discover more', 60, 660, 400, 710),
+        _box('Sneakers', 200, 800, 460, 850),
+        _box('74k+ items', 200, 860, 380, 900),
+    )
+    popup = _snapshot(_box('Welcome gifts', 200, 700, 1000, 780))
+
+    def on_tap(screen: str, label: str | None, _count: int) -> str | None:
+        return 'boost1' if screen == 'coins' and label == 'earn more' else None
+
+    world = _World(
+        series={
+            'boost0': (_boost_frame(badge='0/2'),),
+            'landing': (landing,),
+            'popup': (popup,),
+            'results': (_results_frame(),),
+            'coins': (_coin_frame(),),
+            'boost1': (_boost_frame(badge='1/2'),),
+        },
+        transitions={
+            ('boost0', 'go'): 'landing',
+            ('boost1', 'go'): 'landing',
+            ('landing', 'sneakers'): 'popup',
+        },
+        on_tap=on_tap,
+    )
+    report = _dismiss('launch_welcome_gifts')
+
+    def sweep(*_args: object, **_kwargs: object) -> tuple[DismissReport, None]:
+        world.go('results')
+        return report, None
+
+    monkeypatch.setattr(search, '_sweep', sweep)
+
+    result = _run(world, catalogue, corpus, _state(tmp_path), _entry(catalogue, world.frame))
+
+    assert result.verification == 'category_not_found'
+    assert report in result.dismissals
+
+
+def test_a_redeem_interstitial_after_the_category_tap_stops_the_round(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aliexpress_coins.tasks import search
+
+    landing = _snapshot(
+        _box('Discover more', 60, 660, 400, 710),
+        _box('Sneakers', 200, 800, 460, 850),
+        _box('74k+ items', 200, 860, 380, 900),
+    )
+    popup = _snapshot(_box('Welcome gifts', 200, 700, 1000, 780))
+    world = _World(
+        series={
+            'boost0': (_boost_frame(badge='0/2'),),
+            'landing': (landing,),
+            'popup': (popup,),
+            'coins': (_coin_frame(),),
+        },
+        transitions={
+            ('boost0', 'go'): 'landing',
+            ('landing', 'sneakers'): 'popup',
+        },
+    )
+    monkeypatch.setattr(search, '_sweep', lambda *args, **kwargs: (None, 'redeem_interstitial'))
+
+    result = _run(world, catalogue, corpus, _state(tmp_path), _entry(catalogue, world.frame))
+
+    assert result.outcome is SearchOutcome.FAILED
+    assert result.verification == 'redeem_interstitial'
+    assert result.stop == 'redeem_interstitial'
 
 
 def test_the_round_return_is_reported_when_the_route_cannot_prove_the_coin_page(
@@ -844,10 +983,15 @@ def test_an_entry_popup_is_kept_in_the_result_dismissals(
 ) -> None:
     from aliexpress_coins.tasks import search
 
+    landing = _snapshot(
+        _box('Discover more', 60, 660, 400, 710),
+        _box('Sneakers', 200, 800, 460, 850),
+        _box('74k+ items', 200, 860, 380, 900),
+    )
     world = _World(
         series={
             'boost0': (_boost_frame(),),
-            'landing': (_snapshot(_box('Discover more', 60, 660, 400, 710)),),
+            'landing': (landing,),
             'coins': (_coin_frame(),),
         },
         transitions={('boost0', 'go'): 'landing'},
@@ -857,7 +1001,7 @@ def test_an_entry_popup_is_kept_in_the_result_dismissals(
 
     result = _run(world, catalogue, corpus, _state(tmp_path), _entry(catalogue, world.frame))
 
-    assert result.verification == 'category_not_found'
+    assert result.verification == 'transition_not_observed'
     assert [dismiss.closed for dismiss in result.dismissals] == [('launch_welcome_gifts',)]
 
 
@@ -993,11 +1137,16 @@ def test_a_popup_on_the_way_to_the_landing_is_swept(
     from aliexpress_coins.tasks import search
 
     popup = _snapshot(_box('Welcome gifts', 200, 700, 1000, 780), _box('Close', 900, 1200, 1000, 1260))
+    landing = _snapshot(
+        _box('Discover more', 60, 660, 400, 710),
+        _box('Sneakers', 200, 800, 460, 850),
+        _box('74k+ items', 200, 860, 380, 900),
+    )
     world = _World(
         series={
             'boost0': (_boost_frame(),),
             'popup': (popup,),
-            'landing': (_snapshot(_box('Discover more', 60, 660, 400, 710)),),
+            'landing': (landing,),
             'coins': (_coin_frame(),),
         },
         transitions={('boost0', 'go'): 'popup'},
@@ -1012,7 +1161,7 @@ def test_a_popup_on_the_way_to_the_landing_is_swept(
 
     result = _run(world, catalogue, corpus, _state(tmp_path), _entry(catalogue, _boost_frame()))
 
-    assert result.verification == 'category_not_found'
+    assert result.verification == 'transition_not_observed'
     assert report in result.dismissals
 
 

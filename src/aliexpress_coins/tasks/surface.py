@@ -25,7 +25,7 @@ from aliexpress_coins.perception.matching import (
     normalize,
 )
 from aliexpress_coins.perception.snapshot import Snapshot
-from aliexpress_coins.perception.state import TASK_TITLES
+from aliexpress_coins.perception.state import TASK_TITLES, has_search_landing_markers
 
 BOOST_MARKER = 'Coins boost'
 """The header shared by the populated boost page and its empty state."""
@@ -44,9 +44,9 @@ SEARCH_LANDING_MARKER = 'Discover more'
 """The category-card section on the search landing (#108).
 
 The landing also carries a search field and an account-specific
-``Search history`` section. The history is never used as an identifier; the
-server-rendered ``Discover more`` heading is the stable page marker and is not
-present on the boost row that opens the page.
+``Search history`` section. The history is never used as an identifier. The
+heading alone is ordinary copy, so :func:`is_search_landing` also requires the
+category grid's item-count lines below it.
 """
 
 PRODUCT_DETAIL_ITEM = re.compile(r'\bitem\s+\d+\s*/\s*\d+\b', re.IGNORECASE)
@@ -226,11 +226,10 @@ def is_search_landing(snapshot: Snapshot) -> bool:
     """Whether the frame is the search landing opened by the search task.
 
     The boost row repeats the title ``Search for what you love``, so the boost
-    page is explicitly excluded. The ``Discover more`` category heading is the
-    landing's own marker; the search-history text above it is account data and
-    deliberately not part of the match.
+    page is explicitly excluded. ``Discover more`` is only ordinary copy by
+    itself; the landing must also show the category grid's item-count lines.
     """
-    return not is_boost_page(snapshot) and contains_text(snapshot, SEARCH_LANDING_MARKER)
+    return not is_boost_page(snapshot) and has_search_landing_markers(snapshot)
 
 
 def is_empty_boost(snapshot: Snapshot) -> bool:

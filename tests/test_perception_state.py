@@ -211,6 +211,19 @@ def test_the_search_landing_is_a_named_page(frames: dict[str, Snapshot]) -> None
     assert 'Discover more' in classification.evidence[0].detail
 
 
+def test_discover_more_without_category_anchors_stays_unknown() -> None:
+    boxes = (
+        _box('Discover more', 60, 660, 400, 710),
+        *(_box(f'Feed item {index}', 60, 760 + index * 60, 600, 810 + index * 60) for index in range(8)),
+    )
+    heading_only = _snapshot(Image.new('RGB', (1200, 2000), 'white'), boxes)
+
+    classification = classify(heading_only)
+
+    assert classification.state is ScreenState.UNKNOWN
+    assert classification.evidence[0].signal == 'no_signal'
+
+
 @pytest.mark.slow
 def test_the_recorded_surprise_product_detail_is_a_named_page() -> None:
     engine = RapidOcrEngine()

@@ -1,6 +1,6 @@
 # Screen-state fixtures
 
-Fourteen recorded frames from the reference tablet, used by the screen-state classifier tests
+Fifteen recorded frames from the reference tablet, used by the screen-state classifier tests
 (`tests/test_perception_state.py`) and the #84 discovery/sign-in tests. They are **full 1200×2000
 frames**, exactly the shape `AdbSnapshotter.capture()`
 returns: the status-bar clock and the Android taskbar glyphs are retained. The classifier

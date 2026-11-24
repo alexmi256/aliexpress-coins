@@ -216,6 +216,21 @@ def test_classify_surface_names_the_recorded_search_landing(engine: RapidOcrEngi
     assert classify_surface(_snapshot(_box('Search for what you love', 60, 400, 700, 450))) is Surface.UNKNOWN
 
 
+def test_discover_more_without_a_category_grid_is_not_the_search_landing() -> None:
+    heading_only = _snapshot(_box('Discover more', 60, 660, 400, 710))
+
+    assert not is_search_landing(heading_only)
+    assert classify_surface(heading_only) is Surface.UNKNOWN
+
+    anchored = _snapshot(
+        _box('Discover more', 60, 660, 400, 710),
+        _box('Sneakers', 200, 800, 460, 850),
+        _box('74k+ items', 200, 860, 380, 900),
+    )
+    assert is_search_landing(anchored)
+    assert classify_surface(anchored) is Surface.SEARCH_LANDING
+
+
 @pytest.mark.slow
 def test_classify_surface_names_the_recorded_surprise_detail_and_grid(engine: RapidOcrEngine) -> None:
     detail = _load(ROOT / 'tests' / 'data' / 'flows' / 'surprise_items_item_detail.png', engine)

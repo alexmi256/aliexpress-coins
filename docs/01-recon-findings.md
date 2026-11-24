@@ -125,9 +125,12 @@ fallback up to 20:9).
   (balance `67 → 68`). A second category (`Sneakers`) completed the task; the row was gone from the
   populated boost list on the next read and the balance moved `68 → 69`. The app removes the row at
   `2/2`, so the final badge was not visible on a returned frame.
-- **The landing has no timer chip and no item visit is required.** The measured page marker is
-  `Discover more`; search-history text is account data and is not a marker. The reviewed frame is
+- **The landing has no timer chip and no item visit is required.** The page marker is
+  `Discover more` together with the category grid's item-count lines; search-history text is
+  account data and is not a marker. The reviewed frame is
   [`tests/data/states/search_landing.png`](../tests/data/states/search_landing.png).
+  The executor's live verification is deferred to #114 because this recon had already completed
+  the task for the app day; the replay uses the captured landing frame.
 
 Reviewed flow fixtures live under `tests/data/flows/` and `specs/flows.yaml`; open app questions
 are tracked in [`05-app-knowledge.md`](05-app-knowledge.md) §8.
