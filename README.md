@@ -124,8 +124,15 @@ docker compose up -d
 docker compose logs --tail 5 collector
 ```
 
-Expected log line (`03:30` local default via `AECOINS_SCHEDULE_TIME`, plus up to 180 s jitter via
-`AECOINS_SCHEDULE_JITTER_SECONDS`):
+The default is cron `30 3 * * *` (`03:30` local via `AECOINS_SCHEDULE_TIME`), plus up to 180 s
+jitter via `AECOINS_SCHEDULE_JITTER_SECONDS`, so the actual fire lands between 03:30 and 03:33. The
+reset is observed at **00:00 device-local**. The late slot reduces competition with evening tablet
+use, but the daemon has no second scheduled fire despite roughly 20 hours of claimable time; the
+planned in-run retry loop (#123) will re-enumerate a retryable failure within the same night once it
+lands. An after-reset fire such as 00:20 would leave more room for a supervised retry, at the risk of
+driving a tablet still in use. See [`docs/06-runbook.md`](docs/06-runbook.md) §7 for the full rationale.
+
+Expected log line:
 
 ```text
 2026-11-23 16:31:14,439 INFO {"event":"schedule_wait","next_fire":"2026-11-24T03:31:31.431469-05:00","seconds":57616.992}

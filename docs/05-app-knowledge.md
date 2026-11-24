@@ -151,6 +151,29 @@ shape, but #116 refuses it because its destination and completion contract were 
   destination page marker, the full countdown-to-check transition and whether the row repeats are
   ❓; do not infer them from the tiles below the row.
 
+### 5c. Daily reset boundary ✅
+
+The daily task reset is **00:00 device-local** ✅, bracketed by three `--dry-run` passes on the
+same coin page on the night of 2026-11-23/24 (issue #111):
+
+| local (EST) | `daily_checkin` | plan |
+|---|---|---|
+| 23:25 | allowed, then `task_skipped` `daily limit` | `steps: []` |
+| 23:45 | allowed, then `task_skipped` `daily limit` | `steps: []` |
+| 00:05 | allowed, **no skip** | `steps: ["Daily coins"]` |
+
+Before the roll, the planner still recognises `daily_checkin` as allowed, but daily state marks it
+at its limit and the plan is empty. At 00:05 the fresh day plans `Daily coins`. The 23:45 and 00:05
+readings place the cut at device-local midnight, not 03:00 or 03:30.
+
+This supersedes the recon-era "Pacific midnight?" hypothesis: a Pacific-midnight reset would land at
+03:00 EST, outside the 23:45 → 00:05 bracket. The boundary follows the device's own local day.
+
+Evidence: `/home/alex/aecoins-reset/20261123T234509-0500.log`, run `20261124T042511Z` (23:25 EST),
+run `20261124T044513Z` (23:45 EST), and run `20261124T050459Z` (00:05 EST). The tablet showed `11:25`
+at 23:25 EST and its timezone was EST (`UTC-05:00`, `America/Toronto`). The former 03:10 probe is
+retired; this bracketing settles the reset hour.
+
 ## 6. Interstitials seen ✅
 
 | interstitial | trigger | exit |
@@ -176,5 +199,4 @@ verification → return to coins page → `balance-after` → report. See
 | Does surprise-items distinctness reset between rounds? ❓ | resolves the fallback branch in `surprise.py` | #63: start at `0/2`, open same product in both rounds |
 | Quiz result & notification denial frames ❓ | completes `tests/data/flows/` fixtures | capture before rows are claimed |
 | Whether the quiz question set is finite ❓ | question-bank hit rate | observe `data/quiz_bank.json` growth |
-| **When does the daily reset happen — 00:00 or ~03:00 local?** ❓ | decides whether `03:30` local is after the server reset; running before the roll yields an empty night | #63: two `--dry-run` passes at ~02:50 and ~03:10 local plus nightly `roster.jsonl` at 03:32 (a pre-reset dry run exits non-zero; `roster.jsonl` is the measurement) |
 | What does `Browse recently viewed items` open, and what proves completion? ❓ | the row is visible with `GO` / `+1` but no badge; #116 could not retain its destination or post-tap frame | one supervised run that retains the pre-tap row, destination/timer, and populated boost verification frames |

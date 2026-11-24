@@ -39,7 +39,17 @@ __all__ = [
 ]
 
 DEFAULT_SCHEDULE_TIME = time(3, 30)
-"""The default local start time, 03:30."""
+"""The default local start time, 03:30.
+
+The reset is observed at 00:00 device-local (docs/05-app-knowledge.md §5c), so this slot is safely
+after the roll. The late time is a choice rather than a reset estimate: it avoids competing with
+evening tablet use, at the cost of same-night recovery. A failed run leaves the rest of the day in
+which tasks are still claimable, but the daemon has no second scheduled fire; the planned in-run
+retry loop (#123) will re-enumerate a retryable failure within the same night once it lands instead
+of forfeiting it. Moving the fire closer to the reset (for example 00:20) would leave more room for a
+supervised retry, at the risk of driving a tablet a human is still using. Changing the default is a
+separate decision.
+"""
 
 DEFAULT_KEEP_RUNS = 30
 """How many run directories retention keeps, including the current one."""

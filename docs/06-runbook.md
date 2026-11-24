@@ -102,10 +102,10 @@ A manual `run --once` is supervised, so it **warns** in the log and on stderr wi
 values and continues; use it to diagnose, not to hide a mismatch. The scheduler is the unattended
 path, so it refuses at fire time.
 
-The **daily reset hour is still unmeasured** ❓ ([`05-app-knowledge.md`](05-app-knowledge.md) §8).
-The operator recalls rewards resetting around 03:00 local, but that is not confirmed for coins. The
-schedule is 03:30 plus up to three minutes of jitter, which is *probably* after the roll — not
-proven. See §9 for what to check when a night claims nothing.
+The **daily reset is observed at 00:00 device-local** ✅, bracketed by three dry runs across the
+2026-11-23/24 boundary ([`05-app-knowledge.md`](05-app-knowledge.md) §5c). The nightly default remains
+03:30 plus up to three minutes of jitter, safely after that reset; §7 records why the later fire is
+retained and its retry-window trade-off. See §9 for what to check when a night claims nothing.
 
 ---
 
@@ -461,6 +461,21 @@ a night whose walk left a retryable task failure is not marked complete, so the 
 later run. A run-level failure is likewise not silently treated as complete, so the next day's fire
 tries again.
 
+**Cron and fire-time rationale.** `AECOINS_SCHEDULE_TIME=03:30` is cron `30 3 * * *` in
+`AECOINS_TIMEZONE`; up to 180 seconds of jitter makes the actual fire 03:30–03:33 local (03:32 in the
+example below). The reset is observed at **00:00 device-local**, so this late slot is safely after the
+roll. It is retained because it is less likely to compete with a human using the tablet in the
+evening. The cost is recovery time: a failure at 03:32 leaves roughly 20 hours in which tasks are
+still claimable, and the daemon has no second scheduled fire that day. The planned in-run retry loop
+(#123) will re-enumerate a retryable failure within the same night instead of forfeiting it once it
+lands, which narrows that cost; it will not restore the extra hours an earlier fire would leave for a
+supervised retry if the whole run aborts. Firing shortly after the reset (for example 00:20) would
+leave room for that supervised retry, at the risk of driving a tablet while someone is still using it.
+The 03:32 fire is
+therefore an operational choice, not a reset-time estimate; change it only with a supervised first
+run or an operator retry plan. The former 03:10 reset probe is retired now that the boundary is
+measured.
+
 **What "complete" means.** A finished roster walk marks the day complete only when the roster was
 read completely and nothing dispatched is worth retrying: every row either completed, was
 skipped/refused (policy, daily limit, or the app reporting it unavailable), or failed with a failure
@@ -615,18 +630,16 @@ replaying the phone.
 
 ## 9. When a night claims nothing
 
-The daily reset hour is **❓ unmeasured**. The operator recalls rewards resetting around 03:00 EST,
-but that is not confirmed for coins ([`05-app-knowledge.md`](05-app-knowledge.md) §8). The task day
-is decided server-side; changing the tablet's timezone did not clear completed task rows in the
-2026-11-22 session. Treat a run before the roll as a successful, empty night: it can report
-`completed` with a zero delta.
+The daily reset is **✅ observed at 00:00 device-local**, bracketed by dry runs at 23:25, 23:45
+and 00:05 EST ([`05-app-knowledge.md`](05-app-knowledge.md) §5c). The task day is decided server-side;
+changing the tablet's timezone did not clear completed task rows in the 2026-11-22 session. Treat a
+run before the roll as a successful, empty night: it can report `completed` with a zero delta.
 
-The schedule is **03:30 plus up to 180 s of jitter**. That is probably after a ~03:00 roll, but
-"probably" is not a measurement. Do not move the schedule earlier to "catch" the reset without
-first running the two-dry-run measurement in #63 (around 02:50 and 03:10 local, with no claims) and
-reading the nightly `roster.jsonl`. A dry run that cannot settle and read its surface is a **probe
-failure** (`plan.probe_failed: true`), not a pre-reset datapoint; retry or inspect it rather than
-counting its zero rows as evidence about the reset.
+The schedule is **03:30 plus up to 180 s of jitter** (03:30–03:33 local), safely after the observed
+reset. §7 records why that late fire is retained and the trade-off with an after-reset fire; 03:30 is
+not a reset estimate. The former 03:10 probe is no longer needed. A dry run that cannot settle and
+read its surface is still a **probe failure** (`plan.probe_failed: true`), not an empty-roster
+datapoint; retry or inspect it rather than counting its zero rows as evidence about the day.
 
 If a night claims nothing, check in this order:
 
@@ -777,7 +790,7 @@ gets an unattended night.
 | Android / app | Android 15 (sdk 35), AliExpress `8.180.1` | An update can move a row, change a label or add a popup. The deny list still refuses unknown rows, but the allowed catalogue may stop matching; capture a fixture and update the catalogue rather than tapping a guess. |
 | store region / locale | AliExpress Canada store, `en`, coin values in `C$` | The catalogue and patterns were built from this region. Another region or locale changes labels, row ordering and currency rendering; treat it as unmeasured and re-run recon. |
 | account and device use | one signed-in account, one device, no concurrency | The collector assumes the tablet is unlocked with no PIN/biometric lock, the charger is attached, and no human is using it. Runs that share a state directory serialise on `state/run.lock`; runs with different state directories are not coordinated and would each drive the device. |
-| daily reset hour | ❓ unmeasured; schedule is 03:30 local plus up to 180 s jitter | A run before the device's day rolls finds every task already claimed and reports a successful, empty night. Confirm the reset before moving the schedule earlier (§9). |
+| daily reset hour | ✅ observed at 00:00 device-local, bracketed by 23:45 and 00:05 EST dry runs; schedule is 03:30 local plus up to 180 s jitter | A run before the device's day rolls finds every task already claimed and reports a successful, empty night. Keep the schedule after midnight; weigh human tablet use against same-night retry room before moving it (§7, §9). |
 | balance and verification | OCR on the shipped frame | Account data is never in git; screenshots contain the nickname, cart and orders. A frame that cannot be read leaves the balance `unknown`, never guessed. |
 
 ### Before the first unattended night
