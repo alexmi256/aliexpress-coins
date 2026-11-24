@@ -466,11 +466,12 @@ tries again.
 example below). The reset is observed at **00:00 device-local**, so this late slot is safely after the
 roll. It is retained because it is less likely to compete with a human using the tablet in the
 evening. The cost is recovery time: a failure at 03:32 leaves roughly 20 hours in which tasks are
-still claimable, and the daemon has no second scheduled fire that day. The in-run retry loop (#123)
-re-enumerates a retryable failure within the same night instead of forfeiting it, which narrows that
-cost; it does not restore the extra hours an earlier fire would leave for a supervised retry if the
-whole run aborts. Firing shortly after the reset (for example 00:20) would leave room for that
-supervised retry, at the risk of driving a tablet while someone is still using it. The 03:32 fire is
+still claimable, and the daemon has no second scheduled fire that day. The planned in-run retry loop
+(#123) will re-enumerate a retryable failure within the same night instead of forfeiting it once it
+lands, which narrows that cost; it will not restore the extra hours an earlier fire would leave for a
+supervised retry if the whole run aborts. Firing shortly after the reset (for example 00:20) would
+leave room for that supervised retry, at the risk of driving a tablet while someone is still using it.
+The 03:32 fire is
 therefore an operational choice, not a reset-time estimate; change it only with a supervised first
 run or an operator retry plan. The former 03:10 reset probe is retired now that the boundary is
 measured.

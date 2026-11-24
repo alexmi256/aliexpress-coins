@@ -128,9 +128,9 @@ The default is cron `30 3 * * *` (`03:30` local via `AECOINS_SCHEDULE_TIME`), pl
 jitter via `AECOINS_SCHEDULE_JITTER_SECONDS`, so the actual fire lands between 03:30 and 03:33. The
 reset is observed at **00:00 device-local**. The late slot reduces competition with evening tablet
 use, but the daemon has no second scheduled fire despite roughly 20 hours of claimable time; the
-in-run retry loop (#123) re-enumerates a retryable failure within the same night. An after-reset fire
-such as 00:20 would leave more room for a supervised retry, at the risk of driving a tablet still in
-use. See [`docs/06-runbook.md`](docs/06-runbook.md) §7 for the full rationale.
+planned in-run retry loop (#123) will re-enumerate a retryable failure within the same night once it
+lands. An after-reset fire such as 00:20 would leave more room for a supervised retry, at the risk of
+driving a tablet still in use. See [`docs/06-runbook.md`](docs/06-runbook.md) §7 for the full rationale.
 
 Expected log line:
 
