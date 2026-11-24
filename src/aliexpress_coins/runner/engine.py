@@ -1844,6 +1844,14 @@ def _popup_recorder(report: RunReport) -> Callable[[DismissReport], None]:
     return record
 
 
+def _observe_balance(context: RunContext, balance: float | None, log: logging.Logger) -> None:
+    """Persist a verified coin-page reading without making a balance write fail the run."""
+    try:
+        context.state.observe_balance(balance)
+    except Exception as exc:
+        log.warning('%s', _event('state_balance_failed', detail=f'{type(exc).__name__}: {exc}'))
+
+
 def _record_balance_before(
     context: RunContext,
     controller: Controller,
@@ -1892,6 +1900,7 @@ def _record_balance_before(
     report.balance_before = read_coin_balance(recorded)
     if context.safety is not None:
         context.safety.expect_balance(report.balance_before)
+    _observe_balance(context, report.balance_before, log)
     if report.balance_before is None:
         report.balance_note = 'the coins page did not render a readable balance before the first task'
 
@@ -1911,6 +1920,7 @@ def _finish_on_coins_page(
             report.returned_to_coins_page = True
             recorded = _record_frame(report, artifacts, frame, 'balance-after', log)
             report.balance_after = read_coin_balance(recorded)
+            _observe_balance(context, report.balance_after, log)
             return
         result = return_to_coins_page(
             controller,
@@ -1931,6 +1941,7 @@ def _finish_on_coins_page(
         if result.returned and result.snapshot is not None:
             recorded = _record_frame(report, artifacts, result.snapshot, 'balance-after', log)
             report.balance_after = read_coin_balance(recorded)
+            _observe_balance(context, report.balance_after, log)
     except RunAborted:
         raise
     except RunInterrupted as exc:
