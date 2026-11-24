@@ -1324,12 +1324,17 @@ def run_browse_task(
         if (
             arrival is not None
             and warm_start is not None
-            and (arrival.left_app or classify_surface(arrival.snapshot) is Surface.UNKNOWN)
+            and (
+                arrival.left_app
+                or (classify_surface(arrival.snapshot) is Surface.UNKNOWN and arrival.app_foreground is None)
+            )
         ):
             # Screenshot evidence is sufficient to force a warm start. A probe
             # that returns None cannot separate an icon launcher from a real
             # unknown page, so the unknown destination is still accepted, but
             # the return route must not cold-link into the empty-boost state.
+            # A readable True needs no relaunch and keeps the 10-second settle
+            # off ordinary uncatalogued destinations.
             warm_start()
 
         return_state = return_to_coins_page(
@@ -1837,6 +1842,7 @@ def _wait_for_arrival(
                 elapsed=max(0.0, clock() - started),
                 history=tuple(history),
                 dismiss=dismiss,
+                app_foreground=foreground,
             )
 
         if classification.state is ScreenState.POPUP:
@@ -1877,6 +1883,7 @@ def _wait_for_arrival(
                     elapsed=max(0.0, clock() - started),
                     history=tuple(history),
                     dismiss=dismiss,
+                    app_foreground=foreground,
                 )
             if on_coin:
                 return Arrival(
@@ -1887,6 +1894,7 @@ def _wait_for_arrival(
                     elapsed=max(0.0, clock() - started),
                     history=tuple(history),
                     dismiss=dismiss,
+                    app_foreground=foreground,
                 )
 
         now = clock()
@@ -1899,6 +1907,7 @@ def _wait_for_arrival(
                 elapsed=max(0.0, clock() - started),
                 history=tuple(history),
                 dismiss=dismiss,
+                app_foreground=foreground,
             )
         sleep(min(interval, max(0.0, deadline - now)))
         current = _capture(capture)

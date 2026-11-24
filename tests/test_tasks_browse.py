@@ -1440,6 +1440,51 @@ def test_an_unreadable_probe_keeps_an_unknown_launcher_as_destination_but_warms_
     assert set(world.navigations) == {SurfaceRoute.SHORTCUT}
 
 
+def test_a_readable_foreground_skips_the_warm_start_for_an_unknown_destination(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    world = _World(
+        series={
+            'boost': (_boost_frame(),),
+            'destination': (_destination(chip=None),),
+            'coins': (_coin_frame(),),
+            'boost_after': (_boost_frame(),),
+        },
+        transitions={
+            ('boost', 'go'): 'destination',
+            ('coins', 'earn more'): 'boost_after',
+        },
+    )
+    warm_starts: list[bool] = []
+
+    result = run_browse_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        app_foreground=lambda: True,
+        warm_start=lambda: warm_starts.append(True),
+        arrival_timeout=1.0,
+        load_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is BrowseOutcome.FAILED
+    assert result.verification == 'no_change'
+    assert result.arrival is not None
+    assert result.arrival.arrived is True
+    assert result.arrival.left_app is False
+    assert result.arrival.app_foreground is True
+    assert warm_starts == []
+
+
 def test_run_browse_task_recognises_the_bare_clock_date_surface_without_a_probe(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
