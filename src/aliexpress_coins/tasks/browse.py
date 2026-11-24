@@ -444,10 +444,11 @@ class BrowseResult:
     ``verification`` names the proof: ``progress_advanced``, ``progress_complete``,
     ``progress_unchanged`` (the row was read and its badge did not advance),
     ``row_gone``, ``action_completed``, ``action_gone``, ``daily_limit``,
-    ``row_complete``, ``row_vanished``, ``no_change`` (present with no readable
-    badge baseline), ``no_observation`` (the row was absent and no positive
-    signal could prove it gone), ``return_failed``, ``redeem_interstitial`` or
-    ``not_settled``. ``detail`` is the report-safe sentence.
+    ``row_complete``, ``row_vanished``, ``no_change`` (present but no readable
+    badge establishes a change), ``no_observation`` (the row was absent and no
+    positive signal could prove it gone), ``return_failed``,
+    ``redeem_interstitial`` or ``not_settled``. ``detail`` is the report-safe
+    sentence.
     """
 
     key: str
@@ -2161,11 +2162,26 @@ def _verdict(
             badge=badge,
             evidence=evidence,
         )
-    if before is not None:
+    # Each verification names the fact that was established and carries the
+    # values behind it. An unread badge is not an unchanged badge: without an
+    # observed value there is no progress_unchanged, only no_change.
+    if before is not None and badge is not None:
         return _Verdict(
             status='progress_unchanged',
             decisive=False,
             detail=progress_unchanged_detail(title, before, badge),
+            badge=badge,
+            evidence=evidence,
+        )
+    if before is not None:
+        expected = min(before.completed + 1, before.total)
+        return _Verdict(
+            status='no_change',
+            decisive=False,
+            detail=(
+                f'{title!r} is still present but its badge could not be read: '
+                f'expected {expected}/{before.total}, saw unreadable'
+            ),
             badge=badge,
             evidence=evidence,
         )

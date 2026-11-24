@@ -1210,6 +1210,54 @@ def test_run_browse_task_fails_when_the_taps_change_nothing(
 
 
 @pytest.mark.slow
+def test_run_browse_task_does_not_claim_progress_when_the_badge_is_unreadable(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    world = _World(
+        series={
+            'boost': (_boost_frame(),),
+            'destination': (_destination(chip=None), _destination(chip=None)),
+            'coins': (_coin_frame(),),
+            'boost_after': (_boost_frame(badge=None),),
+        },
+        transitions={
+            ('boost', 'go'): 'destination',
+            ('coins', 'earn more'): 'boost_after',
+        },
+    )
+    state = _state(tmp_path)
+
+    result = run_browse_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        state,
+        _entry(catalogue),
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        load_timeout=1.0,
+        chip_interval=0.5,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is BrowseOutcome.FAILED
+    assert result.verification == 'no_change'
+    assert result.detail == (
+        "'Explore sponsored items' is still present but its badge could not be read: expected 1/6, saw unreadable"
+    )
+    assert result.badge_before == '0/6'
+    assert result.badge_after is None
+    assert result.recorded is False
+    assert result.returned is True
+    assert state.count('sponsored_items') == 0
+
+
+@pytest.mark.slow
 @pytest.mark.parametrize('foreground', [None, True])
 def test_run_browse_task_returns_to_coins_when_the_destination_is_wrong(
     catalogue: TaskCatalogue,
@@ -3260,6 +3308,7 @@ def test_run_browse_task_fails_on_the_inline_route_when_the_row_is_unchanged(
 
     assert result.outcome is BrowseOutcome.FAILED
     assert result.verification == 'progress_unchanged'
+    assert result.detail == "progress_unchanged: expected 1/6, saw 0/6 ('Explore sponsored items')"
     assert result.returned is True
 
 
