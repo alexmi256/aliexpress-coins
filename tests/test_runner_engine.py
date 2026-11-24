@@ -48,7 +48,7 @@ from aliexpress_coins.runner.errors import (
 from aliexpress_coins.runner.failures import FailureCode, failure
 from aliexpress_coins.runner.notify import AppriseSink, Notification, NotificationSink, WebhookSink
 from aliexpress_coins.runner.report import RunEventLog, RunReport, RunStatus, TaskRecord
-from aliexpress_coins.runner.safety import AbortCode, RunAborted, ScreenReport
+from aliexpress_coins.runner.safety import AbortCode, RunAborted, SafetyGuard, ScreenReport
 from aliexpress_coins.runner.state import DailyStateStore, NightOutcome
 from aliexpress_coins.tasks import notifications as notifications_module
 from aliexpress_coins.tasks.browse import ReturnResult
@@ -327,6 +327,25 @@ def _skeleton_frame() -> Snapshot:
         boxes=(),
         captured_at=CAPTURED_AT,
         geometry=DeviceGeometry.from_frame(image.width, image.height, density=240, sdk=35),
+    )
+
+
+def _coin_store_frame() -> Snapshot:
+    return _snapshot(_box('Use coins for discounts', 100, 100, 700, 160))
+
+
+def _rendering_boost_frame() -> Snapshot:
+    """The #120 probe shape: boost header and title, but no rendered row controls.
+
+    The measured skeleton pixels keep this a changing frame for the stability
+    wait; the OCR boxes name the boost page before its rows have finished.
+    """
+    return replace(
+        _skeleton_frame(),
+        boxes=(
+            _box('Coins boost', 100, 100, 500, 150),
+            _box('Take the coins quiz', 180, 1269, 700, 1305),
+        ),
     )
 
 
@@ -1087,9 +1106,214 @@ def test_a_dry_run_waits_for_the_inline_rows_after_the_coin_page_markers(
     content_waits = report.plan['content_waits']
     assert isinstance(content_waits, list)
     assert content_waits[-1]['status'] == 'satisfied'
-    assert content_waits[-1]['history'][0] is False
+    assert content_waits[-1]['history'] == [True]
     assert context.controller.tap_count == 0
     assert device.taps == []
+
+
+def test_a_dry_run_settles_a_still_rendering_boost_page_before_planning(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    rendering = _rendering_boost_frame()
+    content = _boost_frame('coins_quiz')
+    context = _context(
+        tmp_path,
+        capture=_Capture(rendering, content, content),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+    device = _RecordingDevice()
+    context.controller = Controller.from_frame(device, rendering, rng=random.Random(0))
+    assert isinstance(context.navigate, _Navigate)
+
+    report = engine.run_once(context)
+
+    assert context.navigate.routes == []
+    assert report.status is RunStatus.PLANNED
+    assert report.ok is True
+    assert report.plan is not None
+    assert report.plan['probe_failed'] is False
+    assert report.plan['surface'] == 'boost_page'
+    assert [step['key'] for step in report.plan['steps']] == ['coins_quiz']
+    assert report.plan['taps_issued'] == 0
+    stable_waits = report.plan['stable_waits']
+    assert isinstance(stable_waits, list)
+    assert stable_waits[-1]['status'] == 'satisfied'
+    assert stable_waits[-1]['differences'][0] > stable_waits[-1]['threshold']
+    content_waits = report.plan['content_waits']
+    assert isinstance(content_waits, list)
+    assert content_waits[-1]['status'] == 'satisfied'
+    assert content_waits[-1]['history'] == [True]
+    assert context.controller.tap_count == 0
+    assert device.taps == []
+
+
+def test_a_dry_run_rereads_rows_that_appear_after_the_frame_settles(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    rendering = _rendering_boost_frame()
+    content = _boost_frame('coins_quiz')
+    context = _context(
+        tmp_path,
+        capture=_Capture(rendering, rendering, rendering, content),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+    device = _RecordingDevice()
+    context.controller = Controller.from_frame(device, rendering, rng=random.Random(0))
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.PLANNED
+    assert report.plan is not None
+    assert [step['key'] for step in report.plan['steps']] == ['coins_quiz']
+    stable_waits = report.plan['stable_waits']
+    assert isinstance(stable_waits, list)
+    assert stable_waits[-1]['status'] == 'satisfied'
+    assert stable_waits[-1]['differences'] == [0.0, 0.0]
+    content_waits = report.plan['content_waits']
+    assert isinstance(content_waits, list)
+    assert content_waits[-1]['status'] == 'satisfied'
+    assert content_waits[-1]['history'] == [False, True]
+    plan_event = next(event for event in _events(report) if event['event'] == 'dry_run_plan')
+    assert plan_event['probe_failed'] is False
+    payload = _report_payload(tmp_path)
+    plan = payload['plan']
+    assert plan['probe_failed'] is False
+    assert plan['stable_waits'][-1]['status'] == 'satisfied'
+    assert plan['content_waits'][-1]['history'] == [False, True]
+    assert context.controller.tap_count == 0
+    assert device.taps == []
+
+
+def test_a_dry_run_does_not_plan_rows_from_a_surface_that_never_settles(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    rendering = _rendering_boost_frame()
+    changing = replace(rendering, image=Image.new('RGB', (1200, 2000), '#e0e0e0'))
+    content = _boost_frame('coins_quiz')
+    context = _context(
+        tmp_path,
+        capture=_Capture(*([rendering, changing] * 10), rendering, content),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+    device = _RecordingDevice()
+    context.controller = Controller.from_frame(device, rendering, rng=random.Random(0))
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.FAILED
+    assert report.failure_code == FailureCode.NAVIGATION_FAILED.value
+    assert report.detail is not None
+    assert report.detail.startswith('surface_unverified: task rows were read but the surface never settled')
+    assert 'stability wait timed_out' in report.detail
+    assert report.plan is not None
+    assert report.plan['probe_failed'] is True
+    stable_waits = report.plan['stable_waits']
+    assert isinstance(stable_waits, list)
+    assert stable_waits[-1]['status'] == 'timed_out'
+    content_waits = report.plan['content_waits']
+    assert isinstance(content_waits, list)
+    assert content_waits[-1]['status'] == 'satisfied'
+    assert [step['key'] for step in report.plan['steps']] == ['coins_quiz']
+    assert context.controller.tap_count == 0
+    assert device.taps == []
+
+
+def test_a_dry_run_does_not_settle_a_route_that_arrived_on_a_non_task_surface(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    destination = _coin_store_frame()
+    context = _context(
+        tmp_path,
+        capture=_Capture(_home_frame(), destination),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.FAILED
+    assert report.detail is not None
+    assert report.detail.startswith('surface_incomplete')
+    assert report.plan is not None
+    assert report.plan['surface'] == 'coin_store'
+    assert report.plan['stable_waits'] == []
+    assert report.plan['content_waits'] == []
+    assert report.plan['probe_failed'] is True
+
+
+def test_a_dry_run_stops_settling_when_a_popup_appears(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    rendering = _rendering_boost_frame()
+    covered = _coin_popup_frame()
+    assert engine._has_plan_rows(covered, catalogue) is False
+    context = _context(
+        tmp_path,
+        capture=_Capture(rendering, covered, covered, covered),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+    context.safety = SafetyGuard(catalogue=catalogue, limit=4)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.FAILED
+    assert report.failure_code == FailureCode.NAVIGATION_FAILED.value
+    assert report.detail is not None
+    assert report.detail.startswith('surface_popup')
+    assert report.plan is not None
+    assert report.plan['surface'] == 'unknown'
+    stable_waits = report.plan['stable_waits']
+    assert isinstance(stable_waits, list)
+    assert stable_waits[-1]['status'] == 'satisfied'
+    assert report.plan['content_waits'] == []
+    assert report.plan['taps_issued'] == 0
+    assert context.controller is not None
+    assert context.controller.tap_count == 0
+
+
+def test_a_dry_run_does_not_reread_rows_after_settling_on_a_non_task_surface(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    destination = _coin_store_frame()
+    context = _context(
+        tmp_path,
+        capture=_Capture(_rendering_boost_frame(), destination, destination, destination),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.FAILED
+    assert report.plan is not None
+    assert report.plan['surface'] == 'coin_store'
+    stable_waits = report.plan['stable_waits']
+    assert isinstance(stable_waits, list)
+    assert stable_waits[-1]['status'] == 'satisfied'
+    assert report.plan['content_waits'] == []
+    assert report.plan['probe_failed'] is True
 
 
 def test_a_dry_run_that_never_renders_fails_instead_of_planning_nothing(
@@ -1181,9 +1405,17 @@ def test_a_dry_run_that_stays_on_the_empty_boost_page_fails_with_its_own_reason(
     assert report.detail is not None
     assert report.detail.startswith('surface_empty_boost')
     assert report.plan is not None
+    assert report.plan['probe_failed'] is True
     assert report.plan['surface'] == 'empty_boost'
     assert report.plan['steps'] == []
     assert report.plan['taps_issued'] == 0
+    plan_event = next(event for event in _events(report) if event['event'] == 'dry_run_plan')
+    assert plan_event['probe_failed'] is True
+    payload = _report_payload(tmp_path)
+    assert payload['plan']['probe_failed'] is True
+    assert '**Plan (dry run):** dry-run probe failed: surface_empty_boost' in report.summary_path.read_text(
+        encoding='utf-8'
+    )
     assert report.shots.get('failure') == 'shots/failure.png'
     assert (report.run_dir / 'shots' / 'failure.png').is_file()
     assert context.controller.tap_count == 0
@@ -1360,8 +1592,17 @@ def test_a_dry_run_fails_when_the_coin_page_shows_a_title_without_a_row(
     assert report.failure_code == FailureCode.NAVIGATION_FAILED.value
     assert report.detail is not None
     assert report.detail.startswith('surface_incomplete')
+    assert 'stability wait satisfied' in report.detail
+    assert '(row wait timed_out)' in report.detail
     assert report.plan is not None
+    assert report.plan['probe_failed'] is True
     assert report.plan['surface'] == 'rows_present'
+    stable_waits = report.plan['stable_waits']
+    assert isinstance(stable_waits, list)
+    assert stable_waits[-1]['status'] == 'satisfied'
+    content_waits = report.plan['content_waits']
+    assert isinstance(content_waits, list)
+    assert content_waits[-1]['status'] == 'timed_out'
     assert report.plan['steps'] == []
     assert report.plan['taps_issued'] == 0
     assert context.controller.tap_count == 0
@@ -1423,9 +1664,12 @@ def test_a_dry_run_route_failure_on_a_readable_empty_page_is_recorded(
     assert report.failure_code == FailureCode.NAVIGATION_FAILED.value
     assert report.detail is not None
     assert report.detail.startswith('surface_rows_incomplete')
+    assert '(no row wait was possible)' in report.detail
     assert report.plan_note == 'could not read the coins page: DeviceUnavailable: warm re-entry unavailable'
     assert report.plan is not None
     assert report.plan['surface'] == 'rows_absent'
+    assert report.plan['stable_waits'] == []
+    assert report.plan['content_waits'] == []
     assert report.plan['steps'] == []
     assert report.plan['taps_issued'] == 0
     assert context.controller.tap_count == 0

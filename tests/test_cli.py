@@ -343,10 +343,11 @@ def test_an_unreadable_dry_run_prints_the_named_reason_and_returns_non_zero(
     report.detail = 'surface_unknown: the coin page did not render (states=loading)'
     report.plan = {
         'surface': 'unknown',
+        'probe_failed': True,
         'steps': [],
         'refusals': [],
         'taps_issued': 0,
-        'detail': 'dry run: surface_unknown: the coin page did not render; no tap was issued',
+        'detail': 'dry-run probe failed: surface_unknown: the coin page did not render; no tap was issued',
     }
     monkeypatch.setattr(cli, 'make_live_context', lambda config, stop: object())
     monkeypatch.setattr(cli, 'run_once', lambda context: report)
@@ -365,7 +366,7 @@ def test_an_unreadable_dry_run_prints_the_named_reason_and_returns_non_zero(
     output = capsys.readouterr().out
     assert 'run run-1: failed' in output
     assert 'surface_unknown: the coin page did not render' in output
-    assert 'plan: dry run: surface_unknown' in output
+    assert 'plan: dry-run probe failed: surface_unknown' in output
     assert 'taps issued: 0' in output
 
 
