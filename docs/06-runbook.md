@@ -279,8 +279,11 @@ It writes under `tests/data/` only when explicitly asked to capture a set, and n
 ## 5. `run --once --dry-run` — plan the night without tapping
 
 A dry run starts the app normally, may fire the shortcut navigation once (an `am start`, not an
-in-app tap), enumerates the visible roster and applies the same deny list as a live run. It sends
-**no in-app taps** (`taps_issued: 0`) and still writes a report.
+in-app tap), and applies the same deny list as a live run. When the page or its rows are still
+rendering, it settles the frame with `wait_until_stable` and performs a bounded row re-read before
+planning. It sends **no in-app taps** (`taps_issued: 0`) and still writes a report. The plan records
+the page wait, frame-stability evidence (`stable_waits`), row re-read (`content_waits`) and the
+row-set confirmation (`roster_waits`) so a partial render cannot be mistaken for an empty day.
 
 ```console
 $ AECOINS_DEVICE=192.168.8.65:5555 AECOINS_TIMEZONE=America/Toronto \
@@ -329,6 +332,12 @@ exits non-zero. When task rows were legible but the coin-page marker was missing
 non-zero dry run as "retry or inspect", never as "the day is done"; a clean empty day cannot be proven
 from the inline coin page alone. The `Coins boost` empty page is a load fault
 ([`05-app-knowledge.md`](05-app-knowledge.md) §4b), not evidence about the day.
+
+A failed dry run is a **probe failure**, not a reset-hour or empty-roster datapoint. `run.json` carries
+`plan.probe_failed: true`, the CLI prints `dry-run probe failed`, and the summary's plan line names it.
+A probe wrapper must record that result as "probe failed" and must not append its zero rows to a
+reset measurement. Only a `planned` dry run, or a roster read by a real run, is evidence about what
+the app offered.
 
 ---
 
@@ -558,7 +567,7 @@ deliberately; a larger budget is not a fix for a slow network or a stuck screen.
 | `balance_before`, `balance_after`, `balance_delta`, `balance_note` | the two recorded frames, or why one is unknown |
 | `popups_closed`, `shots`, `artifact_errors` | artifacts and best-effort write failures |
 | `notification` | attempted, sink, ok and a class-plus-status error |
-| `plan`, `plan_note` | the dry-run plan, when there was one |
+| `plan`, `plan_note` | the dry-run plan, when there was one; `plan.probe_failed` distinguishes an unreadable probe from evidence about the day, and `stable_waits` / `content_waits` / `roster_waits` record settling, row re-reads and row-set confirmation |
 | `abort` | safety code, reason and the screen that triggered it |
 | `night` | the completion decision: `outcome`, dispatched/completed counts and retryable failures |
 | `failure` | code, stage, retry scope, retries, `abort_run`, sentence and detail |
@@ -597,9 +606,9 @@ is decided server-side; changing the tablet's timezone did not clear completed t
 The schedule is **03:30 plus up to 180 s of jitter**. That is probably after a ~03:00 roll, but
 "probably" is not a measurement. Do not move the schedule earlier to "catch" the reset without
 first running the two-dry-run measurement in #63 (around 02:50 and 03:10 local, with no claims) and
-reading the nightly `roster.jsonl`. A pre-reset dry run is **expected to exit non-zero**
-(`surface_incomplete` or `surface_rows_incomplete`) rather than print `planned`; the measurement is
-the roster log, not the exit code.
+reading the nightly `roster.jsonl`. A dry run that cannot settle and read its surface is a **probe
+failure** (`plan.probe_failed: true`), not a pre-reset datapoint; retry or inspect it rather than
+counting its zero rows as evidence about the reset.
 
 If a night claims nothing, check in this order:
 
@@ -652,7 +661,7 @@ swipe or page press. A result that may already have acted is reported, never rep
 | `unsupported_geometry` | The frame reports no measured profile or calibration. This is a taxonomy refusal, not the capture path's response to a different portrait geometry; see §14. | `doctor`; `adb shell wm size`, `wm density`, `getprop ro.build.version.sdk`; compare [`02-architecture.md`](02-architecture.md), §14 and #42; add calibration rather than forcing a different size. | none |
 | `frame_undecodable` | A screencap arrived but could not be decoded. | `adb -s <serial> exec-out screencap -p > /tmp/frame.png`; `file /tmp/frame.png`; check free disk, the USB/network path and the screen. A truncated frame is not retried because the device did answer. | none |
 | `app_logged_out` | The app shows a sign-in prompt instead of the account surface. | Sign in on the tablet; confirm the Account tab loads; `adb shell dumpsys window` for the focused app; run again. The run stops at the first detection. | none |
-| `navigation_failed` | The route did not reach the screen it promised; a live run records a fallback and may continue from the inline surface, while a dry run has no fallback and exits non-zero with a `surface_*` detail. When rows were legible but the surface was unrecognised, the detail is `surface_unverified` and the rows stay in `steps` as evidence. | Read `Route fallback` and `route_error`; for a dry run, read the `surface_*` detail and retry once the page settles; start the app normally, settle ~10 s, then send the shortcut intent; check for the empty `Coins boost` page and an app update that changed labels. | none |
+| `navigation_failed` | The route did not reach the screen it promised; a live run records a fallback and may continue from the inline surface, while a dry run has no fallback and exits non-zero with a `surface_*` detail. When rows were legible but the surface was unrecognised, the detail is `surface_unverified` and the rows stay in `steps` as evidence. | Read `Route fallback` and `route_error`; for a dry run, read the `surface_*` detail and `plan.probe_failed`, then retry once the page settles; start the app normally, settle ~10 s, then send the shortcut intent; check for the empty `Coins boost` page and an app update that changed labels. | none |
 | `popup_unclosable` | A popup had no safe dismissal: no known label, no template match and no calibration for this profile. | Open the failure frame in `shots/`; note the app version and the `doctor` profile id; update the popup corpus (#11) or the profile calibration (#42). Never tap a guessed coordinate. | none |
 | `task_unverified` | The task did not prove completion on screen. | Read the task row's `code`, `outcome`, `verification` and `detail`; inspect `run.jsonl`; check `tasks[i].result.acted`. A task that acted is not retried, so verify by hand before the next night. | task ×1 |
 | `unexpected_screen` | The same unrecognised or dead screen was seen three times in a row. Inside a task that fails the task and the run tries three shortcut entries back to the coins page; the run aborts only when that recovery fails. | Read `tasks[i].result.payload.screen` for a task-scoped failure, or `abort.screen` labels and fingerprint when the run aborted; check for an app update, a new popup or a hybrid page that did not render; capture a fixture for #11. | none |
