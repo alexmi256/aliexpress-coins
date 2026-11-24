@@ -1003,11 +1003,15 @@ def test_a_tile_tap_that_lands_on_a_coupon_page_is_not_tapped_as_a_grid(
 def test_a_scrolled_grid_accepts_one_known_card_at_the_bottom() -> None:
     from aliexpress_coins.tasks.surprise import _is_scrolled_grid
 
-    known = {'product a'}
+    known = {'product a', 'product b'}
     one_card = _snapshot(_box('Product A', 90, 600, 490, 655), _box('C$12.99', 90, 700, 300, 750))
+    title_only = _snapshot(_box('Product A', 90, 600, 490, 655))
+    two_columns = _snapshot(_box('Product A', 90, 600, 490, 655), _box('Product B', 690, 600, 1090, 655))
     unknown = _snapshot(_box('Product X', 90, 600, 490, 655), _box('C$12.99', 90, 700, 300, 750))
 
     assert _is_scrolled_grid(one_card, known) is True
+    assert _is_scrolled_grid(title_only, known) is True
+    assert _is_scrolled_grid(two_columns, known) is True
     assert _is_scrolled_grid(unknown, known) is False
     assert _is_scrolled_grid(_snapshot(), known) is False
 

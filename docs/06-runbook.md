@@ -124,7 +124,7 @@ Successfully installed aliexpress-coins-0.1.0
 $ just check
 ...
 Required test coverage of 99.50% reached. Total coverage: 99.52%
-======================= 1880 passed in 213.64s (0:03:33) =======================
+======================= 1880 passed in 213.71s (0:03:33) =======================
 All quality gates passed.
 ```
 

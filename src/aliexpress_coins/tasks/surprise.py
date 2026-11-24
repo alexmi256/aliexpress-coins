@@ -2029,13 +2029,16 @@ def _is_scrolled_grid(snapshot: Snapshot, known_labels: set[str] | None = None) 
     prices = sum(1 for box in snapshot.boxes if box.score >= DEFAULT_MIN_OCR_SCORE and _PRICE.search(box.text))
     two_columns = {tile.column for tile in tiles} == {0, 1}
     if known_labels is None:
+        # The guard has no round history; card prices are the structure it can
+        # verify without them.
         return prices >= (2 if two_columns else 1)
     if two_columns:
-        known = sum(1 for tile in tiles if tile.normalized_label in known_labels)
-        return prices >= 2 and known >= 2
+        return sum(1 for tile in tiles if tile.normalized_label in known_labels) >= 2
     # The bottom of an odd grid can show only one column. A known card is still
     # enough identity there; an unfamiliar page is not accepted on one label.
-    return prices >= 1 and all(tile.normalized_label in known_labels for tile in tiles)
+    # A known card may have no price yet: the tile resolver deliberately keeps a
+    # title whose price/shipping anchor has not painted.
+    return all(tile.normalized_label in known_labels for tile in tiles)
 
 
 def _header_bottom(snapshot: Snapshot) -> float:
