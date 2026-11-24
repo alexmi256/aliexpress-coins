@@ -58,6 +58,7 @@ SETS: dict[str, tuple[str, ...]] = {
         'blank_webview',
         'boost',
         'coin_store',
+        'search_landing',
         'quiz',
         'surprise_grid',
         'popup_over_page',

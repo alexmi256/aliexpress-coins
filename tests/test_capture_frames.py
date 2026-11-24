@@ -208,13 +208,13 @@ def test_capture_loop_uses_the_probed_geometry_and_writes_the_manifest(
     printed = json.loads(capsys.readouterr().out)
     assert printed['source'] == 'capture'
     assert printed['serial'] == 'tablet'
-    assert len(printed['frames']) == 11
-    assert len(list(tmp_path.glob('*.png'))) == 11
+    assert len(printed['frames']) == 12
+    assert len(list(tmp_path.glob('*.png'))) == 12
     assert json.loads(manifest_path.read_text(encoding='utf-8')) == printed
 
     # The non-prompting path and the manifest-less branch are separate arms.
     assert main(['--set', 'states', '--out', str(tmp_path / 'second'), '--serial', 'tablet', '--no-prompt']) == 0
-    assert len(list((tmp_path / 'second').glob('*.png'))) == 11
+    assert len(list((tmp_path / 'second').glob('*.png'))) == 12
     capsys.readouterr()
 
 
