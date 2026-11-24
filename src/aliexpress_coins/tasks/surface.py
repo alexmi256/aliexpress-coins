@@ -50,9 +50,6 @@ They are named, never tapped (docs/07 §3). A detail page that is scrolled far
 enough to hide them still carries ``Item N/n``.
 """
 
-_PRICE = re.compile(r'(?:C\$|US\s*\$|CS|\$)\s*\d', re.IGNORECASE)
-"""A card price line; a column of quiz options or plain copy has none."""
-
 COIN_PAGE_MARKERS = ('Daily coins', 'Coins credits to redeem')
 """The two labels that identify the coin page rather than the Account card."""
 
@@ -190,31 +187,17 @@ def is_product_detail(snapshot: Snapshot) -> bool:
 
 
 def is_surprise_grid(snapshot: Snapshot) -> bool:
-    """Whether the frame has the surprise grid's structure.
+    """Whether the frame is the surprise grid's header page.
 
     The boost row carries the same title and subtitle, so the row is explicitly
-    excluded. A scrolled grid is recognised from two columns of detected card
-    titles with their price lines, not from generic discount copy; the executor
-    additionally requires labels it already saw before it will tap on that frame
-    (#100).
+    excluded. The headerless, scrolled grid is recognised by the surprise
+    executor and its guard, not by this global surface classifier.
     """
-    if (
+    return (
         not is_boost_page(snapshot)
         and contains_text(snapshot, SURPRISE_GRID_TITLE)
         and contains_text(snapshot, SURPRISE_GRID_SUBTITLE)
-    ):
-        return True
-    if is_product_detail(snapshot) or is_coin_store(snapshot) or is_boost_page(snapshot):
-        return False
-    prices = sum(1 for box in snapshot.boxes if box.score >= DEFAULT_MIN_OCR_SCORE and _PRICE.search(box.text))
-    if prices < 2:
-        return False
-    # The tile resolver lives with the executor; importing it lazily keeps this
-    # lower-level module free of an import cycle at module load time.
-    from aliexpress_coins.tasks.surprise import find_surprise_tiles
-
-    tiles = find_surprise_tiles(snapshot)
-    return len(tiles) >= 2 and {tile.column for tile in tiles} == {0, 1}
+    )
 
 
 def is_empty_boost(snapshot: Snapshot) -> bool:

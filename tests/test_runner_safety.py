@@ -588,9 +588,20 @@ def test_a_scrolled_surprise_grid_is_expected_only_for_the_surprise_task() -> No
         for _ in range(3):
             surprise.inspect(grid)
 
-    with surprise.task('Browse surprise items'):
+    with surprise.task('Browse surprise item', key='surprise_items'):
         inspect_surprise()
     assert surprise.streak == 0
+
+    one_card = _snapshot(_box('Product A', 90, 600, 490, 655), _box('C$12.99', 90, 700, 300, 750))
+    bottom = _guard()
+
+    def inspect_bottom() -> None:
+        for _ in range(3):
+            bottom.inspect(one_card)
+
+    with bottom.task('Browse surprise items', key='surprise_items'):
+        inspect_bottom()
+    assert bottom.streak == 0
 
     other = _guard()
 
@@ -598,7 +609,7 @@ def test_a_scrolled_surprise_grid_is_expected_only_for_the_surprise_task() -> No
         for _ in range(3):
             other.inspect(grid)
 
-    with pytest.raises(RunAborted) as raised, other.task('Explore sponsored items'):
+    with pytest.raises(RunAborted) as raised, other.task('Explore sponsored items', key='sponsored_items'):
         inspect_other()
     assert raised.value.code is AbortCode.UNEXPECTED_SCREEN
 

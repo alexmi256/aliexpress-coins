@@ -2013,25 +2013,29 @@ def _grid_labels(snapshot: Snapshot) -> set[str]:
     return {tile.normalized_label for tile in find_surprise_tiles(snapshot)}
 
 
-def _is_scrolled_grid(snapshot: Snapshot, known_labels: set[str]) -> bool:
-    """Whether a headerless frame is the same two-column grid, scrolled.
+def _is_scrolled_grid(snapshot: Snapshot, known_labels: set[str] | None = None) -> bool:
+    """Whether a headerless frame is the same grid, scrolled.
 
-    Generic shopping copy is not enough: a coupon sheet or a product feed can
-    carry the same discounts and prices. This requires two columns of detected
-    card titles plus labels that were already seen on this round's grid, so a
-    tile tap that lands anywhere else cannot turn that page into the grid and
-    invite more title taps (#100).
+    The guard passes no known labels and checks only card structure: two columns
+    with their price lines, or one bottom-column card with a price. The executor
+    passes the labels it already read, so a coupon/product page it lands on is
+    not a grid and cannot receive more title taps (#100).
     """
     if is_surprise_grid(snapshot) or is_product_detail(snapshot) or is_coin_store(snapshot) or is_boost_page(snapshot):
         return False
     tiles = find_surprise_tiles(snapshot)
     if not tiles:
         return False
-    if {tile.column for tile in tiles} == {0, 1}:
-        return sum(1 for tile in tiles if tile.normalized_label in known_labels) >= 2
+    prices = sum(1 for box in snapshot.boxes if box.score >= DEFAULT_MIN_OCR_SCORE and _PRICE.search(box.text))
+    two_columns = {tile.column for tile in tiles} == {0, 1}
+    if known_labels is None:
+        return prices >= (2 if two_columns else 1)
+    if two_columns:
+        known = sum(1 for tile in tiles if tile.normalized_label in known_labels)
+        return prices >= 2 and known >= 2
     # The bottom of an odd grid can show only one column. A known card is still
     # enough identity there; an unfamiliar page is not accepted on one label.
-    return all(tile.normalized_label in known_labels for tile in tiles)
+    return prices >= 1 and all(tile.normalized_label in known_labels for tile in tiles)
 
 
 def _header_bottom(snapshot: Snapshot) -> float:
@@ -2297,6 +2301,7 @@ def _finish_failed(
     if not return_state.returned:
         verification = 'return_failed'
         detail = f'{detail}; the shortcut route did not prove the coins page'
+    done_now = done_before if done_after is None else done_after
     result = SurpriseResult(
         key=spec.key,
         title=entry.title,
@@ -2305,7 +2310,7 @@ def _finish_failed(
         detail=detail,
         limit=limit,
         done_today_before=done_before,
-        done_today_after=done_before if done_after is None else done_after,
+        done_today_after=done_now,
         rounds=rounds,
         round_records=tuple(round_records),
         rule_path=rule_path,
@@ -2316,6 +2321,7 @@ def _finish_failed(
         return_state=return_state,
         dismissals=tuple(dismissals),
         stop=stop,
+        recorded=done_now > done_before,
     )
     _log_result(logger, result)
     return result
@@ -2434,7 +2440,7 @@ def _result(
         return_state=return_state,
         dismissals=tuple(dismissals),
         stop=stop,
-        recorded=recorded,
+        recorded=recorded or done_after > done_before,
     )
     _log_result(logger, result)
     return result

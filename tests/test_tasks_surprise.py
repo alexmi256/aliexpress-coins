@@ -983,7 +983,7 @@ def test_a_tile_tap_that_lands_on_a_coupon_page_is_not_tapped_as_a_grid(
     )
     guard = SafetyGuard(catalogue=catalogue)
 
-    with guard.task(SURPRISE_TITLE):
+    with guard.task(SURPRISE_TITLE, key='surprise_items'):
         result = _run(
             world,
             catalogue,
@@ -1004,8 +1004,8 @@ def test_a_scrolled_grid_accepts_one_known_card_at_the_bottom() -> None:
     from aliexpress_coins.tasks.surprise import _is_scrolled_grid
 
     known = {'product a'}
-    one_card = _snapshot(_box('Product A', 90, 600, 490, 655))
-    unknown = _snapshot(_box('Product X', 90, 600, 490, 655))
+    one_card = _snapshot(_box('Product A', 90, 600, 490, 655), _box('C$12.99', 90, 700, 300, 750))
+    unknown = _snapshot(_box('Product X', 90, 600, 490, 655), _box('C$12.99', 90, 700, 300, 750))
 
     assert _is_scrolled_grid(one_card, known) is True
     assert _is_scrolled_grid(unknown, known) is False
@@ -1294,7 +1294,7 @@ def test_run_surprise_task_fails_when_next_round_does_not_reach_a_fresh_grid(
     assert result.outcome is SurpriseOutcome.FAILED
     assert result.verification == 'next_round_not_arrived'
     assert result.rounds == 1
-    assert result.recorded is False
+    assert result.recorded is True
 
 
 def test_run_surprise_task_fails_when_it_cannot_return_to_the_coins_page(
@@ -1326,6 +1326,7 @@ def test_run_surprise_task_fails_when_it_cannot_return_to_the_coins_page(
     assert result.outcome is SurpriseOutcome.FAILED
     assert result.verification == 'return_failed'
     assert result.returned is False
+    assert result.recorded is True
 
 
 def test_run_surprise_task_stops_without_a_completion_on_the_redeem_interstitial(

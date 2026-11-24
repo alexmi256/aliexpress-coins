@@ -239,22 +239,15 @@ def test_generic_discount_copy_is_not_the_surprise_grid() -> None:
     assert classify_surface(_snapshot(_box('Item 1/6', 40, 100, 300, 140))) is Surface.PRODUCT_DETAIL
 
 
-def test_a_headerless_two_column_grid_is_named_but_generic_copy_is_not() -> None:
+def test_the_global_classifier_leaves_headerless_grids_unknown() -> None:
     grid = _snapshot(
         _box('Product A', 90, 300, 490, 355),
         _box('Product B', 690, 300, 1090, 355),
         _box('C$12.99', 90, 420, 300, 470),
         _box('C$13.99', 690, 420, 900, 470),
     )
-    feed = _snapshot(
-        _box('Black Friday', 60, 300, 300, 340),
-        _box('Disc:C$31.27', 60, 360, 330, 400),
-        _box('Applied', 350, 360, 520, 400),
-        _box('C$30.00', 60, 410, 300, 450),
-    )
 
-    assert classify_surface(grid) is Surface.SURPRISE_GRID
-    assert classify_surface(feed) is Surface.UNKNOWN
+    assert classify_surface(grid) is Surface.UNKNOWN
 
 
 def test_classify_surface_recognises_the_empty_boost_recording(frames: dict[str, Snapshot]) -> None:
