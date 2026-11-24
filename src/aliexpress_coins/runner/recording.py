@@ -132,7 +132,7 @@ class _Attempt:
     started_monotonic: float
     frames: list[_RecordedFrame] = field(default_factory=list)
     seed: _RecordedFrame | None = None
-    action_frame: _RecordedFrame | None = None
+    action_frames: list[_RecordedFrame] = field(default_factory=list)
 
 
 def _utc_now() -> datetime:
@@ -216,14 +216,22 @@ class FailureRecorder:
         return frame
 
     def pin_action(self) -> None:
-        """Pin the latest buffered frame as the one the action was issued from."""
+        """Pin the frame a task action was issued from.
+
+        Keep both the first action and the latest action: a later recovery or
+        return gesture must not replace the frame carrying the task's original
+        tap.
+        """
         attempt = self._active
         if attempt is None:
             return
-        if attempt.frames:
-            attempt.action_frame = attempt.frames[-1]
-        elif attempt.seed is not None:
-            attempt.action_frame = attempt.seed
+        frame = attempt.frames[-1] if attempt.frames else attempt.seed
+        if frame is None or any(frame is pinned for pinned in attempt.action_frames):
+            return
+        if len(attempt.action_frames) < 2:
+            attempt.action_frames.append(frame)
+        else:
+            attempt.action_frames[1] = frame
 
     def begin(self, *, key: str, title: str, category: str | None = None) -> int:
         """Start buffering one dispatch attempt and return its 1-based number."""
@@ -342,7 +350,7 @@ class FailureRecorder:
 
     def _pinned_frames(self, attempt: _Attempt) -> list[_RecordedFrame]:
         pinned: list[_RecordedFrame] = []
-        for frame in (attempt.seed, attempt.action_frame):
+        for frame in (attempt.seed, *attempt.action_frames):
             if frame is not None and all(frame is not other for other in pinned):
                 pinned.append(frame)
         return pinned

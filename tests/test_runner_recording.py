@@ -320,6 +320,62 @@ def test_the_pre_action_frames_survive_the_window_and_frame_cap(tmp_path: Path) 
     ]
 
 
+def test_the_first_action_stays_pinned_when_a_later_action_arrives(tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    clock = _Clock()
+    recorder = _recorder(report, clock, window_seconds=2.0)
+    recorder.wrap(
+        _Source(
+            _snapshot(minute=0),
+            _snapshot(minute=1),
+            _snapshot(minute=2),
+            _snapshot(minute=3),
+            _snapshot(minute=4),
+        ),
+    )
+
+    clock.value = 0.0
+    recorder.capture()
+    recorder.begin(key='coins_quiz', title='Take the coins quiz', category='quiz')
+    clock.value = 1.0
+    recorder.capture()
+    recorder.pin_action()
+    clock.value = 2.0
+    recorder.capture()
+    recorder.pin_action()
+    clock.value = 3.0
+    recorder.capture()
+    recorder.pin_action()
+    clock.value = 100.0
+    recorder.capture()
+    recording = _finish_failure(recorder)
+
+    assert recording is not None
+    sidecar = json.loads((report.run_dir / recording['sidecar']).read_text(encoding='utf-8'))
+    assert [entry['captured_at'] for entry in sidecar['frames']] == [
+        (CAPTURED_AT + timedelta(minutes=index)).isoformat() for index in (0, 1, 3, 4)
+    ]
+
+
+def test_a_stop_while_writing_a_failure_recording_propagates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    report = _report(tmp_path)
+    clock = _Clock()
+    recorder = _recorder(report, clock)
+    recorder.wrap(_Source(_snapshot()))
+
+    def stop_write(*_args: Any, **_kwargs: Any) -> None:
+        raise RunInterrupted('stop requested')
+
+    monkeypatch.setattr(recorder, '_write', stop_write)
+    recorder.begin(key='coins_quiz', title='Take the coins quiz', category='quiz')
+    recorder.capture()
+    with pytest.raises(RunInterrupted):
+        _finish_failure(recorder)
+
+    assert report.failure_recordings == []
+    assert _finish_failure(recorder) is None
+
+
 def test_the_rolling_buffer_also_honors_the_byte_cap(tmp_path: Path) -> None:
     report = _report(tmp_path)
     clock = _Clock()
@@ -351,6 +407,7 @@ def test_pin_action_without_an_attempt_or_before_a_capture_uses_the_seed(tmp_pat
     recorder.pin_action()
     recorder.capture()
     recorder.begin(key='coins_quiz', title='Take the coins quiz', category='quiz')
+    recorder.pin_action()
     recorder.pin_action()
     recording = _finish_failure(recorder)
 
