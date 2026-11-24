@@ -19,9 +19,11 @@ Three facts keep this executor honest:
   bounded number of genuinely new products fail to move the counter, switches
   once to the whole-task set and records ``rule_path: reset``. When #63 lands,
   the losing branch can be deleted without changing the rest of the executor.
-* **the ledger follows the counter, not the final return.** A completed round is
-  recorded as soon as its counter reaches the target, so a later failure cannot
-  leave a complete round in ``run.json`` without a matching daily completion.
+* **the ledger follows an attributed counter, not the final return.** A completed
+  round is recorded as soon as a product visit moves its counter to the target,
+  so a later failure cannot leave a complete round in ``run.json`` without a
+  matching daily completion. A counter seen before any tile tap, or read from a
+  headerless crop, is not that evidence.
 
 The run never taps a purchase control: only a product card, the page's own
 ``Next round``, the overlay, and BACK. Every completion is recorded from a
@@ -87,6 +89,7 @@ __all__ = [
     'DEFAULT_RETURN_ATTEMPTS',
     'DEFAULT_RETURN_INTERVAL',
     'DEFAULT_RETURN_TIMEOUT',
+    'DEFAULT_TILE_TIMEOUT',
     'MAX_INERT_TAPS',
     'MAX_ROUNDS',
     'MAX_TAPS_PER_ROUND',
@@ -142,6 +145,16 @@ DEFAULT_COUNTER_TIMEOUT = 2.0
 The measured frame already read ``1/3`` one second after BACK, so two seconds
 is generous. The wait is a poll of the counter, never a blind sleep: an inert
 tile ends it at the bound and is reported as an unchanged counter (#100).
+"""
+
+DEFAULT_TILE_TIMEOUT = 5.0
+"""How long a newly opened or scrolled grid may take to paint product tiles.
+
+The header and counter can arrive before the product cards. An empty first
+read is therefore polled, not treated as proof that the grid has no products
+(#115). The measured gap between the header frame and the painted cards was
+under a second; five seconds leaves room for a slow render without turning a
+genuinely empty grid into a long stall.
 """
 
 DEFAULT_BADGE_TIMEOUT = 2.0
@@ -626,6 +639,19 @@ def read_surprise_counter(
     return _counter_from_boxes(boxes, total)
 
 
+def _read_grid_counter(snapshot: Snapshot) -> CounterState | None:
+    """Read the pill only while the grid header proves it is still on screen.
+
+    A scrolled grid can put a product's bare ``3`` under the fixed pill crop.
+    Accepting that as ``3/3`` once turned a zero-tap scroll into a completed
+    round (#115). The public counter reader remains useful on a pill crop; the
+    executor uses this header-guarded wrapper.
+    """
+    if not is_surprise_grid(snapshot):
+        return None
+    return read_surprise_counter(snapshot)
+
+
 def _counter_ocr() -> OcrEngine:
     """Load the crop reader once; it is only needed on frames full OCR fails."""
     global _DEFAULT_COUNTER_OCR
@@ -644,11 +670,13 @@ def _counter_from_boxes(boxes: Sequence[TextBox], total: int) -> CounterState | 
                 return CounterState(completed=done, total=found_total, box=box)
 
     digits = [box for box in boxes if _BARE_DIGIT.match(unicodedata.normalize('NFKC', box.text))]
-    if digits:
+    if len(digits) == 2:
         digits.sort(key=lambda box: box.center[0])
-        value = int(_BARE_DIGIT.match(unicodedata.normalize('NFKC', digits[0].text)).group('value'))  # type: ignore[union-attr]
-        if 0 <= value <= total:
-            return CounterState(completed=value, total=total, box=digits[0])
+        matches = [_BARE_DIGIT.match(unicodedata.normalize('NFKC', box.text)) for box in digits]
+        if all(match is not None for match in matches):
+            value, found_total = (int(match.group('value')) for match in matches if match is not None)
+            if found_total == total and 0 <= value <= total:
+                return CounterState(completed=value, total=total, box=digits[0])
     return None
 
 
@@ -728,6 +756,7 @@ def run_surprise_task(
     arrival_timeout: float = DEFAULT_ARRIVAL_TIMEOUT,
     exit_timeout: float = DEFAULT_EXIT_TIMEOUT,
     counter_timeout: float = DEFAULT_COUNTER_TIMEOUT,
+    tile_timeout: float = DEFAULT_TILE_TIMEOUT,
     badge_timeout: float = DEFAULT_BADGE_TIMEOUT,
     interval: float = DEFAULT_INTERVAL,
     return_timeout: float = DEFAULT_RETURN_TIMEOUT,
@@ -737,6 +766,7 @@ def run_surprise_task(
     max_rounds: int = MAX_ROUNDS,
     back: Callable[[], None] | None = None,
     scroll: Callable[[Snapshot], bool] | None = None,
+    record_round_grid: Callable[[int, Snapshot], None] | None = None,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     logger: logging.Logger | None = None,
@@ -753,7 +783,9 @@ def run_surprise_task(
     ``back`` and ``scroll`` are injectable seams. When they are omitted, BACK
     goes through :meth:`Controller.press_key` and scrolling through
     :meth:`Controller.swipe`, with a visible back chevron as the fallback for a
-    device that cannot press keys.
+    device that cannot press keys. ``record_round_grid`` receives each round's
+    first frame so a run can retain the image and OCR sidecar behind a tile
+    perception failure.
     """
     log = logger if logger is not None else logging.getLogger(LOGGER_NAME)
     spec = _allowed_spec(entry)
@@ -779,6 +811,8 @@ def run_surprise_task(
         raise ValueError(f'exit_timeout must be positive, got {exit_timeout!r}')
     if counter_timeout <= 0:
         raise ValueError(f'counter_timeout must be positive, got {counter_timeout!r}')
+    if tile_timeout <= 0:
+        raise ValueError(f'tile_timeout must be positive, got {tile_timeout!r}')
     if badge_timeout <= 0:
         raise ValueError(f'badge_timeout must be positive, got {badge_timeout!r}')
     if interval <= 0:
@@ -973,7 +1007,7 @@ def run_surprise_task(
                 sleep=sleep,
                 logger=log,
             )
-        if read_surprise_counter(current) is None:
+        if _read_grid_counter(current) is None:
             return _finish_failed(
                 controller,
                 capture,
@@ -1013,10 +1047,12 @@ def run_surprise_task(
                 arrival_timeout=arrival_timeout,
                 exit_timeout=exit_timeout,
                 counter_timeout=counter_timeout,
+                tile_timeout=tile_timeout,
                 interval=interval,
                 settle=settle,
                 back=back,
                 scroll=scroll,
+                record_round_grid=record_round_grid,
                 clock=clock,
                 sleep=sleep,
                 logger=log,
@@ -1080,7 +1116,7 @@ def run_surprise_task(
                 dismissals.append(dismiss)
             if stop is not None:
                 break
-            if not arrived or read_surprise_counter(current) is None:
+            if not arrived or _read_grid_counter(current) is None:
                 return _finish_failed(
                     controller,
                     capture,
@@ -1282,10 +1318,12 @@ def _run_round(
     arrival_timeout: float,
     exit_timeout: float,
     counter_timeout: float,
+    tile_timeout: float,
     interval: float,
     settle: float,
     back: Callable[[], None] | None,
     scroll: Callable[[Snapshot], bool] | None,
+    record_round_grid: Callable[[int, Snapshot], None] | None,
     clock: Callable[[], float],
     sleep: Callable[[float], None],
     logger: logging.Logger,
@@ -1295,7 +1333,9 @@ def _run_round(
     dismissals: list[DismissReport],
 ) -> tuple[RoundRecord, Snapshot, str | None]:
     """Walk one round until its counter is complete or the round proves stuck."""
-    first = read_surprise_counter(snapshot)
+    if record_round_grid is not None:
+        record_round_grid(index, snapshot)
+    first = _read_grid_counter(snapshot)
     total = first.total if first is not None else 3
     before = first.completed if first is not None else None
     current = snapshot
@@ -1306,6 +1346,7 @@ def _run_round(
     round_taps = 0
     scrolls = 0
     scroll_stable = False
+    mission_seen = False
     items: list[str] = []
     pending_item: str | None = None
     grid_labels = _grid_labels(snapshot)
@@ -1327,7 +1368,19 @@ def _run_round(
             None,
         )
 
+    current = _wait_for_tiles(
+        capture,
+        current,
+        round_tried,
+        timeout=tile_timeout,
+        interval=interval,
+        clock=clock,
+        sleep=sleep,
+    )
+    grid_labels.update(_grid_labels(current))
+
     while True:
+        mission_seen = mission_seen or find_mission_overlay(current) is not None
         current, stop = _dismiss_mission(
             controller,
             capture,
@@ -1345,9 +1398,12 @@ def _run_round(
             detail = 'the reward interstitial appeared before the round completed'
             break
 
-        counter = read_surprise_counter(current)
+        counter = _read_grid_counter(current)
         if counter is not None and counter.complete:
             before = counter.completed
+            if round_taps == 0 and not mission_seen:
+                detail = 'the round counter reached its target before any product tile was opened; no completion was recorded'
+                break
             detail = 'the round counter advanced to its target'
             break
 
@@ -1371,15 +1427,30 @@ def _run_round(
                         swipes.append(swipe)
                     scrolls += 1
                     current = _capture(capture)
+                    current = _wait_for_tiles(
+                        capture,
+                        current,
+                        tracker,
+                        timeout=tile_timeout,
+                        interval=interval,
+                        clock=clock,
+                        sleep=sleep,
+                    )
                     grid_labels.update(_grid_labels(current))
-                    if _grid_signature(current) == before_scroll:
+                    if before_scroll and _grid_signature(current) == before_scroll:
                         scroll_stable = True
                     continue
-            detail = _round_stall_detail(
-                last_miss,
-                total,
-                'no unopened product tile was available and the grid could not be scrolled further',
-            )
+            if not grid_labels and round_taps == 0:
+                detail = (
+                    'the freshly opened grid showed no product tile after the settle; '
+                    'no tile was opened and the counter did not advance'
+                )
+            else:
+                detail = _round_stall_detail(
+                    last_miss,
+                    total,
+                    'no unopened product tile was available and the grid could not be scrolled further',
+                )
             break
 
         taps.append(
@@ -1525,8 +1596,17 @@ def _run_round(
                         swipes.append(swipe)
                     scrolls += 1
                     current = _capture(capture)
+                    current = _wait_for_tiles(
+                        capture,
+                        current,
+                        tracker,
+                        timeout=tile_timeout,
+                        interval=interval,
+                        clock=clock,
+                        sleep=sleep,
+                    )
                     grid_labels.update(_grid_labels(current))
-                    if _grid_signature(current) == before_scroll:
+                    if before_scroll and _grid_signature(current) == before_scroll:
                         scroll_stable = True
                     inert = 0
                     continue
@@ -1539,7 +1619,7 @@ def _run_round(
             total=total,
             taps=round_taps,
             rule_path=mode,
-            complete=before is not None and before >= total,
+            complete=(round_taps > 0 or mission_seen) and before is not None and before >= total,
             detail=detail,
             scrolls=scrolls,
             items=tuple(items),
@@ -1555,6 +1635,35 @@ def _next_tile(snapshot: Snapshot, tried: _TriedTiles) -> SurpriseTile | None:
         if not tried.contains(tile):
             return tile
     return None
+
+
+def _wait_for_tiles(
+    capture: CaptureSource,
+    snapshot: Snapshot,
+    tried: _TriedTiles,
+    *,
+    timeout: float,
+    interval: float,
+    clock: Callable[[], float],
+    sleep: Callable[[float], None],
+) -> Snapshot:
+    """Let a newly opened or scrolled grid paint its cards before searching.
+
+    The grid header and round pill are server-rendered before product tiles. A
+    first frame with no tile is therefore inconclusive, not an empty grid. The
+    wait is bounded and returns immediately as soon as an untried card appears.
+    """
+    current = snapshot
+    if _next_tile(current, tried) is not None:
+        return current
+    deadline = clock() + timeout
+    while clock() < deadline:
+        remaining = deadline - clock()
+        sleep(min(interval, max(0.0, remaining)))
+        current = _capture(capture)
+        if _next_tile(current, tried) is not None:
+            break
+    return current
 
 
 def _round_stall_detail(last_miss: tuple[int, int] | None, total: int, fallback: str) -> str:
@@ -1586,7 +1695,7 @@ def _read_counter_after_dwell(
     the measured credit can lag the transition by a frame (#100).
     """
     current = snapshot
-    reading = read_surprise_counter(current)
+    reading = _read_grid_counter(current)
     if before is None or (reading is not None and reading.completed > before):
         return current, reading
     deadline = clock() + timeout
@@ -1594,7 +1703,7 @@ def _read_counter_after_dwell(
         remaining = deadline - clock()
         sleep(min(interval, max(0.0, remaining)))
         current = _capture(capture)
-        reading = read_surprise_counter(current)
+        reading = _read_grid_counter(current)
         if reading is not None and reading.completed > before:
             break
     return current, reading

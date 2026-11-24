@@ -39,6 +39,23 @@ arbitrary screenshots anywhere else in the tree.
 | `coins_quiz_exit_coin_page.png` | `coins_quiz` / coin page | the coin page the flow returns to (`Daily coins`, `Coins credits to redeem`) | reused from the reviewed `states/coins.png`; balances masked there |
 | `notifications_os_settings.png` | `notifications` / `os_settings` | OS page the app's `Allow phone notifications` toggle lands on: `All AliExpress notifications` off, "You haven't allowed notifications from this app" | no account data; app name only |
 | `notifications_after_grant.png` | `notifications` / `after_grant` | same OS page after the permission is granted: switch on, `Categories` list, `Allow notification dot` | no account data |
+| `surprise_items_issue_115_loading_grid.png` | `surprise_items` / opening load (#115) | `Browse surprise items` header and `0/3` pill over empty skeleton cards; `find_surprise_tiles` returns none | status-bar clock retained; no account data |
+| `surprise_items_issue_115_loaded_grid.png` | `surprise_items` / settled grid (#115) | the same `0/3` grid a moment later, with product cards, titles and prices painted | status-bar clock retained; product titles and prices only; no account data |
+
+`surprise_items_issue_115.json` is sanitized report evidence from run `20261124T083006Z`, not a
+screenshot. That run retained only the two balance frames: no surprise-grid PNG or OCR sidecar was
+written, so the tile boxes and the OCR reading behind its zero-tap `0/3 -> 3/3` record cannot be
+reconstructed truthfully. The JSON fixture preserves what the report does prove (`0/2 -> 0/2`, zero
+product taps, one scroll, a falsely complete round) and its replay test covers the headerless-digit
+failure mode.
+
+`surprise_items_issue_115_loading_grid.png` and `surprise_items_issue_115_loaded_grid.png` are the
+same `0/2` row reproduced live on 2026-11-24 after that run, while the tablet still offered the
+task. They are not frames from `20261124T083006Z`; they are the supervised capture of its load-timing
+gap: the first frame proves the header and `0/3` pill are readable while every product card is still
+a skeleton, and the second proves the same grid paints its tiles moments later. The executor now
+records each round's first grid frame and OCR sidecar under
+`runs/<run-id>/shots/surprise-items-round-<n>-grid.*`.
 
 Three states in `specs/flows.yaml` have **no frame** and say so in the file, rather than being
 backed by a screenshot that does not exist: `coins_quiz/result`, `coins_quiz/redeem_interstitial`

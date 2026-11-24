@@ -13,6 +13,7 @@ disappeared" failure are exercised.
 
 from __future__ import annotations
 
+import json
 import logging
 import random
 from collections.abc import Callable, Sequence
@@ -39,6 +40,7 @@ from aliexpress_coins.tasks.errors import TaskError
 from aliexpress_coins.tasks.surface import RouteFirer, SurfaceRoute
 from aliexpress_coins.tasks.surprise import (
     MAX_ROUNDS,
+    MAX_SCROLLS,
     RULE_PATH_RESET,
     RULE_PATH_REUSE,
     SURPRISE_TITLE,
@@ -507,6 +509,35 @@ def test_find_surprise_tiles_on_the_measured_grid_does_not_return_the_header(eng
 
 
 @pytest.mark.slow
+def test_the_issue_115_loading_grid_is_settled_into_its_product_tiles(engine: RapidOcrEngine) -> None:
+    from aliexpress_coins.tasks.surprise import _TriedTiles, _wait_for_tiles
+
+    loading = _load(DATA / 'flows' / 'surprise_items_issue_115_loading_grid.png', engine)
+    loaded = _load(DATA / 'flows' / 'surprise_items_issue_115_loaded_grid.png', engine)
+
+    assert is_surprise_grid(loading) is True
+    assert read_surprise_counter(loading, ocr=engine).completed == 0  # type: ignore[union-attr]
+    assert find_surprise_tiles(loading) == ()
+    assert find_surprise_tiles(loaded)
+    assert {tile.column for tile in find_surprise_tiles(loaded)} == {0, 1}
+
+    world = _World({'grid': (loaded,)}, {}, start='grid')
+    clock = _SleepClock()
+    current = _wait_for_tiles(
+        world.capture,
+        loading,
+        _TriedTiles(),
+        timeout=1.0,
+        interval=0.25,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert current is loaded
+    assert clock.value > 0
+
+
+@pytest.mark.slow
 def test_the_measured_counter_fixtures_read_through_the_pill_crop(engine: RapidOcrEngine) -> None:
     grid = _load(DATA / 'flows' / 'surprise_items_round_grid.png', engine)
     one = _load(DATA / 'flows' / 'surprise_items_progress_1of3.png', engine)
@@ -527,6 +558,24 @@ def test_read_surprise_counter_reads_a_slashed_box_and_returns_none_without_a_di
 
     assert read_surprise_counter(slashed) == CounterState(1, 3, slashed.boxes[0])
     assert read_surprise_counter(empty) is None
+
+
+def test_read_surprise_counter_requires_both_boxes_when_ocr_splits_the_slash() -> None:
+    split = _snapshot(_box('2', 480, 440, 520, 490), _box('3', 530, 440, 573, 490))
+    lone_digit = _snapshot(_box('3', 480, 440, 520, 490))
+    wrong_total = _snapshot(_box('2', 480, 440, 520, 490), _box('2', 530, 440, 573, 490))
+
+    assert read_surprise_counter(split) == CounterState(2, 3, split.boxes[0])
+    assert read_surprise_counter(lone_digit) is None
+    assert read_surprise_counter(wrong_total) is None
+
+
+def test_the_executor_does_not_read_a_counter_from_a_headerless_grid_crop() -> None:
+    from aliexpress_coins.tasks.surprise import _read_grid_counter
+
+    headerless = _snapshot(_box('3/3', 480, 440, 573, 490))
+
+    assert _read_grid_counter(headerless) is None
 
 
 @pytest.mark.slow
@@ -612,6 +661,7 @@ def test_run_surprise_task_rejects_a_non_item_tap_category(
         ('arrival_timeout', 0.0),
         ('exit_timeout', 0.0),
         ('counter_timeout', 0.0),
+        ('tile_timeout', 0.0),
         ('badge_timeout', 0.0),
         ('interval', 0.0),
         ('return_timeout', 0.0),
@@ -773,6 +823,119 @@ def test_run_surprise_task_completes_one_round_and_returns_from_every_detail(
     assert payload['rounds'] == 1
     assert payload['counter_deltas'] == ['0/3 -> 3/3']
     assert payload['rule_path'] == 'reuse'
+
+
+def test_a_new_grid_with_no_tiles_is_settled_then_completes_from_zero_of_two(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    bare = _snapshot(
+        _box(SURPRISE_TITLE, 270, 200, 930, 270),
+        _box('Tap 3 items on this page to earn coins', 253, 332, 946, 384),
+        _box('0/3', 480, 440, 573, 490),
+    )
+    final = _snapshot(
+        *_coins_frame().boxes,
+        _box(SURPRISE_TITLE, 60, 1200, 700, 1250),
+        _box('1/2', 1000, 1200, 1080, 1250),
+        _box('GO', 1090, 1200, 1160, 1250),
+    )
+    pending: dict[str, str] = {}
+
+    def on_tap(screen: str, label: str | None, _count: int) -> str | None:
+        if screen in ('grid0', 'grid1', 'grid2') and label in PRODUCTS[:3]:
+            pending['return'] = f'grid{int(screen[-1]) + 1}'
+            return 'detail'
+        return None
+
+    def on_key(screen: str, key: str, _count: int) -> str | None:
+        if screen == 'detail' and key == 'KEYCODE_BACK':
+            return pending.pop('return')
+        return None
+
+    world = _World(
+        series={
+            'boost': (_boost_frame(progress='0/2'),),
+            'grid0': (bare, _grid_frame(0)),
+            'grid1': (_grid_frame(1),),
+            'grid2': (_grid_frame(2),),
+            'grid3': (_grid_frame(3, mission=True),),
+            'detail': (_detail_frame(),),
+            'coins': (final,),
+        },
+        transitions={('boost', 'GO'): 'grid0'},
+        on_tap=on_tap,
+        on_key=on_key,
+    )
+    clock = _SleepClock()
+    recorded: list[tuple[int, Snapshot]] = []
+
+    result = _run(
+        world,
+        catalogue,
+        corpus,
+        _state(tmp_path),
+        entry=_entry(catalogue, progress='0/2'),
+        max_rounds=1,
+        tile_timeout=1.0,
+        interval=0.25,
+        clock=clock,
+        sleep=clock.sleep,
+        record_round_grid=lambda index, frame: recorded.append((index, frame)),
+    )
+
+    assert result.outcome is SurpriseOutcome.COMPLETED
+    assert result.badge_change == '0/2 -> 1/2'
+    assert result.round_records[0].counter_change == '0/3 -> 3/3'
+    assert [tap.label for tap in result.taps if tap.label in PRODUCTS] == ['Product A', 'Product B', 'Product C']
+    assert result.swipes == ()
+    assert clock.value > 0
+    assert recorded == [(1, bare)]
+
+
+def test_a_counter_jump_before_any_tile_tap_is_not_a_completed_round(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    bare = _snapshot(
+        _box(SURPRISE_TITLE, 270, 200, 930, 270),
+        _box('Tap 3 items on this page to earn coins', 253, 332, 946, 384),
+        _box('0/3', 480, 440, 573, 490),
+    )
+    world = _World(
+        series={
+            'boost': (_boost_frame(progress='0/2'),),
+            'grid': (bare, _grid_frame(3)),
+            'coins': (_coins_frame(),),
+        },
+        transitions={('boost', 'GO'): 'grid'},
+    )
+    clock = _SleepClock()
+    state = _state(tmp_path)
+
+    result = _run(
+        world,
+        catalogue,
+        corpus,
+        state,
+        entry=_entry(catalogue, progress='0/2'),
+        max_rounds=1,
+        tile_timeout=1.0,
+        interval=0.25,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert result.outcome is SurpriseOutcome.FAILED
+    assert result.verification == 'counter_stalled'
+    assert result.round_records[0].complete is False
+    assert result.round_records[0].taps == 0
+    assert result.round_records[0].counter_change == '0/3 -> 3/3'
+    assert result.recorded is False
+    assert state.count('surprise_items') == 0
+    assert [tap.label for tap in result.taps] == ['GO']
 
 
 @pytest.mark.slow
@@ -1426,6 +1589,71 @@ def test_run_surprise_task_reports_no_observation_when_no_round_ran(
     assert result.recorded is False
 
 
+def test_issue_115_report_replay_cannot_turn_a_headerless_digit_into_completion(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    evidence = json.loads((DATA / 'flows' / 'surprise_items_issue_115.json').read_text(encoding='utf-8'))
+    observed = evidence['observed']
+    assert observed['badge_before'] == '0/2'
+    assert observed['badge_after'] == '0/2'
+    assert observed['product_taps'] == 0
+    assert observed['round']['counter_after'] == 3
+    assert evidence['frame_evidence']['grid_png_retained'] is False
+
+    bare = _snapshot(
+        _box(SURPRISE_TITLE, 270, 200, 930, 270),
+        _box('Tap 3 items on this page to earn coins', 253, 332, 946, 384),
+        _box('0/3', 480, 440, 573, 490),
+    )
+    # Reconstructed from the report's zero-tile 0/3 -> 3/3 path, not presented
+    # as the missing screenshot: after a scroll the pill crop can contain only
+    # a product's bare digit. It is not counter evidence.
+    headerless = _snapshot(_box('3', 480, 440, 520, 490))
+    assert read_surprise_counter(headerless) is None
+    world = _World(
+        series={
+            'boost': (_boost_frame(progress='0/2'),),
+            'grid': (bare, bare, headerless, headerless, headerless),
+            'coins': (_coins_frame(),),
+        },
+        transitions={('boost', 'GO'): 'grid'},
+    )
+    clock = _SleepClock()
+    scroll_calls = 0
+
+    def scroll_once(_frame: Snapshot) -> bool:
+        nonlocal scroll_calls
+        scroll_calls += 1
+        return scroll_calls == 1
+
+    state = _state(tmp_path)
+    result = _run(
+        world,
+        catalogue,
+        corpus,
+        state,
+        entry=_entry(catalogue, progress='0/2'),
+        max_rounds=1,
+        tile_timeout=0.5,
+        interval=0.25,
+        scroll=scroll_once,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert result.outcome is SurpriseOutcome.FAILED
+    assert result.verification == 'counter_stalled'
+    assert result.round_records[0].complete is False
+    assert result.round_records[0].taps == 0
+    assert result.round_records[0].scrolls == observed['scrolls']
+    assert result.recorded is False
+    assert state.count('surprise_items') == 0
+    assert [tap.label for tap in result.taps] == ['GO']
+    assert 'showed no product tile after the settle' in result.detail
+
+
 # --- result rendering and small helpers --------------------------------------
 
 
@@ -1900,6 +2128,13 @@ def test_surprise_private_helpers_cover_the_bounded_paths() -> None:
         assert _failure_verification(RoundRecord(1, 0, 0, 3, 0, RULE_PATH_REUSE, False, detail)) == expected
 
 
+def test_surprise_round_stall_detail_names_a_miss_and_keeps_its_own_fallback() -> None:
+    from aliexpress_coins.tasks.surprise import _round_stall_detail
+
+    assert _round_stall_detail(None, 3, 'the grid showed no tile') == 'the grid showed no tile'
+    assert _round_stall_detail((1, 0), 3, 'unused') == 'progress_unchanged: expected 1/3, saw 0/3'
+
+
 def test_surprise_without_boost_sheet_returns_the_corpus_when_no_family_matches(
     corpus: PopupCorpus,
 ) -> None:
@@ -2229,7 +2464,7 @@ def test_run_surprise_task_scrolls_for_new_products_before_giving_up(
 
     assert result.outcome is SurpriseOutcome.FAILED
     assert result.verification == 'counter_stalled'
-    assert result.round_records[0].scrolls == 1
+    assert result.round_records[0].scrolls == MAX_SCROLLS
 
 
 def test_run_surprise_task_uses_an_injected_back_seam(
@@ -2420,10 +2655,12 @@ def test_surprise_run_round_reports_an_unreadable_counter() -> None:
         arrival_timeout=0.5,
         exit_timeout=0.5,
         counter_timeout=0.5,
+        tile_timeout=0.5,
         interval=0.5,
         settle=0.0,
         back=None,
         scroll=None,
+        record_round_grid=None,
         clock=_SteppingClock(),
         sleep=_SteppingClock().sleep,
         logger=_logger(),
@@ -2639,10 +2876,12 @@ def test_surprise_run_round_stops_when_the_mission_leads_to_redeem() -> None:
         arrival_timeout=0.5,
         exit_timeout=0.5,
         counter_timeout=0.5,
+        tile_timeout=0.5,
         interval=0.5,
         settle=0.0,
         back=None,
         scroll=None,
+        record_round_grid=None,
         clock=_SteppingClock(step=0.5),
         sleep=_SteppingClock().sleep,
         logger=_logger(),
@@ -2689,10 +2928,12 @@ def test_surprise_run_round_reads_a_completed_counter_after_the_overlay() -> Non
         arrival_timeout=0.5,
         exit_timeout=0.5,
         counter_timeout=0.5,
+        tile_timeout=0.5,
         interval=0.5,
         settle=0.0,
         back=None,
         scroll=None,
+        record_round_grid=None,
         clock=_SteppingClock(step=0.5),
         sleep=_SteppingClock().sleep,
         logger=_logger(),
@@ -2763,10 +3004,12 @@ def test_surprise_run_round_recovers_when_the_overlay_tap_opens_a_product() -> N
         arrival_timeout=0.5,
         exit_timeout=0.5,
         counter_timeout=0.5,
+        tile_timeout=0.5,
         interval=0.5,
         settle=0.0,
         back=None,
         scroll=None,
+        record_round_grid=None,
         clock=_SteppingClock(step=0.5),
         sleep=_SteppingClock().sleep,
         logger=_logger(),

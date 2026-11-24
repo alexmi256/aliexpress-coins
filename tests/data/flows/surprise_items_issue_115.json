@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "issue": 115,
+  "run_id": "20261124T083006Z",
+  "source": "sanitized surprise_items task payload from the run report",
+  "frame_evidence": {
+    "grid_png_retained": false,
+    "grid_ocr_sidecar_retained": false,
+    "retained_shots": [
+      "balance-before.png",
+      "balance-after.png"
+    ],
+    "note": "The run retained only coin-page balance frames. The product-tile boxes and the OCR box that produced 3/3 were not persisted, so this is report evidence rather than a captured-grid image."
+  },
+  "observed": {
+    "badge_before": "0/2",
+    "badge_after": "0/2",
+    "product_taps": 0,
+    "items": [],
+    "scrolls": 1,
+    "round": {
+      "counter_before": 0,
+      "counter_after": 3,
+      "total": 3,
+      "taps": 0,
+      "complete": true,
+      "rule_path": "reset"
+    },
+    "verification": "progress_unchanged",
+    "recorded": true
+  }
+}

@@ -91,7 +91,10 @@ category-tap executor (#108).
   executor recognises the same two-column card set it already read, not generic discount copy, and
   restores the top before reading the counter (#100). At `3/3`, `Mission Completed` stays >10 s
   until tapped; `Next round` appears on non-final rounds at ~(597, 1240) ⬜. Final round paid +1
-  (43 → 44) and removed the row (intermediate-round payout ⬜). The counter-proven round is recorded
+  (43 → 44) and removed the row (intermediate-round payout ⬜). The header and `N/3` pill can paint
+  while every product card is still a skeleton (measured 2026-11-24 in the `0/2` case), so a
+  tile-less first read is settled before the grid is called empty; each round's first frame is
+  retained under `shots/surprise-items-round-<n>-grid.*` (#115). The counter-proven round is recorded
   immediately; when the returned row badge (`N/2`) is readable it is re-read after a short dwell
   and a non-advancing badge fails `progress_unchanged`, but an absent row leaves the counter as the
   evidence. Until
