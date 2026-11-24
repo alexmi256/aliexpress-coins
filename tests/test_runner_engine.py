@@ -523,7 +523,16 @@ def test_the_dispatch_table_covers_every_implemented_category(catalogue: TaskCat
     }
     assert TaskCategory.SHORTCUT not in engine.DISPATCH_TABLE
     assert TaskCategory.WIDGET not in engine.DISPATCH_TABLE
-    assert set(engine._CATEGORY_COST) == set(TaskCategory)
+    assert engine._CATEGORY_COST == {
+        TaskCategory.SIGN_IN: 0,
+        TaskCategory.QUIZ: 1,
+        TaskCategory.BROWSE: 2,
+        TaskCategory.ITEM_TAP: 3,
+        TaskCategory.BROWSE_WAIT: 4,
+        TaskCategory.NOTIFICATION: 5,
+        TaskCategory.SHORTCUT: 6,
+        TaskCategory.WIDGET: 7,
+    }
     assert catalogue.allowed
 
 
@@ -578,6 +587,64 @@ def test_a_full_walk_dispatches_in_policy_order_and_reports_the_task_budget(
     assert report.roster_log_path.is_file()
     assert report.failure_code == FailureCode.BUDGET_EXHAUSTED.value
     assert _report_payload(tmp_path)['status'] == 'budget'
+
+
+@pytest.mark.slow
+def test_the_engine_attempts_every_category_in_policy_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boost_frame: Snapshot,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = replace(
+        boost_frame,
+        boxes=(
+            *boost_frame.boxes,
+            _box('Search for what you love', 100, 1310, 700, 1350),
+            _box('Earn by using keywords to explore items', 100, 1355, 760, 1385),
+            _box('GO', 980, 1330, 1040, 1370),
+        ),
+    )
+    wanted = (
+        'boost_checkin',
+        'coins_quiz',
+        'search_for_what_you_love',
+        'surprise_items',
+        'sponsored_items',
+        'notifications',
+    )
+    enumerated = enumerate_roster(frame, catalogue, route=DiscoveryRoute.BOOST)
+    roster = replace(
+        enumerated,
+        entries=tuple(entry for entry in enumerated.entries if entry.key in wanted),
+        surface_variant=Surface.BOOST_PAGE,
+        routes_taken=(SurfaceRoute.SHORTCUT,),
+    )
+    _surface(monkeypatch, roster, frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+        max_tasks=5,
+    )
+    order: list[str] = []
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        order.append(entry.key or '')
+        if entry.key is not None:
+            _context.state.record(entry.key)
+        return EngineResult('completed', 'fake', 'done', True, {'key': entry.key})
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert order == list(wanted[:5])
+    assert [task.key for task in report.tasks] == list(wanted[:5])
+    assert report.status is RunStatus.BUDGET
+    assert any(skip.key == 'notifications' and skip.reason == 'run budget' for skip in report.skipped)
 
 
 @pytest.mark.slow
