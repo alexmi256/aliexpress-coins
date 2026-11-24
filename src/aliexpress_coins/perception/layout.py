@@ -14,8 +14,11 @@ text), while staying below the ~190 px gap between adjacent task rows and below
 the 106 px gap that separates the coin-page card from its first task row.
 
 Nearest-neighbour clustering can chain across a bridging box, so a cluster with
-several action labels is split at the midpoints between those actions. That is
-what guarantees two task titles can never resolve to the same button.
+several action labels is split at the midpoints between those actions. A cluster
+with one action is split around that action's vertical band: card copy above the
+band cannot borrow the task row's button just because a bridging box joined the
+two. That is what guarantees two task titles can never resolve to the same
+button.
 
 Rows are returned in reading order (top to bottom, boxes top-left first). A
 row's action is the **rightmost** action label in its band, which is how a task
@@ -223,10 +226,30 @@ def row_tolerance(boxes: Iterable[TextBox], geometry: DeviceGeometry) -> float:
     return min(derived, geometry.height * MAX_ROW_TOLERANCE_FRAME_FRACTION)
 
 
-def _is_action_box(box: TextBox) -> bool:
+def _is_action_box(box: TextBox, action_labels: Sequence[str] = DEFAULT_ACTION_LABELS) -> bool:
     if box.score < DEFAULT_MIN_OCR_SCORE:
         return False
-    return any(similarity(label, box.text) >= DEFAULT_MIN_SCORE for label in DEFAULT_ACTION_LABELS)
+    return any(similarity(label, box.text) >= DEFAULT_MIN_SCORE for label in action_labels)
+
+
+def count_action_boxes(
+    boxes: Iterable[TextBox],
+    geometry: DeviceGeometry,
+    *,
+    action_labels: Sequence[str] = DEFAULT_ACTION_LABELS,
+) -> int:
+    """Count visible action controls independently of row grouping.
+
+    Repeated OCR detections of one button collapse within the same derived
+    vertical band. The count deliberately does not call :func:`group_rows`: it is
+    the sanity check that notices when the splitter failed to enumerate a row.
+    """
+    ordered = tuple(boxes)
+    actions = tuple(box for box in ordered if _is_action_box(box, action_labels))
+    if not actions:
+        return 0
+    band = row_tolerance(ordered, geometry)
+    return len(_distinct_actions(tuple(sorted(actions, key=lambda box: (box.center[1], box.bbox[0]))), band))
 
 
 def _distinct_actions(actions: tuple[TextBox, ...], band: float) -> tuple[TextBox, ...]:
@@ -268,15 +291,74 @@ def _split_at_largest_gap(cluster: tuple[TextBox, ...], limit: float) -> tuple[t
     return left + right
 
 
-def _split_cluster(cluster: tuple[TextBox, ...], median_height: float) -> tuple[tuple[TextBox, ...], ...]:
+def _split_cluster(
+    cluster: tuple[TextBox, ...],
+    median_height: float,
+    tolerance: float,
+) -> tuple[tuple[TextBox, ...], ...]:
     actions = _distinct_actions(tuple(box for box in cluster if _is_action_box(box)), median_height)
     if len(actions) >= 2:
         return _split_at_actions(cluster, actions)
-    if not actions and median_height > 0:
-        limit = median_height * ROW_MAX_TEXT_SPAN_HEIGHT_RATIO
-        if cluster[-1].center[1] - cluster[0].center[1] > limit:
-            return _split_at_largest_gap(cluster, limit)
+    if len(actions) == 1 and tolerance > 0:
+        return _split_around_action(cluster, actions[0], tolerance, median_height)
+    return _split_text_cluster(cluster, median_height)
+
+
+def _split_around_action(
+    cluster: tuple[TextBox, ...],
+    action: TextBox,
+    tolerance: float,
+    median_height: float,
+) -> tuple[tuple[TextBox, ...], ...]:
+    """Keep only the action's own vertical band in an action-bearing row.
+
+    The measured coin-page card and its first task row can chain into one
+    cluster even though the task title and ``GO`` are close together and the
+    card's last line is already too far above the button. Splitting at the
+    button, rather than lowering the global tolerance, preserves every measured
+    title-to-``GO`` gap while returning the card copy as separate text rows.
+    """
+    anchor = action.center[1]
+    anchored = tuple(box for box in cluster if abs(box.center[1] - anchor) <= tolerance)
+    before = tuple(box for box in cluster if box.center[1] < anchor - tolerance)
+    after = tuple(box for box in cluster if box.center[1] > anchor + tolerance)
+    parts = _split_text_cluster(before, median_height) if before else ()
+    return (*parts, anchored, *(_split_text_cluster(after, median_height) if after else ()))
+
+
+def _split_text_cluster(cluster: tuple[TextBox, ...], median_height: float) -> tuple[tuple[TextBox, ...], ...]:
+    if len(cluster) < 2 or median_height <= 0:
+        return (cluster,)
+    limit = median_height * ROW_MAX_TEXT_SPAN_HEIGHT_RATIO
+    if cluster[-1].center[1] - cluster[0].center[1] > limit:
+        return _split_at_largest_gap(cluster, limit)
     return (cluster,)
+
+
+def group_row_clusters(boxes: Iterable[TextBox], geometry: DeviceGeometry) -> tuple[tuple[TextBox, ...], ...]:
+    """The raw nearest-neighbour clusters before any action-aware split.
+
+    :func:`group_rows` returns the task rows after splitting a chained cluster
+    around its action control. Diagnostics need the cluster *as it chained*, so
+    they can prove a card or a shortcut strip was joined to a neighbouring row
+    before the splitter repaired it. The tolerance is the same derived one used
+    by :func:`group_rows`; there are no stored pixel gaps.
+    """
+    ordered = sorted(boxes, key=lambda box: (box.center[1], box.bbox[0], box.bbox[1]))
+    if not ordered:
+        return ()
+
+    tolerance = row_tolerance(ordered, geometry)
+    clusters: list[tuple[TextBox, ...]] = []
+    current: list[TextBox] = [ordered[0]]
+    for box in ordered[1:]:
+        if box.center[1] - current[-1].center[1] <= tolerance:
+            current.append(box)
+        else:
+            clusters.append(tuple(current))
+            current = [box]
+    clusters.append(tuple(current))
+    return tuple(clusters)
 
 
 def group_rows(boxes: Iterable[TextBox], geometry: DeviceGeometry) -> tuple[Row, ...]:
@@ -290,10 +372,11 @@ def group_rows(boxes: Iterable[TextBox], geometry: DeviceGeometry) -> tuple[Row,
     A cluster that still contains more than one action label is split at the
     midpoints between those actions, because nearest-neighbour clustering can
     otherwise chain through a bridging box and make two tasks share a button.
-    This split uses :data:`DEFAULT_ACTION_LABELS`; a surface with different row
-    controls must extend that set to get the same guarantee. A cluster without
-    an action is split at its widest text gap when it spans more than one
-    stacked line.
+    A cluster with one action is split around that action's derived vertical
+    band, so copy above the band cannot borrow its button. These splits use
+    :data:`DEFAULT_ACTION_LABELS`; a surface with different row controls must
+    extend that set to get the same guarantees. A cluster without an action is
+    split at its widest text gap when it spans more than one stacked line.
     """
     ordered = sorted(boxes, key=lambda box: (box.center[1], box.bbox[0], box.bbox[1]))
     if not ordered:
@@ -302,19 +385,10 @@ def group_rows(boxes: Iterable[TextBox], geometry: DeviceGeometry) -> tuple[Row,
     heights = tuple(box.height for box in ordered if box.height > 0)
     median_height = float(statistics.median(heights)) if heights else 0.0
     tolerance = row_tolerance(ordered, geometry)
-    clusters: list[tuple[TextBox, ...]] = []
-    current: list[TextBox] = [ordered[0]]
-    for box in ordered[1:]:
-        if box.center[1] - current[-1].center[1] <= tolerance:
-            current.append(box)
-        else:
-            clusters.append(tuple(current))
-            current = [box]
-    clusters.append(tuple(current))
 
     rows: list[Row] = []
-    for cluster in clusters:
-        rows.extend(Row(part) for part in _split_cluster(cluster, median_height))
+    for cluster in group_row_clusters(ordered, geometry):
+        rows.extend(Row(part) for part in _split_cluster(cluster, median_height, tolerance))
     return tuple(rows)
 
 

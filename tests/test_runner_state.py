@@ -208,6 +208,19 @@ def test_a_retryable_failure_leaves_the_day_open_and_records_the_decision(tmp_pa
     assert _store(tmp_path).snapshot().completed_night is False
 
 
+def test_an_incomplete_roster_leaves_the_day_open(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    record = NightRecord(NightOutcome.INCOMPLETE_ROSTER, dispatched=1, completed=1)
+
+    store.record_night(record)
+
+    snapshot = store.snapshot()
+    assert record.complete is False
+    assert snapshot.completed_night is False
+    assert snapshot.last_night is record
+    assert snapshot.as_dict()['last_night']['outcome'] == 'incomplete_roster'
+
+
 def test_a_later_retryable_night_reopens_a_finished_day(tmp_path: Path) -> None:
     store = _store(tmp_path)
     store.record_night(NightRecord(NightOutcome.EXHAUSTED, dispatched=1, completed=1))

@@ -113,6 +113,20 @@ allowed:
       Named in the brief's task taxonomy. The row was not on the measured
       roster on 2026-11-20, so its presence is opportunistic; absent is normal.
 
+  - key: super_discounts
+    label_patterns:
+      - View Super discounts
+    category: browse_wait
+    wait_seconds: 15
+    repeatable: false
+    max_per_run: 1
+    notes: >-
+      A timed view row measured on the 2026-11-23 coin page: ~15 s wait, +1 coin,
+      no purchase step (docs/05 §5b). It sits above the mini-app shortcut strip
+      (Merge Boss / Play & Earn / Prize Land); those tiles are the games, not
+      this row. Repeatability and the destination page's own marker are
+      unresolved, so one completion per day is the conservative bound.
+
   - key: shopping_credits_checkin
     label_patterns:
       - Check in to win Shopping credits

@@ -85,6 +85,7 @@ tapping a guessed coordinate ([`06-runbook.md`](06-runbook.md) §14).
 | Take the coins quiz | ✅ allowed | `quiz` (`quiz.py`) | 2 or 4 options; learns into `data/quiz_bank.json` |
 | Explore sponsored items | ✅ allowed | `browse_wait` (`browse.py`) | timer chip (15 s bound), repeatable `6/day` |
 | Learn to save money with Coins Credits | ✅ allowed | `browse_wait` (`browse.py`) | timer chip (15 s bound) |
+| View Super discounts | ✅ allowed | `browse_wait` (`browse.py`) | timed view (~15 s), +1 coin, no purchase step; repeatability ❓ |
 | Browse recently viewed items | ✅ allowed | `browse_wait` (`browse.py`) | timer chip (15 s bound), opportunistic |
 | Check in to win Shopping credits | ✅ allowed | `browse_wait` (`browse.py`) | timer chip (15 s bound) |
 | Browse surprise items | ✅ allowed | `item_tap` (`surprise.py`) | 3 distinct products per round, `2` rounds |

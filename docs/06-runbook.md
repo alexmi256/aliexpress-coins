@@ -314,6 +314,9 @@ Read it like this:
 - **refusals** are the deny-list decisions. `unrecognised` is default-deny: the row is not in
   `specs/tasks.yaml`, so the collector skips it. `spending_order` is an explicit refusal. A refusal
   is a safety feature, not a failure.
+- **roster warnings** name visible `GO` buttons that did not become task rows, or known task titles
+  that could not be split from another row's copy. A recovered split is still reported; an
+  incomplete read keeps the night open instead of letting a swallowed row prove the day is done.
 - **`taps_issued: 0`** is the proof that the dry run did not touch the app.
 
 A dry run exits `0` only when it positively read a complete roster. Any unreadable surface — still
@@ -430,12 +433,13 @@ a night whose walk left a retryable task failure is not marked complete, so the 
 later run. A run-level failure is likewise not silently treated as complete, so the next day's fire
 tries again.
 
-**What "complete" means.** A finished roster walk marks the day complete only when nothing
-dispatched is worth retrying: every row either completed, was skipped/refused (policy, daily limit,
-or the app reporting it unavailable), or failed with a failure class that spends no retry. Any
-`failed` row whose taxonomy entry is retryable (`task_unverified`, including a timeout or a
-recovered unknown screen) keeps `completed_night` false, even if another row completed, because the
-retryable row is still unclaimed work. This is a cross-run retry, not the in-run rule that
+**What "complete" means.** A finished roster walk marks the day complete only when the roster was
+read completely and nothing dispatched is worth retrying: every row either completed, was
+skipped/refused (policy, daily limit, or the app reporting it unavailable), or failed with a failure
+class that spends no retry. Any `failed` row whose taxonomy entry is retryable (`task_unverified`,
+including a timeout or a recovered unknown screen), or a visible action that could not be attached
+to a task row, keeps `completed_night` false even if another row completed, because unclaimed work
+may still be hidden by the splitter. This is a cross-run retry, not the in-run rule that
 `acted=True` blocks a repeated tap. A task that acted without proof is recorded in
 `acted_unverified`; its next dispatch first re-reads the fresh task surface. A row that still shows
 its unclaimed `GO` may proceed, a row that is gone/checked on a complete surface is reported
@@ -483,7 +487,7 @@ gate in #41.
 | **Geometry** | frame size, density, SDK, orientation and calibration profile id |
 | **Surface** | the screen family the roster was read from (`rows_present`, `boost_page`, ...) |
 | **Route** | the route used and the routes tried, including a warm re-entry |
-| **Roster** | row count, allowed count and refused count, with the read status |
+| **Roster** | row count, allowed count and refused count, with the read status and any swallowed-row warning |
 | **Observations** | how many roster diffs were logged in `roster.jsonl` |
 | **Balance** | before and after, with the delta when both frames were readable |
 | **Popups closed** | verified dismissals by family, or `none` |

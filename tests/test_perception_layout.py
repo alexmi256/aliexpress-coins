@@ -19,6 +19,7 @@ from aliexpress_coins.perception.layout import (
     ROW_MAX_TEXT_SPAN_HEIGHT_RATIO,
     ProgressBadge,
     Row,
+    count_action_boxes,
     find_action_in_row,
     find_progress_badge,
     group_rows,
@@ -249,6 +250,36 @@ def test_group_rows_does_not_use_an_unsure_action_as_a_split_point(
     group_rows(boxes, _geometry(400, 2000))
 
     assert calls == []
+
+
+def test_group_rows_splits_card_copy_above_a_single_action_band() -> None:
+    """The 2026-11-24 card chains into Search, but only Search owns the GO."""
+    card = _centered_box('Daily coins', 190, 948, width=250, height=62)
+    worth = _centered_box('Worth C$0.01', 250, 1169.5, width=230, height=41)
+    title = _centered_box('Search for what you love', 390, 1268, width=430, height=47)
+    badge = _centered_box('0/2', 1100, 1262, width=74, height=50)
+    action = _centered_box('GO', 1018, 1297, width=74, height=48)
+    geometry = _geometry(1200, 2000)
+
+    rows = group_rows((card, worth, title, badge, action), geometry)
+
+    task = next(row for row in rows if row_of(rows, title) is row)
+    assert find_action_in_row(task) is action
+    progress = find_progress_badge(task)
+    assert progress is not None
+    assert progress.box is badge
+    assert row_of(rows, card) is not task
+    assert row_of(rows, worth) is not task
+    assert all(find_action_in_row(row) is None for row in rows if row_of(rows, card) is row)
+
+
+def test_count_action_boxes_deduplicates_repeated_ocr_but_not_separate_buttons() -> None:
+    first = _centered_box('GO', 1000, 1300, height=48)
+    duplicate = _centered_box('GO', 1005, 1301, height=48)
+    second = _centered_box('GO', 1000, 1475, height=48)
+    unsure = _centered_box('GO', 1000, 1650, height=48, score=0.1)
+
+    assert count_action_boxes((first, duplicate, second, unsure), _geometry(1200, 2000)) == 2
 
 
 def test_group_rows_deduplicates_duplicate_action_boxes_before_splitting() -> None:

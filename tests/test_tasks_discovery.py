@@ -194,6 +194,8 @@ def frames(engine: RapidOcrEngine) -> dict[str, Snapshot]:
         'state_boost': _load(STATES / 'boost.png', engine),
         'real_boost': _load(STATES / 'boost_daily_checkin.png', engine),
         'coins': _load(STATES / 'coins.png', engine),
+        'merged_card': _load(STATES / 'coins_merged_card.png', engine),
+        'search_row': _load(STATES / 'coins_search_row.png', engine),
         'launch': _load(DATA / 'popups' / 'launch_welcome_gifts.png', engine),
         'sheet': _load(DATA / 'popups' / 'coins_boost_sheet.png', engine),
         'skeleton': _load(STATES / 'skeleton.png', engine),
@@ -316,6 +318,92 @@ def test_the_measured_fixtures_keep_their_progress_badges(
     ]
 
 
+@pytest.mark.slow
+def test_the_search_row_capture_enumerates_the_card_and_every_task_separately(
+    frames: dict[str, Snapshot],
+    catalogue: TaskCatalogue,
+) -> None:
+    """The exact 2026-11-24 23:25 EST frame from issue #107."""
+    roster = enumerate_roster(frames['search_row'], catalogue, route=DiscoveryRoute.INLINE)
+
+    assert roster.titles == (
+        'Daily coins',
+        'Search for what you love',
+        'Place an order on this page',
+        'View Super discounts',
+    )
+    daily, search, order, discounts = roster.entries
+    assert daily.key == 'daily_checkin'
+    assert daily.action is None  # Today was already claimed; the card has no Collect.
+    assert daily.subtitle is not None
+    assert daily.subtitle.endswith('Worth C$0.01')
+    assert 'Search for what you love' not in daily.subtitle
+    assert search.denied
+    assert search.reason == 'unrecognised'
+    assert search.progress_text == '0/2'
+    assert search.action is not None
+    assert search.action.text == 'GO'
+    assert search.dispatch_target is None
+    assert order.rule == 'spending_order'
+    assert order.progress_text == '0/3'
+    # `View Super discounts` is a timed view, not a mini-game. The strip of
+    # tiles below it must not become its subtitle.
+    assert discounts.allowed
+    assert discounts.key == 'super_discounts'
+    assert discounts.category is TaskCategory.BROWSE_WAIT
+    assert discounts.subtitle is None or 'Play & Earn' not in discounts.subtitle
+    assert discounts.dispatch_target is not None
+    # Its own copy is the title, GO and +1 reward. The shortcut strip below is
+    # not part of this row and is not a task row of its own.
+    assert '+1' in discounts.row.text
+    assert all(tile not in discounts.row.text for tile in ('Merge Boss', 'Play & Earn', 'Prize Land'))
+    assert roster.visible_action_count == 3
+    assert roster.unassigned_action_count == 0
+    assert roster.incomplete is False
+    absorbed = {(failure.title, failure.container_title) for failure in roster.split_failures}
+    assert ('Search for what you love', 'Daily coins') in absorbed
+    assert ('Play & Earn', 'View Super discounts') in absorbed
+    assert all(failure.recovered for failure in roster.split_failures)
+    assert roster.warning == f'{len(roster.split_failures)} split failure(s) were recovered'
+    # The run report must carry the repaired absorption, not only the final rows.
+    payload = roster.as_dict()
+    assert payload['warning'] == roster.warning
+    assert len(cast('list[object]', payload['split_failures'])) == len(roster.split_failures)
+
+
+@pytest.mark.slow
+def test_the_merged_card_capture_pairs_collect_and_daily_checkin_with_their_own_controls(
+    frames: dict[str, Snapshot],
+    catalogue: TaskCatalogue,
+) -> None:
+    roster = enumerate_roster(frames['merged_card'], catalogue, route=DiscoveryRoute.INLINE)
+
+    assert roster.titles == (
+        'Daily coins',
+        'Daily check-in',
+        'Explore sponsored items',
+        'Browse surprise items',
+    )
+    daily, checkin, sponsored, surprise = roster.entries
+    assert daily.action is not None
+    assert daily.action.text == 'Collect'
+    assert daily.subtitle is not None
+    assert daily.subtitle.endswith('Worth C$0.01')
+    assert 'Daily check-in' not in daily.subtitle
+    assert checkin.key == 'boost_checkin'
+    assert checkin.action is not None
+    assert checkin.action.text == 'GO'
+    assert sponsored.progress_text == '0/6'
+    assert surprise.progress_text == '0/2'
+    assert roster.visible_action_count == 3
+    assert roster.unassigned_action_count == 0
+    assert roster.incomplete is False
+    assert [(failure.title, failure.container_title) for failure in roster.split_failures] == [
+        ('Daily check-in', 'Daily coins'),
+    ]
+    assert all(failure.recovered for failure in roster.split_failures)
+
+
 def test_a_refused_row_is_reported_but_never_gets_a_dispatch_target(
     frames: dict[str, Snapshot],
     catalogue: TaskCatalogue,
@@ -335,6 +423,53 @@ def test_a_refused_row_is_reported_but_never_gets_a_dispatch_target(
     assert payload['reason'] == refused.reason
     assert payload['action'] is not None
     assert payload['dispatch_target'] is None
+
+
+def test_a_card_control_does_not_mask_an_unassigned_go() -> None:
+    snapshot = _snapshot(
+        _box('Daily coins', 100, 500, 500, 540),
+        _box('Worth C$0.01', 100, 600, 400, 640),
+        _box('Collect', 900, 600, 1000, 640),
+        _box('Take the coins quiz', 80, 800, 700, 840),
+        _box('GO', 980, 831, 1040, 861),
+        _box('GO', 980, 1000, 1040, 1030),
+    )
+
+    roster = enumerate_roster(snapshot, load_task_catalogue(CATALOGUE_PATH))
+
+    assert roster.entries[0].title == 'Daily coins'
+    assert roster.entries[0].action is not None
+    assert roster.entries[0].action.text == 'Collect'
+    # The Collect control is not a GO button, so two visible GO buttons with
+    # one row means one unassigned action, not a clean read.
+    assert roster.visible_action_count == 2
+    assert roster.unassigned_action_count == 1
+    assert roster.incomplete
+
+
+def test_an_actual_mini_game_row_is_still_refused_by_policy() -> None:
+    snapshot = _boost_frame(_task_row('Play & Earn', 100, subtitle='Win rewards'))
+
+    roster = enumerate_roster(snapshot, load_task_catalogue(CATALOGUE_PATH))
+
+    assert roster.titles == ('Play & Earn',)
+    entry = roster.entries[0]
+    assert entry.denied
+    assert entry.rule == 'game_play_and_earn'
+    assert entry.dispatch_target is None
+    assert roster.split_failures == ()
+
+
+def test_a_legitimate_subtitle_that_mentions_a_tile_is_not_a_split_failure() -> None:
+    snapshot = _boost_frame(
+        _task_row('Water to win a US $0.10 prize', 100, subtitle='Water your tree in Prize Land'),
+    )
+
+    roster = enumerate_roster(snapshot, load_task_catalogue(CATALOGUE_PATH))
+
+    assert roster.titles == ('Water to win a US $0.10 prize',)
+    assert roster.split_failures == ()
+    assert roster.incomplete is False
 
 
 def test_an_unrecognised_row_is_kept_with_the_default_refusal_reason() -> None:
@@ -367,6 +502,96 @@ def test_duplicate_rows_with_the_same_title_are_listed_once() -> None:
     roster = enumerate_roster(snapshot, load_task_catalogue(CATALOGUE_PATH))
 
     assert roster.titles == ('Explore sponsored items',)
+    assert roster.visible_action_count == 2
+    assert roster.unassigned_action_count == 1
+    assert roster.incomplete
+
+
+def test_a_known_title_in_another_rows_copy_is_split_back_apart_and_reported() -> None:
+    snapshot = _snapshot(
+        _box('Daily coins', 80, 1245, 500, 1290),
+        _box('Worth C$0.01', 80, 1248, 400, 1292),
+        _box('Search for what you love', 80, 1250, 700, 1295),
+        _box('0/2', 900, 1235, 1000, 1280),
+        _box('GO', 980, 1270, 1040, 1310),
+    )
+
+    roster = enumerate_roster(snapshot, load_task_catalogue(CATALOGUE_PATH))
+
+    assert roster.titles == ('Daily coins', 'Search for what you love')
+    assert roster.entries[0].subtitle == 'Worth C$0.01'
+    assert roster.entries[1].progress_text == '0/2'
+    assert roster.entries[1].action is not None
+    assert len(roster.split_failures) == 1
+    failure = roster.split_failures[0]
+    assert failure.title == 'Search for what you love'
+    assert failure.container_title == 'Daily coins'
+    assert failure.recovered
+    assert roster.unassigned_action_count == 0
+    assert roster.incomplete is False
+    assert roster.warning == '1 split failure(s) were recovered'
+
+
+def test_a_known_title_merged_into_one_ocr_box_leaves_the_action_unassigned() -> None:
+    snapshot = _snapshot(
+        _box('Worth C$0.01 Search for what you love', 80, 1245, 800, 1295),
+        _box('GO', 980, 1270, 1040, 1310),
+    )
+
+    roster = enumerate_roster(snapshot, load_task_catalogue(CATALOGUE_PATH))
+
+    assert roster.count == 1
+    assert roster.entries[0].action is None
+    assert roster.entries[0].dispatch_target is None
+    assert len(roster.split_failures) == 1
+    assert roster.split_failures[0].title == 'Search for what you love'
+    assert roster.split_failures[0].recovered is False
+    assert roster.visible_action_count == 1
+    assert roster.unassigned_action_count == 1
+    assert roster.incomplete
+    assert 'not enumerated' in (roster.warning or '')
+
+
+def test_a_task_title_merged_into_a_subtitle_box_is_an_unrecovered_split_failure() -> None:
+    snapshot = _snapshot(
+        _box('Daily coins', 80, 1200, 500, 1240),
+        _box('Worth C$0.01 Search for what you love', 80, 1250, 800, 1295),
+        _box('GO', 980, 1270, 1040, 1310),
+    )
+
+    roster = enumerate_roster(snapshot, load_task_catalogue(CATALOGUE_PATH))
+
+    assert roster.titles == ('Daily coins',)
+    entry = roster.entries[0]
+    assert entry.action is None
+    assert entry.dispatch_target is None
+    assert len(roster.split_failures) == 1
+    failure = roster.split_failures[0]
+    assert failure.title == 'Search for what you love'
+    assert failure.container_title == 'Daily coins'
+    assert failure.recovered is False
+    assert roster.visible_action_count == 1
+    assert roster.unassigned_action_count == 1
+    assert roster.incomplete
+    assert 'not enumerated' in (roster.warning or '')
+    assert 'known task title' in (roster.warning or '')
+
+
+def test_a_clean_two_row_chain_is_not_a_split_failure() -> None:
+    snapshot = _snapshot(
+        _box('Daily check-in', 80, 100, 700, 140),
+        _box('GO', 900, 131, 960, 161),
+        _box('Take the coins quiz', 80, 180, 700, 220),
+        _box('GO', 1000, 211, 1060, 241),
+    )
+
+    roster = enumerate_roster(snapshot, load_task_catalogue(CATALOGUE_PATH))
+
+    assert roster.titles == ('Daily check-in', 'Take the coins quiz')
+    assert roster.split_failures == ()
+    assert roster.unassigned_action_count == 0
+    assert roster.incomplete is False
+    assert roster.warning is None
 
 
 def test_the_roster_report_carries_the_route_status_and_catalogue_version(
@@ -383,6 +608,11 @@ def test_the_roster_report_carries_the_route_status_and_catalogue_version(
     assert payload['allowed_count'] == 3
     assert payload['denied_count'] == 1
     assert payload['nothing_available'] is False
+    assert payload['visible_action_count'] == 4
+    assert payload['unassigned_action_count'] == 0
+    assert payload['incomplete'] is False
+    assert payload['warning'] is None
+    assert payload['split_failures'] == []
     assert payload['catalogue'] == {
         'version': catalogue.version,
         'default_deny_reason': catalogue.default_deny_reason,
@@ -452,17 +682,41 @@ def test_a_missing_earn_more_degrades_to_the_inline_rows(
     roster = enumerate_roster(opened.snapshot, catalogue, route=opened.route)
     assert roster.route is DiscoveryRoute.INLINE
     assert roster.titles == (
+        'Daily coins',
         'Daily check-in',
         'Explore sponsored items',
         'Browse surprise items',
     )
-    assert roster.count == 3
+    assert roster.count == 4
     assert roster.as_dict()['route'] == 'inline'
 
     opened_payload = opened.as_dict()
     assert opened_payload['route'] == 'inline'
     assert 'tap' not in opened_payload
     assert 'dismiss' not in opened_payload
+
+
+def test_a_claimed_card_without_any_task_action_is_not_a_usable_roster() -> None:
+    snapshot = _snapshot(
+        _box('Daily coins', 100, 500, 500, 540),
+        _box('Worth C$0.01', 100, 600, 400, 640),
+    )
+
+    roster = enumerate_roster(snapshot, load_task_catalogue(CATALOGUE_PATH))
+
+    assert roster.empty
+    assert roster.visible_action_count == 0
+    assert roster.incomplete is False
+
+
+def test_a_known_title_with_different_case_is_not_a_split_failure() -> None:
+    snapshot = _boost_frame(_task_row('search for what you love', 100, badge='0/2'))
+
+    roster = enumerate_roster(snapshot, load_task_catalogue(CATALOGUE_PATH))
+
+    assert roster.titles == ('search for what you love',)
+    assert roster.split_failures == ()
+    assert roster.incomplete is False
 
 
 def test_a_row_with_no_title_is_not_guessed() -> None:
@@ -473,6 +727,10 @@ def test_a_row_with_no_title_is_not_guessed() -> None:
 
     assert roster.count == 0
     assert roster.nothing_available
+    assert roster.visible_action_count == 1
+    assert roster.unassigned_action_count == 1
+    assert roster.incomplete
+    assert roster.warning == '1 visible GO button(s) but 1 task action(s) were not enumerated'
 
 
 def test_open_boost_list_taps_earn_more_once_and_waits_for_the_list(
@@ -1482,6 +1740,31 @@ def test_an_unknown_title_is_a_candidate_that_is_never_dispatchable(
     assert [row.label for row in first.diff.candidates] == ['Invent a new task']
     assert [row.label for row in second.diff.candidates] == []
     assert [row.label for row in observer.candidates] == ['Invent a new task']
+
+
+def test_an_unassigned_go_is_durable_and_logged_as_a_warning(
+    caplog: pytest.LogCaptureFixture,
+    catalogue: TaskCatalogue,
+) -> None:
+    frame = _boost_frame(_task_row('Daily check-in', 100), (_box('GO', 980, 500, 1040, 530),))
+    logger = logging.getLogger('test.roster.diagnostics')
+    observer = RosterObserver(catalogue, clock=lambda: CAPTURED_AT, logger=logger)
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        observation = observer.observe(frame)
+
+    assert observation.roster is not None
+    assert observation.roster.incomplete
+    payload = observation.as_dict()
+    diagnostics = cast('dict[str, object]', payload['roster_diagnostics'])
+    assert diagnostics['incomplete'] is True
+    assert diagnostics['unassigned_action_count'] == 1
+    assert 'not enumerated' in str(diagnostics['warning'])
+    records = [record for record in caplog.records if record.message.startswith('{')]
+    assert records[-1].levelno == logging.WARNING
+    event = cast('dict[str, object]', json.loads(records[-1].message))
+    assert event['event'] == 'roster_observation'
+    assert cast('dict[str, object]', event['roster_diagnostics'])['incomplete'] is True
 
 
 def test_a_failed_observation_keeps_the_previous_roster_and_the_walk_continues(

@@ -6,10 +6,10 @@ done (docs/05-app-knowledge.md §5):
 * the streak card's ``Collect`` control on the coin page, above the task rows;
 * the boost page's ``Daily check-in`` row, with its own ``GO``.
 
-The streak control is deliberately **not** a boost row, so it never goes through
-:func:`~aliexpress_coins.tasks.discovery.enumerate_roster` / row dispatch. This
-module owns that control directly. The boost claim does use the row layout: the
-button is resolved from the current frame with
+The streak control is **not** a boost row, but the Daily coins card is enumerated
+as its own roster surface so a neighbouring task's ``GO`` can never stand in for
+``Collect``. This module owns the control directly. The boost claim also uses the
+row layout: the button is resolved from the current frame with
 :func:`~aliexpress_coins.perception.layout.find_action_in_row`, never from a
 remembered position.
 
@@ -64,6 +64,9 @@ from aliexpress_coins.tasks.surface import (
     BOOST_MARKER,
     COIN_PAGE_MARKERS,
     REDEEM_MARKER,
+    STREAK_CARD_HEIGHT_RATIO,
+    STREAK_CONTROL_LABELS,
+    STREAK_MARKER,
     Surface,
     classify_surface,
     contains_text,
@@ -106,12 +109,6 @@ STREAK_KEY = 'daily_checkin'
 
 BOOST_KEY = 'boost_checkin'
 """The catalogue key of the boost page's ``Daily check-in`` row."""
-
-STREAK_MARKER = 'Daily coins'
-"""The section marker above the streak card (docs/07 §3)."""
-
-STREAK_CONTROL_LABELS: tuple[str, ...] = ('Collect', 'Claim', 'Sign in')
-"""The label variants the streak claim control has been seen with."""
 
 STREAK_CLAIMED_LABELS: tuple[str, ...] = ('Tomorrow', 'Claimed', 'Collected', 'Checked in')
 """Wording the streak card uses after today's claim."""
@@ -176,14 +173,6 @@ control numeral such as ``0``. A zero read there is not evidence (issue #94).
 """
 
 _BARE_NUMBER = re.compile(r'^\s*(\d{1,3}(?:,\d{3})*|\d+)\s*$')
-
-_STREAK_CARD_HEIGHT_RATIO = 5.0
-"""How far below the marker row the streak card may reach, in row heights.
-
-The measured card ends about 4.5 marker-row heights below the marker, and the
-first task row starts about 5.8 below it. Scaling by the marker row's own
-height keeps the band tied to the frame's text size rather than a pixel offset.
-"""
 
 
 class SigninOutcome(StrEnum):
@@ -1028,7 +1017,7 @@ def _streak_rows(snapshot: Snapshot) -> tuple[Row, ...]:
         header = section.header
         if header is None or not _row_has(header, (STREAK_MARKER,)):
             continue
-        limit = header.top + header.height * _STREAK_CARD_HEIGHT_RATIO
+        limit = header.top + header.height * STREAK_CARD_HEIGHT_RATIO
         card: list[Row] = [header]
         for row in section.rows:
             if row.center_y > limit or _is_task_row(row):
