@@ -95,13 +95,14 @@ markers = [
 # The coin-store surface raise left the floor at 99.46; the run lock landed
 # (issue #78) with the suite measured at 99.48, raising it to 99.47. The night
 # completion and acted-row re-check work measured 99.49, raising it to 99.48.
-# See "Quality gate" in README.md.
+# The surprise-grid surface, per-round tile and badge verification work measured
+# 99.52, raising it to 99.50. See "Quality gate" in README.md.
 [tool.coverage.run]
 branch = true
 source = ["aliexpress_coins"]
 
 [tool.coverage.report]
-fail_under = 99.48
+fail_under = 99.50
 precision = 2
 show_missing = true
 skip_covered = true

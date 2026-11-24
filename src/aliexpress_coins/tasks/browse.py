@@ -125,6 +125,7 @@ __all__ = [
     'find_collect_control',
     'find_task_row',
     'find_timer_chip',
+    'progress_unchanged_detail',
     'return_to_coins_page',
     'run_browse_task',
     'wait_for_timer_chip',
@@ -743,6 +744,30 @@ def find_task_row(snapshot: Snapshot, title: str) -> tuple[Row | None, TextBox |
     if row is None:
         return None, None, None
     return row, find_action_in_row(row), find_progress_badge(row)
+
+
+def progress_unchanged_detail(
+    title: str,
+    before: ProgressBadge | None,
+    observed: ProgressBadge | None,
+    *,
+    advanced: int = 1,
+) -> str:
+    """Name the expected next badge against the one actually read.
+
+    Browse tasks and the surprise-items executor share this wording so a report
+    says ``progress_unchanged: expected 3/6, saw 2/6`` rather than the generic
+    "still present" sentence (#99, #100). The expected value advances ``before``
+    by the units the executor believes it earned; an unreadable observation is
+    named as such instead of being invented.
+    """
+    if before is None:
+        expected = 'a changed badge'
+    else:
+        expected_value = min(before.completed + max(0, advanced), before.total)
+        expected = f'{expected_value}/{before.total}'
+    seen = 'unreadable' if observed is None else observed.text
+    return f'progress_unchanged: expected {expected}, saw {seen} ({title!r})'
 
 
 def return_to_coins_page(
@@ -1924,10 +1949,13 @@ def _verdict(
             badge=badge,
             evidence=evidence,
         )
+    detail = f'{title!r} is still present with an unchanged badge or action'
+    if before is not None:
+        detail = progress_unchanged_detail(title, before, badge)
     return _Verdict(
         status='no_change',
         decisive=False,
-        detail=f'{title!r} is still present with an unchanged badge or action',
+        detail=detail,
         badge=badge,
         evidence=evidence,
     )

@@ -36,6 +36,7 @@ from aliexpress_coins.tasks.surface import (
     classify_surface,
     has_task_rows,
     is_logged_out,
+    is_surprise_grid,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -203,6 +204,39 @@ def test_classify_surface_names_the_recorded_coin_store(frames: dict[str, Snapsh
 
     assert surface is Surface.COIN_STORE
     assert not has_task_rows(frames['coin_store'])
+
+
+@pytest.mark.slow
+def test_classify_surface_names_the_recorded_surprise_detail_and_grid(engine: RapidOcrEngine) -> None:
+    detail = _load(ROOT / 'tests' / 'data' / 'flows' / 'surprise_items_item_detail.png', engine)
+    grid = _load(ROOT / 'tests' / 'data' / 'flows' / 'surprise_items_round_grid.png', engine)
+
+    assert classify_surface(detail) is Surface.PRODUCT_DETAIL
+    assert classify_surface(grid) is Surface.SURPRISE_GRID
+
+
+def test_classify_surface_names_the_scrolled_surprise_grid_from_its_cards() -> None:
+    scrolled = _snapshot(
+        _box('Disc:C$31.27', 60, 300, 330, 340),
+        _box('Applied', 350, 300, 520, 340),
+        _box('C$30.00', 60, 350, 300, 390),
+        _box('Black Friday', 60, 420, 300, 460),
+        _box('Free shipping', 60, 480, 300, 520),
+        _box('7 sold', 60, 540, 240, 580),
+        _box('Wireless CarPlay interface', 60, 600, 560, 640),
+    )
+
+    assert classify_surface(scrolled) is Surface.SURPRISE_GRID
+    assert is_surprise_grid(scrolled)
+    assert not is_surprise_grid(_snapshot(_box('Item 1/6', 40, 100, 300, 140)))
+    assert not is_surprise_grid(
+        _snapshot(
+            _box('Coins boost', 80, 90, 400, 150),
+            _box('Browse surprise items', 60, 420, 700, 470),
+            _box('Tap 3 items on this page to earn', 60, 480, 700, 530),
+        )
+    )
+    assert classify_surface(_snapshot(_box('Item 1/6', 40, 100, 300, 140))) is Surface.PRODUCT_DETAIL
 
 
 def test_classify_surface_recognises_the_empty_boost_recording(frames: dict[str, Snapshot]) -> None:

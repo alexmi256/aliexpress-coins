@@ -532,6 +532,46 @@ def test_the_known_surprise_product_detail_does_not_abort_for_its_two_buttons() 
     assert guard.task_running is False
 
 
+def test_the_product_detail_discount_copy_is_not_a_dangerous_control() -> None:
+    detail = _snapshot(
+        _box('Item 1/6', 40, 100, 300, 140),
+        _box('Disc:C$31.27', 60, 300, 330, 340),
+        _box('Applied', 350, 300, 520, 340),
+        _box('C$30.00', 60, 350, 300, 390),
+        _box('Add to cart', 393, 1860, 510, 1887),
+        _box('Buy now', 895, 1859, 988, 1890),
+    )
+    guard = _guard()
+
+    assert find_dangerous_controls(detail) == ()
+    with guard.task('Browse surprise items'):
+        guard.inspect(detail)
+        guard.inspect(detail)
+        guard.inspect(detail)
+
+    assert guard.streak == 0
+
+
+def test_a_scrolled_surprise_grid_is_not_an_unexpected_task_screen() -> None:
+    grid = _snapshot(
+        _box('Disc:C$31.27', 60, 300, 330, 340),
+        _box('Applied', 350, 300, 520, 340),
+        _box('C$30.00', 60, 350, 300, 390),
+        _box('Black Friday', 60, 420, 300, 460),
+        _box('Free shipping', 60, 480, 300, 520),
+        _box('7 sold', 60, 540, 240, 580),
+        _box('Wireless CarPlay interface', 60, 600, 560, 640),
+    )
+    guard = _guard()
+
+    with guard.task('Browse surprise items'):
+        guard.inspect(grid)
+        guard.inspect(grid)
+        guard.inspect(grid)
+
+    assert guard.streak == 0
+
+
 def test_the_product_detail_suffixed_purchase_captions_are_exempt() -> None:
     guard = _guard()
     detail = _snapshot(

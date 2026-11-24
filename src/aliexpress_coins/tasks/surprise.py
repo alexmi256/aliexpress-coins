@@ -42,6 +42,7 @@ from aliexpress_coins.control.controller import LOGGER_NAME, Controller, KeyReco
 from aliexpress_coins.control.errors import InputError, PopupUnclosable
 from aliexpress_coins.control.popups import DismissReport, PopupCorpus, dismiss_after
 from aliexpress_coins.perception.errors import OcrError
+from aliexpress_coins.perception.layout import ProgressBadge
 from aliexpress_coins.perception.matching import DEFAULT_MIN_OCR_SCORE, normalize
 from aliexpress_coins.perception.ocr import OcrEngine, RapidOcrEngine
 from aliexpress_coins.perception.scroll import SCROLL_START_FRACTION, SCROLL_VIEWPORT_FRACTION
@@ -52,7 +53,12 @@ from aliexpress_coins.perception.waits import wait_for_text_gone
 from aliexpress_coins.runner.errors import RunInterrupted
 from aliexpress_coins.runner.safety import RunAborted
 from aliexpress_coins.runner.state import DailyStateStore
-from aliexpress_coins.tasks.browse import ReturnResult, find_task_row, return_to_coins_page
+from aliexpress_coins.tasks.browse import (
+    ReturnResult,
+    find_task_row,
+    progress_unchanged_detail,
+    return_to_coins_page,
+)
 from aliexpress_coins.tasks.catalogue import AllowedTaskSpec, TaskCategory
 from aliexpress_coins.tasks.discovery import RosterEntry
 from aliexpress_coins.tasks.dispatch import authorization_of
@@ -65,10 +71,15 @@ from aliexpress_coins.tasks.surface import (
     SurfaceRoute,
     contains_text,
     is_boost_page,
+    is_product_detail,
+)
+from aliexpress_coins.tasks.surface import (
+    is_surprise_grid as is_loaded_surprise_grid,
 )
 
 __all__ = [
     'DEFAULT_ARRIVAL_TIMEOUT',
+    'DEFAULT_COUNTER_TIMEOUT',
     'DEFAULT_EXIT_TIMEOUT',
     'DEFAULT_INTERVAL',
     'DEFAULT_LOAD_TIMEOUT',
@@ -123,6 +134,22 @@ DEFAULT_EXIT_TIMEOUT = 10.0
 
 DEFAULT_INTERVAL = 0.5
 """How often capture is polled while a page is loading or settling."""
+
+DEFAULT_COUNTER_TIMEOUT = 2.0
+"""How long the round pill may take to show the credit after BACK.
+
+The measured frame already read ``1/3`` one second after BACK, so two seconds
+is generous. The wait is a poll of the counter, never a blind sleep: an inert
+tile ends it at the bound and is reported as an unchanged counter (#100).
+"""
+
+DEFAULT_BADGE_TIMEOUT = 2.0
+"""How long the returned row badge may take to reflect a completed round.
+
+The badge is server-driven; the counter is the immediate proof and the badge is
+the independent positive signal. A badge that is still unchanged at the bound
+fails the task instead of being recorded optimistically (#100).
+"""
 
 DEFAULT_RETURN_TIMEOUT = 20.0
 """How long one shortcut re-entry may take to show the coin-page markers."""
@@ -387,6 +414,8 @@ class SurpriseResult:
     keys: tuple[KeyRecord, ...] = ()
     swipes: tuple[SwipeRecord, ...] = ()
     items: tuple[str, ...] = ()
+    badge_before: ProgressBadge | None = None
+    badge_after: ProgressBadge | None = None
     return_state: ReturnResult | None = None
     dismissals: tuple[DismissReport, ...] = ()
     stop: str | None = None
@@ -430,6 +459,25 @@ class SurpriseResult:
         """The unclosable reward overlay that ended the flow, if any."""
         return self.stop
 
+    @property
+    def badge_before_text(self) -> str | None:
+        """The returned row's badge before the task, exactly as OCR read it."""
+        return self.badge_before.text if self.badge_before is not None else None
+
+    @property
+    def badge_after_text(self) -> str | None:
+        """The returned row's badge after the task, exactly as OCR read it."""
+        return self.badge_after.text if self.badge_after is not None else None
+
+    @property
+    def badge_change(self) -> str | None:
+        """The ``before -> after`` badge pair the acceptance report quotes."""
+        before = self.badge_before_text
+        after = self.badge_after_text
+        if before is None and after is None:
+            return None
+        return f'{before if before is not None else "?"} -> {after if after is not None else "?"}'
+
     def as_dict(self) -> dict[str, object]:
         """Render the result for ``run.json`` without losing the evidence."""
         record: dict[str, object] = {
@@ -446,6 +494,9 @@ class SurpriseResult:
             'counter_deltas': list(self.counter_deltas),
             'rule_path': self.rule_path,
             'items': list(self.items),
+            'badge_before': self.badge_before_text,
+            'badge_after': self.badge_after_text,
+            'badge_change': self.badge_change,
             'taps': [tap.as_dict() for tap in self.taps],
             'keys': [key.as_dict() for key in self.keys],
             'swipes': [swipe.as_dict() for swipe in self.swipes],
@@ -625,13 +676,28 @@ def find_back_control(snapshot: Snapshot) -> TextBox | None:
 
 
 def is_surprise_grid(snapshot: Snapshot) -> bool:
-    """Whether the frame is the grid's page (header plus subtitle)."""
-    return contains_text(snapshot, SURPRISE_TITLE) and contains_text(snapshot, SURPRISE_SUBTITLE)
+    """Whether the frame is the grid's page (header plus subtitle, not the row).
+
+    The boost row carries the same title and subtitle, so the row is explicitly
+    excluded. Without that, the frame captured before the grid paints answers
+    "grid arrived", the row's ``1/2`` badge is not a round counter, and the
+    executor reports ``counter_unreadable`` without ever seeing the grid (#100).
+    """
+    return (
+        not is_boost_page(snapshot)
+        and contains_text(snapshot, SURPRISE_TITLE)
+        and contains_text(snapshot, SURPRISE_SUBTITLE)
+    )
 
 
 def is_item_detail(snapshot: Snapshot) -> bool:
-    """Whether the frame is the product detail page opened by a tile."""
-    return contains_text(snapshot, 'Add to cart') and contains_text(snapshot, 'Buy now')
+    """Whether the frame is the product detail page opened by a tile.
+
+    The shared surface matcher also accepts the page's ``Item N/n`` counter, so
+    a detail page that scrolls its purchase buttons off-screen is still the
+    legitimate destination of a tile tap (#100).
+    """
+    return is_product_detail(snapshot)
 
 
 def run_surprise_task(
@@ -648,6 +714,8 @@ def run_surprise_task(
     load_timeout: float = DEFAULT_LOAD_TIMEOUT,
     arrival_timeout: float = DEFAULT_ARRIVAL_TIMEOUT,
     exit_timeout: float = DEFAULT_EXIT_TIMEOUT,
+    counter_timeout: float = DEFAULT_COUNTER_TIMEOUT,
+    badge_timeout: float = DEFAULT_BADGE_TIMEOUT,
     interval: float = DEFAULT_INTERVAL,
     return_timeout: float = DEFAULT_RETURN_TIMEOUT,
     return_interval: float = DEFAULT_RETURN_INTERVAL,
@@ -696,6 +764,10 @@ def run_surprise_task(
         raise ValueError(f'arrival_timeout must be positive, got {arrival_timeout!r}')
     if exit_timeout <= 0:
         raise ValueError(f'exit_timeout must be positive, got {exit_timeout!r}')
+    if counter_timeout <= 0:
+        raise ValueError(f'counter_timeout must be positive, got {counter_timeout!r}')
+    if badge_timeout <= 0:
+        raise ValueError(f'badge_timeout must be positive, got {badge_timeout!r}')
     if interval <= 0:
         raise ValueError(f'interval must be positive, got {interval!r}')
     if return_timeout <= 0:
@@ -775,6 +847,7 @@ def run_surprise_task(
 
     row, action, fresh_badge = find_task_row(frame, entry.title)
     badge = fresh_badge if fresh_badge is not None else entry.progress
+    badge_before = badge
     if row is None or action is None:
         status = 'row_vanished' if row is None else 'row_complete'
         detail = (
@@ -926,6 +999,7 @@ def run_surprise_task(
                 templates=templates,
                 arrival_timeout=arrival_timeout,
                 exit_timeout=exit_timeout,
+                counter_timeout=counter_timeout,
                 interval=interval,
                 settle=settle,
                 back=back,
@@ -943,7 +1017,6 @@ def run_surprise_task(
             if not record.complete:
                 break
             completed_rounds += 1
-            state.record(spec.key)
             if done_before + completed_rounds >= limit:
                 break
             if round_index >= round_budget:
@@ -1062,7 +1135,53 @@ def run_surprise_task(
                 logger=log,
             )
 
+        badge_after: ProgressBadge | None = None
+        if completed_rounds > 0 and badge_before is not None:
+            current, badge_after = _recheck_badge(
+                capture,
+                entry.title,
+                badge_before,
+                completed_rounds,
+                snapshot=return_state.snapshot,
+                timeout=badge_timeout,
+                interval=interval,
+                clock=clock,
+                sleep=sleep,
+            )
+            expected = min(badge_before.completed + completed_rounds, badge_before.total)
+            if badge_after is not None and badge_after.completed < expected:
+                return _result(
+                    spec,
+                    entry.title,
+                    SurpriseOutcome.FAILED,
+                    verification='progress_unchanged',
+                    detail=progress_unchanged_detail(
+                        entry.title,
+                        badge_before,
+                        badge_after,
+                        advanced=completed_rounds,
+                    ),
+                    limit=limit,
+                    done_before=done_before,
+                    done_after=state.count(spec.key),
+                    rounds=len(round_records),
+                    round_records=round_records,
+                    rule_path=_rule_path(round_records),
+                    taps=taps,
+                    keys=keys,
+                    swipes=swipes,
+                    items=opened_items,
+                    badge_before=badge_before,
+                    badge_after=badge_after,
+                    return_state=return_state,
+                    dismissals=dismissals,
+                    stop=stop,
+                    logger=log,
+                )
+
         if completed_rounds > 0:
+            for _ in range(completed_rounds):
+                state.record(spec.key)
             return _result(
                 spec,
                 entry.title,
@@ -1079,6 +1198,8 @@ def run_surprise_task(
                 keys=keys,
                 swipes=swipes,
                 items=opened_items,
+                badge_before=badge_before,
+                badge_after=badge_after,
                 return_state=return_state,
                 dismissals=dismissals,
                 stop=stop,
@@ -1144,6 +1265,7 @@ def _run_round(
     templates: TemplateStore | None,
     arrival_timeout: float,
     exit_timeout: float,
+    counter_timeout: float,
     interval: float,
     settle: float,
     back: Callable[[], None] | None,
@@ -1171,6 +1293,7 @@ def _run_round(
     items: list[str] = []
     pending_item: str | None = None
     baseline_unknown = False
+    last_miss: tuple[int, int] | None = None
     stop: str | None = None
     detail = 'the round counter advanced to its target'
 
@@ -1212,7 +1335,7 @@ def _run_round(
             break
 
         if round_taps >= MAX_TAPS_PER_ROUND:
-            detail = f'the round used its {MAX_TAPS_PER_ROUND}-tap budget without the counter completing'
+            detail = _round_stall_detail(last_miss, total, f'the round used its {MAX_TAPS_PER_ROUND}-tap budget')
             break
 
         tracker = task_tried if mode == RULE_PATH_RESET else round_tried
@@ -1234,7 +1357,11 @@ def _run_round(
                     if _grid_signature(current) == before_scroll:
                         scroll_stable = True
                     continue
-            detail = 'no unopened product tile was available and the grid could not be scrolled further'
+            detail = _round_stall_detail(
+                last_miss,
+                total,
+                'no unopened product tile was available and the grid could not be scrolled further',
+            )
             break
 
         taps.append(
@@ -1308,11 +1435,27 @@ def _run_round(
                 dismissals=dismissals,
                 taps=taps,
             )
-        if not arrived and not is_surprise_grid(current) and find_next_round(current) is None:
+        if not arrived and not is_loaded_surprise_grid(current) and find_next_round(current) is None:
             detail = 'the grid disappeared without the counter advancing; no completion was recorded'
             break
 
-        after = read_surprise_counter(current)
+        if is_loaded_surprise_grid(current) and not is_surprise_grid(current):
+            # The card grid scrolled its header and pill out of view. Bring the
+            # observed grid back to the top so the counter can be read and the
+            # next round starts from the same layout.
+            current, restored = _restore_grid_top(controller, capture, current, scroll)
+            if restored is not None:
+                swipes.append(restored)
+
+        current, after = _read_counter_after_dwell(
+            capture,
+            current,
+            before,
+            timeout=counter_timeout,
+            interval=interval,
+            clock=clock,
+            sleep=sleep,
+        )
         if after is None:
             # The missed read hides whether this tile credited. Do not let the
             # next successful read attribute that hidden credit to the next tap.
@@ -1340,12 +1483,14 @@ def _run_round(
             pending_item = None
             before = after.completed
             inert = 0
+            last_miss = None
             if after.complete:
                 detail = 'the round counter advanced to its target'
                 break
             continue
 
         pending_item = None
+        last_miss = (before + 1, after.completed)
         inert += 1
         if inert >= MAX_INERT_TAPS:
             if mode == RULE_PATH_REUSE and not reset_used:
@@ -1390,6 +1535,122 @@ def _next_tile(snapshot: Snapshot, tried: _TriedTiles) -> SurpriseTile | None:
         if not tried.contains(tile):
             return tile
     return None
+
+
+def _round_stall_detail(last_miss: tuple[int, int] | None, total: int, fallback: str) -> str:
+    """Name an unchanged counter with the expected and observed values.
+
+    A tile that was tapped and did not move the counter is the evidence for
+    ``progress_unchanged``; a round with no tap at all keeps its own sentence.
+    """
+    if last_miss is None:
+        return fallback
+    expected, observed = last_miss
+    return f'progress_unchanged: expected {expected}/{total}, saw {observed}/{total}'
+
+
+def _read_counter_after_dwell(
+    capture: CaptureSource,
+    snapshot: Snapshot,
+    before: int | None,
+    *,
+    timeout: float,
+    interval: float,
+    clock: Callable[[], float],
+    sleep: Callable[[float], None],
+) -> tuple[Snapshot, CounterState | None]:
+    """Re-read the round pill until BACK's credit appears or the bound ends.
+
+    The first read is the frame that proved the grid returned. When it has not
+    advanced yet, capture is polled instead of trusting that one early read;
+    the measured credit can lag the transition by a frame (#100).
+    """
+    current = snapshot
+    reading = read_surprise_counter(current)
+    if before is None or (reading is not None and reading.completed > before):
+        return current, reading
+    deadline = clock() + timeout
+    while clock() < deadline:
+        remaining = deadline - clock()
+        sleep(min(interval, max(0.0, remaining)))
+        current = _capture(capture)
+        reading = read_surprise_counter(current)
+        if reading is not None and reading.completed > before:
+            break
+    return current, reading
+
+
+def _restore_grid_top(
+    controller: Controller,
+    capture: CaptureSource,
+    snapshot: Snapshot,
+    scroll: Callable[[Snapshot], bool] | None,
+) -> tuple[Snapshot, SwipeRecord | None]:
+    """Scroll a scrolled grid back down until its header and pill are visible.
+
+    The counter is at the top of the page, so a grid scrolled for unseen products
+    must be restored before its credit can be read. An injected scroll seam is
+    opaque in direction, so it is left alone; the executor still names the
+    scrolled grid and does not burn safety sightings on it.
+    """
+    if scroll is not None or is_surprise_grid(snapshot):
+        return snapshot, None
+    current = snapshot
+    for _ in range(MAX_SCROLLS):
+        start = (current.width / 2.0, current.height * _SCROLL_END_FRACTION)
+        end = (current.width / 2.0, current.height * _SCROLL_START_FRACTION)
+        try:
+            record = controller.swipe(
+                start,
+                end,
+                why='surprise: restore the grid header after a scroll',
+                label='grid restore',
+            )
+        except InputError:
+            return current, None
+        current = _capture(capture)
+        if is_surprise_grid(current):
+            return current, record
+    return current, None
+
+
+def _recheck_badge(
+    capture: CaptureSource,
+    title: str,
+    before: ProgressBadge | None,
+    advanced: int,
+    *,
+    snapshot: Snapshot | None,
+    timeout: float,
+    interval: float,
+    clock: Callable[[], float],
+    sleep: Callable[[float], None],
+) -> tuple[Snapshot, ProgressBadge | None]:
+    """Poll the returned row's badge until it advances, or the bound ends.
+
+    The row can still show the pre-task badge on the first returned frame while
+    the server catches up. The badge is the independent positive signal for the
+    task, so it gets its own short dwell. An absent row stays ``None`` and is not
+    invented: the counter evidence already proves the round, and absence on the
+    partial inline coin page is not proof either way.
+    """
+    current = snapshot if snapshot is not None else _capture(capture)
+    observed = _row_badge(current, title)
+    if before is None:
+        return current, observed
+    expected = min(before.completed + advanced, before.total)
+    deadline = clock() + timeout
+    while observed is not None and observed.completed < expected and clock() < deadline:
+        remaining = deadline - clock()
+        sleep(min(interval, max(0.0, remaining)))
+        current = _capture(capture)
+        observed = _row_badge(current, title)
+    return current, observed
+
+
+def _row_badge(snapshot: Snapshot, title: str) -> ProgressBadge | None:
+    _, _, badge = find_task_row(snapshot, title)
+    return badge
 
 
 def _leave_detail_if_open(controller: Controller, capture: CaptureSource, snapshot: Snapshot) -> Snapshot:
@@ -1722,7 +1983,7 @@ def _is_grid_surface(snapshot: Snapshot) -> bool:
 
 
 def _is_round_surface(snapshot: Snapshot) -> bool:
-    return is_surprise_grid(snapshot) or find_next_round(snapshot) is not None
+    return is_loaded_surprise_grid(snapshot) or find_next_round(snapshot) is not None
 
 
 def _header_bottom(snapshot: Snapshot) -> float:
@@ -1889,6 +2150,8 @@ def _rule_path(records: Sequence[RoundRecord]) -> str:
 
 def _failure_verification(record: RoundRecord) -> str:
     detail = record.detail.lower()
+    if 'progress_unchanged' in detail:
+        return 'progress_unchanged'
     if 'counter could not be read' in detail:
         return 'counter_unreadable'
     if 'grid disappeared' in detail:
@@ -1905,7 +2168,12 @@ def _failure_verification(record: RoundRecord) -> str:
 def _completed_detail(records: Sequence[RoundRecord]) -> str:
     completed = [record for record in records if record.complete]
     deltas = ', '.join(record.counter_change for record in completed)
-    return f'{len(completed)} round(s) completed with counter evidence ({deltas})'
+    labels = [label for record in completed for label in record.items]
+    detail = f'{len(completed)} round(s) completed with counter evidence ({deltas})'
+    if labels:
+        quoted = ', '.join(repr(label) for label in labels)
+        detail = f'{detail}; distinct items: {quoted}'
+    return detail
 
 
 def _skipped(
@@ -2094,6 +2362,8 @@ def _result(
     stop: str | None,
     recorded: bool = False,
     logger: logging.Logger,
+    badge_before: ProgressBadge | None = None,
+    badge_after: ProgressBadge | None = None,
 ) -> SurpriseResult:
     result = SurpriseResult(
         key=spec.key,
@@ -2111,6 +2381,8 @@ def _result(
         keys=tuple(keys),
         swipes=tuple(swipes),
         items=tuple(items),
+        badge_before=badge_before,
+        badge_after=badge_after,
         return_state=return_state,
         dismissals=tuple(dismissals),
         stop=stop,

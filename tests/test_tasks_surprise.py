@@ -31,6 +31,7 @@ from aliexpress_coins.perception.geometry import DeviceGeometry
 from aliexpress_coins.perception.ocr import RapidOcrEngine
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.runner.state import DailyStateStore
+from aliexpress_coins.tasks.browse import find_task_row
 from aliexpress_coins.tasks.catalogue import TaskCatalogue, load_task_catalogue
 from aliexpress_coins.tasks.discovery import RosterEntry, enumerate_roster
 from aliexpress_coins.tasks.dispatch import DispatchGate
@@ -214,6 +215,26 @@ def _snapshot(*boxes: TextBox, size: tuple[int, int] = (1200, 2000)) -> Snapshot
     )
 
 
+def _rebox(snapshot: Snapshot, boxes: Sequence[TextBox]) -> Snapshot:
+    return Snapshot(
+        image=snapshot.image,
+        boxes=tuple(boxes),
+        captured_at=snapshot.captured_at,
+        geometry=snapshot.geometry,
+    )
+
+
+def _round_counter_boxes(snapshot: Snapshot) -> tuple[TextBox, ...]:
+    """The recorded grid's boxes minus the round pill, so a replay can set it."""
+    left = snapshot.width * 0.2
+    right = snapshot.width * 0.8
+    top = snapshot.height * 0.195
+    bottom = snapshot.height * 0.27
+    return tuple(
+        box for box in snapshot.boxes if not (left <= box.center[0] <= right and top <= box.center[1] <= bottom)
+    )
+
+
 def _label_at(snapshot: Snapshot, x: float, y: float) -> str | None:
     best: TextBox | None = None
     for box in snapshot.boxes:
@@ -335,7 +356,12 @@ def _run(
     )
 
 
-def _success_world(*, progress: str = '1/2', next_round: bool = False) -> _World:
+def _success_world(
+    *,
+    progress: str = '1/2',
+    next_round: bool = False,
+    coins_frame: Snapshot | None = None,
+) -> _World:
     """A normal one-round visit: three distinct products credit A -> B -> C."""
     pending: dict[str, str] = {}
 
@@ -358,7 +384,7 @@ def _success_world(*, progress: str = '1/2', next_round: bool = False) -> _World
             'grid2': (_grid_frame(2),),
             'grid3': (_grid_frame(3, next_round=next_round, mission=not next_round),),
             'detail': (_detail_frame(),),
-            'coins': (_coins_frame(),),
+            'coins': (coins_frame if coins_frame is not None else _coins_frame(),),
         },
         transitions={('boost', 'GO'): 'grid0'},
         on_tap=on_tap,
@@ -524,6 +550,8 @@ def test_surface_helpers_recognise_the_grid_and_detail() -> None:
     assert is_item_detail(_detail_frame()) is True
     assert is_surprise_grid(_wrong_frame()) is False
     assert is_item_detail(_grid_frame()) is False
+    # The boost row shares the grid's title and subtitle; it is not the grid.
+    assert is_surprise_grid(_boost_frame()) is False
 
 
 def test_find_back_control_falls_back_to_the_visible_chevron() -> None:
@@ -582,6 +610,8 @@ def test_run_surprise_task_rejects_a_non_item_tap_category(
         ('load_timeout', 0.0),
         ('arrival_timeout', 0.0),
         ('exit_timeout', 0.0),
+        ('counter_timeout', 0.0),
+        ('badge_timeout', 0.0),
         ('interval', 0.0),
         ('return_timeout', 0.0),
         ('return_interval', 0.0),
@@ -742,6 +772,261 @@ def test_run_surprise_task_completes_one_round_and_returns_from_every_detail(
     assert payload['rounds'] == 1
     assert payload['counter_deltas'] == ['0/3 -> 3/3']
     assert payload['rule_path'] == 'reuse'
+
+
+@pytest.mark.slow
+def test_a_replay_of_the_recorded_grid_opens_two_distinct_tiles_and_reports_2_of_2(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    engine: RapidOcrEngine,
+    tmp_path: Path,
+) -> None:
+    recorded = _load(DATA / 'flows' / 'surprise_items_round_grid.png', engine)
+    static = _round_counter_boxes(recorded)
+
+    def grid(done: int) -> Snapshot:
+        return _rebox(
+            recorded,
+            (*static, _box(f'{done}/2', 480, 440, 573, 490)),
+        )
+
+    grid0, grid1, grid2 = grid(0), grid(1), grid(2)
+    tiles = find_surprise_tiles(grid0)
+    first, second = tiles[0], tiles[1]
+    assert first.column != second.column
+    pending: dict[str, str] = {}
+
+    def on_tap(screen: str, label: str | None, _count: int) -> str | None:
+        if screen == 'grid0' and label == first.label:
+            pending['return'] = 'grid1'
+            return 'detail'
+        if screen == 'grid1' and label == second.label:
+            pending['return'] = 'grid2'
+            return 'detail'
+        return None
+
+    def on_key(screen: str, key: str, _count: int) -> str | None:
+        if screen == 'detail' and key == 'KEYCODE_BACK':
+            return pending.pop('return')
+        return None
+
+    world = _World(
+        series={
+            'boost': (_boost_frame(progress='0/2'),),
+            'grid0': (grid0,),
+            'grid1': (grid1,),
+            'grid2': (grid2,),
+            'detail': (_detail_frame(),),
+            'coins': (_coins_frame(),),
+        },
+        transitions={('boost', 'GO'): 'grid0'},
+        on_tap=on_tap,
+        on_key=on_key,
+    )
+
+    result = _run(world, catalogue, corpus, _state(tmp_path), entry=_entry(catalogue, progress='0/2'))
+
+    assert result.outcome is SurpriseOutcome.COMPLETED
+    assert result.round_records[0].counter_change == '0/2 -> 2/2'
+    assert result.round_records[0].items == (first.label, second.label)
+    assert result.round_records[0].taps == 2
+    assert first.label in result.detail
+    product_taps = [tap for tap in result.taps if tap.label == first.label]
+    assert len(product_taps) == 2
+    assert product_taps[0].point != product_taps[1].point
+    assert result.round_records[0].items == (first.label, second.label)
+
+
+def test_run_surprise_task_restores_a_scrolled_grid_before_reading_the_counter(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    strict_after_scroll = _grid_frame(1)
+    scrolled = _snapshot(
+        _box('Product A', 90, 300, 490, 355),
+        _box('Product B', 690, 300, 1090, 355),
+        _box('Disc:C$31.27', 60, 420, 330, 460),
+        _box('Applied', 350, 420, 520, 460),
+        _box('C$30.00', 60, 470, 300, 510),
+        _box('Black Friday', 60, 540, 300, 580),
+        _box('Free shipping', 60, 600, 300, 640),
+        _box('7 sold', 60, 660, 240, 700),
+    )
+    pending: dict[str, str] = {}
+
+    def on_tap(screen: str, label: str | None, _count: int) -> str | None:
+        if screen == 'grid0' and label == 'Product A':
+            pending['return'] = 'scrolled'
+            return 'detail'
+        return None
+
+    def on_key(screen: str, key: str, _count: int) -> str | None:
+        if screen == 'detail' and key == 'KEYCODE_BACK':
+            return pending.pop('return')
+        return None
+
+    world = _World(
+        series={
+            'boost': (_boost_frame(progress='1/2'),),
+            'grid0': (_grid_frame(0),),
+            'scrolled': (scrolled, strict_after_scroll),
+            'detail': (_detail_frame(),),
+            'coins': (_coins_frame(),),
+        },
+        transitions={('boost', 'GO'): 'grid0'},
+        on_tap=on_tap,
+        on_key=on_key,
+    )
+
+    result = _run(
+        world,
+        catalogue,
+        corpus,
+        _state(tmp_path),
+        max_rounds=1,
+        arrival_timeout=0.1,
+        counter_timeout=0.1,
+    )
+
+    assert any(swipe.label == 'grid restore' for swipe in result.swipes)
+
+
+def test_run_surprise_task_rebaselines_after_an_unreadable_counter(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    unreadable = _snapshot(
+        _box('Product A', 90, 600, 490, 655),
+        _box('Product B', 690, 600, 1090, 655),
+        _box('Disc:C$31.27', 60, 720, 330, 760),
+        _box('Applied', 350, 720, 520, 760),
+        _box('C$30.00', 60, 770, 300, 810),
+        _box('Black Friday', 60, 840, 300, 880),
+        _box('Free shipping', 60, 900, 300, 940),
+        _box('7 sold', 60, 960, 240, 1000),
+    )
+    pending: dict[str, str] = {}
+
+    def on_tap(screen: str, label: str | None, _count: int) -> str | None:
+        if screen == 'grid0' and label == 'Product A':
+            pending['return'] = 'unreadable'
+            return 'detail'
+        if screen == 'unreadable' and label == 'Product B':
+            pending['return'] = 'complete'
+            return 'detail'
+        return None
+
+    def on_key(screen: str, key: str, _count: int) -> str | None:
+        if screen == 'detail' and key == 'KEYCODE_BACK':
+            return pending.pop('return')
+        return None
+
+    world = _World(
+        series={
+            'boost': (_boost_frame(progress='1/2'),),
+            'grid0': (_grid_frame(0),),
+            'unreadable': (unreadable,),
+            'complete': (_grid_frame(3),),
+            'detail': (_detail_frame(),),
+            'coins': (_coins_frame(),),
+        },
+        transitions={('boost', 'GO'): 'grid0'},
+        on_tap=on_tap,
+        on_key=on_key,
+    )
+
+    result = _run(
+        world,
+        catalogue,
+        corpus,
+        _state(tmp_path),
+        max_rounds=1,
+        counter_timeout=0.1,
+        scroll=lambda _frame: True,
+    )
+
+    assert result.outcome is SurpriseOutcome.COMPLETED
+    assert result.round_records[0].counter_change == '0/3 -> 3/3'
+    assert result.round_records[0].taps == 2
+
+
+def test_run_surprise_task_never_reopens_the_same_tile_on_a_fixed_grid(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    world = _World(
+        series={
+            'boost': (_boost_frame(progress='1/2'),),
+            'grid': (_many_tile_grid(),),
+            'coins': (_coins_frame(),),
+        },
+        transitions={('boost', 'GO'): 'grid'},
+    )
+
+    result = _run(
+        world,
+        catalogue,
+        corpus,
+        _state(tmp_path),
+        max_rounds=1,
+        arrival_timeout=0.2,
+        counter_timeout=0.1,
+        scroll=lambda _frame: True,
+    )
+
+    labels = [tap.label for tap in result.taps if tap.label and tap.label.startswith('Product')]
+    assert labels
+    assert len(labels) == len(set(labels)), labels
+
+
+def test_run_surprise_task_fails_when_the_badge_does_not_advance(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    final = _snapshot(
+        *_coins_frame().boxes,
+        _box(SURPRISE_TITLE, 60, 1200, 700, 1250),
+        _box('1/2', 1000, 1200, 1080, 1250),
+        _box('GO', 1090, 1200, 1160, 1250),
+    )
+    world = _success_world(progress='1/2', coins_frame=final)
+    state = _state(tmp_path)
+
+    result = _run(world, catalogue, corpus, state, badge_timeout=0.5)
+
+    assert result.outcome is SurpriseOutcome.FAILED
+    assert result.verification == 'progress_unchanged'
+    assert result.recorded is False
+    assert state.count('surprise_items') == 0
+    assert result.badge_change == '1/2 -> 1/2'
+    assert 'progress_unchanged: expected 2/2, saw 1/2' in result.detail
+
+
+def test_run_surprise_task_records_only_after_the_badge_advances(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    final = _snapshot(
+        *_coins_frame().boxes,
+        _box(SURPRISE_TITLE, 60, 1200, 700, 1250),
+        _box('2/2', 1000, 1200, 1080, 1250),
+        _box('GO', 1090, 1200, 1160, 1250),
+    )
+    world = _success_world(progress='1/2', coins_frame=final)
+    state = _state(tmp_path)
+
+    result = _run(world, catalogue, corpus, state, badge_timeout=0.5)
+
+    assert result.outcome is SurpriseOutcome.COMPLETED
+    assert result.verification == 'counter_complete'
+    assert result.badge_change == '1/2 -> 2/2'
+    assert result.recorded is True
+    assert state.count('surprise_items') == 1
 
 
 def test_run_surprise_task_handles_the_mission_overlay_before_next_round(
@@ -1548,6 +1833,150 @@ def test_surprise_private_helpers_cover_the_bounded_paths() -> None:
         assert _failure_verification(RoundRecord(1, 0, 0, 3, 0, RULE_PATH_REUSE, False, detail)) == expected
 
 
+def test_surprise_without_boost_sheet_returns_the_corpus_when_no_family_matches(
+    corpus: PopupCorpus,
+) -> None:
+    from dataclasses import replace
+
+    from aliexpress_coins.tasks.surprise import _without_boost_sheet
+
+    without_boost = replace(
+        corpus,
+        families=tuple(family for family in corpus.families if family.anchor != 'Coins boost'),
+    )
+
+    assert _without_boost_sheet(without_boost) is without_boost
+
+
+def test_surprise_counter_recheck_waits_for_a_late_advance() -> None:
+    from aliexpress_coins.tasks.surprise import _read_counter_after_dwell
+
+    world = _World({'frames': (_grid_frame(1),)}, {}, start='frames')
+    clock = _SteppingClock(step=0.5)
+
+    current, reading = _read_counter_after_dwell(
+        world.capture,
+        _grid_frame(0),
+        0,
+        timeout=1.0,
+        interval=0.5,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert reading is not None
+    assert reading.completed == 1
+    assert current is world.frame
+
+
+def test_surprise_grid_restore_returns_on_the_header_and_handles_no_swipe() -> None:
+    from aliexpress_coins.tasks.surprise import _restore_grid_top
+
+    scrolled = _snapshot(_box('Product A', 100, 300, 500, 350))
+    restored = _grid_frame(0)
+    world = _World({'frames': (scrolled, restored)}, {}, start='frames')
+    controller = _controller(world, world.frame)
+
+    current, record = _restore_grid_top(controller, world.capture, scrolled, None)
+
+    assert current is restored
+    assert record is not None
+    assert world.swipes
+
+    same, none = _restore_grid_top(controller, world.capture, restored, None)
+    assert same is restored
+    assert none is None
+
+    injected, none = _restore_grid_top(controller, world.capture, scrolled, lambda _frame: True)
+    assert injected is scrolled
+    assert none is None
+
+    no_swipe = Controller.from_frame(cast(Any, _TapOnlyDevice()), scrolled, rng=random.Random(0))
+    unchanged, none = _restore_grid_top(no_swipe, world.capture, scrolled, None)
+    assert unchanged is scrolled
+    assert none is None
+
+    stuck = _World({'frames': (scrolled, scrolled, scrolled, scrolled, scrolled)}, {}, start='frames')
+    exhausted, none = _restore_grid_top(
+        _controller(stuck, stuck.frame),
+        stuck.capture,
+        scrolled,
+        None,
+    )
+    assert exhausted is not restored
+    assert none is None
+
+
+class _SleepClock:
+    """A clock that advances only when a wait actually sleeps."""
+
+    def __init__(self) -> None:
+        self.value = 0.0
+
+    def __call__(self) -> float:
+        return self.value
+
+    def sleep(self, seconds: float) -> None:
+        self.value += seconds
+
+
+def test_surprise_badge_recheck_waits_for_the_advanced_badge() -> None:
+    from aliexpress_coins.tasks.surprise import _recheck_badge
+
+    def frame(progress: str) -> Snapshot:
+        return _snapshot(
+            _box(SURPRISE_TITLE, 60, 1200, 700, 1250),
+            _box(progress, 1000, 1200, 1080, 1250),
+            _box('GO', 1090, 1200, 1160, 1250),
+        )
+
+    stale = frame('1/2')
+    advanced = frame('2/2')
+    _, _, before = find_task_row(stale, SURPRISE_TITLE)
+    assert before is not None
+    world = _World({'frames': (advanced,)}, {}, start='frames')
+    clock = _SleepClock()
+
+    current, observed = _recheck_badge(
+        world.capture,
+        SURPRISE_TITLE,
+        before,
+        1,
+        snapshot=stale,
+        timeout=1.0,
+        interval=0.5,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert current is advanced
+    assert observed is not None
+    assert observed.completed == 2
+    assert clock.value > 0
+
+
+def test_surprise_badge_recheck_without_a_baseline_does_not_wait() -> None:
+    from aliexpress_coins.tasks.surprise import _recheck_badge
+
+    frame = _snapshot(_box(SURPRISE_TITLE, 60, 1200, 700, 1250))
+    clock = _SteppingClock()
+
+    current, badge = _recheck_badge(
+        _ForbiddenCapture(),
+        SURPRISE_TITLE,
+        None,
+        1,
+        snapshot=frame,
+        timeout=1.0,
+        interval=0.5,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert current is frame
+    assert badge is None
+
+
 class _TapOnlyDevice:
     def tap(self, x: int, y: int) -> None:
         del x, y
@@ -1923,6 +2352,7 @@ def test_surprise_run_round_reports_an_unreadable_counter() -> None:
         templates=None,
         arrival_timeout=0.5,
         exit_timeout=0.5,
+        counter_timeout=0.5,
         interval=0.5,
         settle=0.0,
         back=None,
@@ -1985,8 +2415,9 @@ def test_run_surprise_task_stops_at_the_round_tap_budget(
     )
 
     assert result.outcome is SurpriseOutcome.FAILED
-    assert result.verification == 'counter_stalled'
+    assert result.verification == 'progress_unchanged'
     assert result.round_records[0].taps == MAX_TAPS_PER_ROUND
+    assert 'progress_unchanged: expected 1/3, saw 0/3' in result.detail
 
 
 def test_run_surprise_task_fails_when_back_returns_to_the_wrong_page(
@@ -2140,6 +2571,7 @@ def test_surprise_run_round_stops_when_the_mission_leads_to_redeem() -> None:
         templates=None,
         arrival_timeout=0.5,
         exit_timeout=0.5,
+        counter_timeout=0.5,
         interval=0.5,
         settle=0.0,
         back=None,
@@ -2189,6 +2621,7 @@ def test_surprise_run_round_reads_a_completed_counter_after_the_overlay() -> Non
         templates=None,
         arrival_timeout=0.5,
         exit_timeout=0.5,
+        counter_timeout=0.5,
         interval=0.5,
         settle=0.0,
         back=None,
@@ -2262,6 +2695,7 @@ def test_surprise_run_round_recovers_when_the_overlay_tap_opens_a_product() -> N
         templates=None,
         arrival_timeout=0.5,
         exit_timeout=0.5,
+        counter_timeout=0.5,
         interval=0.5,
         settle=0.0,
         back=None,
@@ -2485,11 +2919,13 @@ def test_surprise_completed_detail_counts_only_completed_rounds() -> None:
     from aliexpress_coins.tasks.surprise import _completed_detail
 
     records = (
-        RoundRecord(1, 0, 3, 3, 3, RULE_PATH_REUSE, True, 'done'),
+        RoundRecord(1, 0, 3, 3, 3, RULE_PATH_REUSE, True, 'done', items=('A', 'B', 'C')),
         RoundRecord(2, 0, 2, 3, 5, RULE_PATH_RESET, False, 'stalled'),
     )
 
-    assert _completed_detail(records) == '1 round(s) completed with counter evidence (0/3 -> 3/3)'
+    assert _completed_detail(records) == (
+        "1 round(s) completed with counter evidence (0/3 -> 3/3); distinct items: 'A', 'B', 'C'"
+    )
 
 
 def test_read_surprise_counter_returns_none_when_the_crop_ocr_fails() -> None:

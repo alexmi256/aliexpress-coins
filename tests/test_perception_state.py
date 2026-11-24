@@ -201,6 +201,18 @@ def test_the_coin_store_list_is_a_named_page(frames: dict[str, Snapshot]) -> Non
     assert 'Use coins for discounts' in classification.evidence[0].detail
 
 
+@pytest.mark.slow
+def test_the_recorded_surprise_product_detail_is_a_named_page() -> None:
+    engine = RapidOcrEngine()
+    detail = _load_snapshot(DATA / 'flows' / 'surprise_items_item_detail.png', engine)
+
+    classification = classify(detail)
+
+    assert classification.state is ScreenState.PAGE
+    assert classification.evidence[0].signal == 'page_marker'
+    assert 'product detail' in classification.evidence[0].detail
+
+
 @pytest.mark.parametrize('colour', ['white', 'black'])
 def test_a_uniform_frame_is_never_a_page(colour: str) -> None:
     classification = classify(_snapshot(Image.new('RGB', (400, 800), colour)))

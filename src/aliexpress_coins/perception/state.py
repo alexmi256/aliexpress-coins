@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 import time
+import unicodedata
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -91,6 +92,9 @@ _COLLECTION_HEADER_TOP_FRACTION = 0.35
 """A product-collection header sits near the top; a feed section lower down does not."""
 
 _PRICE = re.compile(r'(?:C\$|US\s*\$|CS|\$)\s*\d', re.IGNORECASE)
+
+_PRODUCT_DETAIL_ITEM = re.compile(r'\bitem\s+\d+\s*/\s*\d+\b', re.IGNORECASE)
+"""The product page's own item counter, a stable marker when its buttons scroll away."""
 
 TASK_TITLES: tuple[str, ...] = (
     'Daily check-in',
@@ -581,6 +585,10 @@ def _page_marker(snapshot: Snapshot) -> Evidence | None:
     if coin_store is not None:
         return Evidence('page_marker', coin_store.score, f'coin store: {coin_store.text!r}')
 
+    detail = _product_detail_marker(snapshot)
+    if detail is not None:
+        return Evidence('page_marker', detail.score, f'product detail: {detail.text!r}')
+
     # A feed can contain a "Bundle deals" section too, so the header must be
     # near the top before it identifies a product-collection page. The home
     # feed itself is deliberately unmodelled: it has no stable whole-screen
@@ -615,6 +623,25 @@ class _Match:
     text: str
     score: float
     top: float = 0.0
+
+
+def _product_detail_marker(snapshot: Snapshot) -> _Match | None:
+    """The product page's ``Item N/n`` line, or its two purchase captions."""
+    for box in snapshot.boxes:
+        if box.score < DEFAULT_MIN_OCR_SCORE:
+            continue
+        text = unicodedata.normalize('NFKC', box.text)
+        if _PRODUCT_DETAIL_ITEM.search(text):
+            return _Match(text=box.text, score=1.0, top=box.bbox[1])
+    cart = _match(snapshot, 'Add to cart')
+    buy = _match(snapshot, 'Buy now')
+    if cart is not None and buy is not None:
+        return _Match(
+            text=f'{cart.text} + {buy.text}',
+            score=min(cart.score, buy.score),
+            top=min(cart.top, buy.top),
+        )
+    return None
 
 
 def _match(snapshot: Snapshot, label: str) -> _Match | None:
