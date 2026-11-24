@@ -480,12 +480,8 @@ def run_once(
         log.warning('%s', _event('run_log_failed', detail=f'{type(exc).__name__}: {exc}'))
 
     safety = context.safety if context.safety is not None else SafetyGuard(catalogue=context.catalogue)
-    if context.safety is None:
-        context.safety = safety
-        context.capture = recorder.wrap(context.capture)
-        context.capture = safety.wrap(context.capture)
-    else:
-        context.capture = recorder.wrap(context.capture)
+    context.safety = safety
+    context.capture = safety.wrap(recorder.wrap(raw_capture))
 
     def attach_action_hook(current: object) -> None:
         setter = getattr(current, 'set_action_hook', None)
@@ -1641,7 +1637,18 @@ def _dispatch_with_retry(
         )
 
     if authorized.key is not None and context.state.is_acted_unverified(authorized.key):
-        readable, fresh = _recheck_acted_row(context, controller, authorized)
+        try:
+            readable, fresh = _recheck_acted_row(context, controller, authorized)
+        except RunAborted as exc:
+            _flush_abort_recording(context, recorder, code=exc.code.value, detail=exc.reason)
+            raise
+        except RunInterrupted as exc:
+            _flush_abort_recording(context, recorder, code='stopped', detail=str(exc))
+            raise
+        except BaseException:
+            if recorder is not None:
+                recorder.abandon()
+            raise
         if not readable:
             result = EngineResult(
                 outcome='failed',

@@ -7498,12 +7498,14 @@ def test_a_failed_task_whose_aftermath_is_empty_boost_does_not_abort_the_run(
     assert (report.run_dir / report.failure_recordings[0]['sidecar']).is_file()
 
 
+@pytest.mark.parametrize('injected_safety', [False, True])
 def test_a_dangerous_control_abort_flushes_the_buffered_frames(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     full_roster: Roster,
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
+    injected_safety: bool,
 ) -> None:
     class _TriggerCapture:
         def __init__(self, frame: Snapshot) -> None:
@@ -7523,6 +7525,8 @@ def test_a_dangerous_control_abort_flushes_the_buffered_frames(
         catalogue=catalogue,
         corpus=corpus,
     )
+    if injected_safety:
+        context.safety = SafetyGuard(catalogue=catalogue)
 
     def dispatch(current: RunContext, _controller: Controller, _entry: RosterEntry) -> EngineResult:
         source.frame = _snapshot(_box('Wireless Earbuds', 60, 300, 600, 350), _box('Buy now', 400, 1800, 700, 1860))
@@ -7579,4 +7583,108 @@ def test_a_stop_during_a_task_flushes_the_buffered_frames_without_an_aftermath(
     assert recording['failure_code'] == 'stopped'
     sidecar = json.loads((report.run_dir / recording['sidecar']).read_text(encoding='utf-8'))
     assert sidecar['failure']['code'] == 'stopped'
+    assert sidecar['frames']
+
+
+def test_run_once_attaches_the_action_hook_to_factory_created_controllers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    frame = _boost_frame('coins_quiz')
+    _surface(monkeypatch, roster, frame)
+    frames = [replace(_coin_frame(), captured_at=CAPTURED_AT + timedelta(seconds=index)) for index in range(12)]
+    clock = _Clock()
+    context = _context(
+        tmp_path,
+        capture=_Capture(*frames),
+        catalogue=catalogue,
+        corpus=corpus,
+        clock=clock,
+    )
+    context.controller = None
+    created: list[Controller] = []
+
+    def factory(snapshot: Snapshot) -> Controller:
+        controller = Controller.from_frame(_RecordingDevice(), snapshot, rng=random.Random(0))
+        created.append(controller)
+        return controller
+
+    context.controller_factory = factory
+    tapped: list[Snapshot] = []
+
+    def dispatch(current: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        tapped.append(engine._capture(current.capture))
+        assert current.controller is not None
+        current.controller.tap((600, 1000), why='tap from the factory controller')
+        clock.value += 100.0
+        engine._capture(current.capture)
+        clock.value += 1.0
+        engine._capture(current.capture)
+        return EngineResult(
+            'failed',
+            'no_change',
+            'the row did not move',
+            False,
+            {'key': entry.key, 'taps': [{'point': [600, 1000]}]},
+            failure=failure(FailureCode.TASK_UNVERIFIED, detail='the row did not move'),
+            acted=True,
+        )
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert len(created) == 1
+    assert len(report.failure_recordings) == 1
+    sidecar = json.loads((report.run_dir / report.failure_recordings[0]['sidecar']).read_text(encoding='utf-8'))
+    captured = [entry['captured_at'] for entry in sidecar['frames']]
+    assert tapped[0].captured_at.isoformat() in captured
+
+
+@pytest.mark.parametrize(
+    ('error', 'expected_status', 'expected_code'),
+    [
+        (RunInterrupted('stop requested'), RunStatus.STOPPED, 'stopped'),
+        (_safety_abort(AbortCode.DANGEROUS_CONTROL), RunStatus.ABORTED, AbortCode.DANGEROUS_CONTROL.value),
+    ],
+)
+def test_an_abort_or_stop_during_the_acted_recheck_flushes_the_buffer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    error: Exception,
+    expected_status: RunStatus,
+    expected_code: str,
+) -> None:
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    frame = _boost_frame('coins_quiz')
+    _surface(monkeypatch, roster, frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.state.mark_acted_unverified('coins_quiz')
+
+    def recheck(current: RunContext, _controller: Controller, _entry: RosterEntry) -> tuple[bool, RosterEntry | None]:
+        engine._capture(current.capture)
+        raise error
+
+    monkeypatch.setattr(engine, '_recheck_acted_row', recheck)
+
+    report = engine.run_once(context)
+
+    assert report.status is expected_status
+    assert len(report.failure_recordings) == 1
+    recording = report.failure_recordings[0]
+    assert recording['failure_code'] == expected_code
+    sidecar = json.loads((report.run_dir / recording['sidecar']).read_text(encoding='utf-8'))
+    assert sidecar['failure']['code'] == expected_code
     assert sidecar['frames']

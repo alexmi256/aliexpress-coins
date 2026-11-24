@@ -416,7 +416,7 @@ def test_a_failed_aftermath_capture_is_a_warning_and_the_recording_still_lands(
     assert report.artifact_errors == []
 
 
-def test_a_stop_during_the_aftermath_is_not_swallowed(tmp_path: Path) -> None:
+def test_a_stop_during_the_aftermath_still_writes_the_buffer_then_propagates(tmp_path: Path) -> None:
     report = _report(tmp_path)
     clock = _Clock()
 
@@ -438,7 +438,9 @@ def test_a_stop_during_the_aftermath_is_not_swallowed(tmp_path: Path) -> None:
     with pytest.raises(RunInterrupted):
         _finish_failure(recorder)
 
-    assert report.failure_recordings == []
+    assert len(report.failure_recordings) == 1
+    assert report.failure_recordings[0]['frames']
+    assert (report.run_dir / report.failure_recordings[0]['sidecar']).is_file()
     assert _finish_failure(recorder) is None
 
 

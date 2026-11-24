@@ -260,6 +260,8 @@ class FailureRecorder:
         attempt = self._active
         if attempt is None:
             return None
+        pending: BaseException | None = None
+        recording: dict[str, Any] | None = None
         try:
             if completed or outcome != 'failed':
                 self._logger.debug(
@@ -272,13 +274,13 @@ class FailureRecorder:
                     ),
                 )
                 return None
-            try:
-                if aftermath:
+            if aftermath:
+                try:
                     self._aftermath()
-            except RunAborted, RunInterrupted:
-                raise
+                except (RunAborted, RunInterrupted) as exc:
+                    pending = exc
             self._trim(attempt, self._clock())
-            return self._write(
+            recording = self._write(
                 attempt,
                 outcome=outcome,
                 verification=verification,
@@ -302,9 +304,11 @@ class FailureRecorder:
             self.report.record_artifact_error(
                 f'failure recording {attempt.key} attempt {attempt.number}: {detail_text}'
             )
-            return None
         finally:
             self._active = None
+        if pending is not None:
+            raise pending
+        return recording
 
     def abandon(self) -> None:
         """Drop the current buffer without writing anything (run interrupted)."""
