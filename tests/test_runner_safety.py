@@ -552,8 +552,8 @@ def test_the_product_detail_discount_copy_is_not_a_dangerous_control() -> None:
     assert guard.streak == 0
 
 
-def test_a_scrolled_surprise_grid_is_not_an_unexpected_task_screen() -> None:
-    grid = _snapshot(
+def test_a_generic_discount_feed_still_trips_the_guard_in_another_task() -> None:
+    feed = _snapshot(
         _box('Disc:C$31.27', 60, 300, 330, 340),
         _box('Applied', 350, 300, 520, 340),
         _box('C$30.00', 60, 350, 300, 390),
@@ -564,12 +564,14 @@ def test_a_scrolled_surprise_grid_is_not_an_unexpected_task_screen() -> None:
     )
     guard = _guard()
 
-    with guard.task('Browse surprise items'):
-        guard.inspect(grid)
-        guard.inspect(grid)
-        guard.inspect(grid)
+    def inspect_three() -> None:
+        for _ in range(3):
+            guard.inspect(feed)
 
-    assert guard.streak == 0
+    with pytest.raises(RunAborted) as raised, guard.task('Explore sponsored items'):
+        inspect_three()
+
+    assert raised.value.code is AbortCode.UNEXPECTED_SCREEN
 
 
 def test_the_product_detail_suffixed_purchase_captions_are_exempt() -> None:

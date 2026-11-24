@@ -50,16 +50,6 @@ They are named, never tapped (docs/07 §3). A detail page that is scrolled far
 enough to hide them still carries ``Item N/n``.
 """
 
-_PRICE = re.compile(r'(?:C\$|US\s*\$|CS|\$)\s*\d', re.IGNORECASE)
-_GRID_SIGNALS = ('black friday', 'free shipping', ' sold', 'disc:', 'applied')
-"""Promotional card furniture that survives a scroll of the surprise grid.
-
-The header and round pill scroll away with the grid; a scrolled grid is still a
-loaded product page, not an unknown screen (#100). These signals are only
-consulted when no stronger surface marker (detail, coin store, boost, coin
-page) is present.
-"""
-
 COIN_PAGE_MARKERS = ('Daily coins', 'Coins credits to redeem')
 """The two labels that identify the coin page rather than the Account card."""
 
@@ -197,25 +187,19 @@ def is_product_detail(snapshot: Snapshot) -> bool:
 
 
 def is_surprise_grid(snapshot: Snapshot) -> bool:
-    """Whether the frame is the surprise grid, including a scrolled grid.
+    """Whether the frame is the surprise grid's header page.
 
-    The header-only test identifies arrival. Once the executor has scrolled for
-    unseen products, the title and round pill are above the viewport, so a
-    loaded card grid is recognised by several independent card signals instead
-    of being reported ``unknown`` (#100).
+    The boost row carries the same title and subtitle, so the row is explicitly
+    excluded. A scrolled grid is not globally named from generic shopping copy;
+    the surprise executor recognises it from the tile set it already saw. That
+    keeps a coupon or product feed from becoming a known surface for every task
+    (#100).
     """
-    if (
+    return (
         not is_boost_page(snapshot)
         and contains_text(snapshot, SURPRISE_GRID_TITLE)
         and contains_text(snapshot, SURPRISE_GRID_SUBTITLE)
-    ):
-        return True
-    if is_product_detail(snapshot) or is_coin_store(snapshot) or is_boost_page(snapshot):
-        return False
-    labels = [normalize(box.text) for box in snapshot.boxes if box.score >= DEFAULT_MIN_OCR_SCORE]
-    signals = sum(1 for signal in _GRID_SIGNALS if any(signal in label for label in labels))
-    prices = sum(1 for box in snapshot.boxes if box.score >= DEFAULT_MIN_OCR_SCORE and _PRICE.search(box.text))
-    return signals >= 3 and prices >= 2
+    )
 
 
 def is_empty_boost(snapshot: Snapshot) -> bool:

@@ -7,7 +7,7 @@ tap. A round is three distinct products, and the page counter (``0/3`` through
 ``Mission Completed`` overlay, which a tap dismisses, and a ``Next round``
 control when the row still has rounds left.
 
-Two facts keep this executor honest:
+Three facts keep this executor honest:
 
 * **distinctness is per product, not per tap.** A tile that does not move the
   counter is marked tried and is not counted a second time. The page does not
@@ -19,6 +19,9 @@ Two facts keep this executor honest:
   bounded number of genuinely new products fail to move the counter, switches
   once to the whole-task set and records ``rule_path: reset``. When #63 lands,
   the losing branch can be deleted without changing the rest of the executor.
+* **the ledger follows the counter, not the final return.** A completed round is
+  recorded as soon as its counter reaches the target, so a later failure cannot
+  leave a complete round in ``run.json`` without a matching daily completion.
 
 The run never taps a purchase control: only a product card, the page's own
 ``Next round``, the overlay, and BACK. Every completion is recorded from a
@@ -71,10 +74,8 @@ from aliexpress_coins.tasks.surface import (
     SurfaceRoute,
     contains_text,
     is_boost_page,
+    is_coin_store,
     is_product_detail,
-)
-from aliexpress_coins.tasks.surface import (
-    is_surprise_grid as is_loaded_surprise_grid,
 )
 
 __all__ = [
@@ -324,6 +325,18 @@ class SurpriseTile:
     def keys(self) -> tuple[tuple[object, ...], ...]:
         """Both identities, so tracking survives a re-render either way."""
         return (self.label_key, self.position_key)
+
+    @property
+    def report_label(self) -> str:
+        """A label that stays distinct when OCR merged both columns into one line.
+
+        The two halves of a shared OCR line carry the same text but are different
+        cards. The column makes the report quote two distinct products instead of
+        repeating the one label the issue flagged (#100).
+        """
+        if self.shared_label:
+            return f'{self.label} (column {self.column + 1})'
+        return self.label
 
     def as_dict(self) -> dict[str, object]:
         """Render the tile for the run report."""
@@ -1017,6 +1030,10 @@ def run_surprise_task(
             if not record.complete:
                 break
             completed_rounds += 1
+            # The round's counter proof is the ledger event. Record it now so a
+            # later failure or interrupt cannot leave a complete RoundRecord in
+            # run.json while the day's completion count did not move (#100).
+            state.record(spec.key)
             if done_before + completed_rounds >= limit:
                 break
             if round_index >= round_budget:
@@ -1180,8 +1197,6 @@ def run_surprise_task(
                 )
 
         if completed_rounds > 0:
-            for _ in range(completed_rounds):
-                state.record(spec.key)
             return _result(
                 spec,
                 entry.title,
@@ -1292,6 +1307,7 @@ def _run_round(
     scroll_stable = False
     items: list[str] = []
     pending_item: str | None = None
+    grid_labels = _grid_labels(snapshot)
     baseline_unknown = False
     last_miss: tuple[int, int] | None = None
     stop: str | None = None
@@ -1354,6 +1370,7 @@ def _run_round(
                         swipes.append(swipe)
                     scrolls += 1
                     current = _capture(capture)
+                    grid_labels.update(_grid_labels(current))
                     if _grid_signature(current) == before_scroll:
                         scroll_stable = True
                     continue
@@ -1372,7 +1389,7 @@ def _run_round(
             ),
         )
         round_taps += 1
-        pending_item = tile.label
+        pending_item = tile.report_label
         round_tried.add(tile)
         task_tried.add(tile)
 
@@ -1404,7 +1421,7 @@ def _run_round(
                 controller,
                 capture,
                 corpus,
-                _is_round_surface,
+                lambda frame: _is_round_surface(frame, grid_labels),
                 timeout=exit_timeout,
                 interval=interval,
                 settle=settle,
@@ -1435,11 +1452,12 @@ def _run_round(
                 dismissals=dismissals,
                 taps=taps,
             )
-        if not arrived and not is_loaded_surprise_grid(current) and find_next_round(current) is None:
+        scrolled_grid = _is_scrolled_grid(current, grid_labels)
+        if not arrived and not scrolled_grid and not is_surprise_grid(current) and find_next_round(current) is None:
             detail = 'the grid disappeared without the counter advancing; no completion was recorded'
             break
 
-        if is_loaded_surprise_grid(current) and not is_surprise_grid(current):
+        if scrolled_grid and not is_surprise_grid(current):
             # The card grid scrolled its header and pill out of view. Bring the
             # observed grid back to the top so the counter can be read and the
             # next round starts from the same layout.
@@ -1506,6 +1524,7 @@ def _run_round(
                         swipes.append(swipe)
                     scrolls += 1
                     current = _capture(capture)
+                    grid_labels.update(_grid_labels(current))
                     if _grid_signature(current) == before_scroll:
                         scroll_stable = True
                     inert = 0
@@ -1982,8 +2001,32 @@ def _is_grid_surface(snapshot: Snapshot) -> bool:
     return is_surprise_grid(snapshot)
 
 
-def _is_round_surface(snapshot: Snapshot) -> bool:
-    return is_loaded_surprise_grid(snapshot) or find_next_round(snapshot) is not None
+def _is_round_surface(snapshot: Snapshot, known_labels: set[str]) -> bool:
+    return (
+        is_surprise_grid(snapshot) or _is_scrolled_grid(snapshot, known_labels) or find_next_round(snapshot) is not None
+    )
+
+
+def _grid_labels(snapshot: Snapshot) -> set[str]:
+    """The card labels this frame shares with the grid already read."""
+    return {tile.normalized_label for tile in find_surprise_tiles(snapshot)}
+
+
+def _is_scrolled_grid(snapshot: Snapshot, known_labels: set[str]) -> bool:
+    """Whether a headerless frame is the same two-column grid, scrolled.
+
+    Generic shopping copy is not enough: a coupon sheet or a product feed can
+    carry the same discounts and prices. This requires two columns of detected
+    card titles plus labels that were already seen on this round's grid, so a
+    tile tap that lands anywhere else cannot turn that page into the grid and
+    invite more title taps (#100).
+    """
+    if is_surprise_grid(snapshot) or is_product_detail(snapshot) or is_coin_store(snapshot) or is_boost_page(snapshot):
+        return False
+    tiles = find_surprise_tiles(snapshot)
+    if len(tiles) < 2 or {tile.column for tile in tiles} != {0, 1}:
+        return False
+    return sum(1 for tile in tiles if tile.normalized_label in known_labels) >= 2
 
 
 def _header_bottom(snapshot: Snapshot) -> float:

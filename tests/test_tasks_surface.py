@@ -215,8 +215,8 @@ def test_classify_surface_names_the_recorded_surprise_detail_and_grid(engine: Ra
     assert classify_surface(grid) is Surface.SURPRISE_GRID
 
 
-def test_classify_surface_names_the_scrolled_surprise_grid_from_its_cards() -> None:
-    scrolled = _snapshot(
+def test_generic_discount_copy_is_not_the_surprise_grid() -> None:
+    coupon_page = _snapshot(
         _box('Disc:C$31.27', 60, 300, 330, 340),
         _box('Applied', 350, 300, 520, 340),
         _box('C$30.00', 60, 350, 300, 390),
@@ -226,8 +226,8 @@ def test_classify_surface_names_the_scrolled_surprise_grid_from_its_cards() -> N
         _box('Wireless CarPlay interface', 60, 600, 560, 640),
     )
 
-    assert classify_surface(scrolled) is Surface.SURPRISE_GRID
-    assert is_surprise_grid(scrolled)
+    assert classify_surface(coupon_page) is Surface.UNKNOWN
+    assert not is_surprise_grid(coupon_page)
     assert not is_surprise_grid(_snapshot(_box('Item 1/6', 40, 100, 300, 140)))
     assert not is_surprise_grid(
         _snapshot(

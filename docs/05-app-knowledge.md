@@ -85,11 +85,14 @@ identical `GO` buttons — enforcing the deny list at dispatch is mandatory.
   `Buy now` — **never tapped**); **BACK** increments the counter per **distinct product**, not per
   tap ([`01-recon-findings.md`](01-recon-findings.md) §7c). The counter is re-read after a short
   dwell; a tile that leaves it unchanged is inert and the round fails `progress_unchanged` rather
-  than being recorded. Scrolling for unseen products moves the header and pill off-screen, so the
-  executor names the scrolled grid and restores the top before reading the counter (#100). At
-  `3/3`, `Mission Completed` stays >10 s until tapped; `Next round` appears on non-final rounds at
-  ~(597, 1240) ⬜. Final round paid +1 (43 → 44) and removed the row (intermediate-round payout ⬜);
-  the returned row badge (`N/2`) is re-read and must advance before the round is recorded. Until
+  than being recorded. Scrolling for unseen products moves the header and pill off-screen; the
+  executor recognises the same two-column card set it already read, not generic discount copy, and
+  restores the top before reading the counter (#100). At `3/3`, `Mission Completed` stays >10 s
+  until tapped; `Next round` appears on non-final rounds at ~(597, 1240) ⬜. Final round paid +1
+  (43 → 44) and removed the row (intermediate-round payout ⬜). The counter-proven round is recorded
+  immediately; when the returned row badge (`N/2`) is readable it is re-read after a short dwell
+  and a non-advancing badge fails `progress_unchanged`, but an absent row leaves the counter as the
+  evidence. Until
   #63 settles cross-round reset ❓, `surprise.py` tries per-round distinctness first and falls back
   once to whole-task exclusion.
 - **`Turn on notifications` 🟡:** paid +1 on 2026-11-20 with no dialog and `POST_NOTIFICATION: ignore`

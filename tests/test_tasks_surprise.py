@@ -828,13 +828,13 @@ def test_a_replay_of_the_recorded_grid_opens_two_distinct_tiles_and_reports_2_of
 
     assert result.outcome is SurpriseOutcome.COMPLETED
     assert result.round_records[0].counter_change == '0/2 -> 2/2'
-    assert result.round_records[0].items == (first.label, second.label)
+    assert result.round_records[0].items == (first.report_label, second.report_label)
+    assert first.report_label != second.report_label
     assert result.round_records[0].taps == 2
-    assert first.label in result.detail
+    assert first.report_label in result.detail
     product_taps = [tap for tap in result.taps if tap.label == first.label]
     assert len(product_taps) == 2
     assert product_taps[0].point != product_taps[1].point
-    assert result.round_records[0].items == (first.label, second.label)
 
 
 def test_run_surprise_task_restores_a_scrolled_grid_before_reading_the_counter(
@@ -952,6 +952,41 @@ def test_run_surprise_task_rebaselines_after_an_unreadable_counter(
     assert result.round_records[0].taps == 2
 
 
+def test_a_tile_tap_that_lands_on_a_coupon_page_is_not_tapped_as_a_grid(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    coupon = _snapshot(
+        _box('1:41', 40, 20, 120, 60),
+        _box('Disc:C$31.27', 60, 300, 330, 340),
+        _box('Applied', 350, 300, 520, 340),
+        _box('C$30.00', 60, 350, 300, 390),
+        _box('Wireless CarPlay/Android Auto interface', 60, 600, 560, 650),
+        _box('For 2012-2017 Bentley Flying Spur', 640, 600, 1140, 650),
+        _box('C$141.94', 60, 700, 300, 750),
+        _box('Disc:C$141.03', 640, 700, 900, 750),
+        _box('Applied', 920, 700, 1100, 750),
+        _box('Black Friday', 60, 800, 300, 840),
+    )
+    world = _World(
+        series={
+            'boost': (_boost_frame(progress='1/2'),),
+            'grid': (_grid_frame(0),),
+            'coupon': (coupon,),
+            'coins': (_coins_frame(),),
+        },
+        transitions={('boost', 'GO'): 'grid', ('grid', 'Product A'): 'coupon'},
+    )
+
+    result = _run(world, catalogue, corpus, _state(tmp_path), max_rounds=1, arrival_timeout=0.2)
+
+    assert result.outcome is SurpriseOutcome.FAILED
+    assert result.verification == 'grid_disappeared'
+    product_taps = [tap.label for tap in result.taps if tap.label and tap.label.startswith('Product')]
+    assert product_taps == ['Product A']
+
+
 def test_run_surprise_task_never_reopens_the_same_tile_on_a_fixed_grid(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1001,7 +1036,9 @@ def test_run_surprise_task_fails_when_the_badge_does_not_advance(
     assert result.outcome is SurpriseOutcome.FAILED
     assert result.verification == 'progress_unchanged'
     assert result.recorded is False
-    assert state.count('surprise_items') == 0
+    # The counter-proven round is persisted at the point it is proven; the
+    # later badge disagreement is reported but cannot erase that evidence.
+    assert state.count('surprise_items') == 1
     assert result.badge_change == '1/2 -> 1/2'
     assert 'progress_unchanged: expected 2/2, saw 1/2' in result.detail
 

@@ -490,7 +490,7 @@ def _is_unexpected_inside_task(
     """
     if _is_product_detail(snapshot) or is_logged_out(snapshot):
         return False
-    if surface in (Surface.EMPTY_BOOST, Surface.SURPRISE_GRID, Surface.PRODUCT_DETAIL):
+    if surface is Surface.EMPTY_BOOST:
         return False
     if any(evidence.signal == 'blank_frame' for evidence in classification.evidence):
         return False
