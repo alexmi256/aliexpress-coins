@@ -58,11 +58,19 @@ from aliexpress_coins.tasks.discovery import (
     DiscoveryRoute,
     Roster,
     RosterEntry,
+    RosterObservation,
+    RosterObserver,
     enumerate_roster,
 )
 from aliexpress_coins.tasks.dispatch import DispatchGate
 from aliexpress_coins.tasks.signin import ClaimResult, SigninOutcome, SigninReport, read_coin_balance
-from aliexpress_coins.tasks.surface import EMPTY_BOOST_MARKER, SHORTCUT_DEEP_LINK, Surface, SurfaceRoute
+from aliexpress_coins.tasks.surface import (
+    EMPTY_BOOST_MARKER,
+    SHORTCUT_DEEP_LINK,
+    Surface,
+    SurfaceRoute,
+    classify_surface,
+)
 from tests.support.adb import ScriptedAdbRunner, ok
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -475,6 +483,12 @@ def _surface(
     roster: Roster,
     snapshot: Snapshot,
 ) -> None:
+    if roster.empty and roster.surface_variant is not Surface.UNKNOWN:
+        # An empty fixture is a readable empty day, not an unreadable surface.
+        # #123 refuses to complete on a stale/failed observation, so use the
+        # coin page's genuine zero-row surface for this convenience fixture.
+        snapshot = _coin_frame()
+    roster = replace(roster, surface_variant=classify_surface(snapshot))
     monkeypatch.setattr(engine, 'discover_roster', lambda *args, **kwargs: roster)
     monkeypatch.setattr(
         engine,
@@ -802,8 +816,12 @@ def test_a_controller_factory_is_used_after_the_first_frame(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
 ) -> None:
-    frame = _boost_header_frame()
-    _surface(monkeypatch, replace(full_roster, entries=()), frame)
+    frame = _coin_frame()
+    _surface(
+        monkeypatch,
+        replace(full_roster, entries=(), surface_variant=Surface.ROWS_ABSENT),
+        frame,
+    )
     context = _context(
         tmp_path,
         capture=_Capture(frame, _coin_frame()),
@@ -3849,7 +3867,7 @@ def test_popups_closed_during_discovery_observation_and_cleanup_are_counted(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
 ) -> None:
-    roster = replace(full_roster, entries=())
+    roster = replace(full_roster, entries=(), surface_variant=Surface.ROWS_ABSENT)
 
     def fake_discover(*args: Any, **kwargs: Any) -> Roster:
         on_dismiss = kwargs.get('on_dismiss')
@@ -3861,7 +3879,7 @@ def test_popups_closed_during_discovery_observation_and_cleanup_are_counted(
         on_dismiss = kwargs.get('on_dismiss')
         if on_dismiss is not None:
             on_dismiss(_dismiss('observation_modal'))
-        return BoostList(snapshot=_boost_header_frame(), route=DiscoveryRoute.BOOST, detail='test')
+        return BoostList(snapshot=_coin_frame(), route=DiscoveryRoute.BOOST, detail='test')
 
     def fake_return(*args: Any, **kwargs: Any) -> ReturnResult:
         on_dismiss = kwargs.get('on_dismiss')
@@ -4837,8 +4855,9 @@ def test_an_unverified_task_is_retried_once_and_the_second_result_stands(
 
     assert len(attempts) == 2
     assert clock.value == 1.0
-    assert report.tasks[0].completed is True
-    assert report.tasks[0].code is None
+    assert report.passes == 2
+    assert [task.completed for task in report.tasks] == [False, True]
+    assert report.tasks[1].code is None
     assert report.status is RunStatus.COMPLETED
 
 
@@ -4877,6 +4896,7 @@ def test_an_unverified_task_that_stays_unverified_is_reported_and_the_walk_conti
     report = engine.run_once(context)
 
     assert len(attempts) == 2
+    assert report.passes == 2
     assert report.status is RunStatus.COMPLETED
     assert report.ok is True
     assert report.tasks[0].code == FailureCode.TASK_UNVERIFIED.value
@@ -5542,7 +5562,10 @@ def test_a_route_timeout_uses_the_route_policy_without_another_route_cycle(
     assert len(calls) == 1
     assert report.route_error is not None
     assert 'StateTimeout' in report.route_error
-    assert report.status is RunStatus.COMPLETED
+    assert report.status is RunStatus.BUDGET
+    assert report.detail is not None
+    assert 'pass budget' in report.detail
+    assert SurfaceRoute.SHORTCUT in cast(_Navigate, context.navigate).routes
 
 
 def test_an_empty_unknown_surface_is_checked_for_a_sign_in_prompt(
@@ -5902,8 +5925,8 @@ def test_a_row_that_vanished_is_dispatched_again_in_a_second_pass(
     corpus: PopupCorpus,
 ) -> None:
     """A stale-roster skip is not terminal: pass two claims the row that moved."""
-    roster = replace(full_roster, entries=(_entry(full_roster, 'surprise_items'),))
-    frame = _boost_frame('surprise_items')
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    frame = _boost_frame('coins_quiz')
     _surface(monkeypatch, roster, frame)
     context = _context(
         tmp_path,
@@ -5930,17 +5953,17 @@ def test_a_row_that_vanished_is_dispatched_again_in_a_second_pass(
 
     report = engine.run_once(context)
 
-    assert attempts == ['surprise_items', 'surprise_items']
+    assert attempts == ['coins_quiz', 'coins_quiz']
     assert report.passes == 2
     assert [task.outcome for task in report.tasks] == ['skipped', 'completed']
     assert report.tasks[1].completed is True
-    assert report.attempts == {'surprise_items': 2}
+    assert report.attempts == {'coins_quiz': 2}
     assert report.blacklist == {}
     assert report.status is RunStatus.COMPLETED
     assert context.state.snapshot().completed_night is True
     summary = report.summary_path.read_text(encoding='utf-8')
     assert '**Passes:** 2 of 4' in summary
-    assert '**Attempts per task:** surprise_items: 2 (limit 2 per task)' in summary
+    assert '**Attempts per task:** coins_quiz: 2 (limit 2 per task)' in summary
     assert '**Blacklist:** none' in summary
 
 
@@ -5982,11 +6005,11 @@ def test_a_repeatedly_failing_task_is_blacklisted_and_the_rest_of_the_roster_con
 
     report = engine.run_once(context)
 
-    assert attempts == ['coins_quiz', 'coins_quiz', 'notifications']
+    assert attempts == ['coins_quiz', 'notifications', 'coins_quiz']
     assert report.attempts['coins_quiz'] == 2
     assert report.blacklist == {'coins_quiz': 2}
-    assert [task.key for task in report.tasks] == ['coins_quiz', 'notifications']
-    assert [task.completed for task in report.tasks] == [False, True]
+    assert [task.key for task in report.tasks] == ['coins_quiz', 'notifications', 'coins_quiz']
+    assert [task.completed for task in report.tasks] == [False, True, False]
     blacklisted = [skip for skip in report.skipped if skip.key == 'coins_quiz']
     assert [skip.reason for skip in blacklisted] == ['blacklisted after 2 attempts']
     assert context.state.is_blacklisted('coins_quiz') is True
@@ -6088,14 +6111,17 @@ def test_a_blacklist_from_an_earlier_same_day_run_is_still_reported(
 
 def test_pass_restart_reasons_cover_unreadable_unknown_and_empty_surfaces(full_roster: Roster) -> None:
     assert engine._pass_restart_reason(None, None) == 'the roster was not read'
-    assert engine._pass_restart_reason(replace(full_roster, entries=()), None) is None
+    assert (
+        engine._pass_restart_reason(replace(full_roster, entries=()), None)
+        == 'the task surface has not been read since the last attempt'
+    )
     assert (
         engine._pass_restart_reason(replace(full_roster, surface_variant=Surface.UNKNOWN), None)
-        == 'the task surface is unknown'
+        == 'the task surface has not been read since the last attempt'
     )
     assert (
         engine._pass_restart_reason(replace(full_roster, surface_variant=Surface.EMPTY_BOOST), None)
-        == 'the Coins boost page is the documented load fault'
+        == 'the task surface has not been read since the last attempt'
     )
 
 
@@ -6146,11 +6172,14 @@ def test_a_stuck_allowed_row_restarts_then_hits_the_pass_bound(
     no_action = replace(full_roster, entries=(replace(_entry(full_roster, 'coins_quiz'), action=None),))
     frame = _boost_frame('coins_quiz')
     monkeypatch.setattr(engine, 'discover_roster', lambda *args, **kwargs: no_action)
-
-    def broken_open(*args: Any, **kwargs: Any) -> BoostList:
-        raise StateTimeout('the task surface is not readable')
-
-    monkeypatch.setattr(engine, 'open_boost_list', broken_open)
+    observation = RosterObservation(
+        sequence=1,
+        timestamp=CAPTURED_AT,
+        rows=(),
+        surface_variant=Surface.BOOST_PAGE,
+        roster=no_action,
+    )
+    monkeypatch.setattr(engine, '_observe', lambda *args, **kwargs: observation)
     context = _context(
         tmp_path,
         capture=_Capture(frame, _coin_frame()),
@@ -6408,3 +6437,229 @@ def test_blacklisting_a_refused_row_skips_the_state_write(
 
     assert updated == {denied.title.casefold(): 2}
     assert context.state.snapshot().blacklist == {}
+
+
+@pytest.mark.slow
+def test_a_repeatable_row_is_offered_again_until_its_daily_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    roster = replace(full_roster, entries=(_entry(full_roster, 'surprise_items'),))
+    frame = _boost_frame('surprise_items')
+    _surface(monkeypatch, roster, frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    attempts: list[str] = []
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        attempts.append(entry.key or '')
+        _context.state.record(entry.key or '')
+        return EngineResult('completed', 'progress_badge', 'the counter moved', True, {'key': entry.key})
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert attempts == ['surprise_items', 'surprise_items']
+    assert report.passes == 2
+    assert len(report.tasks) == 2
+    assert all(task.completed for task in report.tasks)
+    assert context.state.count('surprise_items') == 2
+    assert context.state.snapshot().completed_night is True
+
+
+@pytest.mark.slow
+def test_a_failed_shortcut_restart_never_dispatches_from_the_stale_roster(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    wanted = ('coins_quiz', 'notifications')
+    roster = replace(full_roster, entries=tuple(_entry(full_roster, key) for key in wanted))
+    good = _boost_frame(*wanted)
+    monkeypatch.setattr(engine, 'discover_roster', lambda *args, **kwargs: roster)
+    opens: list[int] = []
+
+    def open_boost(*args: Any, **kwargs: Any) -> BoostList:
+        index = len(opens)
+        opens.append(1)
+        snapshot = good if index == 0 else _home_frame()
+        return BoostList(snapshot=snapshot, route=DiscoveryRoute.BOOST, detail='test')
+
+    monkeypatch.setattr(engine, 'open_boost_list', open_boost)
+    context = _context(
+        tmp_path,
+        capture=_Capture(good, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, max_passes=2)
+    monkeypatch.setattr(
+        context,
+        'navigate',
+        cast(Any, lambda _route: (_ for _ in ()).throw(RuntimeError('shortcut did not start'))),
+    )
+    order: list[str] = []
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        order.append(entry.key or '')
+        _context.state.record(entry.key or '')
+        return EngineResult('completed', 'fake', 'done', True, {'key': entry.key})
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert order == ['coins_quiz']
+    assert report.status is RunStatus.BUDGET
+    assert report.detail is not None
+    assert 'pass budget of 2 exhausted' in report.detail
+    assert any(event.get('event') == 'surface_restart_failed' for event in _events(report))
+
+
+@pytest.mark.slow
+def test_a_second_unreadable_observation_stops_dispatch_and_completion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    wanted = ('coins_quiz', 'notifications')
+    roster = replace(full_roster, entries=tuple(_entry(full_roster, key) for key in wanted))
+    frame = _boost_frame(*wanted)
+    _surface(monkeypatch, roster, frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, max_passes=2)
+    real_observe = engine._observe
+    observations: list[int] = []
+
+    def observe_once_then_none(*args: Any, **kwargs: Any) -> Any:
+        observations.append(1)
+        if len(observations) == 1:
+            return real_observe(*args, **kwargs)
+        return None
+
+    monkeypatch.setattr(engine, '_observe', observe_once_then_none)
+    order: list[str] = []
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        order.append(entry.key or '')
+        _context.state.record(entry.key or '')
+        return EngineResult('completed', 'fake', 'done', True, {'key': entry.key})
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert order == ['coins_quiz']
+    assert report.status is RunStatus.BUDGET
+    assert report.detail is not None
+    assert 'pass budget of 2 exhausted' in report.detail
+    assert 'has not been read' in report.detail
+
+
+@pytest.mark.slow
+def test_a_capped_observation_never_completes_the_night_on_stale_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    wanted = ('coins_quiz', 'notifications')
+    roster = replace(full_roster, entries=tuple(_entry(full_roster, key) for key in wanted))
+    frame = _boost_frame(*wanted)
+    _surface(monkeypatch, roster, frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, max_passes=2)
+    context.observer = RosterObserver(
+        catalogue,
+        previous=roster,
+        max_observations=1,
+        clock=lambda: CAPTURED_AT,
+        logger=_logger(),
+    )
+    order: list[str] = []
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        order.append(entry.key or '')
+        _context.state.record(entry.key or '')
+        return EngineResult('completed', 'fake', 'done', True, {'key': entry.key})
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert order == ['coins_quiz']
+    assert context.observer.cap_reached is True
+    assert report.status is RunStatus.BUDGET
+    assert report.detail is not None
+    assert 'pass budget of 2 exhausted' in report.detail
+    assert 'observation cap' in report.detail
+
+
+@pytest.mark.slow
+def test_an_abort_after_a_blacklist_still_reports_attempts_and_the_blacklist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    wanted = ('coins_quiz', 'notifications')
+    roster = replace(full_roster, entries=tuple(_entry(full_roster, key) for key in wanted))
+    frame = _boost_frame(*wanted)
+    _surface(monkeypatch, roster, frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    notification_calls: list[int] = []
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        if entry.key == 'coins_quiz':
+            return EngineResult(
+                'failed',
+                'no_change',
+                'the quiz row did not move',
+                False,
+                {'key': entry.key},
+                failure=failure(FailureCode.TASK_UNVERIFIED, detail='the quiz row did not move'),
+            )
+        notification_calls.append(1)
+        if len(notification_calls) == 1:
+            return EngineResult('skipped', 'row_vanished', 'stale notification row', False, {'key': entry.key})
+        raise _safety_abort()
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.ABORTED
+    assert report.attempts == {'coins_quiz': 2, 'notifications': 2}
+    assert report.blacklist == {'coins_quiz': 2}
+    summary = report.summary_path.read_text(encoding='utf-8')
+    assert '**Attempts per task:** coins_quiz: 2, notifications: 2 (limit 2 per task)' in summary
+    assert '**Blacklist:** coins_quiz: blacklisted after 2 attempt(s)' in summary

@@ -389,6 +389,9 @@ def run_once(
     detail: str | None = None
     attempted: set[str] = set()
     blocked: set[str] = set()
+    passes = 0
+    attempts: dict[str, int] = {}
+    blacklist: dict[str, int] = {}
     task_started: float | None = None
     artifacts = ArtifactStore(report.runs_dir, report.run_id)
     record_dismissal = _popup_recorder(report)
@@ -467,7 +470,12 @@ def run_once(
             observer = (
                 observer
                 if observer is not None
-                else _observer(context, report, roster, max_observations=task_limit + 2)
+                else _observer(
+                    context,
+                    report,
+                    roster,
+                    max_observations=task_limit + context.config.max_passes + 2,
+                )
             )
             last_observation = _observe(
                 context,
@@ -484,8 +492,7 @@ def run_once(
             max_attempts = context.config.max_task_attempts
             report.max_passes = max_passes
             report.max_task_attempts = max_attempts
-            attempts: dict[str, int] = {}
-            blacklist: dict[str, int] = dict(context.state.snapshot().blacklist)
+            blacklist = dict(context.state.snapshot().blacklist)
             report.blacklist = dict(blacklist)
             attempted_this_pass: set[str] = set()
             settled: set[str] = set()
@@ -615,7 +622,6 @@ def run_once(
                     context,
                     controller,
                     entry,
-                    attempts_left=max(1, max_attempts - attempts_before),
                     on_attempt=note_attempt,
                 )
                 made = attempts.get(identity, 0) - attempts_before
@@ -665,7 +671,9 @@ def run_once(
                     report.observations = observer.sequence
 
                 if result.completed:
-                    settled.add(identity)
+                    # Completion is per-pass: a repeatable row below its daily
+                    # limit is offered again on the next sweep. The daily limit
+                    # itself is still state.count() in _next_entry.
                     blacklist.pop(identity, None)
                 elif made == 0:
                     # Nothing was tapped and no attempt was spent. Keep the
@@ -687,6 +695,23 @@ def run_once(
                             blacklist=blacklist,
                             logger=log,
                         )
+                    else:
+                        named = result.failure
+                        if named is not None and named.retryable:
+                            delay = retry_delay(count - 1)
+                            log.warning(
+                                '%s',
+                                _event(
+                                    'failure_retry',
+                                    code=named.code.value,
+                                    scope=named.retry.value,
+                                    stage='task',
+                                    key=spec.key,
+                                    attempt=count,
+                                    delay_seconds=delay,
+                                ),
+                            )
+                            context.sleep(delay)
                     # Otherwise the row stays pending for the next pass.
                 else:
                     settled.add(identity)
@@ -817,6 +842,9 @@ def run_once(
                 )
         finalized = False
         try:
+            report.passes = passes
+            report.attempts = dict(attempts)
+            report.blacklist = dict(blacklist)
             used = max(0.0, context.clock() - started)
             report.finish(status, detail=detail, budget_used_seconds=used, finished_at=context.wall_clock())
             report.write()
@@ -1432,17 +1460,14 @@ def _dispatch_with_retry(
     controller: Controller,
     entry: RosterEntry,
     *,
-    attempts_left: int | None = None,
     on_attempt: Callable[[], None] | None = None,
 ) -> EngineResult:
-    """Dispatch one row, spending the task retry only when no action was taken.
+    """Dispatch one row once; the outer pass loop owns the task retry.
 
-    A transport failure is not retried here: the capture seam already spent the
-    stage retry. A result that records a tap, key or page press is never re-run,
-    because the first attempt may already have changed the account (FR-5's
-    "never re-press a claimed card"). Only an unverified result with no action
-    evidence is safe to repeat. A run-level class is re-raised so the top-level
-    catch names it and stops the night.
+    A result that records a tap, key or page press is never re-run, because the
+    first attempt may already have changed the account (FR-5's "never re-press
+    a claimed card"). The outer loop re-enumerates before a safe retry, so this
+    function only dispatches and applies the signed-out guard.
 
     A row that acted without proof in an earlier run is marked in the daily
     state. Its next dispatch first re-reads the task surface: a fresh row with
@@ -1496,41 +1521,17 @@ def _dispatch_with_retry(
         authorized = _authorize(context, fresh)
         log.info('%s', _event('acted_recheck', key=authorized.key, claimable=True))
 
-    def attempt() -> EngineResult:
-        if on_attempt is not None:
-            on_attempt()
-        return _attempt_dispatch(context, controller, authorized)
-
-    result = attempt()
+    if on_attempt is not None:
+        on_attempt()
+    result = _attempt_dispatch(context, controller, authorized)
     # Persist the safety marker before the signed-out guard: if the session
     # expired after the task acted, the next run still needs the re-check.
     _remember_acted_result(context, authorized, result)
     if not result.completed:
         # A failed task is the first place a session that expired mid-walk is
-        # visible. Detect it before spending the retry, so a signed-out app
-        # stops the run instead of producing more task failures.
+        # visible. Detect it before the next pass, so a signed-out app stops
+        # the run instead of producing more task failures.
         _guard_signed_in(context, _capture(context.capture))
-    named = result.failure
-    if named is None or not named.retryable or named.retry is not RetryScope.TASK or result.acted:
-        return result
-    if attempts_left is not None and attempts_left <= 1:
-        return result
-
-    delay = retry_delay(0)
-    log.warning(
-        '%s',
-        _event(
-            'failure_retry',
-            code=named.code.value,
-            scope=named.retry.value,
-            stage='task',
-            key=entry.key,
-            delay_seconds=delay,
-        ),
-    )
-    context.sleep(delay)
-    result = attempt()
-    _remember_acted_result(context, authorized, result)
     return result
 
 
@@ -1948,7 +1949,7 @@ def _observer(
     *,
     max_observations: int | None = None,
 ) -> RosterObserver:
-    cap = context.config.max_tasks + 2 if max_observations is None else max_observations
+    cap = context.config.max_tasks + context.config.max_passes + 2 if max_observations is None else max_observations
     return RosterObserver(
         context.catalogue,
         previous=roster,
@@ -2026,24 +2027,12 @@ def _pass_restart_reason(
     """
     if roster is None:
         return 'the roster was not read'
-    if not roster.entries:
-        # An empty surface has no work to lose. A readable empty page is a
-        # clean zero; an unknown one with no rows is named by the route/report
-        # path instead of burning the pass budget on restarts.
-        return None
-    if observation is not None and observation.failed:
-        unknown = observation.surface_variant is Surface.UNKNOWN or (
-            observation.error is not None
-            and any(
-                token in observation.error
-                for token in ('still loading', 'popup covers', 'error state', 'reward interstitial')
-            )
-        )
-        # A surface-family change keeps the previous roster and is still
-        # dispatchable; only an unreadable/unknown frame is the stuck surface
-        # that #123 restarts from the shortcut.
-        if unknown:
-            return f'the re-enumerated surface could not be read: {observation.error}'
+    if observation is None:
+        return 'the task surface has not been read since the last attempt'
+    if observation.cap_reached:
+        return 'the roster observation cap was reached before a fresh read'
+    if observation.failed:
+        return f'the re-enumerated surface could not be read: {observation.error}'
     if roster.surface_variant is Surface.UNKNOWN:
         return 'the task surface is unknown'
     if roster.surface_variant is Surface.EMPTY_BOOST:
