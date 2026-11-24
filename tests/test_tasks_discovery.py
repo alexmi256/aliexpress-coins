@@ -552,6 +552,48 @@ def test_a_known_title_merged_into_one_ocr_box_leaves_the_action_unassigned() ->
     assert 'not enumerated' in (roster.warning or '')
 
 
+def test_a_task_title_merged_into_a_subtitle_box_is_an_unrecovered_split_failure() -> None:
+    snapshot = _snapshot(
+        _box('Daily coins', 80, 1200, 500, 1240),
+        _box('Worth C$0.01 Search for what you love', 80, 1250, 800, 1295),
+        _box('GO', 980, 1270, 1040, 1310),
+    )
+
+    roster = enumerate_roster(snapshot, load_task_catalogue(CATALOGUE_PATH))
+
+    assert roster.titles == ('Daily coins',)
+    entry = roster.entries[0]
+    assert entry.action is None
+    assert entry.dispatch_target is None
+    assert len(roster.split_failures) == 1
+    failure = roster.split_failures[0]
+    assert failure.title == 'Search for what you love'
+    assert failure.container_title == 'Daily coins'
+    assert failure.recovered is False
+    assert roster.visible_action_count == 1
+    assert roster.unassigned_action_count == 1
+    assert roster.incomplete
+    assert 'not enumerated' in (roster.warning or '')
+    assert 'known task title' in (roster.warning or '')
+
+
+def test_a_clean_two_row_chain_is_not_a_split_failure() -> None:
+    snapshot = _snapshot(
+        _box('Daily check-in', 80, 100, 700, 140),
+        _box('GO', 900, 131, 960, 161),
+        _box('Take the coins quiz', 80, 180, 700, 220),
+        _box('GO', 1000, 211, 1060, 241),
+    )
+
+    roster = enumerate_roster(snapshot, load_task_catalogue(CATALOGUE_PATH))
+
+    assert roster.titles == ('Daily check-in', 'Take the coins quiz')
+    assert roster.split_failures == ()
+    assert roster.unassigned_action_count == 0
+    assert roster.incomplete is False
+    assert roster.warning is None
+
+
 def test_the_roster_report_carries_the_route_status_and_catalogue_version(
     frames: dict[str, Snapshot],
     catalogue: TaskCatalogue,

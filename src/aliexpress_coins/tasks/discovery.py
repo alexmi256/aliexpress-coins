@@ -172,7 +172,9 @@ _KNOWN_ROW_TITLES: tuple[str, ...] = (*TASK_TITLES, *MINI_APP_TITLES, STREAK_MAR
 
 The card heading is included because the streak card is a task surface. The
 mini-app strip is included because its tiles sit directly below the task rows
-and must not be read as the row above them.
+and must not be read as the row above them. A recognised task title is never
+another row's subtitle: if one appears there, the split failed, whatever the
+similarity score says.
 """
 
 
@@ -1825,6 +1827,11 @@ def _cluster_split_failures(
         action = find_action_in_row(Row(cluster), action_labels)
         if action is None:
             continue
+        if count_action_boxes(cluster, snapshot.geometry, action_labels=action_labels) > 1:
+            # Two task rows chained by proximity are already split between
+            # their buttons. Each title is near its own action, so a warning
+            # here would cry wolf on a clean read.
+            continue
         titled = [(box, title) for box in cluster for title in (_whole_known_title(box.text),) if title is not None]
         if len(titled) < 2:
             continue
@@ -1878,6 +1885,21 @@ def _split_known_title_row(
     for box in candidates[1:]:
         consumed = _known_title_in_text(box.text)
         if consumed is None:
+            # A recognised task title is never another row's subtitle. When it
+            # shares this OCR box with the container's copy, the split failed
+            # and the title cannot be recovered as its own row.
+            embedded = _known_title_in_text(box.text, embedded=True)
+            if embedded is not None and embedded in TASK_TITLES:
+                return (row,), RosterSplitFailure(
+                    title=embedded,
+                    container_title=title,
+                    row=row.text,
+                    recovered=False,
+                    detail=(
+                        f'{embedded!r} shares one OCR box with the subtitle copy; '
+                        "a recognised task title is never another row's subtitle"
+                    ),
+                )
             continue
         before = tuple(
             item
