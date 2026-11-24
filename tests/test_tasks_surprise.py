@@ -13,6 +13,7 @@ disappeared" failure are exercised.
 
 from __future__ import annotations
 
+import json
 import logging
 import random
 from collections.abc import Callable, Sequence
@@ -1046,7 +1047,7 @@ def test_run_surprise_task_never_reopens_the_same_tile_on_a_fixed_grid(
     assert len(labels) == len(set(labels)), labels
 
 
-def test_run_surprise_task_fails_when_the_badge_does_not_advance(
+def test_a_failed_badge_check_records_no_completion_and_leaves_the_row_dispatchable(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
     tmp_path: Path,
@@ -1054,22 +1055,41 @@ def test_run_surprise_task_fails_when_the_badge_does_not_advance(
     final = _snapshot(
         *_coins_frame().boxes,
         _box(SURPRISE_TITLE, 60, 1200, 700, 1250),
-        _box('1/2', 1000, 1200, 1080, 1250),
+        _box('0/2', 1000, 1200, 1080, 1250),
         _box('GO', 1090, 1200, 1160, 1250),
     )
-    world = _success_world(progress='1/2', coins_frame=final)
+    world = _success_world(progress='0/2', coins_frame=final)
     state = _state(tmp_path)
+    state.begin_run(at=CAPTURED_AT)
 
     result = _run(world, catalogue, corpus, state, badge_timeout=0.5)
 
     assert result.outcome is SurpriseOutcome.FAILED
+    assert result.completed is False
     assert result.verification == 'progress_unchanged'
-    # The counter-proven round is persisted at the point it is proven; the
-    # later badge disagreement is reported but cannot erase that evidence.
-    assert result.recorded is True
-    assert state.count('surprise_items') == 1
-    assert result.badge_change == '1/2 -> 1/2'
-    assert 'progress_unchanged: expected 2/2, saw 1/2' in result.detail
+    assert result.rounds == 1
+    assert result.recorded is False
+    payload = result.as_dict()
+    assert payload['outcome'] == 'failed'
+    assert payload['rounds'] == 1
+    assert payload['recorded'] is False
+    assert state.count('surprise_items') == 0
+    assert json.loads(state.path.read_text(encoding='utf-8'))['completions'] == {}
+    assert result.badge_change == '0/2 -> 0/2'
+    assert 'progress_unchanged: expected 1/2, saw 0/2' in result.detail
+
+    # A fresh store models a later run on the same day: the failed attempt did
+    # not consume the daily limit, so the row reaches the executor again.
+    world.go('boost')
+    later = DailyStateStore(state.state_dir, clock=lambda: CAPTURED_AT)
+    later.begin_run(at=CAPTURED_AT)
+
+    retry = _run(world, catalogue, corpus, later, badge_timeout=0.5)
+
+    assert retry.verification == 'progress_unchanged'
+    assert retry.outcome is SurpriseOutcome.FAILED
+    assert later.count('surprise_items') == 0
+    assert later.done_today('surprise_items') is False
 
 
 def test_run_surprise_task_records_only_after_the_badge_advances(
@@ -1293,12 +1313,14 @@ def test_run_surprise_task_fails_when_next_round_does_not_reach_a_fresh_grid(
         on_key=on_key,
     )
 
-    result = _run(world, catalogue, corpus, _state(tmp_path))
+    state = _state(tmp_path)
+    result = _run(world, catalogue, corpus, state)
 
     assert result.outcome is SurpriseOutcome.FAILED
     assert result.verification == 'next_round_not_arrived'
     assert result.rounds == 1
-    assert result.recorded is True
+    assert result.recorded is False
+    assert state.count('surprise_items') == 0
 
 
 def test_run_surprise_task_fails_when_it_cannot_return_to_the_coins_page(
@@ -1307,6 +1329,7 @@ def test_run_surprise_task_fails_when_it_cannot_return_to_the_coins_page(
     tmp_path: Path,
 ) -> None:
     world = _success_world(progress='1/2')
+    state = _state(tmp_path)
 
     def navigate(_route: SurfaceRoute) -> None:
         world.navigations.append(_route)
@@ -1316,7 +1339,7 @@ def test_run_surprise_task_fails_when_it_cannot_return_to_the_coins_page(
         _controller(world, world.frame),
         world.capture,
         corpus,
-        _state(tmp_path),
+        state,
         _entry(catalogue),
         navigate=cast(RouteFirer, navigate),
         arrival_timeout=1.0,
@@ -1330,7 +1353,9 @@ def test_run_surprise_task_fails_when_it_cannot_return_to_the_coins_page(
     assert result.outcome is SurpriseOutcome.FAILED
     assert result.verification == 'return_failed'
     assert result.returned is False
-    assert result.recorded is True
+    assert result.rounds == 1
+    assert result.recorded is False
+    assert state.count('surprise_items') == 0
 
 
 def test_run_surprise_task_stops_without_a_completion_on_the_redeem_interstitial(
@@ -1423,6 +1448,7 @@ def test_run_surprise_task_reports_no_observation_when_no_round_ran(
 
     assert result.outcome is SurpriseOutcome.FAILED
     assert result.verification == 'counter_stalled'
+    assert result.rounds == 0
     assert result.recorded is False
 
 
@@ -1585,26 +1611,93 @@ def test_run_surprise_task_stops_when_the_redeem_interstitial_follows_go(
     assert result.returned is True
 
 
-def test_run_surprise_task_records_a_round_that_was_already_complete(
+def test_an_already_complete_counter_without_a_tile_proves_no_new_round(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
     tmp_path: Path,
 ) -> None:
     world = _World(
         series={
-            'boost': (_boost_frame(progress='1/2'),),
+            'boost': (_boost_frame(progress='0/2'),),
             'grid': (_grid_frame(3),),
             'coins': (_coins_frame(),),
         },
         transitions={('boost', 'GO'): 'grid'},
     )
+    state = _state(tmp_path)
 
-    result = _run(world, catalogue, corpus, _state(tmp_path), max_rounds=1)
+    result = _run(world, catalogue, corpus, state, max_rounds=1)
 
-    assert result.outcome is SurpriseOutcome.COMPLETED
+    assert result.outcome is SurpriseOutcome.FAILED
+    assert result.completed is False
+    assert result.verification == 'progress_unchanged'
+    assert result.rounds == 0
+    assert result.recorded is False
     assert result.round_records[0].complete is True
+    assert result.round_records[0].proven is False
+    assert result.round_records[0].delta == 0
     assert result.round_records[0].taps == 0
-    assert result.recorded is True
+    assert not any(tap.label in PRODUCTS for tap in result.taps)
+    assert state.count('surprise_items') == 0
+
+
+def test_the_issue_117_scroll_reveal_without_a_tile_proves_no_round(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """Replay the recorded shape: GO, one scroll, a 0/3 -> 3/3 pill, no tile tap.
+
+    Run ``20261124T083006Z`` recorded ``counter: 0/3 -> 3/3`` with ``taps: 0``
+    and ``rounds: 1`` after a single grid scroll. The counter moved but this
+    execution never opened a tile, so the round is not proof of work and must
+    neither be counted nor recorded.
+    """
+    bare = _snapshot(
+        _box(SURPRISE_TITLE, 270, 200, 930, 270),
+        _box('Tap 3 items on this page to earn coins', 253, 332, 946, 384),
+        _box('0/3', 480, 440, 573, 490),
+    )
+    revealed = _snapshot(
+        _box(SURPRISE_TITLE, 270, 200, 930, 270),
+        _box('Tap 3 items on this page to earn coins', 253, 332, 946, 384),
+        _box('3/3', 480, 440, 573, 490),
+    )
+    world = _World(
+        series={
+            'boost': (_boost_frame(progress='0/2'),),
+            'grid0': (bare,),
+            'grid1': (revealed,),
+            'coins': (_coins_frame(),),
+        },
+        transitions={('boost', 'GO'): 'grid0'},
+    )
+    state = _state(tmp_path)
+
+    def scroll(_frame: Snapshot) -> bool:
+        world.go('grid1')
+        return True
+
+    result = _run(world, catalogue, corpus, state, max_rounds=1, scroll=scroll)
+
+    record = result.round_records[0]
+    assert result.outcome is SurpriseOutcome.FAILED
+    assert result.completed is False
+    assert result.verification == 'tile_not_opened'
+    assert 'no tile was opened' in result.detail
+    assert record.counter_change == '0/3 -> 3/3'
+    assert record.taps == 0
+    assert record.scrolls == 1
+    assert record.rule_path == RULE_PATH_RESET
+    assert record.complete is True
+    assert record.proven is False
+    assert result.rounds == 0
+    assert result.recorded is False
+    assert state.count('surprise_items') == 0
+    assert not any(tap.label in PRODUCTS for tap in result.taps)
+    entry = _entry(catalogue, progress='0/2')
+    assert entry.spec is not None
+    assert state.count('surprise_items') < entry.spec.max_per_run
 
 
 def test_run_surprise_task_fails_when_back_has_no_key_and_no_visible_control(
@@ -2184,10 +2277,14 @@ def test_run_surprise_task_sweeps_a_popup_on_arrival_to_the_grid(
         on_tap=lambda screen, _label, _count: 'grid' if screen == 'popup' else None,
     )
 
-    result = _run(world, catalogue, corpus, _state(tmp_path))
+    state = _state(tmp_path)
+    result = _run(world, catalogue, corpus, state)
 
-    assert result.outcome is SurpriseOutcome.COMPLETED
+    assert result.outcome is SurpriseOutcome.FAILED
+    assert result.rounds == 0
+    assert result.recorded is False
     assert result.dismissals
+    assert state.count('surprise_items') == 0
     assert result.round_records[0].complete is True
 
 
@@ -2483,6 +2580,8 @@ def test_run_surprise_task_stops_at_the_round_tap_budget(
 
     assert result.outcome is SurpriseOutcome.FAILED
     assert result.verification == 'progress_unchanged'
+    assert result.rounds == 0
+    assert result.recorded is False
     assert result.round_records[0].taps == MAX_TAPS_PER_ROUND
     assert 'progress_unchanged: expected 1/3, saw 0/3' in result.detail
 

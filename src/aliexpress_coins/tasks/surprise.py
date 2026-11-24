@@ -19,9 +19,10 @@ Three facts keep this executor honest:
   bounded number of genuinely new products fail to move the counter, switches
   once to the whole-task set and records ``rule_path: reset``. When #63 lands,
   the losing branch can be deleted without changing the rest of the executor.
-* **the ledger follows the counter, not the final return.** A completed round is
-  recorded as soon as its counter reaches the target, so a later failure cannot
-  leave a complete round in ``run.json`` without a matching daily completion.
+* **the ledger follows a successful, counter-proven task.** A round counts only
+  when its counter advances to the target during this visit, and completions are
+  written only after the returned row agrees. A failed task therefore cannot
+  consume the day's limit and foreclose its retry.
 
 The run never taps a purchase control: only a product card, the page's own
 ``Next round``, the overlay, and BACK. Every completion is recorded from a
@@ -376,6 +377,11 @@ class RoundRecord:
         return self.counter_after - self.counter_before
 
     @property
+    def proven(self) -> bool:
+        """Whether this visit advanced the counter to a newly completed round."""
+        return self.complete and self.taps > 0 and self.delta is not None and self.delta > 0
+
+    @property
     def counter_change(self) -> str:
         """The ``before -> after`` pair the acceptance report quotes."""
         before = '?' if self.counter_before is None else str(self.counter_before)
@@ -407,9 +413,9 @@ class SurpriseResult:
     ``verification`` names the proof: ``counter_complete`` on the success path;
     ``daily_limit``, ``row_complete`` or ``row_vanished`` when no work was
     possible; ``not_settled``, ``task_surface_unavailable``, ``grid_not_arrived``,
-    ``counter_unreadable``, ``counter_stalled``, ``grid_disappeared``,
-    ``back_not_reached``, ``next_round_not_arrived``, ``return_failed``,
-    ``redeem_interstitial`` or ``no_observation`` on the others.
+    ``counter_unreadable``, ``counter_stalled``, ``tile_not_opened``,
+    ``grid_disappeared``, ``back_not_reached``, ``next_round_not_arrived``,
+    ``return_failed``, ``redeem_interstitial`` or ``no_observation`` on the others.
     """
 
     key: str
@@ -1027,13 +1033,9 @@ def run_surprise_task(
             )
             round_records.append(record)
             opened_items.extend(record.items)
-            if not record.complete:
+            if not record.proven:
                 break
             completed_rounds += 1
-            # The round's counter proof is the ledger event. Record it now so a
-            # later failure or interrupt cannot leave a complete RoundRecord in
-            # run.json while the day's completion count did not move (#100).
-            state.record(spec.key)
             if done_before + completed_rounds >= limit:
                 break
             if round_index >= round_budget:
@@ -1092,7 +1094,6 @@ def run_surprise_task(
                     limit,
                     verification='next_round_not_arrived',
                     detail='Next round was pressed but a fresh grid with a readable counter did not appear',
-                    rounds=len(round_records),
                     round_records=round_records,
                     rule_path=_rule_path(round_records),
                     taps=taps,
@@ -1139,7 +1140,6 @@ def run_surprise_task(
                 limit=limit,
                 done_before=done_before,
                 done_after=state.count(spec.key),
-                rounds=len(round_records),
                 round_records=round_records,
                 rule_path=_rule_path(round_records),
                 taps=taps,
@@ -1181,7 +1181,6 @@ def run_surprise_task(
                     limit=limit,
                     done_before=done_before,
                     done_after=state.count(spec.key),
-                    rounds=len(round_records),
                     round_records=round_records,
                     rule_path=_rule_path(round_records),
                     taps=taps,
@@ -1193,11 +1192,12 @@ def run_surprise_task(
                     return_state=return_state,
                     dismissals=dismissals,
                     stop=stop,
-                    recorded=state.count(spec.key) > done_before,
                     logger=log,
                 )
 
         if completed_rounds > 0:
+            for _ in range(completed_rounds):
+                state.record(spec.key)
             return _result(
                 spec,
                 entry.title,
@@ -1207,7 +1207,6 @@ def run_surprise_task(
                 limit=limit,
                 done_before=done_before,
                 done_after=state.count(spec.key),
-                rounds=len(round_records),
                 round_records=round_records,
                 rule_path=_rule_path(round_records),
                 taps=taps,
@@ -1219,7 +1218,6 @@ def run_surprise_task(
                 return_state=return_state,
                 dismissals=dismissals,
                 stop=stop,
-                recorded=True,
                 logger=log,
             )
 
@@ -1232,7 +1230,6 @@ def run_surprise_task(
             limit=limit,
             done_before=done_before,
             done_after=state.count(spec.key),
-            rounds=len(round_records),
             round_records=round_records,
             rule_path=_rule_path(round_records),
             taps=taps,
@@ -1322,7 +1319,16 @@ def _run_round(
         )
     if first.complete:
         return (
-            RoundRecord(index, before, before, total, 0, mode, True, 'the round was already complete'),
+            RoundRecord(
+                index,
+                before,
+                before,
+                total,
+                0,
+                mode,
+                True,
+                'progress_unchanged: the round counter was already complete before a tile was opened',
+            ),
             current,
             None,
         )
@@ -1348,7 +1354,11 @@ def _run_round(
         counter = read_surprise_counter(current)
         if counter is not None and counter.complete:
             before = counter.completed
-            detail = 'the round counter advanced to its target'
+            detail = (
+                'the round counter was complete but no tile was opened; no completion was proven'
+                if round_taps == 0
+                else 'the round counter advanced to its target'
+            )
             break
 
         if round_taps >= MAX_TAPS_PER_ROUND:
@@ -2199,6 +2209,11 @@ def _counter_boxes(snapshot: Snapshot) -> list[TextBox]:
     return sorted(boxes, key=lambda box: box.center[0])
 
 
+def _proven_rounds(records: Sequence[RoundRecord]) -> int:
+    """Count only rounds whose counter advanced to the target during this visit."""
+    return sum(record.proven for record in records)
+
+
 def _rule_path(records: Sequence[RoundRecord]) -> str:
     return RULE_PATH_RESET if any(record.rule_path == RULE_PATH_RESET for record in records) else RULE_PATH_REUSE
 
@@ -2207,6 +2222,8 @@ def _failure_verification(record: RoundRecord) -> str:
     detail = record.detail.lower()
     if 'progress_unchanged' in detail:
         return 'progress_unchanged'
+    if 'no tile was opened' in detail:
+        return 'tile_not_opened'
     if 'counter could not be read' in detail:
         return 'counter_unreadable'
     if 'grid disappeared' in detail:
@@ -2221,7 +2238,7 @@ def _failure_verification(record: RoundRecord) -> str:
 
 
 def _completed_detail(records: Sequence[RoundRecord]) -> str:
-    completed = [record for record in records if record.complete]
+    completed = [record for record in records if record.proven]
     deltas = ', '.join(record.counter_change for record in completed)
     labels = [label for record in completed for label in record.items]
     detail = f'{len(completed)} round(s) completed with counter evidence ({deltas})'
@@ -2273,7 +2290,6 @@ def _finish_failed(
     clock: Callable[[], float],
     sleep: Callable[[float], None],
     logger: logging.Logger,
-    rounds: int = 0,
     round_records: Sequence[RoundRecord] = (),
     rule_path: str = RULE_PATH_REUSE,
     taps: Sequence[TapRecord] = (),
@@ -2314,7 +2330,7 @@ def _finish_failed(
         limit=limit,
         done_today_before=done_before,
         done_today_after=done_now,
-        rounds=rounds,
+        rounds=_proven_rounds(round_records),
         round_records=tuple(round_records),
         rule_path=rule_path,
         taps=tuple(taps),
@@ -2324,7 +2340,7 @@ def _finish_failed(
         return_state=return_state,
         dismissals=tuple(dismissals),
         stop=stop,
-        recorded=done_now > done_before,
+        recorded=False,
     )
     _log_result(logger, result)
     return result
@@ -2407,7 +2423,6 @@ def _result(
     limit: int,
     done_before: int,
     done_after: int,
-    rounds: int,
     round_records: Sequence[RoundRecord],
     rule_path: str,
     taps: Sequence[TapRecord],
@@ -2417,7 +2432,6 @@ def _result(
     return_state: ReturnResult | None,
     dismissals: Sequence[DismissReport],
     stop: str | None,
-    recorded: bool = False,
     logger: logging.Logger,
     badge_before: ProgressBadge | None = None,
     badge_after: ProgressBadge | None = None,
@@ -2431,7 +2445,7 @@ def _result(
         limit=limit,
         done_today_before=done_before,
         done_today_after=done_after,
-        rounds=rounds,
+        rounds=_proven_rounds(round_records),
         round_records=tuple(round_records),
         rule_path=rule_path,
         taps=tuple(taps),
@@ -2443,7 +2457,7 @@ def _result(
         return_state=return_state,
         dismissals=tuple(dismissals),
         stop=stop,
-        recorded=recorded or done_after > done_before,
+        recorded=outcome is SurpriseOutcome.COMPLETED and done_after > done_before,
     )
     _log_result(logger, result)
     return result
