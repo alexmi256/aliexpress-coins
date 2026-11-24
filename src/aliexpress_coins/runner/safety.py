@@ -485,6 +485,10 @@ def _screen_report(snapshot: Snapshot, state: ScreenState, surface: Surface) -> 
 def _is_unexpected(snapshot: Snapshot, state: ScreenState, surface: Surface) -> bool:
     if is_logged_out(snapshot):
         return False
+    if surface is Surface.NON_APP:
+        # The route policy owns recovery from a measured launcher/clock frame.
+        # Counting it as an unexplained screen would abort before that route runs.
+        return False
     if state in (ScreenState.UNKNOWN, ScreenState.ERROR):
         return True
     return state is ScreenState.PAGE and surface is Surface.UNKNOWN
@@ -507,6 +511,8 @@ def _is_unexpected_inside_task(
     three captures is a stuck screen.
     """
     if _is_product_detail(snapshot) or is_logged_out(snapshot):
+        return False
+    if surface is Surface.NON_APP:
         return False
     if surface is Surface.EMPTY_BOOST:
         return False

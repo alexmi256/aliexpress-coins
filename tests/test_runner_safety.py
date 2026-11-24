@@ -182,6 +182,26 @@ def test_the_same_unexpected_screen_counts_inside_a_task() -> None:
     assert 'stuck executor' not in raised.value.reason
 
 
+def test_a_non_app_clock_surface_is_left_to_route_recovery_not_the_unexpected_streak() -> None:
+    frame = _snapshot(
+        _box('3:36', 20, 5, 100, 35),
+        _box('0', 1120, 5, 1160, 35),
+        _box('日', 500, 700, 560, 760),
+        _box('24', 580, 700, 640, 760),
+    )
+    guard = _guard()
+
+    for _ in range(3):
+        guard.inspect(frame)
+    with guard.task('browse'):
+        for _ in range(3):
+            guard.inspect(frame)
+
+    assert guard.streak == 0
+    assert guard.last_screen is not None
+    assert guard.last_screen.surface == Surface.NON_APP.value
+
+
 def test_a_blank_loading_webview_does_not_count_as_a_stuck_task_screen() -> None:
     guard = _guard()
     blank = _snapshot()

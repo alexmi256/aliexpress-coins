@@ -54,8 +54,8 @@ tapping a guessed coordinate ([`06-runbook.md`](06-runbook.md) §14).
   an order, adding to cart, leaving a review, or sharing/inviting.
 - **FR-10** Enforce per-task daily limits, `AECOINS_MAX_TASKS_PER_RUN` (default 12), and
   `AECOINS_RUN_BUDGET_SECONDS` (default 2700 s).
-- **FR-11** Dedicated executors: **11a browse-and-wait** (sponsored items, recently viewed,
-  shopping-credits check-in, learn to save — watch the right-edge timer chip, 15 s catalogue bound);
+- **FR-11** Dedicated executors: **11a browse-and-wait** (sponsored items, shopping-credits check-in,
+  learn to save — watch the right-edge timer chip, 15 s catalogue bound);
   **11b quiz** (+ **FR-22** — OCR options, answer from `data/quiz_bank.json`, learn
   `Correct answer: X`, absorb `YOU CAN NOW REDEEM!`); **11c surprise items** (3 distinct products
   per round, BACK increments); **11d/11e shortcut & widget** (catalogued, automation descoped #27);
@@ -88,7 +88,7 @@ tapping a guessed coordinate ([`06-runbook.md`](06-runbook.md) §14).
 | Explore sponsored items | ✅ allowed | `browse_wait` (`browse.py`) | timer chip (15 s bound), repeatable `6/day` |
 | Learn to save money with Coins Credits | ✅ allowed | `browse_wait` (`browse.py`) | timer chip (15 s bound) |
 | View Super discounts | ✅ allowed | `browse_wait` (`browse.py`) | timed view (~15 s), +1 coin, no purchase step; repeatability ❓ |
-| Browse recently viewed items | ✅ allowed | `browse_wait` (`browse.py`) | timer chip (15 s bound), opportunistic |
+| Browse recently viewed items | ❌ refused | `unrecognised_recently_viewed` | row observed with `GO`, `+1`, no badge; destination/completion never captured (#116) |
 | Check in to win Shopping credits | ✅ allowed | `browse_wait` (`browse.py`) | timer chip (15 s bound) |
 | Browse surprise items | ✅ allowed | `item_tap` (`surprise.py`) | 3 distinct products per round, `2` rounds |
 | Turn on notifications | ✅ allowed | `notification` (`notifications.py`) | handles system dialog / settings redirect |

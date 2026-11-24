@@ -58,7 +58,6 @@ ALLOWED_FAMILIES: tuple[tuple[str, TaskCategory, float], ...] = (
     ('Explore sponsored items', TaskCategory.BROWSE_WAIT, 15.0),
     ('Browse surprise items', TaskCategory.ITEM_TAP, 0.0),
     ('Search for what you love', TaskCategory.BROWSE, 0.0),
-    ('Browse recently viewed items', TaskCategory.BROWSE_WAIT, 15.0),
     ('View Super discounts', TaskCategory.BROWSE_WAIT, 15.0),
     ('Check in to win Shopping credits', TaskCategory.BROWSE_WAIT, 15.0),
     ('Learn to save money with Coins Credits', TaskCategory.BROWSE_WAIT, 15.0),
@@ -127,7 +126,6 @@ def test_the_committed_catalogue_loads_and_covers_both_policies() -> None:
         'sponsored_items',
         'surprise_items',
         'search_for_what_you_love',
-        'recently_viewed',
         'super_discounts',
         'shopping_credits_checkin',
         'learn_to_save',
@@ -149,6 +147,7 @@ def test_the_committed_catalogue_loads_and_covers_both_policies() -> None:
         'spending_cart',
         'review',
         'social',
+        'unrecognised_recently_viewed',
     )
 
 
@@ -401,7 +400,7 @@ def test_a_deny_rule_can_match_the_subtitle_the_title_does_not_name() -> None:
     assert decision.matched_field == 'subtitle'
 
 
-def test_a_generic_deny_word_in_a_subtitle_does_not_refuse_allowed_work() -> None:
+def test_recently_viewed_is_explicitly_unrecognised_until_its_contract_is_measured() -> None:
     catalogue = load_task_catalogue(CATALOGUE_PATH)
 
     decision = catalogue.decide(
@@ -409,10 +408,17 @@ def test_a_generic_deny_word_in_a_subtitle_does_not_refuse_allowed_work() -> Non
         subtitle='Coins deal on viewed, in-cart items',
     )
 
-    assert decision.allowed
-    assert decision.spec is not None
-    assert decision.spec.key == 'recently_viewed'
+    assert decision.denied
+    assert decision.spec is None
+    assert decision.rule == 'unrecognised_recently_viewed'
+    assert decision.reason is not None
+    assert decision.reason.startswith('unrecognised:')
+    assert 'never captured' in decision.reason
     assert decision.matched_field == 'title'
+    assert catalogue.decide('Recently viewed').rule == 'unrecognised_recently_viewed'
+    assert catalogue.decide('A title OCR mangled', subtitle='Coins deal on viewed, in-cart items').rule == (
+        'unrecognised_recently_viewed'
+    )
 
 
 def test_an_action_phrase_in_a_subtitle_still_denies() -> None:

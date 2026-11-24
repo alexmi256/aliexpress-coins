@@ -434,7 +434,11 @@ class Roster:
     @property
     def incomplete(self) -> bool:
         """Whether the frame proves at least one task row was not enumerated."""
-        return self.unassigned_action_count > 0 or any(not failure.recovered for failure in self.split_failures)
+        return (
+            self.surface_variant is Surface.NON_APP
+            or self.unassigned_action_count > 0
+            or any(not failure.recovered for failure in self.split_failures)
+        )
 
     @property
     def warning(self) -> str | None:
@@ -1067,6 +1071,8 @@ def _surface_family(variant: Surface) -> str:
 
 
 def _observation_problem(state: ScreenState, variant: Surface | None) -> str | None:
+    if variant is Surface.NON_APP:
+        return 'a non-app clock/launcher surface is in the foreground'
     if state is ScreenState.LOADING:
         return 'the task surface is still loading'
     if state is ScreenState.POPUP:
@@ -1213,7 +1219,7 @@ class CoinPageWait:
     """The frame the pre-tap coin-page wait settled on, and how it got there.
 
     ``settled`` is true only when the last frame is neither ``LOADING``,
-    ``POPUP`` nor ``UNKNOWN``. A dry run cannot dismiss a popup — that is an
+    ``POPUP``, ``UNKNOWN`` nor a ``NON_APP`` surface. A dry run cannot dismiss a popup — that is an
     in-app tap — so it calls :func:`wait_for_coin_page` without
     ``dismiss_popup`` and receives the ``POPUP`` frame immediately instead of
     waiting out the deadline for a screen it is not allowed to touch.
@@ -1226,11 +1232,16 @@ class CoinPageWait:
 
     @property
     def settled(self) -> bool:
-        """Whether the page stopped loading without a modal or unknown frame."""
-        return not self.timed_out and self.classification.state not in (
-            ScreenState.LOADING,
-            ScreenState.POPUP,
-            ScreenState.UNKNOWN,
+        """Whether the page stopped loading without a modal, unknown or non-app frame."""
+        return (
+            not self.timed_out
+            and self.classification.state
+            not in (
+                ScreenState.LOADING,
+                ScreenState.POPUP,
+                ScreenState.UNKNOWN,
+            )
+            and classify_surface(self.snapshot) is not Surface.NON_APP
         )
 
     def as_dict(self) -> dict[str, object]:
@@ -1272,7 +1283,10 @@ def wait_for_coin_page(
     ``UNKNOWN`` is deliberately not settled: the measured device sequence starts
     with the pre-transition frame, and returning on it was the #76 bug. The wait
     keeps polling until a coin-page or boost marker appears, the deadline ends,
-    or a caller's capture guard names the repeating screen.
+    or a caller's capture guard names the repeating screen. A recognised
+    ``NON_APP`` clock/launcher frame returns immediately as unsettled so its caller
+    can fire the shortcut route instead of spending the deadline waiting for an
+    app page that is not in the foreground (#116).
     """
     if timeout <= 0:
         raise ValueError('timeout must be positive')
@@ -1284,6 +1298,13 @@ def wait_for_coin_page(
     frame = _capture(capture)
     classification = classify(frame)
     history = [classification.state]
+    if classify_surface(frame) is Surface.NON_APP:
+        return CoinPageWait(
+            snapshot=frame,
+            classification=classification,
+            history=tuple(history),
+            timed_out=False,
+        )
 
     while classification.state in (ScreenState.LOADING, ScreenState.POPUP, ScreenState.UNKNOWN):
         now = clock()
@@ -1308,6 +1329,13 @@ def wait_for_coin_page(
         frame = _capture(capture)
         classification = classify(frame)
         history.append(classification.state)
+        if classify_surface(frame) is Surface.NON_APP:
+            return CoinPageWait(
+                snapshot=frame,
+                classification=classification,
+                history=tuple(history),
+                timed_out=False,
+            )
 
     return CoinPageWait(
         snapshot=frame,

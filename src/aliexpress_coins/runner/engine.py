@@ -198,6 +198,8 @@ class RunContext:
     hygiene: HygieneDevice
     navigate: RouteFirer
     state: DailyStateStore
+    app_foreground: Callable[[], bool | None] | None = None
+    warm_start: Callable[[], None] | None = None
     controller: Controller | None = None
     controller_factory: Callable[[Snapshot], Controller] | None = None
     observer: RosterObserver | None = None
@@ -211,6 +213,7 @@ class RunContext:
     gate: DispatchGate | None = None
     safety: SafetyGuard | None = None
     record_round_grid: Callable[[int, Snapshot], None] | None = None
+    record_foreground_loss: Callable[[str, Snapshot], None] | None = None
 
 
 _EXECUTORS: frozenset[TaskCategory] = frozenset(
@@ -280,7 +283,20 @@ def make_live_context(
         logger=log,
         check_connected=device.check_connected,
     )
-    navigate = _guarded_call(device.navigate, stop)
+    foreground = _guarded_call(device.is_app_foreground, stop)
+    warm_start = _guarded_call(device.warm_start, stop)
+    fire_route = _guarded_call(device.navigate, stop)
+
+    def navigate(route: SurfaceRoute) -> None:
+        if route is SurfaceRoute.SHORTCUT and foreground() is False:
+            # False proves another app is foregrounded. None is unreadable, not
+            # a loss: a warm start there would add a settle and relaunch the app
+            # on every route. Browse recovery forces its own warm start from
+            # screenshot NON_APP evidence even when the probe is unreadable.
+            warm_start()
+        fire_route(route)
+
+    navigate = _guarded_call(navigate, stop)
     corpus = load_popup_corpus(config.corpus_path)
     catalogue = load_task_catalogue(config.catalogue_path)
     templates = load_templates(corpus)
@@ -306,6 +322,8 @@ def make_live_context(
         catalogue=catalogue,
         hygiene=device,
         navigate=navigate,
+        app_foreground=foreground,
+        warm_start=warm_start,
         state=state,
         controller_factory=controller_for,
         templates=templates,
@@ -368,6 +386,16 @@ def run_once(
             _record_frame(report, artifacts, frame, f'surprise-items-round-{index}-grid', log)
 
         context.record_round_grid = record_round_grid
+    if context.record_foreground_loss is None:
+        loss_counts: dict[str, int] = {}
+
+        def record_foreground_loss(key: str, frame: Snapshot) -> None:
+            count = loss_counts.get(key, 0) + 1
+            loss_counts[key] = count
+            name = f'browse-{key}-foreground-lost' if count == 1 else f'browse-{key}-foreground-lost-{count}'
+            _record_frame(report, artifacts, frame, name, log)
+
+        context.record_foreground_loss = record_foreground_loss
     event_log = RunEventLog(report.event_log_path)
     raw_capture = context.capture
     log.addHandler(event_log)
@@ -421,6 +449,8 @@ def run_once(
             report.surface = roster.surface_variant.value if roster.surface_variant is not None else None
             gate.surface = report.surface
             report.write()
+            if roster.empty and roster.surface_variant is Surface.NON_APP:
+                raise StateTimeout('the shortcut route did not leave the non-app foreground surface')
             context.state.begin_run(at=context.wall_clock())
             observer = (
                 observer
@@ -814,6 +844,7 @@ def _plan_dry_run(
     initial_roster = read_roster()
     needs_route = (
         (surface is Surface.UNKNOWN and initial_roster.empty)
+        or (surface is Surface.NON_APP and initial_roster.empty)
         or initial_state is ScreenState.POPUP
         or surface in (Surface.ROWS_ABSENT, Surface.EMPTY_BOOST)
     )
@@ -1051,6 +1082,8 @@ def _unreadable_plan_reason(
         reason = 'surface_popup: a popup covers the coin page and a dry run cannot dismiss it'
     elif surface is Surface.EMPTY_BOOST:
         reason = 'surface_empty_boost: the Coins boost page was still the documented load fault'
+    elif surface is Surface.NON_APP:
+        reason = 'surface_non_app: a clock/launcher surface is in the foreground, not the AliExpress app'
     elif surface is Surface.UNKNOWN:
         if roster.empty:
             reason = 'surface_unknown: the coin page did not render'
@@ -1155,12 +1188,23 @@ def _discover_or_fallback(
         frame = _capture(context.capture)
         _guard_signed_in(context, frame)
         surface = classify_surface(frame)
-        roster = replace(
-            enumerate_roster(frame, context.catalogue, route=DiscoveryRoute.INLINE),
-            surface_variant=surface,
-            routes_taken=(SurfaceRoute.SHORTCUT,),
-            refresh_attempted=True,
-        )
+        if surface in (Surface.BOOST_PAGE, Surface.EMPTY_BOOST, Surface.ROWS_PRESENT, Surface.ROWS_ABSENT):
+            roster = replace(
+                enumerate_roster(frame, context.catalogue, route=DiscoveryRoute.INLINE),
+                surface_variant=surface,
+                routes_taken=(SurfaceRoute.SHORTCUT,),
+                refresh_attempted=True,
+            )
+        else:
+            roster = Roster(
+                entries=(),
+                route=None,
+                catalogue_version=context.catalogue.version,
+                default_deny_reason=context.catalogue.default_deny_reason,
+                surface_variant=surface,
+                routes_taken=(SurfaceRoute.SHORTCUT,),
+                refresh_attempted=True,
+            )
         return roster, detail
 
 
@@ -1191,8 +1235,15 @@ def _dispatch_entry(context: RunContext, controller: Controller, entry: RosterEn
             run_search_task(controller, context.capture, context.corpus, context.state, entry, **common),
         )
     if category is TaskCategory.BROWSE_WAIT:
+        browse_options = dict(common)
+        if context.app_foreground is not None:
+            browse_options['app_foreground'] = context.app_foreground
+        if context.warm_start is not None:
+            browse_options['warm_start'] = context.warm_start
+        if context.record_foreground_loss is not None:
+            browse_options['record_foreground_loss'] = context.record_foreground_loss
         return _from_executor(
-            run_browse_task(controller, context.capture, context.corpus, context.state, entry, **common),
+            run_browse_task(controller, context.capture, context.corpus, context.state, entry, **browse_options),
         )
     if category is TaskCategory.ITEM_TAP:
         if context.record_round_grid is not None:

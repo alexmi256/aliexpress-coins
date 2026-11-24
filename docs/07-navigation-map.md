@@ -89,6 +89,7 @@ flowchart TD
 | **search landing** | `Discover more` + category cards with item-count lines (a `Search history` section may sit above it) | the heading alone is generic feed copy; boost row shares `Search for what you love`, and history text is account data, not an identifier |
 | product detail | `Item 1/n` or `Add to cart` + `Buy now` | BACK only; never tap purchase controls |
 | mission overlay / coupon | `Mission Completed` over dimmed grid / `Sale coupons` + `Collect all: C$…` | — |
+| non-app clock surface | status-bar `H:MM` + weekday/day widget + no app content | a clock alone appears on every app frame; the date widget and empty content are required. Launchers with icons use the foreground-package probe |
 
 **Portability (`1080×1920 @ 320 dpi`):** text markers, label lookups, and graph topology port;
 coordinates, scroll distances, and unscaled crops do not (modal close fraction drifted `0.826 → 0.789`).
@@ -98,7 +99,7 @@ coordinates, scroll distances, and unscaled crops do not (modal close fraction d
 | from | action | to | verification |
 |---|---|---|---|
 | coin page | tap `Earn more` | boost list | `Coins boost` header + rows present |
-| boost list | tap row's `GO` | task page | coin page left (`is_coins_page` false) |
+| boost list | tap row's `GO` | app destination, or foreground-loss recovery | timer/known app page; a `non_app` frame or non-AliExpress focus saves evidence, warm-starts and re-enters before verification (#116) |
 | coin / boost | quiz `GO` → option → `Go back` | quiz → result → redeem / coin | `Coins quiz` → `Correct answer:` → BACK on redeem |
 | boost list | surprise `GO` → tile → BACK | grid → detail → grid | `N /3` advances on distinct product; tap `Mission Completed` at `3/3` |
 | boost list | search `GO` → category card | landing → results | returning row badge `0/2 → 1/2`; after the second category the row is gone from the populated list |
@@ -110,6 +111,7 @@ coordinates, scroll distances, and unscaled crops do not (modal close fraction d
 |---|---|---|
 | **empty boost list** | `Coins boost` + `"There's nothing here yet"` + zero rows | warm `FirstActivity` + shortcut intent (§1); never an empty day |
 | home feed / unknown screen | no coin/boost marker; 3 identical frames in a task | up to 3 warm shortcut entries; abort run only if recovery fails |
+| non-app foreground after browse `GO` | clock/date `non_app` frame, or current window package is not AliExpress | save `browse-<key>-foreground-lost.*`; warm-start if needed; shortcut re-entry; verify only on the fresh boost list (#116) |
 | swallowed tap | 36×60 thumbnail MAD `≈ 0.00–0.01` (page swap `0.19–0.40`) | one bounded retry (2 attempts total) on re-verified unchanged frame |
 | vanished task row | label missing on fresh capture at tap time | report `no longer available`; never tap stale coordinates |
 

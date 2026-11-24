@@ -16,8 +16,8 @@
 # deny rule's reason. A label that matches neither is refused with
 # `default_deny_reason` (`unrecognised`). A generic deny word (`cart`, `order`,
 # `game`) is trusted only in the title: the title names the row's action, while
-# a subtitle can describe allowed work (for example `Browse recently viewed
-# items` / "Coins deal on viewed, in-cart items"). An action phrase
+# a subtitle can merely describe the merchandise (for example "Coins deal on
+# viewed, in-cart items"). An action phrase
 # (`Add to cart`, `Place an order`) or a precise action verb (`Checkout`,
 # `Purchase`) may match either field.
 #
@@ -26,14 +26,16 @@
 # your tree in Prize Land" are clearer deny signals than the short titles.
 #
 # The allowed groups from issue #21 are: streak Collect, boost daily check-in,
-# quiz, sponsored items, surprise items, recently viewed, check-in to win
-# credits, and shortcut/widget/notification. The streak `Collect` control is
-# deliberately not an allow pattern: it is not a boost row, and matching the bare
-# word would let an unknown row whose subtitle contains "collect" pass row
-# dispatch. #23 owns that control. Learn to save money is the other allowed row
-# from the measured roster. Search for what you love (#108) has no timer chip and
-# therefore no browse-wait contract; it is allowed only through its own
-# category-card executor and badge verification.
+# quiz, sponsored items, surprise items, check-in to win credits, and
+# shortcut/widget/notification. The streak `Collect` control is deliberately not
+# an allow pattern: it is not a boost row, and matching the bare word would let
+# an unknown row whose subtitle contains "collect" pass row dispatch. #23 owns
+# that control. Learn to save money is the other allowed row from the measured
+# roster. Recently viewed was listed in the brief but never measured; #116 moves
+# it to an explicit unrecognised refusal rather than inferring a browse contract
+# from its title. Search for what you love (#108) has no timer chip and therefore
+# no browse-wait contract; it is allowed only through its own category-card
+# executor and badge verification.
 
 version: 1
 default_deny_reason: unrecognised
@@ -114,18 +116,6 @@ allowed:
       landing page's `Discover more` section; the operator's search history is
       never read or tapped. The row badge is the only counter: it advances
       `N/2` after each category tap and the row disappears at `2/2` (#108).
-
-  - key: recently_viewed
-    label_patterns:
-      - Browse recently viewed items
-      - Recently viewed
-    category: browse_wait
-    wait_seconds: 15
-    repeatable: true
-    max_per_run: 1
-    notes: >-
-      Named in the brief's task taxonomy. The row was not on the measured
-      roster on 2026-11-20, so its presence is opportunistic; absent is normal.
 
   - key: super_discounts
     label_patterns:
@@ -296,3 +286,13 @@ denied:
       - share
       - invite
     deny_reason: "social: sharing coins or inviting friends is refused"
+
+  - key: unrecognised_recently_viewed
+    label_patterns:
+      - Browse recently viewed items
+      - Recently viewed
+      - Coins deal on viewed, in-cart items
+    deny_reason: >-
+      unrecognised: the destination, timer, badge and completion contract for
+      Browse recently viewed items were never captured; issue #116 refuses the
+      family until a supervised run establishes them

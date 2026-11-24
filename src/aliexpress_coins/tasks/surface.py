@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Sequence
 from enum import StrEnum
 from typing import Protocol
 
@@ -24,7 +25,7 @@ from aliexpress_coins.perception.matching import (
     find_text,
     normalize,
 )
-from aliexpress_coins.perception.snapshot import Snapshot
+from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.state import TASK_TITLES, has_search_landing_markers
 
 BOOST_MARKER = 'Coins boost'
@@ -57,6 +58,47 @@ PRODUCT_DETAIL_MARKERS = ('Add to cart', 'Buy now')
 
 They are named, never tapped (docs/07 §3). A detail page that is scrolled far
 enough to hide them still carries ``Item N/n``.
+"""
+
+SYSTEM_UI_TOP_FRACTION = 0.03
+SYSTEM_UI_BOTTOM_FRACTION = 0.10
+"""Frame-relative bands occupied by Android's status bar and taskbar."""
+
+_CLOCK = re.compile(r'^\d{1,2}:\d{2}$')
+_DAY = re.compile(r'^\d{1,2}$')
+_WEEKDAYS = frozenset(
+    {
+        'mon',
+        'monday',
+        'tue',
+        'tues',
+        'tuesday',
+        'wed',
+        'weds',
+        'wednesday',
+        'thu',
+        'thur',
+        'thurs',
+        'thursday',
+        'fri',
+        'friday',
+        'sat',
+        'saturday',
+        'sun',
+        'sunday',
+        '一',
+        '二',
+        '三',
+        '四',
+        '五',
+        '六',
+        '日',
+    }
+)
+"""Weekday spellings accepted in the measured clock/date widget.
+
+The reference tablet's Canada/en launcher rendered the weekday as ``日`` in
+issue #116, so the recogniser cannot assume an English locale.
 """
 
 COIN_PAGE_MARKERS = ('Daily coins', 'Coins credits to redeem')
@@ -119,6 +161,7 @@ class Surface(StrEnum):
     SURPRISE_GRID = 'surprise_grid'
     SEARCH_LANDING = 'search_landing'
     PRODUCT_DETAIL = 'product_detail'
+    NON_APP = 'non_app'
     UNKNOWN = 'unknown'
 
 
@@ -149,8 +192,9 @@ def classify_surface(snapshot: Snapshot) -> Surface:
     Precedence matters. A redeem interstitial is its own screen even if page
     markers remain visible underneath it. The empty boost page must be checked
     before the populated boost page because both carry the same header. A frame
-    with no coin/boost marker is ``UNKNOWN`` rather than a guess, so a wrong
-    screen cannot silently become ``ROWS_ABSENT``.
+    with no coin/boost marker is ``UNKNOWN`` rather than a guessed app page; the
+    measured clock/date shape is the one ``NON_APP`` exception, so a wrong screen
+    cannot silently become ``ROWS_ABSENT``.
     """
     if contains_text(snapshot, REDEEM_MARKER):
         return Surface.REDEEM_INTERSTITIAL
@@ -179,7 +223,69 @@ def classify_surface(snapshot: Snapshot) -> Surface:
     if is_search_landing(snapshot):
         return Surface.SEARCH_LANDING
 
+    if is_non_app_surface(snapshot):
+        return Surface.NON_APP
+
     return Surface.UNKNOWN
+
+
+def is_non_app_surface(snapshot: Snapshot) -> bool:
+    """Whether the frame is the measured launcher/clock surface, not an app page.
+
+    Issue #116's post-tap frame contained only a status-bar clock, a small
+    status glyph and the ``日`` / ``24`` date widget. That combination is evidence
+    that AliExpress was not in the foreground; an ordinary unknown shopping page
+    must not be recovered as though it were the launcher.
+
+    The test is deliberately conservative: a clock in the status-bar band, a
+    weekday/day pair in the content area, and no other readable content or known
+    app marker. All bands are fractions of the frame, so no device pixels are
+    stored. The date pair is also what keeps a loading skeleton or blank WebView
+    (both carry a status-bar clock) out of this surface.
+    """
+    if (
+        contains_text(snapshot, REDEEM_MARKER)
+        or is_product_detail(snapshot)
+        or is_coin_store(snapshot)
+        or is_boost_page(snapshot)
+        or _is_coin_page(snapshot)
+        or is_surprise_grid(snapshot)
+        or is_search_landing(snapshot)
+        or contains_text(snapshot, 'Coins quiz')
+    ):
+        return False
+
+    content_top = snapshot.height * SYSTEM_UI_TOP_FRACTION
+    content_bottom = snapshot.height * (1.0 - SYSTEM_UI_BOTTOM_FRACTION)
+    readable = tuple(box for box in snapshot.boxes if box.score >= DEFAULT_MIN_OCR_SCORE and normalize(box.text))
+    if not any(
+        box.center[1] < content_top and _CLOCK.fullmatch(unicodedata.normalize('NFKC', box.text).strip())
+        for box in readable
+    ):
+        return False
+
+    content = tuple(box for box in readable if content_top <= box.center[1] <= content_bottom)
+    if not content or not all(_is_system_widget_label(box.text) for box in content):
+        return False
+    return _has_date_widget(content)
+
+
+def _is_system_widget_label(text: str) -> bool:
+    """Whether a content label can belong to the clock/date widget only."""
+    label = unicodedata.normalize('NFKC', text).strip()
+    return _DAY.fullmatch(label) is not None or normalize(label) in _WEEKDAYS
+
+
+def _has_date_widget(boxes: Sequence[TextBox]) -> bool:
+    """Whether a weekday and day number share one widget line."""
+    weekdays = tuple(box for box in boxes if normalize(box.text) in _WEEKDAYS)
+    days = tuple(box for box in boxes if _DAY.fullmatch(unicodedata.normalize('NFKC', box.text).strip()))
+    for weekday in weekdays:
+        for day in days:
+            tolerance = max(weekday.height, day.height)
+            if abs(weekday.center[1] - day.center[1]) <= tolerance:
+                return True
+    return False
 
 
 def is_boost_page(snapshot: Snapshot) -> bool:
@@ -298,6 +404,8 @@ __all__ = [
     'SURFACE_REFRESH_LIMIT',
     'SURPRISE_GRID_SUBTITLE',
     'SURPRISE_GRID_TITLE',
+    'SYSTEM_UI_BOTTOM_FRACTION',
+    'SYSTEM_UI_TOP_FRACTION',
     'RouteFirer',
     'Surface',
     'SurfaceRoute',
@@ -308,6 +416,7 @@ __all__ = [
     'is_coin_store',
     'is_empty_boost',
     'is_logged_out',
+    'is_non_app_surface',
     'is_product_detail',
     'is_search_landing',
     'is_surprise_grid',
