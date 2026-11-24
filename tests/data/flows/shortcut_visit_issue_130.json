@@ -1,0 +1,103 @@
+{
+  "version": 1,
+  "issue": 130,
+  "observed_at_local": "2026-11-24T13:00:00-05:00",
+  "observed_at_utc": "2026-11-24T18:00:00Z",
+  "device": "T3_US / Android 15 / AliExpress 8.180.1",
+  "row": {
+    "title_lines": ["Visit the page via coins", "shortcut"],
+    "title": "Visit the page via coins shortcut",
+    "subtitle": "Unlock a daily surprise",
+    "reward": "+1",
+    "badge": null,
+    "action": "GO",
+    "position": "below the first screenful of the scrolled Coins boost list"
+  },
+  "share_row": {
+    "title": "Share coins with friends",
+    "subtitle": "Win rewards together",
+    "badge": "0/3",
+    "action": "GO",
+    "policy_rule": "social",
+    "policy_reason": "social: sharing coins or inviting friends is refused"
+  },
+  "pre_tap": {
+    "balance": 87,
+    "row_present": true,
+    "labels": [
+      "Coins boost",
+      "Place an order on this page",
+      "Add 5 items to your cart",
+      "Water to win a US $0.10 prize",
+      "Visit the page via coins",
+      "shortcut",
+      "Unlock a daily surprise"
+    ]
+  },
+  "tap": {
+    "label": "GO",
+    "requested": [1007, 1851],
+    "clamped": [1007, 1851]
+  },
+  "after_tap": {
+    "balance": 87,
+    "row_present": true,
+    "labels": [
+      "Once you've created a shortcut, find it",
+      "on your home screen. Tap it to enter",
+      "Coins",
+      "Got it",
+      "Create shortcut",
+      "Visit the page via coins",
+      "shortcut",
+      "Unlock a daily surprise"
+    ]
+  },
+  "after_got_it": {
+    "balance": 87,
+    "row_present": true,
+    "credited": false
+  },
+  "create_shortcut_flow": {
+    "launcher_activity": "com.android.launcher3/com.android.launcher3.dragndrop.AddItemActivity",
+    "labels": ["AliExpress", "Coins", "1x1", "Cancel", "Add to home screen"],
+    "home_shortcut_exists": true,
+    "balance_after_creation": 87,
+    "row_present_after_creation": true,
+    "first_shortcut_uri_after_creation": {
+      "balance": 87,
+      "row_present": true,
+      "credited": false
+    }
+  },
+  "home_shortcut_launch": {
+    "shortcut_bounds": [789, 1078, 942, 1258],
+    "landed_on": "coin page",
+    "balance_on_arrival": 87,
+    "later_coin_page_reload": {
+      "balance": 88,
+      "row_present": false
+    }
+  },
+  "retained_shots": [
+    "boost list with the shortcut row",
+    "Android Create shortcut sheet",
+    "launcher Add to home screen step",
+    "coin page after the home shortcut launch"
+  ],
+  "retained_shots_committed": false,
+  "conclusions": {
+    "go_opens_shortcut_creation_sheet": true,
+    "go_credits_immediately": false,
+    "got_it_credits": false,
+    "creating_shortcut_alone_credits": false,
+    "shortcut_uri_immediately_after_creation_credits": false,
+    "home_shortcut_launch_preceded_the_credit": true,
+    "credit_amount": 1,
+    "balance_before": 87,
+    "balance_after": 88,
+    "credit_timing_bracketed": false,
+    "cause": "observed: a launcher shortcut launch preceded the +1; whether the launch or the later coin-page reload delivered it is unknown",
+    "collector_action": "recognise the row and its Create shortcut sheet, close the sheet with Got it, and record no credit unless a readable balance increase appears; do not create or tap a launcher item (#27)"
+  }
+}

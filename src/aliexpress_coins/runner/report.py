@@ -805,6 +805,11 @@ def _roster_summary(roster: dict[str, Any] | None) -> str:
         f'{roster.get("status", "?")}; {roster.get("count", 0)} row(s), '
         f'{roster.get("allowed_count", 0)} allowed, {roster.get("denied_count", 0)} refused'
     )
+    scroll_count = roster.get('scroll_count') or 0
+    if scroll_count or roster.get('scroll_attempts'):
+        summary = f'{summary}, read across {scroll_count} revealing scroll(s)'
+    if roster.get('scroll_limit_reached'):
+        summary = f'{summary}; scroll bound reached'
     warning = roster.get('warning')
     return summary if not warning else f'{summary}; warning: {warning}'
 

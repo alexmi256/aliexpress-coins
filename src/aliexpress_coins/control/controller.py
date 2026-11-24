@@ -54,6 +54,9 @@ injected RNG, then clamps again so a tap at the safe edge cannot jitter out of
 the safe region.
 """
 
+_SWIPE_DURATION_MS = 300
+"""The measured drag duration shared by ordinary and observation-only swipes."""
+
 Point = tuple[float, float]
 Pixel = tuple[int, int]
 
@@ -352,14 +355,58 @@ class Controller:
         *,
         why: str,
         label: str | None = None,
-        duration_ms: int = 300,
+        duration_ms: int = _SWIPE_DURATION_MS,
     ) -> SwipeRecord:
         """Swipe between two points, clamped to the safe inset of the frame.
 
         Scrolling is a search, not a fixed gesture: the caller derives both
         points from the current frame, and this method only guarantees the
-        gesture starts and ends on the screen.
+        gesture starts and ends on the screen. A dry run suppresses the gesture.
         """
+        return self._swipe(
+            start,
+            end,
+            why=why,
+            label=label,
+            duration_ms=duration_ms,
+            suppress_in_dry_run=True,
+        )
+
+    def swipe_for_observation(
+        self,
+        start: Point,
+        end: Point,
+        *,
+        why: str,
+        label: str | None = None,
+        duration_ms: int = _SWIPE_DURATION_MS,
+    ) -> SwipeRecord:
+        """Scroll a read-only list even during a dry run.
+
+        Roster enumeration needs to move the boost list to prove that no task is
+        hidden below the fold. This explicit observation-only path never taps or
+        presses a key, so ``taps_issued`` remains zero; ordinary :meth:`swipe`
+        keeps its dry-run suppression for task executors.
+        """
+        return self._swipe(
+            start,
+            end,
+            why=why,
+            label=label,
+            duration_ms=duration_ms,
+            suppress_in_dry_run=False,
+        )
+
+    def _swipe(
+        self,
+        start: Point,
+        end: Point,
+        *,
+        why: str,
+        label: str | None,
+        duration_ms: int,
+        suppress_in_dry_run: bool,
+    ) -> SwipeRecord:
         reason = _required_reason(why)
         if duration_ms <= 0:
             raise ValueError(f'the swipe duration must be positive, got {duration_ms!r}')
@@ -373,10 +420,10 @@ class Controller:
             requested=requested,
             clamped=clamped,
             duration_ms=duration_ms,
-            suppressed=self._dry_run,
+            suppressed=self._dry_run and suppress_in_dry_run,
         )
         self._logger.info('%s', record.to_json())
-        if not self._dry_run:
+        if not (self._dry_run and suppress_in_dry_run):
             swipe = getattr(self._device, 'swipe', None)
             if swipe is None:
                 raise InputError('the input device cannot swipe')

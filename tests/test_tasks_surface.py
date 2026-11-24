@@ -49,13 +49,17 @@ CAPTURED_AT = datetime(2026, 11, 21, 12, 0, tzinfo=UTC)
 
 
 class _RecordingDevice:
-    """The input seam: record taps instead of spawning adb."""
+    """The input seam: record taps and swipes instead of spawning adb."""
 
     def __init__(self) -> None:
         self.taps: list[tuple[int, int]] = []
+        self.swipes: list[tuple[int, int, int, int, int]] = []
 
     def tap(self, x: int, y: int) -> None:
         self.taps.append((x, y))
+
+    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int) -> None:
+        self.swipes.append((x1, y1, x2, y2, duration_ms))
 
 
 class _RouteRecorder:

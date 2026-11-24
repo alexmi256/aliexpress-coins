@@ -42,6 +42,7 @@ between loads (e.g., `Browse surprise items` rotated to `Search for what you lov
 | Browse surprise items | Tap 3 items on this page to earn coins | +1 | `0/2` | allowed: `item_tap` (`surprise.py`) |
 | Turn on notifications | Stay informed when rewards drop | +1 | — | allowed: `notification` (`notifications.py`) |
 | Add a coins shortcut | One tap away from your daily rewards | +1 | — | catalogued `shortcut`; descoped (#27, skipped `no executor`) |
+| **Visit the page via coins shortcut** | Unlock a daily surprise | +1 | — | allowed: `shortcut_visit` (`shortcut.py`); `GO` opens the OS shortcut sheet, so a launcher visit remains operator work (#130) |
 | Add & start using our widget | Add our widget to your homescreen to use | +1 | — | catalogued `widget`; descoped (#27, skipped `no executor`) |
 | Search for what you love | Earn by using keywords to explore items | +1 | `0/2` | allowed: `browse` (`search.py`) |
 | View Super discounts | Check out this page for 15 seconds | +1 | — | allowed: `super_discounts` (`browse_wait`, `browse.py`) |
@@ -63,6 +64,22 @@ shape, but #116 refuses it because its destination and completion contract were 
 - **Cause:** firing the shortcut intent as a **cold start** (`force-stop` → intent: 4/4 empty;
   `FirstActivity` + ~10 s settle → intent: 2/2 populated; warm app + intent: 3/3 populated).
 - **Runner rule:** warm-start first; on `empty_boost`, re-enter via the warm shortcut route.
+
+### 4c. The boost list scrolls ✅
+
+The `Coins boost` list is one scrollable surface; its first frame is only a screenful. On 2026-11-24 the
+`Visit the page via coins shortcut` and `Share coins with friends` rows were both below the fold, which is
+why the old first-frame roster never named them. Discovery now swipes down with the existing
+viewport-relative gesture (no pixel constants), stops on a stable frame or on a frame that adds no new
+title, merges frames by title, and restores the list to the top before live dispatch (#130). The bound is
+`MAX_ROSTER_SCROLLS = 8`; a list still changing at that bound is reported, not silently accepted.
+Leaving the boost surface during a swipe is also reported as an incomplete read, and absence only
+proves a row is gone after a read that was proved complete.
+
+The sanity check now compares every `GO` seen across the scrolled frames with the distinct enumerated
+rows. A button that never becomes a row in any frame stays unassigned and appears as
+`GO button(s) across N frame(s) but ... task action(s) were not enumerated`; one screenful is no longer
+enough to call the list clean.
 
 ## 5. Reward mechanics ✅
 
@@ -93,9 +110,25 @@ shape, but #116 refuses it because its destination and completion contract were 
   family is explicitly refused as `unrecognised_recently_viewed` until a supervised capture
   establishes them; its `Browse` title is not a browse-wait contract. Sanitized evidence lives in
   `tests/data/flows/recently_viewed_issue_116.json`.
+- **`Visit the page via coins shortcut` ✅ observed / ❓ completion source (2026-11-24 13:00 EST,
+  issue #130):** the row sits below the first screenful, so its title OCRs on two lines:
+  `Visit the page via coins` / `shortcut`, subtitle `Unlock a daily surprise`, reward `+1`, `GO`, no
+  badge ✅. Tapping `GO` did **not** open the coin page and did not credit: it opened Android's
+  `Create shortcut` sheet (`Once you've created a shortcut, find it on your home screen. Tap it to
+  enter`, `Got it`, `Create shortcut`) while the balance stayed `87` and the row stayed visible ✅.
+  `Got it` closed the sheet without a credit ✅. `Create shortcut` led to the launcher's
+  `Add to home screen` step; after adding the `Coins` shortcut, the first shortcut URI fired from the
+  app still left the balance at `87` and the row present ✅. Launching the created `Coins` shortcut
+  from the home screen, then reloading the coin page, showed balance `87 → 88` and the row gone ✅.
+  The exact instant of the credit (home launch versus the later reload) was not bracketed, so
+  whether a launcher launch is strictly required rather than a delayed URI is ❓. The collector does
+  **not** create or tap launcher items (#27); `shortcut.py` taps this row's `GO`, recognises the
+  sheet, closes it and records `shortcut_sheet_no_credit` unless a readable +1 appears ✅. Sanitized
+  evidence is in `tests/data/flows/shortcut_visit_issue_130.json`.
 - **Launcher items ✅ (descoped #27):** adding earns the task row and a widget visit rendered
   `Collect`/inline rows in session 2; automation is descoped because the shortcut URI needs no
-  launcher item.
+  launcher item. The `Visit the page via coins shortcut` row above is now a separate numbered
+  family; its observed credit followed a launcher launch, not the URI alone (#130).
 
 ### 5b. Flows walked end to end
 
@@ -200,3 +233,4 @@ verification → return to coins page → `balance-after` → report. See
 | Quiz result & notification denial frames ❓ | completes `tests/data/flows/` fixtures | capture before rows are claimed |
 | Whether the quiz question set is finite ❓ | question-bank hit rate | observe `data/quiz_bank.json` growth |
 | What does `Browse recently viewed items` open, and what proves completion? ❓ | the row is visible with `GO` / `+1` but no badge; #116 could not retain its destination or post-tap frame | one supervised run that retains the pre-tap row, destination/timer, and populated boost verification frames |
+| Is a launcher launch strictly required to credit `Visit the page via coins shortcut`? ❓ | the observed +1 followed a home-screen shortcut launch, while a URI fired after creating the shortcut did not credit immediately | bracket the balance and row after each step on a fresh day, separating the home launch from the next coin-page reload (#130) |

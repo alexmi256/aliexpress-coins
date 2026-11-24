@@ -82,6 +82,7 @@ from aliexpress_coins.tasks.discovery import (
     RosterLog,
     RosterObservation,
     RosterObserver,
+    collect_roster,
     discover_roster,
     enumerate_roster,
     open_boost_list,
@@ -95,6 +96,7 @@ from aliexpress_coins.tasks.dispatch import (
 from aliexpress_coins.tasks.notifications import run_notifications_task
 from aliexpress_coins.tasks.quiz import run_quiz_task
 from aliexpress_coins.tasks.search import run_search_task
+from aliexpress_coins.tasks.shortcut import run_shortcut_visit_task
 from aliexpress_coins.tasks.signin import claim_daily_signins, read_coin_balance
 from aliexpress_coins.tasks.surface import (
     COIN_PAGE_MARKERS,
@@ -216,6 +218,7 @@ class RunContext:
     controller_factory: Callable[[Snapshot], Controller] | None = None
     observer: RosterObserver | None = None
     templates: TemplateStore | None = None
+    scroll_rosters: bool = True
     clock: Callable[[], float] = time.monotonic
     sleep: Callable[[float], None] = time.sleep
     wall_clock: Callable[[], datetime] = _utc_now
@@ -235,6 +238,7 @@ _EXECUTORS: frozenset[TaskCategory] = frozenset(
         TaskCategory.BROWSE,
         TaskCategory.BROWSE_WAIT,
         TaskCategory.ITEM_TAP,
+        TaskCategory.SHORTCUT_VISIT,
         TaskCategory.NOTIFICATION,
     },
 )
@@ -245,12 +249,15 @@ DISPATCH_TABLE: dict[TaskCategory, str] = {
     TaskCategory.BROWSE: 'search',
     TaskCategory.BROWSE_WAIT: 'browse-and-wait',
     TaskCategory.ITEM_TAP: 'surprise-items',
+    TaskCategory.SHORTCUT_VISIT: 'shortcut-visit',
     TaskCategory.NOTIFICATION: 'notifications',
 }
 """The catalogue categories this engine can dispatch, and their executor names.
 
-``shortcut`` and ``widget`` are deliberately absent: their executors belong to
-#27 and a row in those categories is reported as skipped rather than guessed at.
+The measured `Visit the page via coins shortcut` row is dispatchable through its
+own executor. The older `shortcut`/`widget` setup families remain absent: their
+launcher-item actions belong to #27 and are reported as skipped rather than
+guessed at.
 """
 
 TASK_RECOVERY_ATTEMPTS = UNEXPECTED_SCREEN_LIMIT
@@ -275,8 +282,7 @@ _CATEGORY_COST: dict[TaskCategory, int] = {
     TaskCategory.ITEM_TAP: 3,
     TaskCategory.BROWSE_WAIT: 4,
     TaskCategory.NOTIFICATION: 5,
-    TaskCategory.SHORTCUT: 6,
-    TaskCategory.WIDGET: 7,
+    TaskCategory.SHORTCUT_VISIT: 6,
 }
 """How expensive one attempt is expected to be, cheapest first.
 
@@ -290,11 +296,17 @@ ranking is deliberately coarse and independent of the frame:
 * ``item_tap`` needs several item taps and BACKs;
 * ``browse_wait`` must sit out a timer before it can be collected;
 * ``notification`` crosses into an OS dialog and is the least predictable;
-* ``shortcut``/``widget`` have no executor yet, but still need a stable rank.
+* ``shortcut_visit`` also crosses into an OS surface: its measured ``GO`` opens
+  the ``Create shortcut`` sheet, and the observed credit needed a launcher
+  launch, so it ranks last among dispatchable work.
 
-Within a cost rank the catalogue key is stable across runs; the title and
-subtitle only break the rare tie where OCR enumerated two rows for the same
-family. Reading order is not part of the key.
+Only categories this engine can dispatch are ranked here; a rank for an
+unreachable category would be dead policy. An unsupported row still has to be
+ordered in reports and dry-run skips, so it sorts after every dispatchable
+category without pretending to have a cost of its own. Within a cost rank the
+catalogue key is stable across runs; the title and subtitle only break the rare
+tie where OCR enumerated two rows for the same family. Reading order is not part
+of the key.
 """
 
 
@@ -1034,9 +1046,24 @@ def _plan_dry_run(
             frame = content.frame
             surface = classify_surface(frame)
 
-    def read_roster() -> Roster:
+    def read_roster(*, scroll: bool = True) -> Roster:
+        controller = context.controller
+        if controller is None and context.controller_factory is not None:
+            controller = _controller(context, frame)
+        if controller is not None and scroll and surface is Surface.BOOST_PAGE and context.scroll_rosters:
+            roster = collect_roster(
+                controller,
+                context.capture,
+                context.catalogue,
+                frame,
+                route=DiscoveryRoute.INLINE,
+                settle=context.config.settle_seconds,
+                sleep=context.sleep,
+            )
+        else:
+            roster = enumerate_roster(frame, context.catalogue, route=DiscoveryRoute.INLINE)
         return replace(
-            enumerate_roster(frame, context.catalogue, route=DiscoveryRoute.INLINE),
+            roster,
             surface_variant=surface,
             routes_taken=tuple(routes),
         )
@@ -1053,6 +1080,11 @@ def _plan_dry_run(
         nonlocal frame, surface
         previous: tuple[tuple[str, str | None, tuple[int, int] | None, str | None], ...] | None = None
         if current.empty:
+            return current
+        if current.scroll_count > 0:
+            # Collection already merged every frame until the list stopped
+            # revealing new titles. Re-reading one frame here would throw the
+            # first screenful away and plan only the bottom of the list.
             return current
 
         def settled(candidate: Snapshot) -> Snapshot | None:
@@ -1082,7 +1114,10 @@ def _plan_dry_run(
         surface = classify_surface(frame)
         return read_roster()
 
-    initial_roster = read_roster()
+    # The probe decides which route to take; the whole-list scroll happens once
+    # on the settled surface below. Scrolling the probe would spend a gesture on
+    # a page that may be replaced by the route or settle wait.
+    initial_roster = read_roster(scroll=False)
     needs_route = (
         (surface is Surface.UNKNOWN and initial_roster.empty)
         or (surface is Surface.NON_APP and initial_roster.empty)
@@ -1346,6 +1381,13 @@ def _unreadable_plan_reason(
             reason = 'surface_unverified: task rows were read but the surface never settled'
         elif roster_waits and roster_waits[-1]['status'] != 'satisfied':
             reason = 'surface_unverified: task rows were read but the row set never settled'
+        elif roster.scroll_attempts and roster.incomplete:
+            # Absence is evidence only from a read that was proved complete.
+            reason = (
+                f'surface_incomplete: the scrolled boost list was not read completely '
+                f'({roster.count} row(s) after {roster.scroll_attempts} scroll(s); '
+                f'bound={roster.scroll_limit_reached}, surface_lost={roster.scroll_surface_lost})'
+            )
         else:
             return None
     elif surface is Surface.ROWS_ABSENT:
@@ -1413,6 +1455,7 @@ def _discover_or_fallback(
                 context.catalogue,
                 navigate=context.navigate,
                 refresh=True,
+                scroll=context.scroll_rosters,
                 templates=context.templates,
                 timeout=DEFAULT_BOOST_TIMEOUT,
                 interval=DEFAULT_BOOST_INTERVAL,
@@ -1440,8 +1483,21 @@ def _discover_or_fallback(
         _guard_signed_in(context, frame)
         surface = classify_surface(frame)
         if surface in (Surface.BOOST_PAGE, Surface.EMPTY_BOOST, Surface.ROWS_PRESENT, Surface.ROWS_ABSENT):
+            roster = (
+                collect_roster(
+                    controller,
+                    context.capture,
+                    context.catalogue,
+                    frame,
+                    route=DiscoveryRoute.INLINE,
+                    settle=context.config.settle_seconds,
+                    sleep=context.sleep,
+                )
+                if surface is Surface.BOOST_PAGE and context.scroll_rosters
+                else enumerate_roster(frame, context.catalogue, route=DiscoveryRoute.INLINE)
+            )
             roster = replace(
-                enumerate_roster(frame, context.catalogue, route=DiscoveryRoute.INLINE),
+                roster,
                 surface_variant=surface,
                 routes_taken=(SurfaceRoute.SHORTCUT,),
                 refresh_attempted=True,
@@ -1501,6 +1557,10 @@ def _dispatch_entry(context: RunContext, controller: Controller, entry: RosterEn
             common['record_round_grid'] = context.record_round_grid
         return _from_executor(
             run_surprise_task(controller, context.capture, context.corpus, context.state, entry, **common),
+        )
+    if category is TaskCategory.SHORTCUT_VISIT:
+        return _from_executor(
+            run_shortcut_visit_task(controller, context.capture, context.corpus, context.state, entry, **common),
         )
     if category is TaskCategory.NOTIFICATION:
         return _from_executor(
@@ -1627,14 +1687,23 @@ def _recheck_acted_row(
         return False, None
 
     surface = classify_surface(opened.snapshot)
-    fresh = next(
-        (
-            candidate
-            for candidate in enumerate_roster(opened.snapshot, context.catalogue, route=opened.route).entries
-            if candidate.key == key
-        ),
-        None,
-    )
+    top_roster = enumerate_roster(opened.snapshot, context.catalogue, route=opened.route)
+    fresh = next((candidate for candidate in top_roster.entries if candidate.key == key), None)
+    if fresh is None and surface is Surface.BOOST_PAGE and context.scroll_rosters:
+        fresh_roster = collect_roster(
+            controller,
+            context.capture,
+            context.catalogue,
+            opened.snapshot,
+            route=opened.route,
+            settle=context.config.settle_seconds,
+            sleep=context.sleep,
+        )
+        fresh = next((candidate for candidate in fresh_roster.entries if candidate.key == key), None)
+        if fresh is None and fresh_roster.incomplete:
+            # A truncated or partly split list is not proof that the row is
+            # gone. Keep the acted marker and the task retryable.
+            return False, None
     if fresh is not None:
         if fresh.progress is not None and fresh.progress.complete:
             return True, None
@@ -2044,9 +2113,24 @@ def _observe(
             on_dismiss=on_dismiss,
         )
         _guard_signed_in(context, opened.snapshot)
+        previous = observer.roster
+        collected = (
+            collect_roster(
+                controller,
+                context.capture,
+                context.catalogue,
+                opened.snapshot,
+                route=opened.route if route is None else route,
+                settle=context.config.settle_seconds,
+                sleep=context.sleep,
+            )
+            if context.scroll_rosters and previous is not None and previous.scroll_attempts > 0
+            else None
+        )
         return observer.observe(
             opened.snapshot,
             route=opened.route if route is None else route,
+            roster=collected,
             timestamp=context.wall_clock(),
         )
     except RunAborted, RunInterrupted:
@@ -2437,7 +2521,7 @@ def _selection_key(entry: RosterEntry) -> tuple[int, str, str, str]:
     if spec is None:
         return (len(_CATEGORY_COST), '', entry.title.casefold(), (entry.subtitle or '').casefold())
     return (
-        _CATEGORY_COST[spec.category],
+        _CATEGORY_COST.get(spec.category, len(_CATEGORY_COST)),
         spec.key,
         entry.title.casefold(),
         (entry.subtitle or '').casefold(),

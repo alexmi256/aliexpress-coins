@@ -90,6 +90,7 @@ class TaskCategory(StrEnum):
     BROWSE_WAIT = 'browse_wait'
     ITEM_TAP = 'item_tap'
     SHORTCUT = 'shortcut'
+    SHORTCUT_VISIT = 'shortcut_visit'
     WIDGET = 'widget'
     NOTIFICATION = 'notification'
 

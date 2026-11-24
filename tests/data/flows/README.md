@@ -58,6 +58,14 @@ reflow; the missing frame means neither launcher foreground ownership nor the ca
 can be proven retrospectively. `states/launcher.png` is a separate recon capture used only to replay
 recovery from a launcher that draws app icons.
 
+`shortcut_visit_issue_130.json` is sanitized evidence for issue #130's below-the-fold
+`Visit the page via coins shortcut` row. It records the row's two-line title, the Android
+`Create shortcut` sheet opened by `GO`, the unchanged balance and still-present row after `Got it`,
+after creating the shortcut and after the first shortcut URI, and the later `87 -> 88` credit that
+followed launching the created `Coins` shortcut from the home screen. It deliberately does not claim
+whether the launch or the later coin-page reload delivered the credit, and carries no screenshot or
+account data.
+
 `surprise_items_issue_115_loading_grid.png` and `surprise_items_issue_115_loaded_grid.png` are the
 same `0/2` row reproduced live on 2026-11-24 after that run, while the tablet still offered the
 task. They are not frames from `20261124T083006Z`; they are the supervised capture of its load-timing
