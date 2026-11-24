@@ -580,10 +580,14 @@ def test_the_dispatch_table_covers_every_implemented_category(catalogue: TaskCat
         TaskCategory.ITEM_TAP: 3,
         TaskCategory.BROWSE_WAIT: 4,
         TaskCategory.NOTIFICATION: 5,
-        TaskCategory.SHORTCUT: 6,
-        TaskCategory.WIDGET: 7,
+        TaskCategory.SHORTCUT_VISIT: 6,
     }
     assert catalogue.allowed
+
+
+def test_every_dispatchable_category_has_exactly_one_cost_rank() -> None:
+    assert set(engine._CATEGORY_COST) == engine._EXECUTORS
+    assert set(engine.DISPATCH_TABLE) == engine._EXECUTORS
 
 
 def test_a_dry_run_uses_a_factory_controller_to_collect_a_scrolled_roster(

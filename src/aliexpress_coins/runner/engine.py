@@ -282,8 +282,7 @@ _CATEGORY_COST: dict[TaskCategory, int] = {
     TaskCategory.ITEM_TAP: 3,
     TaskCategory.BROWSE_WAIT: 4,
     TaskCategory.NOTIFICATION: 5,
-    TaskCategory.SHORTCUT: 6,
-    TaskCategory.WIDGET: 7,
+    TaskCategory.SHORTCUT_VISIT: 6,
 }
 """How expensive one attempt is expected to be, cheapest first.
 
@@ -297,11 +296,17 @@ ranking is deliberately coarse and independent of the frame:
 * ``item_tap`` needs several item taps and BACKs;
 * ``browse_wait`` must sit out a timer before it can be collected;
 * ``notification`` crosses into an OS dialog and is the least predictable;
-* ``shortcut``/``widget`` have no executor yet, but still need a stable rank.
+* ``shortcut_visit`` also crosses into an OS surface: its measured ``GO`` opens
+  the ``Create shortcut`` sheet, and the observed credit needed a launcher
+  launch, so it ranks last among dispatchable work.
 
-Within a cost rank the catalogue key is stable across runs; the title and
-subtitle only break the rare tie where OCR enumerated two rows for the same
-family. Reading order is not part of the key.
+Only categories this engine can dispatch are ranked here; a rank for an
+unreachable category would be dead policy. An unsupported row still has to be
+ordered in reports and dry-run skips, so it sorts after every dispatchable
+category without pretending to have a cost of its own. Within a cost rank the
+catalogue key is stable across runs; the title and subtitle only break the rare
+tie where OCR enumerated two rows for the same family. Reading order is not part
+of the key.
 """
 
 
@@ -2516,7 +2521,7 @@ def _selection_key(entry: RosterEntry) -> tuple[int, str, str, str]:
     if spec is None:
         return (len(_CATEGORY_COST), '', entry.title.casefold(), (entry.subtitle or '').casefold())
     return (
-        _CATEGORY_COST[spec.category],
+        _CATEGORY_COST.get(spec.category, len(_CATEGORY_COST)),
         spec.key,
         entry.title.casefold(),
         (entry.subtitle or '').casefold(),
