@@ -45,9 +45,10 @@ autouse guards in `tests/conftest.py` that forbid real sockets and process spawn
 1. **No raw coordinate taps** outside a profile-calibrated popup fallback guarded by an OCR anchor.
 2. **Popup sweep after every navigation**, because modals are invisible to `uiautomator`.
 3. **Single dispatch gate:** `DispatchGate` checks the deny list before any executor sees a row and
-   mints a sealed `TaskAuthorization` token. OCR provenance narrows what may *allow* a row: a
-   subtitle span also present in a neighbouring element is contaminated and ignored. It never
-   narrows denial: an unattested field is still displayed text, and the deny list runs on it.
+   mints a sealed `TaskAuthorization` token. OCR provenance can narrow both allow and deny only
+   for an attested subtitle span duplicated in a neighbour: that span is contaminated and ignored.
+   Provenance never hides an unattested denial — a field the context cannot attest is still
+   displayed text, and the deny list runs on it.
 4. **Structural abort guard:** `SafetyGuard` inspects every frame for `dangerous_control`,
    `balance_decreased`, and three identical `unexpected_screen` sightings; `RunAborted` propagates
    through executors and cleanup, and the guard disarms after the first abort.

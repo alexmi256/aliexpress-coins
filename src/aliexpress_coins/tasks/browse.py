@@ -1838,26 +1838,27 @@ def _verify_completion(
                 logger=logger,
             )
         except (StateTimeout, PopupUnclosable) as exc:
-            final = (
-                refresh_return
-                if refresh_return is not None
-                else return_to_coins_page(
-                    controller,
-                    capture,
-                    corpus,
-                    navigate,
-                    snapshot=None,
-                    templates=templates,
-                    route=route,
-                    timeout=return_timeout,
-                    interval=return_interval,
-                    attempts=return_attempts,
-                    settle=settle,
-                    clock=clock,
-                    sleep=sleep,
-                    logger=logger,
-                )
+            # The earlier refresh proved the coins page only before this open.
+            # Clean up from the current screen; merge the earlier return as
+            # history, never as evidence that the app is already back.
+            final = return_to_coins_page(
+                controller,
+                capture,
+                corpus,
+                navigate,
+                snapshot=None,
+                templates=templates,
+                route=route,
+                timeout=return_timeout,
+                interval=return_interval,
+                attempts=return_attempts,
+                settle=settle,
+                clock=clock,
+                sleep=sleep,
+                logger=logger,
             )
+            if refresh_return is not None:
+                final = refresh_return.merged(final)
             verdict = _Verdict(
                 status='no_observation',
                 decisive=False,

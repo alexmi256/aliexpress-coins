@@ -2006,6 +2006,61 @@ def test_a_refresh_after_a_stale_row_reports_a_failed_return(
     assert result.recorded is False
 
 
+@pytest.mark.slow
+def test_a_timed_out_refresh_cleans_up_from_the_current_screen(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    reads = 0
+
+    def on_tap(screen: str, label: str | None, _count: int) -> str | None:
+        nonlocal reads
+        if screen == 'coins' and label == 'earn more':
+            reads += 1
+            return 'boost_after' if reads == 1 else 'wrong'
+        return None
+
+    world = _World(
+        series={
+            'boost': (_boost_frame(),),
+            'destination': (_destination(chip=None), _destination(chip=None)),
+            'coins': (_coin_frame(),),
+            'boost_after': (_boost_frame(),),
+            'wrong': (_wrong_page(),),
+        },
+        transitions={('boost', 'go'): 'destination'},
+        on_tap=on_tap,
+    )
+
+    def navigate(route: SurfaceRoute) -> None:
+        world.navigations.append(route)
+        world.go('coins' if len(world.navigations) <= 2 else 'wrong')
+
+    result = run_browse_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=navigate,
+        arrival_timeout=1.0,
+        load_timeout=0.5,
+        load_interval=0.5,
+        chip_interval=0.5,
+        return_timeout=0.5,
+        return_interval=0.5,
+        clock=_SteppingClock(step=1.0),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert reads == 2
+    assert result.outcome is BrowseOutcome.FAILED
+    assert result.verification == 'return_failed'
+    assert result.returned is False
+    assert world.current == 'wrong'
+
+
 def test_a_failed_verification_return_keeps_the_first_return_dismissals(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
