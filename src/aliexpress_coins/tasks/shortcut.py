@@ -28,6 +28,8 @@ from aliexpress_coins.perception.matching import find_text
 from aliexpress_coins.perception.scroll import MAX_SCROLL_ATTEMPTS, scroll_until_found
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.state import CaptureSource
+from aliexpress_coins.runner.errors import RunInterrupted
+from aliexpress_coins.runner.safety import RunAborted
 from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks.browse import find_task_row
 from aliexpress_coins.tasks.catalogue import AllowedTaskSpec, TaskCategory
@@ -202,6 +204,8 @@ def run_shortcut_visit_task(
 
     try:
         navigate(route)
+    except RunAborted, RunInterrupted:
+        raise
     except Exception as exc:
         log.warning('%s', _json({'event': 'shortcut_return_failed', 'detail': f'{type(exc).__name__}: {exc}'}))
     arrival = wait_for_coin_page(
@@ -212,7 +216,7 @@ def run_shortcut_visit_task(
         sleep=sleep,
     )
     balance_after = read_coin_balance(arrival.snapshot)
-    if balance_before is not None and balance_after is not None and balance_after > balance_before:
+    if balance_before is not None and balance_after is not None and balance_after - balance_before == 1.0:
         done_after = state.record(spec.key, balance=balance_after)
         result = _result(
             spec,

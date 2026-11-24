@@ -16,6 +16,7 @@ from aliexpress_coins.control.controller import Controller
 from aliexpress_coins.control.popups import PopupCorpus, load_popup_corpus
 from aliexpress_coins.perception.geometry import DeviceGeometry
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
+from aliexpress_coins.runner.errors import RunInterrupted
 from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks.catalogue import TaskCatalogue, load_task_catalogue
 from aliexpress_coins.tasks.discovery import RosterEntry, enumerate_roster
@@ -210,6 +211,33 @@ def test_a_readable_balance_increase_is_the_only_completion_evidence(
     assert state.count('coins_shortcut_visit') == 1
 
 
+def test_a_two_coin_balance_change_is_not_accepted_as_the_advertised_plus_one(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _boost('87')
+    entry = _entry(frame, catalogue)
+    state = _state(tmp_path)
+
+    result = run_shortcut_visit_task(
+        Controller.from_frame(_Device(), frame, rng=random.Random(0)),
+        _Capture((frame, _shortcut_sheet(), _coin_page('89'))),
+        corpus,
+        state,
+        entry,
+        navigate=_Routes(),
+        clock=_Clock(),
+        sleep=_Clock().sleep,
+    )
+
+    assert result.outcome is ShortcutVisitOutcome.FAILED
+    assert result.verification == 'shortcut_sheet_no_credit'
+    assert (result.balance_before, result.balance_after) == (87.0, 89.0)
+    assert result.recorded is False
+    assert state.count('coins_shortcut_visit') == 0
+
+
 def test_the_row_is_found_below_the_fold_by_scrolling(
     tmp_path: Path,
     catalogue: TaskCatalogue,
@@ -293,6 +321,30 @@ def test_a_sheet_without_got_it_and_a_failed_return_are_still_recorded(
     assert result.verification == 'shortcut_sheet_no_credit'
     assert result.modal_labels == ('Create shortcut',)
     assert len(result.taps) == 1
+
+
+def test_a_stop_during_navigation_is_never_swallowed(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _boost('87')
+    entry = _entry(frame, catalogue)
+
+    def stop(_route: SurfaceRoute) -> None:
+        raise RunInterrupted('stop requested')
+
+    with pytest.raises(RunInterrupted, match='stop requested'):
+        run_shortcut_visit_task(
+            Controller.from_frame(_Device(), frame, rng=random.Random(0)),
+            _Capture((frame, _shortcut_sheet(), _coin_page('87'))),
+            corpus,
+            _state(tmp_path),
+            entry,
+            navigate=cast(Any, stop),
+            clock=_Clock(),
+            sleep=_Clock().sleep,
+        )
 
 
 def test_the_daily_limit_is_honoured_before_any_tap(

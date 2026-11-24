@@ -73,6 +73,8 @@ why the old first-frame roster never named them. Discovery now swipes down with 
 viewport-relative gesture (no pixel constants), stops on a stable frame or on a frame that adds no new
 title, merges frames by title, and restores the list to the top before live dispatch (#130). The bound is
 `MAX_ROSTER_SCROLLS = 8`; a list still changing at that bound is reported, not silently accepted.
+Leaving the boost surface during a swipe is also reported as an incomplete read, and absence only
+proves a row is gone after a read that was proved complete.
 
 The sanity check now compares every `GO` seen across the scrolled frames with the distinct enumerated
 rows. A button that never becomes a row in any frame stays unassigned and appears as

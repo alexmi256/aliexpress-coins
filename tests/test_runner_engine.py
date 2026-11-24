@@ -14,6 +14,7 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from functools import partial
 from http.client import HTTPMessage
 from pathlib import Path
 from typing import Any, cast
@@ -22,7 +23,7 @@ from urllib.error import HTTPError
 import pytest
 from PIL import Image
 
-from aliexpress_coins.control.controller import Controller
+from aliexpress_coins.control.controller import Controller, SwipeRecord
 from aliexpress_coins.control.errors import PopupUnclosable
 from aliexpress_coins.control.popups import DismissReport, DismissStop, PopupCorpus, load_popup_corpus
 from aliexpress_coins.perception.artifacts import ArtifactStore
@@ -60,6 +61,7 @@ from aliexpress_coins.tasks.discovery import (
     RosterEntry,
     RosterObservation,
     RosterObserver,
+    collect_roster,
     enumerate_roster,
 )
 from aliexpress_coins.tasks.dispatch import DispatchGate
@@ -198,6 +200,47 @@ class _Capture:
         frame = self.frames[min(self.index, len(self.frames) - 1)]
         self.index += 1
         return frame
+
+
+class _SwipeSwitchCapture:
+    """Hold the first frame until a roster swipe asks for the next one."""
+
+    def __init__(self, first: Snapshot, second: Snapshot) -> None:
+        self.frames = (first, second)
+        self.first = first
+        self.second = second
+        self.swiped = False
+
+    def capture(self) -> Snapshot:
+        return self.second if self.swiped else self.first
+
+
+class _SwipeSwitchController:
+    """The one controller method roster collection needs, with a capture switch."""
+
+    def __init__(self, capture: _SwipeSwitchCapture) -> None:
+        self.capture = capture
+
+    def swipe_for_observation(
+        self,
+        start: tuple[float, float],
+        end: tuple[float, float],
+        *,
+        why: str,
+        label: str | None = None,
+        duration_ms: int = 300,
+    ) -> SwipeRecord:
+        del start, end, why, label, duration_ms
+        self.capture.swiped = True
+        return SwipeRecord(
+            index=1,
+            label='roster scroll',
+            reason='test scroll',
+            requested=((0, 0), (1, 1)),
+            clamped=((0, 0), (1, 1)),
+            duration_ms=300,
+            suppressed=False,
+        )
 
 
 class _FlakyCapture:
@@ -570,6 +613,53 @@ def test_a_dry_run_uses_a_factory_controller_to_collect_a_scrolled_roster(
     assert report.roster['scroll_count'] == 1
 
 
+def test_a_dry_run_fails_when_real_multi_frame_collection_hits_the_scroll_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    first = replace(
+        _snapshot(
+            _box('Coins boost', 100, 100, 500, 150),
+            _box('Place an order on this page', 100, 600, 700, 640),
+            _box('GO', 980, 630, 1040, 670),
+        ),
+        image=Image.new('RGB', (1200, 2000), 'white'),
+    )
+    second = replace(
+        _snapshot(
+            _box('Coins boost', 100, 100, 500, 150),
+            _box('Visit the page via coins', 100, 600, 700, 640),
+            _box('shortcut', 100, 645, 300, 675),
+            _box('Unlock a daily surprise', 100, 680, 700, 710),
+            _box('GO', 980, 630, 1040, 670),
+        ),
+        image=Image.new('RGB', (1200, 2000), '#e0e0e0'),
+    )
+    capture = _SwipeSwitchCapture(first, second)
+    controller = _SwipeSwitchController(capture)
+    context = _context(
+        tmp_path,
+        capture=cast(Any, capture),
+        catalogue=catalogue,
+        corpus=corpus,
+        scroll_rosters=True,
+    )
+    context.config = replace(context.config, dry_run=True)
+    context.capture = cast(Any, capture)
+    context.controller = cast(Any, controller)
+    monkeypatch.setattr(engine, 'collect_roster', partial(collect_roster, max_scrolls=1))
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.FAILED
+    assert report.detail is not None
+    assert 'surface_incomplete' in report.detail
+    assert report.plan is not None
+    assert report.plan['probe_failed'] is True
+
+
 def test_a_pass_restart_names_an_unknown_or_empty_boost_surface() -> None:
     observation = RosterObservation(
         sequence=1,
@@ -582,6 +672,48 @@ def test_a_pass_restart_names_an_unknown_or_empty_boost_surface() -> None:
 
     assert engine._pass_restart_reason(unknown, observation) == 'the task surface is unknown'
     assert engine._pass_restart_reason(empty_boost, observation) == 'the Coins boost page is the documented load fault'
+
+
+def test_an_observer_keeps_scrolling_after_a_no_op_first_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _boost_frame('coins_quiz')
+    previous = replace(
+        enumerate_roster(frame, catalogue),
+        surface_variant=Surface.BOOST_PAGE,
+        scroll_count=0,
+        scroll_attempts=1,
+    )
+    collected = replace(previous, scroll_count=0, scroll_attempts=1)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame),
+        catalogue=catalogue,
+        corpus=corpus,
+        scroll_rosters=True,
+    )
+    observer = RosterObserver(catalogue, previous=previous, log=None)
+    calls: list[str] = []
+    monkeypatch.setattr(
+        engine,
+        'open_boost_list',
+        lambda *args, **kwargs: BoostList(snapshot=frame, route=DiscoveryRoute.BOOST, detail='test'),
+    )
+
+    def collect(*_args: Any, **_kwargs: Any) -> Roster:
+        calls.append('collect')
+        return collected
+
+    monkeypatch.setattr(engine, 'collect_roster', collect)
+
+    observation = engine._observe(context, cast(Controller, context.controller), observer, route=None)
+
+    assert calls == ['collect']
+    assert observation is not None
+    assert observation.sequence == 1
 
 
 def test_dispatch_entry_routes_the_shortcut_visit_row(
@@ -656,6 +788,56 @@ def test_an_acted_recheck_scrolls_for_a_key_below_the_fold(
     assert readable is True
     assert fresh is not None
     assert fresh.key == 'coins_shortcut_visit'
+
+
+def test_an_acted_recheck_does_not_accept_absence_from_a_bound_limited_scroll(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    first = replace(
+        _snapshot(
+            _box('Coins boost', 100, 100, 500, 150),
+            _box('Place an order on this page', 100, 600, 700, 640),
+            _box('GO', 980, 630, 1040, 670),
+        ),
+        image=Image.new('RGB', (1200, 2000), 'white'),
+    )
+    second = replace(
+        _snapshot(
+            _box('Coins boost', 100, 100, 500, 150),
+            _box('Add 5 items to your cart', 100, 600, 700, 640),
+            _box('GO', 980, 630, 1040, 670),
+        ),
+        image=Image.new('RGB', (1200, 2000), '#e0e0e0'),
+    )
+    target = _snapshot(
+        _box('Coins boost', 100, 100, 500, 150),
+        _box('Visit the page via coins', 100, 600, 700, 640),
+        _box('shortcut', 100, 645, 300, 675),
+        _box('Unlock a daily surprise', 100, 680, 700, 710),
+        _box('GO', 980, 630, 1040, 670),
+    )
+    entry = DispatchGate(catalogue).authorize(enumerate_roster(target, catalogue).entries[0])
+    context = _context(
+        tmp_path,
+        capture=_Capture(second, second),
+        catalogue=catalogue,
+        corpus=corpus,
+        scroll_rosters=True,
+    )
+    monkeypatch.setattr(
+        engine,
+        'open_boost_list',
+        lambda *args, **kwargs: BoostList(snapshot=first, route=DiscoveryRoute.BOOST, detail='test'),
+    )
+    monkeypatch.setattr(engine, 'collect_roster', partial(collect_roster, max_scrolls=1))
+
+    readable, fresh = engine._recheck_acted_row(context, cast(Controller, context.controller), entry)
+
+    assert readable is False
+    assert fresh is None
 
 
 @pytest.mark.slow

@@ -394,6 +394,7 @@ class Roster:
     scroll_count: int = 0
     scroll_attempts: int = 0
     scroll_limit_reached: bool = False
+    scroll_surface_lost: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, 'entries', tuple(self.entries))
@@ -458,6 +459,7 @@ class Roster:
             self.surface_variant is Surface.NON_APP
             or self.unassigned_action_count > 0
             or self.scroll_limit_reached
+            or self.scroll_surface_lost
             or any(not failure.recovered for failure in self.split_failures)
         )
 
@@ -483,6 +485,8 @@ class Roster:
                 f'the boost list was still changing after {self.scroll_count} revealing scroll(s); '
                 'more rows may exist below the fold'
             )
+        if self.scroll_surface_lost:
+            problems.append('the boost surface was left during scrolling; the row set is incomplete')
         if problems:
             return '; '.join(problems)
         if self.split_failures:
@@ -512,6 +516,7 @@ class Roster:
             'scroll_count': self.scroll_count,
             'scroll_attempts': self.scroll_attempts,
             'scroll_limit_reached': self.scroll_limit_reached,
+            'scroll_surface_lost': self.scroll_surface_lost,
             'incomplete': self.incomplete,
             'warning': self.warning,
             'split_failures': [failure.as_dict() for failure in self.split_failures],
@@ -695,6 +700,7 @@ class RosterObservation:
                 'scroll_count': self.roster.scroll_count,
                 'scroll_attempts': self.roster.scroll_attempts,
                 'scroll_limit_reached': self.roster.scroll_limit_reached,
+                'scroll_surface_lost': self.roster.scroll_surface_lost,
                 'incomplete': self.roster.incomplete,
                 'warning': self.roster.warning,
                 'split_failures': [failure.as_dict() for failure in self.roster.split_failures],
@@ -1154,6 +1160,7 @@ def _log_observation(
             'scroll_count': roster.scroll_count,
             'scroll_attempts': roster.scroll_attempts,
             'scroll_limit_reached': roster.scroll_limit_reached,
+            'scroll_surface_lost': roster.scroll_surface_lost,
             'incomplete': roster.incomplete,
             'warning': roster.warning,
             'split_failures': [failure.as_dict() for failure in roster.split_failures],
@@ -1757,6 +1764,8 @@ def collect_roster(
     route: DiscoveryRoute | None = None,
     action_labels: Sequence[str] = DEFAULT_ACTION_LABELS,
     max_scrolls: int = MAX_ROSTER_SCROLLS,
+    settle: float = 0.0,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> Roster:
     """Read the whole boost list, scrolling past the first screenful.
 
@@ -1774,9 +1783,16 @@ def collect_roster(
 
     Only the boost page scrolls. The coin page's inline rows are a different
     surface with its own layout; sweeping them would be an unmeasured gesture.
+
+    Absence is evidence only from a read that can be proved complete. Hitting
+    the scroll bound, leaving the boost surface, or leaving a ``GO`` unassigned
+    all make the roster incomplete; callers must treat those as unknown, never
+    as done.
     """
     if max_scrolls < 1:
         raise ValueError(f'max_scrolls must be positive, got {max_scrolls!r}')
+    if settle < 0:
+        raise ValueError(f'settle must not be negative, got {settle!r}')
     first = enumerate_roster(initial, catalogue, route=route, action_labels=action_labels)
     if not is_boost_page(initial) or is_empty_boost(initial):
         return first
@@ -1787,11 +1803,19 @@ def collect_roster(
     revealing_scrolls = 0
     attempts = 0
     limit_reached = False
+    surface_lost = False
 
     for _ in range(max_scrolls):
         attempts += 1
         scrolls.append(_roster_swipe(controller, frame, down=True))
+        if settle:
+            sleep(settle)
         current = _capture(capture)
+        # A scroll that leaves the boost surface is an unknown read: stop
+        # issuing gestures instead of swiping through the launcher or a popup.
+        if classify(current).state is ScreenState.POPUP or classify_surface(current) is not Surface.BOOST_PAGE:
+            surface_lost = True
+            break
         difference = frame_difference(frame, current)
         if difference <= STABLE_FRAME_MAX_DIFFERENCE:
             break
@@ -1806,13 +1830,15 @@ def collect_roster(
     else:
         limit_reached = True
 
-    if revealing_scrolls:
+    if revealing_scrolls and not surface_lost:
         # Return to the top with the same viewport-relative gesture. One extra
         # swipe is allowed to prove the top is stable; the bound is the number
         # of revealing swipes plus that proof.
         frame = current
         for _ in range(revealing_scrolls + 1):
             scrolls.append(_roster_swipe(controller, frame, down=False))
+            if settle:
+                sleep(settle)
             after = _capture(capture)
             difference = frame_difference(frame, after)
             if difference <= STABLE_FRAME_MAX_DIFFERENCE:
@@ -1833,6 +1859,7 @@ def collect_roster(
         scroll_count=revealing_scrolls,
         scroll_attempts=attempts,
         scroll_limit_reached=limit_reached,
+        scroll_surface_lost=surface_lost,
     )
 
 
@@ -1951,6 +1978,8 @@ def discover_roster(
                 opened.snapshot,
                 route=opened.route,
                 action_labels=action_labels,
+                settle=settle,
+                sleep=sleep,
             )
             if scroll
             else enumerate_roster(

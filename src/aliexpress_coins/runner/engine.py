@@ -1013,6 +1013,8 @@ def _plan_dry_run(
                 context.catalogue,
                 frame,
                 route=DiscoveryRoute.INLINE,
+                settle=context.config.settle_seconds,
+                sleep=context.sleep,
             )
         else:
             roster = enumerate_roster(frame, context.catalogue, route=DiscoveryRoute.INLINE)
@@ -1325,6 +1327,13 @@ def _unreadable_plan_reason(
             reason = 'surface_unverified: task rows were read but the surface never settled'
         elif roster_waits and roster_waits[-1]['status'] != 'satisfied':
             reason = 'surface_unverified: task rows were read but the row set never settled'
+        elif roster.scroll_attempts and roster.incomplete:
+            # Absence is evidence only from a read that was proved complete.
+            reason = (
+                f'surface_incomplete: the scrolled boost list was not read completely '
+                f'({roster.count} row(s) after {roster.scroll_attempts} scroll(s); '
+                f'bound={roster.scroll_limit_reached}, surface_lost={roster.scroll_surface_lost})'
+            )
         else:
             return None
     elif surface is Surface.ROWS_ABSENT:
@@ -1427,6 +1436,8 @@ def _discover_or_fallback(
                     context.catalogue,
                     frame,
                     route=DiscoveryRoute.INLINE,
+                    settle=context.config.settle_seconds,
+                    sleep=context.sleep,
                 )
                 if surface is Surface.BOOST_PAGE and context.scroll_rosters
                 else enumerate_roster(frame, context.catalogue, route=DiscoveryRoute.INLINE)
@@ -1631,8 +1642,14 @@ def _recheck_acted_row(
             context.catalogue,
             opened.snapshot,
             route=opened.route,
+            settle=context.config.settle_seconds,
+            sleep=context.sleep,
         )
         fresh = next((candidate for candidate in fresh_roster.entries if candidate.key == key), None)
+        if fresh is None and fresh_roster.incomplete:
+            # A truncated or partly split list is not proof that the row is
+            # gone. Keep the acted marker and the task retryable.
+            return False, None
     if fresh is not None:
         if fresh.progress is not None and fresh.progress.complete:
             return True, None
@@ -2050,8 +2067,10 @@ def _observe(
                 context.catalogue,
                 opened.snapshot,
                 route=opened.route if route is None else route,
+                settle=context.config.settle_seconds,
+                sleep=context.sleep,
             )
-            if context.scroll_rosters and previous is not None and previous.scroll_count > 0
+            if context.scroll_rosters and previous is not None and previous.scroll_attempts > 0
             else None
         )
         return observer.observe(

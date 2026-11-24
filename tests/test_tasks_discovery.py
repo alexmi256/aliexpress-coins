@@ -1791,6 +1791,51 @@ def test_collect_roster_reports_the_scroll_bound_and_keeps_a_changing_frame(cata
     assert roster.as_dict()['scroll_limit_reached'] is True
 
 
+def test_collect_roster_stops_when_a_scroll_leaves_the_boost_surface(catalogue: TaskCatalogue) -> None:
+    first = replace(
+        _snapshot(
+            _box('Coins boost', 100, 100, 500, 150),
+            _box('Place an order on this page', 100, 600, 700, 640),
+            _box('GO', 980, 630, 1040, 670),
+        ),
+        image=Image.new('RGB', (1200, 2000), 'white'),
+    )
+    launcher = replace(
+        _snapshot(_box('For you', 100, 200, 400, 260), _box('Search', 100, 300, 300, 360)),
+        image=Image.new('RGB', (1200, 2000), '#bbbbbb'),
+    )
+    device = _RecordingDevice()
+
+    roster = collect_roster(
+        _controller(device, first),
+        _Capture((launcher, launcher, launcher)),
+        catalogue,
+        first,
+    )
+
+    assert roster.titles == ('Place an order on this page',)
+    assert roster.scroll_surface_lost is True
+    assert roster.incomplete is True
+    assert roster.warning is not None
+    assert 'boost surface was left' in roster.warning
+    assert roster.as_dict()['scroll_surface_lost'] is True
+    # One downward swipe only: no restore swipes on the foreign surface.
+    assert len(device.swipes) == 1
+
+
+def test_collect_roster_rejects_a_negative_settle(catalogue: TaskCatalogue) -> None:
+    frame = _snapshot(_box('Coins boost', 100, 100, 500, 150))
+
+    with pytest.raises(ValueError, match='settle'):
+        collect_roster(
+            _controller(_RecordingDevice(), frame),
+            _Capture((frame,)),
+            catalogue,
+            frame,
+            settle=-1.0,
+        )
+
+
 def test_merge_frame_rosters_requires_at_least_one_frame() -> None:
     with pytest.raises(ValueError, match='at least one frame roster'):
         _merge_frame_rosters(())
