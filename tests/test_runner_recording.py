@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import UTC, datetime, timedelta
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -96,6 +97,7 @@ def _recorder(
     *,
     aftermath_frames: int = 0,
     max_frames: int = 120,
+    max_bytes: int = 4 * 1024 * 1024,
     window_seconds: float = 30.0,
     logger: logging.Logger | None = None,
 ) -> FailureRecorder:
@@ -107,6 +109,7 @@ def _recorder(
         aftermath_frames=aftermath_frames,
         aftermath_interval=0.0,
         max_frames=max_frames,
+        max_bytes=max_bytes,
         window_seconds=window_seconds,
         logger=logger,
     )
@@ -202,7 +205,9 @@ def test_a_failure_writes_the_bounded_sequence_and_a_sidecar(tmp_path: Path) -> 
     assert 'coins_quiz-attempt-1-' in recording['directory']
     assert len(recording['frames']) == 3
     directory = report.run_dir / recording['directory']
-    assert len(list(directory.glob('frame-*.png'))) == 3
+    frames = sorted(directory.glob('frame-*.jpg'))
+    assert len(frames) == 3
+    assert frames[0].read_bytes().startswith(b'\xff\xd8\xff')
     sidecar = json.loads((directory / 'attempt.json').read_text(encoding='utf-8'))
     assert sidecar['task'] == 'Take the coins quiz'
     assert sidecar['attempt'] == 1
@@ -212,8 +217,9 @@ def test_a_failure_writes_the_bounded_sequence_and_a_sidecar(tmp_path: Path) -> 
     assert sidecar['point'] == [100, 220]
     assert sidecar['action']['presses'] == 1
     assert sidecar['action']['keys'] == [{'name': 'KEYCODE_BACK'}]
-    assert sidecar['frames'][0]['file'] == 'frame-000.png'
+    assert sidecar['frames'][0]['file'] == 'frame-000.jpg'
     assert sidecar['window_seconds'] == 30.0
+    assert sidecar['max_bytes'] == 4 * 1024 * 1024
 
     report.write()
     report_payload = json.loads(report.json_path.read_text(encoding='utf-8'))
@@ -286,6 +292,107 @@ def test_the_rolling_buffer_drops_frames_older_than_the_window(tmp_path: Path) -
     assert [entry['captured_at'] for entry in sidecar['frames']] == [
         (CAPTURED_AT + timedelta(minutes=index)).isoformat() for index in (2, 3)
     ]
+
+
+def test_the_pre_action_frames_survive_the_window_and_frame_cap(tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    clock = _Clock()
+    recorder = _recorder(report, clock, window_seconds=2.0, max_frames=3)
+    recorder.wrap(_Source(_snapshot(minute=0), _snapshot(minute=1), _snapshot(minute=2), _snapshot(minute=3)))
+
+    clock.value = 0.0
+    recorder.capture()
+    recorder.begin(key='coins_quiz', title='Take the coins quiz', category='quiz')
+    clock.value = 10.0
+    recorder.capture()
+    recorder.pin_action()
+    clock.value = 11.0
+    recorder.capture()
+    clock.value = 12.0
+    recorder.capture()
+    recording = _finish_failure(recorder)
+
+    assert recording is not None
+    assert len(recording['frames']) == 3
+    sidecar = json.loads((report.run_dir / recording['sidecar']).read_text(encoding='utf-8'))
+    assert [entry['captured_at'] for entry in sidecar['frames']] == [
+        (CAPTURED_AT + timedelta(minutes=index)).isoformat() for index in (0, 1, 3)
+    ]
+
+
+def test_the_rolling_buffer_also_honors_the_byte_cap(tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    clock = _Clock()
+    first = _snapshot(minute=0)
+    second = _snapshot(minute=1)
+    buffer = BytesIO()
+    first.image.save(buffer, format='JPEG')
+    recorder = _recorder(report, clock, max_bytes=len(buffer.getvalue()))
+    recorder.wrap(_Source(first, second))
+
+    recorder.begin(key='coins_quiz', title='Take the coins quiz', category='quiz')
+    recorder.capture()
+    clock.sleep(1.0)
+    recorder.capture()
+    recording = _finish_failure(recorder)
+
+    assert recording is not None
+    assert len(recording['frames']) == 1
+    sidecar = json.loads((report.run_dir / recording['sidecar']).read_text(encoding='utf-8'))
+    assert sidecar['frames'][0]['captured_at'] == (CAPTURED_AT + timedelta(minutes=1)).isoformat()
+
+
+def test_pin_action_without_an_attempt_or_before_a_capture_uses_the_seed(tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    clock = _Clock()
+    recorder = _recorder(report, clock)
+    recorder.wrap(_Source(_snapshot()))
+
+    recorder.pin_action()
+    recorder.capture()
+    recorder.begin(key='coins_quiz', title='Take the coins quiz', category='quiz')
+    recorder.pin_action()
+    recording = _finish_failure(recorder)
+
+    assert recording is not None
+    assert len(recording['frames']) == 1
+
+
+def test_pinned_frames_cannot_be_dropped_by_a_tiny_frame_cap(tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    clock = _Clock()
+    recorder = _recorder(report, clock, max_frames=2)
+    recorder.wrap(_Source(_snapshot(minute=0), _snapshot(minute=1), _snapshot(minute=2)))
+
+    clock.value = 0.0
+    recorder.capture()
+    recorder.begin(key='coins_quiz', title='Take the coins quiz', category='quiz')
+    clock.value = 1.0
+    recorder.capture()
+    recorder.pin_action()
+    recorder.max_frames = 1
+    clock.value = 2.0
+    recorder.capture()
+    recording = _finish_failure(recorder)
+
+    assert recording is not None
+    assert len(recording['frames']) == 2
+
+
+def test_the_default_wall_clock_stamps_an_aware_utc_attempt(tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    clock = _Clock()
+    recorder = FailureRecorder(report, clock=clock, sleep=clock.sleep, aftermath_frames=0)
+    recorder.wrap(_Source(_snapshot()))
+
+    recorder.begin(key='coins_quiz', title='Take the coins quiz', category='quiz')
+    recorder.capture()
+    recording = _finish_failure(recorder)
+
+    assert recording is not None
+    sidecar = json.loads((report.run_dir / recording['sidecar']).read_text(encoding='utf-8'))
+    started_at = datetime.fromisoformat(sidecar['started_at'])
+    assert started_at.tzinfo is UTC
 
 
 def test_a_failed_aftermath_capture_is_a_warning_and_the_recording_still_lands(
@@ -445,6 +552,7 @@ def test_finish_without_an_active_attempt_is_a_noop(tmp_path: Path) -> None:
     [
         ({'window_seconds': 0.0}, 'window_seconds must be positive'),
         ({'max_frames': 0}, 'max_frames must be positive'),
+        ({'max_bytes': 0}, 'max_bytes must be positive'),
         ({'aftermath_frames': -1}, 'aftermath_frames must not be negative'),
         ({'aftermath_interval': -1.0}, 'aftermath_interval must not be negative'),
     ],

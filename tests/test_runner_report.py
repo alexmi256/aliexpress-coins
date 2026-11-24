@@ -448,7 +448,7 @@ def test_retention_prunes_old_failure_recordings_with_their_run(tmp_path: Path) 
     old = tmp_path / '20260101T000000Z'
     attempt = old / 'failures' / 'coins_quiz-attempt-1-20260101T000000Z'
     attempt.mkdir(parents=True)
-    (attempt / 'frame-000.png').write_bytes(b'png')
+    (attempt / 'frame-000.jpg').write_bytes(b'jpeg')
     (attempt / 'attempt.json').write_text('{}', encoding='utf-8')
     current = tmp_path / '20260102T000000Z'
     current.mkdir()
@@ -528,7 +528,7 @@ def test_failure_recordings_are_listed_per_attempt_in_both_report_files(tmp_path
             'key': 'coins_quiz',
             'attempt': 1,
             'failure_code': 'task_unverified',
-            'frames': ['failures/coins_quiz-attempt-1-20261122T033000Z/frame-000.png'],
+            'frames': ['failures/coins_quiz-attempt-1-20261122T033000Z/frame-000.jpg'],
             'directory': 'failures/coins_quiz-attempt-1-20261122T033000Z',
             'sidecar': 'failures/coins_quiz-attempt-1-20261122T033000Z/attempt.json',
         },
@@ -540,8 +540,8 @@ def test_failure_recordings_are_listed_per_attempt_in_both_report_files(tmp_path
             'attempt': 2,
             'failure_code': 'task_unverified',
             'frames': [
-                'failures/coins_quiz-attempt-2-20261122T033100Z/frame-000.png',
-                'failures/coins_quiz-attempt-2-20261122T033100Z/frame-001.png',
+                'failures/coins_quiz-attempt-2-20261122T033100Z/frame-000.jpg',
+                'failures/coins_quiz-attempt-2-20261122T033100Z/frame-001.jpg',
             ],
             'directory': 'failures/coins_quiz-attempt-2-20261122T033100Z',
             'sidecar': 'failures/coins_quiz-attempt-2-20261122T033100Z/attempt.json',
@@ -554,7 +554,7 @@ def test_failure_recordings_are_listed_per_attempt_in_both_report_files(tmp_path
     summary = report.summary_path.read_text(encoding='utf-8')
     assert len(payload['failure_recordings']) == 2
     assert payload['failure_recordings'][0]['attempt'] == 1
-    assert payload['failure_recordings'][1]['frames'][1].endswith('frame-001.png')
+    assert payload['failure_recordings'][1]['frames'][1].endswith('frame-001.jpg')
     assert '| Take the coins quiz | 1 | task_unverified | 1 | failures/coins_quiz-attempt-1-' in summary
     assert '| Take the coins quiz | 2 | task_unverified | 2 | failures/coins_quiz-attempt-2-' in summary
 

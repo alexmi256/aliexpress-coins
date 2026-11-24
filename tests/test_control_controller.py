@@ -109,6 +109,18 @@ def _controller(
     )
 
 
+def test_an_action_hook_runs_before_the_device_call() -> None:
+    device = _FakeDevice()
+    controller = _controller(device)
+    events: list[tuple[str, int]] = []
+
+    controller.set_action_hook(lambda: events.append(('hook', len(device.calls))))
+    controller.tap((600, 1000), why='test the pre-action frame')
+
+    assert events == [('hook', 0)]
+    assert len(device.calls) == 1
+
+
 def test_clamping_lands_inside_the_derived_inset_at_every_edge() -> None:
     device = _FakeDevice()
     controller = _controller(device)

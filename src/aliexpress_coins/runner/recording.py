@@ -1,29 +1,32 @@
 """Per-attempt failure recordings for a task that did not verify (#124).
 
-The recorder wraps the run's capture seam, so every frame the perception path
-already takes during an attempt is kept in a bounded rolling buffer. It never
-opens a second adb capture channel and it does not capture on a successful task:
-a good night writes nothing here.
-
-On a failed attempt the last :data:`DEFAULT_FAILURE_WINDOW_SECONDS` of frames
-are written with a small aftermath burst, one directory per attempt::
+The recorder wraps the run's capture seam *inside* the safety seam, so every
+frame the perception path already takes during an attempt is kept in a bounded
+rolling buffer. It never opens a second adb capture channel. A successful or
+skipped task writes nothing here; a failed attempt writes one directory::
 
     runs/<run-id>/failures/<key>-attempt-<n>-<UTC timestamp>/
         attempt.json
-        frame-000.png
-        frame-001.png
+        frame-000.jpg
+        frame-001.jpg
         ...
 
-The sidecar names the task, attempt, failure code, verification and every tap,
-key or swipe the executor reported. The engine adds the directory and frame
-paths to ``run.json`` and ``summary.md``; run retention removes the whole run
-directory with the rest of the night's evidence.
+The sidecar names the task, attempt, failure/abort code, verification and every
+tap, key or swipe the executor reported. The engine adds the directory and
+frame paths to ``run.json`` and ``summary.md``; run retention removes the whole
+run directory with the rest of the night's evidence.
 
-Memory and disk stay bounded: the buffer keeps at most
-:data:`DEFAULT_FAILURE_MAX_FRAMES` compressed PNG frames and drops anything
-older than the window. A successful attempt discards the buffer, and writing a
-recording is best-effort: a capture or write failure is logged and recorded in
-``artifact_errors`` rather than turning a task failure into a run failure.
+Frames are JPEG-encoded because encoding is on the capture path, and the buffer
+is bounded by the window, :data:`DEFAULT_FAILURE_MAX_FRAMES` and
+:data:`DEFAULT_FAILURE_MAX_BYTES`. The pre-attempt frame and the latest
+pre-action frame are pinned so a long attempt keeps the evidence the issue
+requires. Aftermath captures run directly from the raw source, outside
+unexpected-screen accounting, so an observer can never abort the run it is
+recording. A run-level abort or stop flushes what was already buffered.
+
+Writing a recording is best-effort: a capture, encode or write failure is
+logged and recorded in ``artifact_errors`` rather than turning a task failure
+into a run failure.
 """
 
 from __future__ import annotations
@@ -33,7 +36,6 @@ import logging
 import re
 import shutil
 import time
-from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -53,6 +55,7 @@ from aliexpress_coins.runner.safety import RunAborted
 __all__ = [
     'DEFAULT_FAILURE_AFTERMATH_FRAMES',
     'DEFAULT_FAILURE_AFTERMATH_INTERVAL_SECONDS',
+    'DEFAULT_FAILURE_MAX_BYTES',
     'DEFAULT_FAILURE_MAX_FRAMES',
     'DEFAULT_FAILURE_WINDOW_SECONDS',
     'FAILURE_DIRECTORY',
@@ -79,6 +82,16 @@ The cap bounds the buffer even when a task captures much faster than the
 screenshots it needs; the oldest frame is dropped first.
 """
 
+DEFAULT_FAILURE_MAX_BYTES = 4 * 1024 * 1024
+"""The per-attempt byte cap for encoded frames.
+
+JPEG frames are used because encoding is on the capture path: reviewed
+1200x2000 fixtures encode in about 3 ms as JPEG versus about 48-61 ms as PNG on
+the development machine. Four MiB keeps a dozen failed attempts to roughly
+48 MiB per run before run-level retention removes old attempts; the pinned
+pre-attempt and pre-action frames are kept even if that adds one or two frames.
+"""
+
 DEFAULT_FAILURE_AFTERMATH_FRAMES = 3
 """How many extra frames are taken after a failure.
 
@@ -98,7 +111,7 @@ _MonotonicClock = Callable[[], float]
 class _RecordedFrame:
     """One compressed frame and the OCR metadata that explains it."""
 
-    png: bytes
+    data: bytes
     boxes: tuple[TextBox, ...]
     captured_at: datetime
     geometry: DeviceGeometry
@@ -117,7 +130,9 @@ class _Attempt:
     number: int
     started_at: datetime
     started_monotonic: float
-    frames: deque[_RecordedFrame] = field(default_factory=deque)
+    frames: list[_RecordedFrame] = field(default_factory=list)
+    seed: _RecordedFrame | None = None
+    action_frame: _RecordedFrame | None = None
 
 
 def _utc_now() -> datetime:
@@ -151,6 +166,7 @@ class FailureRecorder:
         wall_clock: _WallClock = _utc_now,
         window_seconds: float = DEFAULT_FAILURE_WINDOW_SECONDS,
         max_frames: int = DEFAULT_FAILURE_MAX_FRAMES,
+        max_bytes: int = DEFAULT_FAILURE_MAX_BYTES,
         aftermath_frames: int = DEFAULT_FAILURE_AFTERMATH_FRAMES,
         aftermath_interval: float = DEFAULT_FAILURE_AFTERMATH_INTERVAL_SECONDS,
         logger: logging.Logger | None = None,
@@ -159,6 +175,8 @@ class FailureRecorder:
             raise ValueError(f'window_seconds must be positive, got {window_seconds!r}')
         if max_frames < 1:
             raise ValueError(f'max_frames must be positive, got {max_frames!r}')
+        if max_bytes < 1:
+            raise ValueError(f'max_bytes must be positive, got {max_bytes!r}')
         if aftermath_frames < 0:
             raise ValueError(f'aftermath_frames must not be negative, got {aftermath_frames!r}')
         if aftermath_interval < 0:
@@ -166,6 +184,7 @@ class FailureRecorder:
         self.report = report
         self.window_seconds = window_seconds
         self.max_frames = max_frames
+        self.max_bytes = max_bytes
         self.aftermath_frames = aftermath_frames
         self.aftermath_interval = aftermath_interval
         self._clock = clock
@@ -196,6 +215,16 @@ class FailureRecorder:
                 self._trim(attempt, self._clock())
         return frame
 
+    def pin_action(self) -> None:
+        """Pin the latest buffered frame as the one the action was issued from."""
+        attempt = self._active
+        if attempt is None:
+            return
+        if attempt.frames:
+            attempt.action_frame = attempt.frames[-1]
+        elif attempt.seed is not None:
+            attempt.action_frame = attempt.seed
+
     def begin(self, *, key: str, title: str, category: str | None = None) -> int:
         """Start buffering one dispatch attempt and return its 1-based number."""
         self._active = None
@@ -209,12 +238,9 @@ class FailureRecorder:
             number=number,
             started_at=started_at,
             started_monotonic=self._clock(),
-            frames=deque(maxlen=self.max_frames),
         )
         if self._last_frame is not None:
-            recorded = self._encode(self._last_frame)
-            if recorded is not None:
-                attempt.frames.append(recorded)
+            attempt.seed = self._encode(self._last_frame)
         self._active = attempt
         self._logger.debug('%s', _event('failure_recording_started', key=key, attempt=number))
         return number
@@ -228,6 +254,7 @@ class FailureRecorder:
         completed: bool,
         failure_code: str | None,
         payload: Mapping[str, Any] | None = None,
+        aftermath: bool = True,
     ) -> dict[str, Any] | None:
         """Discard a success; write one per-attempt artifact for a failure."""
         attempt = self._active
@@ -246,7 +273,8 @@ class FailureRecorder:
                 )
                 return None
             try:
-                self._aftermath()
+                if aftermath:
+                    self._aftermath()
             except RunAborted, RunInterrupted:
                 raise
             self._trim(attempt, self._clock())
@@ -301,13 +329,43 @@ class FailureRecorder:
 
     def _trim(self, attempt: _Attempt, now: float) -> None:
         cutoff = now - self.window_seconds
-        while attempt.frames and attempt.frames[0].observed_at < cutoff:
-            attempt.frames.popleft()
+        pinned = {id(frame) for frame in self._pinned_frames(attempt)}
+        attempt.frames[:] = [frame for frame in attempt.frames if id(frame) in pinned or frame.observed_at >= cutoff]
+        while len(self._buffered_frames(attempt)) > self.max_frames and self._drop_oldest_unpinned(attempt):
+            pass
+        while self._buffered_bytes(attempt) > self.max_bytes and self._drop_oldest_unpinned(attempt):
+            pass
+
+    def _pinned_frames(self, attempt: _Attempt) -> list[_RecordedFrame]:
+        pinned: list[_RecordedFrame] = []
+        for frame in (attempt.seed, attempt.action_frame):
+            if frame is not None and all(frame is not other for other in pinned):
+                pinned.append(frame)
+        return pinned
+
+    def _buffered_frames(self, attempt: _Attempt) -> list[_RecordedFrame]:
+        frames: list[_RecordedFrame] = []
+        for frame in [*self._pinned_frames(attempt), *attempt.frames]:
+            if all(frame is not other for other in frames):
+                frames.append(frame)
+        return sorted(frames, key=lambda frame: frame.observed_at)
+
+    def _buffered_bytes(self, attempt: _Attempt) -> int:
+        return sum(len(frame.data) for frame in self._buffered_frames(attempt))
+
+    def _drop_oldest_unpinned(self, attempt: _Attempt) -> bool:
+        pinned = {id(frame) for frame in self._pinned_frames(attempt)}
+        for index, frame in enumerate(attempt.frames):
+            if id(frame) not in pinned:
+                del attempt.frames[index]
+                return True
+        return False
 
     def _encode(self, frame: Snapshot) -> _RecordedFrame | None:
         try:
             buffer = BytesIO()
-            frame.image.save(buffer, format='PNG')
+            image = frame.image if frame.image.mode == 'RGB' else frame.image.convert('RGB')
+            image.save(buffer, format='JPEG')
         except OSError as exc:
             self._logger.warning(
                 '%s',
@@ -315,7 +373,7 @@ class FailureRecorder:
             )
             return None
         return _RecordedFrame(
-            png=buffer.getvalue(),
+            data=buffer.getvalue(),
             boxes=frame.boxes,
             captured_at=frame.captured_at,
             geometry=frame.geometry,
@@ -342,9 +400,9 @@ class FailureRecorder:
         directory = _unique_directory(failures_dir, base_name)
         frame_payloads: list[dict[str, Any]] = []
         try:
-            for index, frame in enumerate(attempt.frames):
-                file_name = f'frame-{index:03d}.png'
-                atomic_write_bytes(directory / file_name, frame.png)
+            for index, frame in enumerate(self._buffered_frames(attempt)):
+                file_name = f'frame-{index:03d}.jpg'
+                atomic_write_bytes(directory / file_name, frame.data)
                 frame_payloads.append(
                     {
                         'file': file_name,
@@ -367,6 +425,7 @@ class FailureRecorder:
                 'ended_at': ended_at.isoformat(),
                 'window_seconds': self.window_seconds,
                 'max_frames': self.max_frames,
+                'max_bytes': self.max_bytes,
                 'aftermath_frames': self.aftermath_frames,
                 'outcome': outcome,
                 'completed': False,

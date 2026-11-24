@@ -25,6 +25,7 @@ import json
 import logging
 import math
 import random
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -248,6 +249,19 @@ class Controller:
         self._tap_count = 0
         self._key_count = 0
         self._swipe_count = 0
+        self._on_action: Callable[[], None] | None = None
+
+    def set_action_hook(self, hook: Callable[[], None] | None) -> None:
+        """Observe an action immediately before it reaches the device.
+
+        The failure recorder uses this to pin the frame the action was issued
+        from without adding a capture or encode to the tap itself.
+        """
+        self._on_action = hook
+
+    def _notify_action(self) -> None:
+        if self._on_action is not None:
+            self._on_action()
 
     @classmethod
     def from_frame(
@@ -345,6 +359,7 @@ class Controller:
             keyevent = getattr(self._device, 'keyevent', None)
             if keyevent is None:
                 raise InputError(f'the input device cannot press {name!r}')
+            self._notify_action()
             keyevent(name)
         return record
 
@@ -427,6 +442,7 @@ class Controller:
             swipe = getattr(self._device, 'swipe', None)
             if swipe is None:
                 raise InputError('the input device cannot swipe')
+            self._notify_action()
             swipe(clamped[0][0], clamped[0][1], clamped[1][0], clamped[1][1], duration_ms)
         return record
 
@@ -495,6 +511,7 @@ class Controller:
         self._logger.info('%s', record.to_json())
 
         if not self._dry_run:
+            self._notify_action()
             self._device.tap(*final)
         return record
 

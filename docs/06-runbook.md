@@ -407,15 +407,21 @@ runs/<UTC timestamp>/          # e.g. runs/20261123T015402Z/
 │   └── failure.png            # best-effort, failed runs only
 └── failures/
     └── <key>-attempt-<n>-<UTC timestamp>/
-        ├── attempt.json       # failure code, verification, taps/keys/swipes
-        └── frame-000.png ...  # the attempt's last 30 s, plus three aftermath frames
+        ├── attempt.json       # failure/abort code, verification, taps/keys/swipes
+        └── frame-000.jpg ...  # pinned pre-action frame, last 30 s, three aftermath frames
 ```
 
-A successful task writes nothing under `failures/`: the rolling buffer is discarded. A failed
-attempt keeps its own directory, so two failures of the same task in one run leave two artifacts
-instead of overwriting one name. The 30 s window is capped at 120 frames (about 4 fps), and the
-normal run retention (`AECOINS_KEEP_RUNS`, default 30) removes those directories with the rest of
-the run.
+A successful or skipped task writes nothing under `failures/`: the rolling buffer is discarded. A
+failed attempt keeps its own directory, so two failures of the same task in one run leave two
+artifacts instead of overwriting one name. Frames are JPEG-encoded because encoding happens on the
+capture path; reviewed 1200x2000 fixtures measured about 3 ms as JPEG versus about 48-61 ms as PNG
+on the development machine. The buffer keeps the last 30 s, capped at 120 frames and 4 MiB per
+attempt, with the pre-attempt and last pre-action frames pinned so a long attempt does not lose the
+tap. A failure adds three aftermath frames at about 2.5 fps. The worst case is about 4 MiB per
+attempt plus the pinned frames, roughly 48 MiB for a 12-attempt run and about 1.4 GiB across 30
+retained runs. A run-level abort or operator stop writes the buffer already collected, with the
+abort/stop code, and does not spend aftermath frames. The normal run retention
+(`AECOINS_KEEP_RUNS`, default 30) removes those directories with the rest of the run.
 
 `AECOINS_RUNS_DIR` overrides the root. In the container it is `/app/runs`, backed by the named
 volume `aliexpress-coins_runs`; `AECOINS_STATE_DIR` is `/app/state`, backed by
@@ -564,7 +570,7 @@ gate in #41.
 | **Popups closed** | verified dismissals by family, or `none` |
 | **Back on coins page** | whether the cleanup route proved the coin page |
 | **Detail / Failure / Abort / Run error** | the terminal sentence and the named failure, when present |
-| **Failure recordings** | one row per failed attempt, naming its artifact directory and frame count |
+| **Failure recordings** | one row per recorded attempt, naming its artifact directory and frame count |
 
 ### A good night
 
@@ -596,9 +602,10 @@ names the screen. `Skipped` lists rows that were never dispatched and groups
 them by `reason`: `policy` (deny list), `no executor`, `no action`, `daily limit`, `run budget`,
 `blacklisted after N attempts`, `stopped` or `not selected`.
 
-When a task fails, a `## Failure recordings` table follows the task table with one row per failed
+When a task fails, a `## Failure recordings` table follows the task table with one row per recorded
 attempt: the task, attempt number, failure code, frame count and the artifact directory under
-`failures/`. A run with no failed task has no such section and no recording paths.
+`failures/`. A run-level abort or operator stop also flushes the frames already collected. A run
+with no recorded failure has no such section and no recording paths.
 
 ### A budget-exhausted night
 
@@ -633,7 +640,7 @@ Raise a limit only deliberately; a larger budget is not a fix for a slow network
 | `surface`, `roster`, `route_error`, `observations` | what the roster looked like |
 | `balance_before`, `balance_after`, `balance_delta`, `balance_note` | the two recorded frames, or why one is unknown |
 | `popups_closed`, `shots`, `artifact_errors` | artifacts and best-effort write failures |
-| `failure_recordings` | one entry per failed attempt: task/key/attempt, failure code, artifact directory, frame and sidecar paths |
+| `failure_recordings` | one entry per recorded attempt: task/key/attempt, failure or abort code, artifact directory, frame and sidecar paths |
 | `notification` | attempted, sink, ok and a class-plus-status error |
 | `plan`, `plan_note` | the dry-run plan, when there was one; `plan.probe_failed` distinguishes an unreadable probe from evidence about the day, and `stable_waits` / `content_waits` / `roster_waits` record settling, row re-reads and row-set confirmation |
 | `abort` | safety code, reason and the screen that triggered it |

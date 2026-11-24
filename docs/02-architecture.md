@@ -68,8 +68,8 @@ acquire run.lock → timezone check → hygiene (wake, keyguard check, portrait 
   → open Coins boost ("Earn more"; warm re-entry if empty_boost) → enumerate roster
   → claim daily sign-ins (streak Collect + boost Daily check-in)
   → select next row by category cost/key/title → DispatchGate → budget/daily-limit check
-  → executor → verify → roster diff
-  → failed attempt? write failures/<key>-attempt-<n>-<timestamp>/ (rolling frames + sidecar)
+  → executor (failure frames observed inside the safety seam) → verify → roster diff
+  → failed/aborted attempt? write failures/<key>-attempt-<n>-<timestamp>/ (pinned frames + sidecar)
   → return to coins page → read balance-after → restore device settings
   → write run.json + summary.md → prune old runs → notify → release run.lock
 ```
