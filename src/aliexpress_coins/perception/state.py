@@ -156,6 +156,15 @@ list ``Explore sponsored items`` opens, and the same frame carries a right-edge
 dwell chip.
 """
 
+_SEARCH_LANDING_MARKER = 'Discover more'
+"""The category-card section on the search landing (#108).
+
+The page also carries a search field and, on this account, a search-history
+section. The history is account data and is never an identifier; the
+``Discover more`` section heading is the stable, reusable marker for the landing
+the ``Search for what you love`` row opens.
+"""
+
 
 class ScreenState(StrEnum):
     """The mutually exclusive states a captured frame can be in."""
@@ -599,6 +608,10 @@ def _page_marker(snapshot: Snapshot) -> Evidence | None:
     coin_store = _match(snapshot, _COIN_STORE_MARKER)
     if coin_store is not None:
         return Evidence('page_marker', coin_store.score, f'coin store: {coin_store.text!r}')
+
+    search_landing = _match(snapshot, _SEARCH_LANDING_MARKER)
+    if search_landing is not None:
+        return Evidence('page_marker', search_landing.score, f'search landing: {search_landing.text!r}')
 
     detail = _product_detail_marker(snapshot)
     if detail is not None:

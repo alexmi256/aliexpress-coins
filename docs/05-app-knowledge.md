@@ -42,7 +42,7 @@ between loads (e.g., `Browse surprise items` rotated to `Search for what you lov
 | Turn on notifications | Stay informed when rewards drop | +1 | — | allowed: `notification` (`notifications.py`) |
 | Add a coins shortcut | One tap away from your daily rewards | +1 | — | catalogued `shortcut`; descoped (#27, skipped `no executor`) |
 | Add & start using our widget | Add our widget to your homescreen to use | +1 | — | catalogued `widget`; descoped (#27, skipped `no executor`) |
-| Search for what you love | Earn by using keywords to explore items | +1 | `0/2` | **refused** (`unrecognised`, default-deny) |
+| Search for what you love | Earn by using keywords to explore items | +1 | `0/2` | allowed: `browse` (`search.py`) |
 | View Super discounts | Check out this page for 15 seconds | +1 | — | allowed: `super_discounts` (`browse_wait`, `browse.py`) |
 | Place an order on this page | Each order grants you rewards | — | `0/3` | **refused** (`spending_order`) |
 | Add 5 items to your cart | — | — | — | **refused** (`spending_cart`) |
@@ -50,8 +50,9 @@ between loads (e.g., `Browse surprise items` rotated to `Search for what you lov
 | Share coins with friends | Win rewards together | — | `0/3` | **refused** (`social`) |
 | *coin page only:* Merge Boss / Play & Earn / Prize Land | — | +30 / +900 | — | **refused** (games) |
 
-Four explicit deny rows plus `Search for what you love` (default-deny) sit beside allowed rows with
-identical `GO` buttons — enforcing the deny list at dispatch is mandatory.
+Four explicit deny rows sit beside allowed rows with identical `GO` buttons — enforcing the deny
+list at dispatch is mandatory. `Search for what you love` is now an allowed browse row with its own
+category-tap executor (#108).
 
 ### 4b. The stuck state (`empty_boost`) ✅
 
@@ -100,8 +101,16 @@ identical `GO` buttons — enforcing the deny list at dispatch is mandatory.
   unchanged. App settings' toggle deep-links to OS settings (no runtime dialog). The executor
   handles all four outcomes: immediate credit, app pre-prompt, runtime dialog (`Allow` / `Don't allow`),
   and OS settings redirect (`routed_to_settings`, stops without toggling).
-- **`Search for what you love` ⚠️:** not dispatched (`unrecognised`). No timer chip; progress stayed
-  `0/2` after one search ❓; two BACKs exit to the home feed.
+- **`Search for what you love` ✅ (2026-11-24 01:48–01:53 EST, recon):** two rounds, each paid +1
+  (balance `67 → 68 → 69`). `GO` opens a search landing with a search field, an account-specific
+  `Search history` section and a server-rendered `Discover more` grid of category cards. Landing on
+  the page alone did **not** advance the badge; tapping a history entry (`Smartphone`) only filled
+  the search field and also did not advance it. Tapping a category card under `Discover more`
+  (`Woman Clothing`, then `Sneakers`) advanced the row `0/2 → 1/2`; after the second category the
+  row was gone from the populated boost list (the app removes it at `2/2`). No timer chip and no
+  product visit are involved; the executor taps one untried category per round and verifies the
+  badge after returning. The landing is now classified as `PAGE` / `search_landing`; two BACKs
+  still exit to the home feed (docs/07 §1), so the measured shortcut route is used for every return.
 - **`View Super discounts` ✅ (2026-11-24 00:35 EST, run `20261124T053441Z`):** a timed view task.
   The row reads `View Super discounts`, subtitle `Check out this page for 15 seconds`, `GO`, and
   `+1`; there is no purchase step. The `GO` opens a destination page; the live run read the

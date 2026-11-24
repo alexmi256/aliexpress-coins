@@ -304,7 +304,8 @@ run.json: runs/20261123T015402Z/run.json
 Read it like this:
 
 - **`surface`** is the screen the planner understood: `rows_present`, `rows_absent`, `boost_page`,
-  `redeem_interstitial`, `empty_boost`, `coin_store`, `surprise_grid`, `product_detail`, or `unknown`. `unknown`,
+  `redeem_interstitial`, `empty_boost`, `coin_store`, `surprise_grid`, `search_landing`, `product_detail`,
+  or `unknown`. `unknown`,
   `empty_boost`, a redeem interstitial, or a `rows_absent` with no readable task row is an unreadable report, not a
   plan.
 - **steps** are the rows that would be dispatched, in order, with the catalogue key and executor

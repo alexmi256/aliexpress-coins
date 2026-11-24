@@ -145,8 +145,8 @@ re-checking whether the day is already done.
    `Daily check-in`), then walks allowed rows within `AECOINS_MAX_TASKS_PER_RUN` (default 12) and
    `AECOINS_RUN_BUDGET_SECONDS` (default 2700 s): browse-and-wait (timer chip), coins quiz
    (answers from and learns into [`data/quiz_bank.json`](data/README.md)), surprise items (3
-   distinct products per round), and notifications. Every task requires positive on-screen
-   verification.
+   distinct products per round), search landing (one `Discover more` category per round,
+   `0/2 → 1/2 → 2/2`), and notifications. Every task requires positive on-screen verification.
 4. **Report & retention** — returns to the coins page, restores device settings, writes
    `/app/runs/<UTC timestamp>/` (`summary.md`, `run.json`, `run.jsonl`, `roster.jsonl`,
    `shots/*.png` + OCR sidecars) in the `runs` Docker volume, and prunes beyond

@@ -40,6 +40,15 @@ SURPRISE_GRID_TITLE = 'Browse surprise items'
 SURPRISE_GRID_SUBTITLE = 'Tap 3 items on this page'
 """The surprise grid's header and instruction (docs/07 §3)."""
 
+SEARCH_LANDING_MARKER = 'Discover more'
+"""The category-card section on the search landing (#108).
+
+The landing also carries a search field and an account-specific
+``Search history`` section. The history is never used as an identifier; the
+server-rendered ``Discover more`` heading is the stable page marker and is not
+present on the boost row that opens the page.
+"""
+
 PRODUCT_DETAIL_ITEM = re.compile(r'\bitem\s+\d+\s*/\s*\d+\b', re.IGNORECASE)
 """The product page's own item counter; the stable detail-page marker."""
 
@@ -108,6 +117,7 @@ class Surface(StrEnum):
     EMPTY_BOOST = 'empty_boost'
     COIN_STORE = 'coin_store'
     SURPRISE_GRID = 'surprise_grid'
+    SEARCH_LANDING = 'search_landing'
     PRODUCT_DETAIL = 'product_detail'
     UNKNOWN = 'unknown'
 
@@ -166,6 +176,9 @@ def classify_surface(snapshot: Snapshot) -> Surface:
     if is_surprise_grid(snapshot):
         return Surface.SURPRISE_GRID
 
+    if is_search_landing(snapshot):
+        return Surface.SEARCH_LANDING
+
     return Surface.UNKNOWN
 
 
@@ -207,6 +220,17 @@ def is_surprise_grid(snapshot: Snapshot) -> bool:
         and contains_text(snapshot, SURPRISE_GRID_TITLE)
         and contains_text(snapshot, SURPRISE_GRID_SUBTITLE)
     )
+
+
+def is_search_landing(snapshot: Snapshot) -> bool:
+    """Whether the frame is the search landing opened by the search task.
+
+    The boost row repeats the title ``Search for what you love``, so the boost
+    page is explicitly excluded. The ``Discover more`` category heading is the
+    landing's own marker; the search-history text above it is account data and
+    deliberately not part of the match.
+    """
+    return not is_boost_page(snapshot) and contains_text(snapshot, SEARCH_LANDING_MARKER)
 
 
 def is_empty_boost(snapshot: Snapshot) -> bool:
@@ -266,6 +290,7 @@ __all__ = [
     'PRODUCT_DETAIL_ITEM',
     'PRODUCT_DETAIL_MARKERS',
     'REDEEM_MARKER',
+    'SEARCH_LANDING_MARKER',
     'SHORTCUT_DEEP_LINK',
     'SIGN_IN_MARKERS',
     'STREAK_CARD_HEIGHT_RATIO',
@@ -285,5 +310,6 @@ __all__ = [
     'is_empty_boost',
     'is_logged_out',
     'is_product_detail',
+    'is_search_landing',
     'is_surprise_grid',
 ]

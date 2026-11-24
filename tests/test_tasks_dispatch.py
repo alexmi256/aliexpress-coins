@@ -36,6 +36,7 @@ from aliexpress_coins.tasks.dispatch import DispatchGate, PolicyRefusal, PolicyR
 from aliexpress_coins.tasks.errors import TaskError
 from aliexpress_coins.tasks.notifications import run_notifications_task
 from aliexpress_coins.tasks.quiz import run_quiz_task
+from aliexpress_coins.tasks.search import run_search_task
 from aliexpress_coins.tasks.signin import claim_boost_checkin, claim_daily_signins, claim_streak
 from aliexpress_coins.tasks.surface import SurfaceRoute
 from aliexpress_coins.tasks.surprise import run_surprise_task
@@ -285,6 +286,7 @@ def test_a_raw_row_cannot_reach_any_executor(
     executors: tuple[tuple[str, Callable[..., Any]], ...] = (
         ('coins_quiz', run_quiz_task),
         ('sponsored_items', run_browse_task),
+        ('search_for_what_you_love', run_search_task),
         ('surprise_items', run_surprise_task),
         ('notifications', run_notifications_task),
     )

@@ -505,7 +505,7 @@ def _is_unexpected_inside_task(
     """
     if _is_product_detail(snapshot) or is_logged_out(snapshot):
         return False
-    if surface is Surface.EMPTY_BOOST:
+    if surface in (Surface.EMPTY_BOOST, Surface.SEARCH_LANDING):
         return False
     if task_key == _SURPRISE_TASK_KEY:
         # Only the surprise executor navigates to a headerless scrolled grid.

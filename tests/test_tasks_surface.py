@@ -36,6 +36,7 @@ from aliexpress_coins.tasks.surface import (
     classify_surface,
     has_task_rows,
     is_logged_out,
+    is_search_landing,
     is_surprise_grid,
 )
 
@@ -204,6 +205,15 @@ def test_classify_surface_names_the_recorded_coin_store(frames: dict[str, Snapsh
 
     assert surface is Surface.COIN_STORE
     assert not has_task_rows(frames['coin_store'])
+
+
+@pytest.mark.slow
+def test_classify_surface_names_the_recorded_search_landing(engine: RapidOcrEngine) -> None:
+    landing = _load(STATES / 'search_landing.png', engine)
+
+    assert is_search_landing(landing)
+    assert classify_surface(landing) is Surface.SEARCH_LANDING
+    assert classify_surface(_snapshot(_box('Search for what you love', 60, 400, 700, 450))) is Surface.UNKNOWN
 
 
 @pytest.mark.slow

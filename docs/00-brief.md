@@ -60,7 +60,8 @@ tapping a guessed coordinate ([`06-runbook.md`](06-runbook.md) §14).
   `Correct answer: X`, absorb `YOU CAN NOW REDEEM!`); **11c surprise items** (3 distinct products
   per round, BACK increments); **11d/11e shortcut & widget** (catalogued, automation descoped #27);
   **11f notifications** (immediate credit, app pre-prompt, Android runtime dialog, or stop at OS
-  settings without toggling).
+  settings without toggling); **11g search landing** (one `Discover more` category card per round,
+  badge `0/2 → 1/2 → 2/2`, never a search-history entry or typed account text).
 - **FR-12 / FR-13** Sweep popups after every navigation and verify completion positively (progress
   badge, completed control, balance delta, or row gone from a complete surface).
 
@@ -92,7 +93,7 @@ tapping a guessed coordinate ([`06-runbook.md`](06-runbook.md) §14).
 | Turn on notifications | ✅ allowed | `notification` (`notifications.py`) | handles system dialog / settings redirect |
 | Add a coins shortcut | ⏭️ descoped | `shortcut` (descoped, #27) | skipped as `no executor` |
 | Add & start using our widget | ⏭️ descoped | `widget` (descoped, #27) | skipped as `no executor` |
-| Search for what you love | ❌ refused | — | default-deny (`unrecognised`) |
+| Search for what you love | ✅ allowed | `browse` (`search.py`) | one `Discover more` category card per round, `2` rounds |
 | Play games (Prize Land, Play & Earn, Merge Boss, GoGo Match, Shelf Shuffle) | ❌ refused | — | refused by policy |
 | Convert water / diamonds / energy; Water to win | ❌ refused | — | refused by policy |
 | Buy / checkout / purchase / place an order / add to cart | ❌ refused | — | refused by policy |
