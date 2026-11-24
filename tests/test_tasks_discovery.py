@@ -48,9 +48,12 @@ from aliexpress_coins.tasks.discovery import (
     RosterEntry,
     RosterLog,
     RosterObserver,
+    RosterSplitFailure,
     RosterStatus,
+    _merge_frame_rosters,
     _observation_problem,
     _surface_family,
+    collect_roster,
     discover_roster,
     enumerate_roster,
     is_boost_page,
@@ -73,13 +76,17 @@ CAPTURED_AT = datetime(2026, 11, 21, 12, 0, tzinfo=UTC)
 
 
 class _RecordingDevice:
-    """The input seam: record taps instead of spawning adb."""
+    """The input seam: record taps and swipes instead of spawning adb."""
 
     def __init__(self) -> None:
         self.taps: list[tuple[int, int]] = []
+        self.swipes: list[tuple[int, int, int, int, int]] = []
 
     def tap(self, x: int, y: int) -> None:
         self.taps.append((x, y))
+
+    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int) -> None:
+        self.swipes.append((x1, y1, x2, y2, duration_ms))
 
 
 class _Capture:
@@ -1620,6 +1627,198 @@ def test_discover_roster_records_the_route_it_used(
     assert roster.route is DiscoveryRoute.BOOST
     assert roster.count == 4
     assert len(device.taps) == 1
+
+
+def test_collect_roster_scrolls_and_merges_rows_below_the_first_screenful(
+    catalogue: TaskCatalogue,
+) -> None:
+    first = _snapshot(
+        _box('Coins boost', 100, 100, 500, 150),
+        _box('Place an order on this page', 100, 600, 700, 640),
+        _box('GO', 980, 630, 1040, 670),
+        _box('Add 5 items to your cart', 100, 900, 700, 940),
+        _box('GO', 980, 930, 1040, 970),
+    )
+    second = _snapshot(
+        _box('Coins boost', 100, 100, 500, 150),
+        _box('Visit the page via coins', 100, 600, 700, 640),
+        _box('shortcut', 100, 645, 300, 675),
+        _box('GO', 980, 630, 1040, 670),
+        _box('Share coins with friends', 100, 900, 700, 940),
+        _box('GO', 980, 930, 1040, 970),
+    )
+    first = replace(first, image=Image.new('RGB', (1200, 2000), 'white'))
+    second = replace(second, image=Image.new('RGB', (1200, 2000), '#e0e0e0'))
+    device = _RecordingDevice()
+    controller = _controller(device, first)
+
+    roster = collect_roster(
+        controller,
+        _Capture((second, second, second, second)),
+        catalogue,
+        first,
+    )
+
+    assert roster.titles == (
+        'Place an order on this page',
+        'Add 5 items to your cart',
+        'Visit the page via coins',
+        'Share coins with friends',
+    )
+    assert roster.count == 4
+    assert roster.scroll_count == 1
+    assert roster.scroll_attempts >= 1
+    assert roster.unassigned_action_count == 0
+    assert roster.warning is None
+    # The scan returns the list to the top before a live dispatch reads it.
+    assert len(device.swipes) >= 2
+
+
+def test_collect_roster_reports_a_go_across_the_scrolled_list_that_never_became_a_row(
+    catalogue: TaskCatalogue,
+) -> None:
+    first = _snapshot(
+        _box('Coins boost', 100, 100, 500, 150),
+        _box('Place an order on this page', 100, 600, 700, 640),
+        _box('GO', 980, 630, 1040, 670),
+        _box('Add 5 items to your cart', 100, 900, 700, 940),
+        _box('GO', 980, 930, 1040, 970),
+    )
+    second = _snapshot(
+        _box('Coins boost', 100, 100, 500, 150),
+        _box('Visit the page via coins', 100, 600, 700, 640),
+        _box('GO', 980, 630, 1040, 670),
+        _box('Share coins with friends', 100, 900, 700, 940),
+        _box('GO', 980, 930, 1040, 970),
+        _box('GO', 980, 1400, 1040, 1440),
+    )
+    first = replace(first, image=Image.new('RGB', (1200, 2000), 'white'))
+    second = replace(second, image=Image.new('RGB', (1200, 2000), '#d0d0d0'))
+
+    roster = collect_roster(
+        _controller(_RecordingDevice(), first),
+        _Capture((second, second, second, second)),
+        catalogue,
+        first,
+    )
+
+    assert roster.count == 4
+    assert roster.unassigned_action_count == 1
+    assert roster.incomplete is True
+    assert roster.warning is not None
+    assert 'not enumerated' in roster.warning
+    assert 'across' in roster.warning
+
+
+def test_the_empty_boost_variant_is_named_as_a_load_fault() -> None:
+    assert (
+        _observation_problem(ScreenState.PAGE, Surface.EMPTY_BOOST)
+        == 'the empty boost page is a load fault, not an empty roster'
+    )
+
+
+def test_collect_roster_rejects_a_non_positive_scroll_bound(catalogue: TaskCatalogue) -> None:
+    frame = _snapshot(_box('Coins boost', 100, 100, 500, 150))
+
+    with pytest.raises(ValueError, match='max_scrolls'):
+        collect_roster(_controller(_RecordingDevice(), frame), _Capture((frame,)), catalogue, frame, max_scrolls=0)
+
+
+def test_collect_roster_stops_when_a_changed_frame_adds_no_new_titles(catalogue: TaskCatalogue) -> None:
+    row = (
+        _box('Coins boost', 100, 100, 500, 150),
+        _box('Place an order on this page', 100, 600, 700, 640),
+        _box('GO', 980, 630, 1040, 670),
+    )
+    first = replace(_snapshot(*row), image=Image.new('RGB', (1200, 2000), 'white'))
+    second = replace(_snapshot(*row), image=Image.new('RGB', (1200, 2000), '#dddddd'))
+    device = _RecordingDevice()
+
+    roster = collect_roster(
+        _controller(device, first),
+        _Capture((second, second, second)),
+        catalogue,
+        first,
+    )
+
+    assert roster.titles == ('Place an order on this page',)
+    assert roster.scroll_count == 1
+    assert roster.scroll_limit_reached is False
+    assert len(device.swipes) >= 2
+
+
+def test_collect_roster_reports_the_scroll_bound_and_keeps_a_changing_frame(catalogue: TaskCatalogue) -> None:
+    first = replace(
+        _snapshot(
+            _box('Coins boost', 100, 100, 500, 150),
+            _box('Place an order on this page', 100, 600, 700, 640),
+            _box('GO', 980, 630, 1040, 670),
+        ),
+        image=Image.new('RGB', (1200, 2000), 'white'),
+    )
+    second = replace(
+        _snapshot(
+            _box('Coins boost', 100, 100, 500, 150),
+            _box('Add 5 items to your cart', 100, 600, 700, 640),
+            _box('GO', 980, 630, 1040, 670),
+        ),
+        image=Image.new('RGB', (1200, 2000), '#cccccc'),
+    )
+    third = replace(
+        _snapshot(
+            _box('Coins boost', 100, 100, 500, 150),
+            _box('Share coins with friends', 100, 600, 700, 640),
+            _box('GO', 980, 630, 1040, 670),
+        ),
+        image=Image.new('RGB', (1200, 2000), '#999999'),
+    )
+
+    roster = collect_roster(
+        _controller(_RecordingDevice(), first),
+        _Capture((second, third, second, third, second)),
+        catalogue,
+        first,
+        max_scrolls=2,
+    )
+
+    assert roster.count == 3
+    assert roster.scroll_count == 2
+    assert roster.scroll_attempts == 2
+    assert roster.scroll_limit_reached is True
+    assert roster.incomplete is True
+    assert roster.warning is not None
+    assert 'still changing after 2 revealing scroll(s)' in roster.warning
+    assert roster.as_dict()['scroll_limit_reached'] is True
+
+
+def test_merge_frame_rosters_requires_at_least_one_frame() -> None:
+    with pytest.raises(ValueError, match='at least one frame roster'):
+        _merge_frame_rosters(())
+
+
+def test_merge_frame_rosters_keeps_a_later_action_and_one_split_failure(
+    frames: dict[str, Snapshot],
+    catalogue: TaskCatalogue,
+) -> None:
+    first = enumerate_roster(frames['state_boost'], catalogue)
+    entry = first.entries[0]
+    no_action = Roster(entries=(replace(entry, action=None),))
+    with_action = Roster(entries=(entry,))
+    failure = RosterSplitFailure(
+        title='Daily check-in',
+        container_title='Daily coins',
+        row='merged',
+        recovered=True,
+        detail='split',
+    )
+    left = Roster(entries=(replace(entry, action=None),), split_failures=(failure,))
+    right = Roster(entries=(entry,), split_failures=(failure,))
+
+    merged = _merge_frame_rosters((no_action, with_action, left, right))
+
+    assert len(merged.entries) == 1
+    assert merged.entries[0].action is entry.action
+    assert merged.split_failures == (failure,)
 
 
 def test_open_result_renders_its_route_and_empty_state(

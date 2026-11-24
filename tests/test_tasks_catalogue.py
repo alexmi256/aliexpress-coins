@@ -61,6 +61,7 @@ ALLOWED_FAMILIES: tuple[tuple[str, TaskCategory, float], ...] = (
     ('View Super discounts', TaskCategory.BROWSE_WAIT, 15.0),
     ('Check in to win Shopping credits', TaskCategory.BROWSE_WAIT, 15.0),
     ('Learn to save money with Coins Credits', TaskCategory.BROWSE_WAIT, 15.0),
+    ('Visit the page via coins shortcut', TaskCategory.SHORTCUT_VISIT, 0.0),
     ('Add a coins shortcut', TaskCategory.SHORTCUT, 0.0),
     ('Add & start using our widget', TaskCategory.WIDGET, 0.0),
     ('Turn on notifications', TaskCategory.NOTIFICATION, 0.0),
@@ -129,6 +130,7 @@ def test_the_committed_catalogue_loads_and_covers_both_policies() -> None:
         'super_discounts',
         'shopping_credits_checkin',
         'learn_to_save',
+        'coins_shortcut_visit',
         'coins_shortcut',
         'coins_widget',
         'notifications',
@@ -210,6 +212,23 @@ def test_every_allowed_family_resolves_to_a_row_with_a_category_and_wait(
     assert decision.spec.category is category
     assert decision.spec.wait_seconds == wait
     assert decision.rule == decision.spec.key
+
+
+def test_the_issue_130_shortcut_row_is_allowed_and_the_share_row_is_refused_by_name() -> None:
+    catalogue = load_task_catalogue(CATALOGUE_PATH)
+
+    shortcut = catalogue.decide('Visit the page via coins')
+    assert shortcut.allowed
+    assert shortcut.rule == 'coins_shortcut_visit'
+    assert shortcut.spec is not None
+    assert shortcut.spec.category is TaskCategory.SHORTCUT_VISIT
+
+    share = catalogue.decide('Share coins with friends')
+    assert share.denied
+    assert share.rule == 'social'
+    assert share.reason is not None
+    assert share.reason.startswith('social:')
+    assert 'sharing' in share.reason
 
 
 def test_an_unknown_label_is_refused_as_unrecognised() -> None:

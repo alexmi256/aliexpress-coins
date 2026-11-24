@@ -74,6 +74,7 @@ from aliexpress_coins.tasks.discovery import (
     RosterLog,
     RosterObservation,
     RosterObserver,
+    collect_roster,
     discover_roster,
     enumerate_roster,
     open_boost_list,
@@ -87,6 +88,7 @@ from aliexpress_coins.tasks.dispatch import (
 from aliexpress_coins.tasks.notifications import run_notifications_task
 from aliexpress_coins.tasks.quiz import run_quiz_task
 from aliexpress_coins.tasks.search import run_search_task
+from aliexpress_coins.tasks.shortcut import run_shortcut_visit_task
 from aliexpress_coins.tasks.signin import claim_daily_signins, read_coin_balance
 from aliexpress_coins.tasks.surface import (
     COIN_PAGE_MARKERS,
@@ -208,6 +210,7 @@ class RunContext:
     controller_factory: Callable[[Snapshot], Controller] | None = None
     observer: RosterObserver | None = None
     templates: TemplateStore | None = None
+    scroll_rosters: bool = True
     clock: Callable[[], float] = time.monotonic
     sleep: Callable[[float], None] = time.sleep
     wall_clock: Callable[[], datetime] = _utc_now
@@ -227,6 +230,7 @@ _EXECUTORS: frozenset[TaskCategory] = frozenset(
         TaskCategory.BROWSE,
         TaskCategory.BROWSE_WAIT,
         TaskCategory.ITEM_TAP,
+        TaskCategory.SHORTCUT_VISIT,
         TaskCategory.NOTIFICATION,
     },
 )
@@ -237,12 +241,15 @@ DISPATCH_TABLE: dict[TaskCategory, str] = {
     TaskCategory.BROWSE: 'search',
     TaskCategory.BROWSE_WAIT: 'browse-and-wait',
     TaskCategory.ITEM_TAP: 'surprise-items',
+    TaskCategory.SHORTCUT_VISIT: 'shortcut-visit',
     TaskCategory.NOTIFICATION: 'notifications',
 }
 """The catalogue categories this engine can dispatch, and their executor names.
 
-``shortcut`` and ``widget`` are deliberately absent: their executors belong to
-#27 and a row in those categories is reported as skipped rather than guessed at.
+The measured `Visit the page via coins shortcut` row is dispatchable through its
+own executor. The older `shortcut`/`widget` setup families remain absent: their
+launcher-item actions belong to #27 and are reported as skipped rather than
+guessed at.
 """
 
 TASK_RECOVERY_ATTEMPTS = UNEXPECTED_SCREEN_LIMIT
@@ -995,9 +1002,22 @@ def _plan_dry_run(
             frame = content.frame
             surface = classify_surface(frame)
 
-    def read_roster() -> Roster:
+    def read_roster(*, scroll: bool = True) -> Roster:
+        controller = context.controller
+        if controller is None and context.controller_factory is not None:
+            controller = _controller(context, frame)
+        if controller is not None and scroll and surface is Surface.BOOST_PAGE and context.scroll_rosters:
+            roster = collect_roster(
+                controller,
+                context.capture,
+                context.catalogue,
+                frame,
+                route=DiscoveryRoute.INLINE,
+            )
+        else:
+            roster = enumerate_roster(frame, context.catalogue, route=DiscoveryRoute.INLINE)
         return replace(
-            enumerate_roster(frame, context.catalogue, route=DiscoveryRoute.INLINE),
+            roster,
             surface_variant=surface,
             routes_taken=tuple(routes),
         )
@@ -1014,6 +1034,11 @@ def _plan_dry_run(
         nonlocal frame, surface
         previous: tuple[tuple[str, str | None, tuple[int, int] | None, str | None], ...] | None = None
         if current.empty:
+            return current
+        if current.scroll_count > 0:
+            # Collection already merged every frame until the list stopped
+            # revealing new titles. Re-reading one frame here would throw the
+            # first screenful away and plan only the bottom of the list.
             return current
 
         def settled(candidate: Snapshot) -> Snapshot | None:
@@ -1043,7 +1068,10 @@ def _plan_dry_run(
         surface = classify_surface(frame)
         return read_roster()
 
-    initial_roster = read_roster()
+    # The probe decides which route to take; the whole-list scroll happens once
+    # on the settled surface below. Scrolling the probe would spend a gesture on
+    # a page that may be replaced by the route or settle wait.
+    initial_roster = read_roster(scroll=False)
     needs_route = (
         (surface is Surface.UNKNOWN and initial_roster.empty)
         or (surface is Surface.NON_APP and initial_roster.empty)
@@ -1364,6 +1392,7 @@ def _discover_or_fallback(
                 context.catalogue,
                 navigate=context.navigate,
                 refresh=True,
+                scroll=context.scroll_rosters,
                 templates=context.templates,
                 timeout=DEFAULT_BOOST_TIMEOUT,
                 interval=DEFAULT_BOOST_INTERVAL,
@@ -1391,8 +1420,19 @@ def _discover_or_fallback(
         _guard_signed_in(context, frame)
         surface = classify_surface(frame)
         if surface in (Surface.BOOST_PAGE, Surface.EMPTY_BOOST, Surface.ROWS_PRESENT, Surface.ROWS_ABSENT):
+            roster = (
+                collect_roster(
+                    controller,
+                    context.capture,
+                    context.catalogue,
+                    frame,
+                    route=DiscoveryRoute.INLINE,
+                )
+                if surface is Surface.BOOST_PAGE and context.scroll_rosters
+                else enumerate_roster(frame, context.catalogue, route=DiscoveryRoute.INLINE)
+            )
             roster = replace(
-                enumerate_roster(frame, context.catalogue, route=DiscoveryRoute.INLINE),
+                roster,
                 surface_variant=surface,
                 routes_taken=(SurfaceRoute.SHORTCUT,),
                 refresh_attempted=True,
@@ -1452,6 +1492,10 @@ def _dispatch_entry(context: RunContext, controller: Controller, entry: RosterEn
             common['record_round_grid'] = context.record_round_grid
         return _from_executor(
             run_surprise_task(controller, context.capture, context.corpus, context.state, entry, **common),
+        )
+    if category is TaskCategory.SHORTCUT_VISIT:
+        return _from_executor(
+            run_shortcut_visit_task(controller, context.capture, context.corpus, context.state, entry, **common),
         )
     if category is TaskCategory.NOTIFICATION:
         return _from_executor(
@@ -1578,14 +1622,17 @@ def _recheck_acted_row(
         return False, None
 
     surface = classify_surface(opened.snapshot)
-    fresh = next(
-        (
-            candidate
-            for candidate in enumerate_roster(opened.snapshot, context.catalogue, route=opened.route).entries
-            if candidate.key == key
-        ),
-        None,
-    )
+    top_roster = enumerate_roster(opened.snapshot, context.catalogue, route=opened.route)
+    fresh = next((candidate for candidate in top_roster.entries if candidate.key == key), None)
+    if fresh is None and surface is Surface.BOOST_PAGE and context.scroll_rosters:
+        fresh_roster = collect_roster(
+            controller,
+            context.capture,
+            context.catalogue,
+            opened.snapshot,
+            route=opened.route,
+        )
+        fresh = next((candidate for candidate in fresh_roster.entries if candidate.key == key), None)
     if fresh is not None:
         if fresh.progress is not None and fresh.progress.complete:
             return True, None
@@ -1995,9 +2042,22 @@ def _observe(
             on_dismiss=on_dismiss,
         )
         _guard_signed_in(context, opened.snapshot)
+        previous = observer.roster
+        collected = (
+            collect_roster(
+                controller,
+                context.capture,
+                context.catalogue,
+                opened.snapshot,
+                route=opened.route if route is None else route,
+            )
+            if context.scroll_rosters and previous is not None and previous.scroll_count > 0
+            else None
+        )
         return observer.observe(
             opened.snapshot,
             route=opened.route if route is None else route,
+            roster=collected,
             timestamp=context.wall_clock(),
         )
     except RunAborted, RunInterrupted:

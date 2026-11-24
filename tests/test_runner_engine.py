@@ -80,9 +80,13 @@ CAPTURED_AT = datetime(2026, 11, 22, 3, 30, tzinfo=UTC)
 class _RecordingDevice:
     def __init__(self) -> None:
         self.taps: list[tuple[int, int]] = []
+        self.swipes: list[tuple[int, int, int, int, int]] = []
 
     def tap(self, x: int, y: int) -> None:
         self.taps.append((x, y))
+
+    def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int) -> None:
+        self.swipes.append((x1, y1, x2, y2, duration_ms))
 
 
 class _Clock:
@@ -437,6 +441,7 @@ def _context(
     hygiene: HygieneDevice | None = None,
     notifier: NotificationSink | None = None,
     notify_on_empty: bool = False,
+    scroll_rosters: bool = False,
 ) -> RunContext:
     config = replace(
         RunConfig.from_environment(
@@ -463,6 +468,7 @@ def _context(
         navigate=_Navigate(),
         state=DailyStateStore(config.state_dir, clock=lambda: CAPTURED_AT),
         controller=Controller.from_frame(_RecordingDevice(), capture.frames[0], rng=random.Random(0)),
+        scroll_rosters=scroll_rosters,
         clock=the_clock,
         sleep=the_clock.sleep,
         wall_clock=lambda: CAPTURED_AT,
@@ -518,11 +524,138 @@ def test_the_dispatch_table_covers_every_implemented_category(catalogue: TaskCat
         TaskCategory.BROWSE,
         TaskCategory.BROWSE_WAIT,
         TaskCategory.ITEM_TAP,
+        TaskCategory.SHORTCUT_VISIT,
         TaskCategory.NOTIFICATION,
     }
     assert TaskCategory.SHORTCUT not in engine.DISPATCH_TABLE
     assert TaskCategory.WIDGET not in engine.DISPATCH_TABLE
     assert catalogue.allowed
+
+
+def test_a_dry_run_uses_a_factory_controller_to_collect_a_scrolled_roster(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _boost_frame('coins_quiz')
+    roster = replace(
+        enumerate_roster(frame, catalogue),
+        surface_variant=Surface.BOOST_PAGE,
+        scroll_count=1,
+        scroll_attempts=2,
+    )
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame),
+        catalogue=catalogue,
+        corpus=corpus,
+        scroll_rosters=True,
+    )
+    context.config = replace(context.config, dry_run=True)
+    context.controller = None
+    context.controller_factory = lambda snapshot: Controller.from_frame(
+        _RecordingDevice(),
+        snapshot,
+        rng=random.Random(0),
+    )
+    monkeypatch.setattr(engine, 'collect_roster', lambda *args, **kwargs: roster)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.PLANNED
+    assert report.plan is not None
+    assert [step['key'] for step in report.plan['steps']] == ['coins_quiz']
+    assert report.roster is not None
+    assert report.roster['scroll_count'] == 1
+
+
+def test_a_pass_restart_names_an_unknown_or_empty_boost_surface() -> None:
+    observation = RosterObservation(
+        sequence=1,
+        timestamp=CAPTURED_AT,
+        rows=(),
+    )
+
+    unknown = Roster(entries=(), surface_variant=Surface.UNKNOWN)
+    empty_boost = Roster(entries=(), surface_variant=Surface.EMPTY_BOOST)
+
+    assert engine._pass_restart_reason(unknown, observation) == 'the task surface is unknown'
+    assert engine._pass_restart_reason(empty_boost, observation) == 'the Coins boost page is the documented load fault'
+
+
+def test_dispatch_entry_routes_the_shortcut_visit_row(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _snapshot(
+        _box('Coins boost', 100, 100, 500, 150),
+        _box('Visit the page via coins', 100, 600, 700, 640),
+        _box('shortcut', 100, 645, 300, 675),
+        _box('Unlock a daily surprise', 100, 680, 700, 710),
+        _box('GO', 980, 630, 1040, 670),
+    )
+    entry = DispatchGate(catalogue).authorize(enumerate_roster(frame, catalogue).entries[0])
+    context = _context(tmp_path, capture=_Capture(frame), catalogue=catalogue, corpus=corpus)
+    called: list[str] = []
+
+    def executor(*_args: Any, **_kwargs: Any) -> _FakeResult:
+        called.append('shortcut')
+        return _FakeResult(completed=True)
+
+    monkeypatch.setattr(engine, 'run_shortcut_visit_task', executor)
+
+    result = engine._dispatch_entry(context, cast(Controller, context.controller), entry)
+
+    assert result.completed is True
+    assert called == ['shortcut']
+
+
+def test_an_acted_recheck_scrolls_for_a_key_below_the_fold(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    top = replace(
+        _snapshot(
+            _box('Coins boost', 100, 100, 500, 150),
+            _box('Place an order on this page', 100, 600, 700, 640),
+            _box('GO', 980, 630, 1040, 670),
+        ),
+        image=Image.new('RGB', (1200, 2000), 'white'),
+    )
+    below = replace(
+        _snapshot(
+            _box('Coins boost', 100, 100, 500, 150),
+            _box('Visit the page via coins', 100, 600, 700, 640),
+            _box('shortcut', 100, 645, 300, 675),
+            _box('Unlock a daily surprise', 100, 680, 700, 710),
+            _box('GO', 980, 630, 1040, 670),
+        ),
+        image=Image.new('RGB', (1200, 2000), '#e0e0e0'),
+    )
+    entry = DispatchGate(catalogue).authorize(enumerate_roster(below, catalogue).entries[0])
+    context = _context(
+        tmp_path,
+        capture=_Capture(below, below, below),
+        catalogue=catalogue,
+        corpus=corpus,
+        scroll_rosters=True,
+    )
+    monkeypatch.setattr(
+        engine,
+        'open_boost_list',
+        lambda *args, **kwargs: BoostList(snapshot=top, route=DiscoveryRoute.BOOST, detail='test'),
+    )
+
+    readable, fresh = engine._recheck_acted_row(context, cast(Controller, context.controller), entry)
+
+    assert readable is True
+    assert fresh is not None
+    assert fresh.key == 'coins_shortcut_visit'
 
 
 @pytest.mark.slow

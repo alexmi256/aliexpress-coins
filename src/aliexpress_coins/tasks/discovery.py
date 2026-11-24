@@ -35,7 +35,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, cast
 
-from aliexpress_coins.control.controller import Controller, TapRecord
+from aliexpress_coins.control.controller import Controller, SwipeRecord, TapRecord
 from aliexpress_coins.control.popups import DismissReport, PopupCorpus, _matching_family, dismiss_after
 from aliexpress_coins.perception.errors import OcrError, SnapshotError, StateTimeout
 from aliexpress_coins.perception.layout import (
@@ -56,6 +56,12 @@ from aliexpress_coins.perception.matching import (
     find_text,
     normalize,
     similarity,
+)
+from aliexpress_coins.perception.scroll import (
+    SCROLL_START_FRACTION,
+    SCROLL_VIEWPORT_FRACTION,
+    STABLE_FRAME_MAX_DIFFERENCE,
+    frame_difference,
 )
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.state import (
@@ -103,6 +109,7 @@ __all__ = [
     'DEFAULT_OBSERVATION_CAP',
     'EARN_MORE_LABEL',
     'EMPTY_BOOST_MARKER',
+    'MAX_ROSTER_SCROLLS',
     'ROSTER_LOG_NAME',
     'ROSTER_OBSERVATION_SCHEMA',
     'BoostList',
@@ -120,6 +127,7 @@ __all__ = [
     'RosterRow',
     'RosterSplitFailure',
     'RosterStatus',
+    'collect_roster',
     'diff_rosters',
     'discover_roster',
     'enumerate_roster',
@@ -160,6 +168,15 @@ DEFAULT_OBSERVATION_CAP = 13
 The measured ``AECOINS_MAX_TASKS_PER_RUN`` default is 12. One observation per
 completed task plus the final capture needs 13, so the cap always leaves room
 for that final capture. The cap is a churn guard, not a work budget.
+"""
+
+MAX_ROSTER_SCROLLS = 8
+"""How many downward swipes may be spent reading the whole boost list.
+
+The list scrolls but has no page count. Eight viewport-sized swipes reach the
+end of the measured list with room to spare; the search also stops on a stable
+frame or on a frame that names no new row. The bound is explicit so a server
+that keeps appending rows cannot hold discovery forever.
 """
 
 _MAX_TASKS_ENV = 'AECOINS_MAX_TASKS_PER_RUN'
@@ -374,6 +391,9 @@ class Roster:
     visible_action_count: int = 0
     unassigned_action_count: int = 0
     split_failures: tuple[RosterSplitFailure, ...] = ()
+    scroll_count: int = 0
+    scroll_attempts: int = 0
+    scroll_limit_reached: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, 'entries', tuple(self.entries))
@@ -437,6 +457,7 @@ class Roster:
         return (
             self.surface_variant is Surface.NON_APP
             or self.unassigned_action_count > 0
+            or self.scroll_limit_reached
             or any(not failure.recovered for failure in self.split_failures)
         )
 
@@ -450,13 +471,18 @@ class Roster:
         """
         problems: list[str] = []
         if self.unassigned_action_count:
-            problems.append(
-                f'{self.visible_action_count} visible GO button(s) but {self.unassigned_action_count} '
-                'task action(s) were not enumerated'
-            )
+            button_count = f'{self.visible_action_count} visible GO button(s)'
+            if self.scroll_attempts:
+                button_count = f'{self.visible_action_count} GO button(s) across {self.scroll_attempts + 1} frame(s)'
+            problems.append(f'{button_count} but {self.unassigned_action_count} task action(s) were not enumerated')
         unrecovered = sum(not failure.recovered for failure in self.split_failures)
         if unrecovered:
             problems.append(f'{unrecovered} known task title(s) could not be split from another row')
+        if self.scroll_limit_reached:
+            problems.append(
+                f'the boost list was still changing after {self.scroll_count} revealing scroll(s); '
+                'more rows may exist below the fold'
+            )
         if problems:
             return '; '.join(problems)
         if self.split_failures:
@@ -483,6 +509,9 @@ class Roster:
             'nothing_available': self.nothing_available,
             'visible_action_count': self.visible_action_count,
             'unassigned_action_count': self.unassigned_action_count,
+            'scroll_count': self.scroll_count,
+            'scroll_attempts': self.scroll_attempts,
+            'scroll_limit_reached': self.scroll_limit_reached,
             'incomplete': self.incomplete,
             'warning': self.warning,
             'split_failures': [failure.as_dict() for failure in self.split_failures],
@@ -663,6 +692,9 @@ class RosterObservation:
             record['roster_diagnostics'] = {
                 'visible_action_count': self.roster.visible_action_count,
                 'unassigned_action_count': self.roster.unassigned_action_count,
+                'scroll_count': self.roster.scroll_count,
+                'scroll_attempts': self.roster.scroll_attempts,
+                'scroll_limit_reached': self.roster.scroll_limit_reached,
                 'incomplete': self.roster.incomplete,
                 'warning': self.roster.warning,
                 'split_failures': [failure.as_dict() for failure in self.roster.split_failures],
@@ -738,17 +770,19 @@ def observe_roster(
     known_candidates: Collection[str] = (),
     action_labels: Sequence[str] = DEFAULT_ACTION_LABELS,
     route: DiscoveryRoute | None = None,
+    roster: Roster | None = None,
     logger: logging.Logger | None = None,
 ) -> RosterObservation:
-    """Capture, classify and enumerate one fresh roster, then diff it.
+    """Capture, classify and read one fresh roster, then diff it.
 
     ``source`` is the capture seam (a callable or an object with ``capture``) or
     an already captured :class:`Snapshot`. The current frame is read with
-    :func:`enumerate_roster`; no navigation is attempted here, because the task
-    executor has already returned the app to the task surface. A loading page, a
-    popup, the redeem interstitial or an ``UNKNOWN`` surface is a failed
-    observation: it is recorded with ``error`` and the *previous* roster is kept,
-    so one bad frame never ends the walk.
+    :func:`enumerate_roster` unless the caller has already scrolled and merged
+    the list, in which case ``roster`` is that whole-list read. No navigation is
+    attempted here, because the task executor has already returned the app to the
+    task surface. A loading page, a popup, the redeem interstitial or an
+    ``UNKNOWN`` surface is a failed observation: it is recorded with ``error`` and
+    the *previous* roster is kept, so one bad frame never ends the walk.
     """
     if sequence < 1:
         raise ValueError(f'sequence must be positive, got {sequence!r}')
@@ -773,15 +807,17 @@ def observe_roster(
                 f'the surface changed from {previous.surface_variant.value} to {variant.value}; '
                 'the previous roster is kept',
             )
-        roster = replace(
-            enumerate_roster(
+        current = (
+            roster
+            if roster is not None
+            else enumerate_roster(
                 snapshot,
                 catalogue,
                 route=route if route is not None else (previous.route if previous is not None else None),
                 action_labels=action_labels,
-            ),
-            surface_variant=variant,
+            )
         )
+        current = replace(current, surface_variant=variant)
     except (OcrError, OSError, SnapshotError, StateTimeout, _ObservationFailure) as exc:
         rows = _rows_of(previous)
         observation = RosterObservation(
@@ -795,14 +831,14 @@ def observe_roster(
         _log_observation(logger, observation)
         return observation
 
-    rows = tuple(RosterRow.from_entry(entry) for entry in roster.entries)
+    rows = tuple(RosterRow.from_entry(entry) for entry in current.entries)
     observation = RosterObservation(
         sequence=sequence,
         timestamp=stamp,
         rows=rows,
-        diff=diff_rosters(previous, roster, known_candidates=known_candidates),
+        diff=diff_rosters(previous, current, known_candidates=known_candidates),
         surface_variant=variant,
-        roster=roster,
+        roster=current,
     )
     _log_observation(logger, observation)
     return observation
@@ -978,6 +1014,7 @@ class RosterObserver:
         source: CaptureSource | Snapshot,
         *,
         route: DiscoveryRoute | None = None,
+        roster: Roster | None = None,
         timestamp: datetime | None = None,
     ) -> RosterObservation:
         """Take the next observation, or report the cap without capturing."""
@@ -992,6 +1029,7 @@ class RosterObserver:
             known_candidates=self._seen_candidates,
             action_labels=self._action_labels,
             route=route,
+            roster=roster,
             logger=self._logger,
         )
         self._sequence += 1
@@ -1113,6 +1151,9 @@ def _log_observation(
         payload['roster_diagnostics'] = {
             'visible_action_count': roster.visible_action_count,
             'unassigned_action_count': roster.unassigned_action_count,
+            'scroll_count': roster.scroll_count,
+            'scroll_attempts': roster.scroll_attempts,
+            'scroll_limit_reached': roster.scroll_limit_reached,
             'incomplete': roster.incomplete,
             'warning': roster.warning,
             'split_failures': [failure.as_dict() for failure in roster.split_failures],
@@ -1707,6 +1748,135 @@ def enumerate_roster(
     )
 
 
+def collect_roster(
+    controller: Controller,
+    capture: CaptureSource,
+    catalogue: TaskCatalogue,
+    initial: Snapshot,
+    *,
+    route: DiscoveryRoute | None = None,
+    action_labels: Sequence[str] = DEFAULT_ACTION_LABELS,
+    max_scrolls: int = MAX_ROSTER_SCROLLS,
+) -> Roster:
+    """Read the whole boost list, scrolling past the first screenful.
+
+    The list is a single scrollable surface, so the first frame is only a
+    screenful. Each swipe is viewport-relative and bounded by ``max_scrolls``;
+    the search stops when the frame stops changing or when a frame names no
+    title that was not already collected. Rows are merged by title, keeping the
+    first readable copy, and the list is returned to the top so the caller's
+    next action sees the same first screenful it would without scrolling.
+
+    The action counters are aggregated across every read frame. A ``GO`` that
+    never became a row in any frame therefore stays an unassigned action, which
+    is what turns #107's per-frame count check into a whole-list check instead
+    of a check on one screenful.
+
+    Only the boost page scrolls. The coin page's inline rows are a different
+    surface with its own layout; sweeping them would be an unmeasured gesture.
+    """
+    if max_scrolls < 1:
+        raise ValueError(f'max_scrolls must be positive, got {max_scrolls!r}')
+    first = enumerate_roster(initial, catalogue, route=route, action_labels=action_labels)
+    if not is_boost_page(initial) or is_empty_boost(initial):
+        return first
+
+    frame = initial
+    rosters = [first]
+    scrolls: list[SwipeRecord] = []
+    revealing_scrolls = 0
+    attempts = 0
+    limit_reached = False
+
+    for _ in range(max_scrolls):
+        attempts += 1
+        scrolls.append(_roster_swipe(controller, frame, down=True))
+        current = _capture(capture)
+        difference = frame_difference(frame, current)
+        if difference <= STABLE_FRAME_MAX_DIFFERENCE:
+            break
+        revealing_scrolls += 1
+        frame_roster = enumerate_roster(current, catalogue, route=route, action_labels=action_labels)
+        rosters.append(frame_roster)
+        known = {normalize(entry.title) for roster in rosters[:-1] for entry in roster.entries}
+        new_titles = {normalize(entry.title) for entry in frame_roster.entries if normalize(entry.title) not in known}
+        frame = current
+        if not new_titles:
+            break
+    else:
+        limit_reached = True
+
+    if revealing_scrolls:
+        # Return to the top with the same viewport-relative gesture. One extra
+        # swipe is allowed to prove the top is stable; the bound is the number
+        # of revealing swipes plus that proof.
+        frame = current
+        for _ in range(revealing_scrolls + 1):
+            scrolls.append(_roster_swipe(controller, frame, down=False))
+            after = _capture(capture)
+            difference = frame_difference(frame, after)
+            if difference <= STABLE_FRAME_MAX_DIFFERENCE:
+                break
+            frame = after
+
+    merged = _merge_frame_rosters(rosters)
+    action_titles = {
+        normalize(entry.title) for roster in rosters for entry in roster.entries if entry.action is not None
+    }
+    max_unassigned = max((roster.unassigned_action_count for roster in rosters), default=0)
+    visible_action_count = len(action_titles) + max_unassigned
+    assigned_titles = {normalize(entry.title) for entry in merged.entries if entry.action is not None}
+    return replace(
+        merged,
+        visible_action_count=visible_action_count,
+        unassigned_action_count=max(0, visible_action_count - len(assigned_titles)),
+        scroll_count=revealing_scrolls,
+        scroll_attempts=attempts,
+        scroll_limit_reached=limit_reached,
+    )
+
+
+def _roster_swipe(controller: Controller, frame: Snapshot, *, down: bool) -> SwipeRecord:
+    """One viewport-relative swipe; no device pixel is stored."""
+    start_y = frame.height * SCROLL_START_FRACTION
+    end_y = frame.height * (SCROLL_START_FRACTION - SCROLL_VIEWPORT_FRACTION)
+    if not down:
+        start_y, end_y = end_y, start_y
+    return controller.swipe_for_observation(
+        (frame.width / 2.0, start_y),
+        (frame.width / 2.0, end_y),
+        why='read every row of the Coins boost list' if down else 'restore the Coins boost list to its top',
+        label='roster scroll',
+    )
+
+
+def _merge_frame_rosters(rosters: Sequence[Roster]) -> Roster:
+    """Merge per-frame reads by title, in first-seen order."""
+    if not rosters:
+        raise ValueError('at least one frame roster is required')
+    first = rosters[0]
+    entries: dict[str, RosterEntry] = {}
+    order: list[str] = []
+    failures: dict[tuple[str, str | None, str, bool], RosterSplitFailure] = {}
+    for roster in rosters:
+        for entry in roster.entries:
+            identity = normalize(entry.title)
+            if identity not in entries:
+                entries[identity] = entry
+                order.append(identity)
+            elif entries[identity].action is None and entry.action is not None:
+                entries[identity] = entry
+        for failure in roster.split_failures:
+            failures.setdefault((failure.title, failure.container_title, failure.row, failure.recovered), failure)
+    return Roster(
+        entries=tuple(entries[identity] for identity in order),
+        route=first.route,
+        catalogue_version=first.catalogue_version,
+        default_deny_reason=first.default_deny_reason,
+        split_failures=tuple(failures.values()),
+    )
+
+
 def discover_roster(
     controller: Controller,
     capture: CaptureSource,
@@ -1716,6 +1886,7 @@ def discover_roster(
     navigate: RouteFirer | None = None,
     entry_route: SurfaceRoute = SurfaceRoute.SHORTCUT,
     refresh: bool = True,
+    scroll: bool = True,
     templates: TemplateStore | None = None,
     timeout: float = DEFAULT_BOOST_TIMEOUT,
     interval: float = DEFAULT_BOOST_INTERVAL,
@@ -1772,11 +1943,22 @@ def discover_roster(
         )
         variant = classify_surface(opened.snapshot)
         variants.append(variant)
-        roster = enumerate_roster(
-            opened.snapshot,
-            catalogue,
-            route=opened.route,
-            action_labels=action_labels,
+        roster = (
+            collect_roster(
+                controller,
+                capture,
+                catalogue,
+                opened.snapshot,
+                route=opened.route,
+                action_labels=action_labels,
+            )
+            if scroll
+            else enumerate_roster(
+                opened.snapshot,
+                catalogue,
+                route=opened.route,
+                action_labels=action_labels,
+            )
         )
         return roster, variant
 
