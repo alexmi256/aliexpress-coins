@@ -89,7 +89,7 @@ def test_a_full_report_round_trips_through_json_and_markdown(tmp_path: Path) -> 
     payload = json.loads(report.json_path.read_text(encoding='utf-8'))
     summary = report.summary_path.read_text(encoding='utf-8')
 
-    assert payload['schema'] == 5
+    assert payload['schema'] == 6
     assert payload['run_id'] == '20261122T033000Z'
     assert payload['status'] == 'budget'
     assert payload['budget'] == {'seconds': 2700.0, 'used_seconds': 60.0}
@@ -263,8 +263,10 @@ def test_a_completed_run_with_no_rows_still_writes_a_report(tmp_path: Path) -> N
     summary = report.summary_path.read_text(encoding='utf-8')
     payload = json.loads(report.json_path.read_text(encoding='utf-8'))
     assert payload['status'] == 'completed'
+    assert payload['failure_recordings'] == []
     assert 'No task was dispatched.' in summary
     assert 'Nothing was skipped.' in summary
+    assert '## Failure recordings' not in summary
     assert '**Device:** not prepared' in summary
     assert '**Geometry:** not captured' in summary
     assert '**Roster:** not read' in summary
@@ -442,6 +444,22 @@ def test_retention_keeps_a_current_run_that_sorts_oldest(tmp_path: Path) -> None
     assert sorted(path.name for path in tmp_path.iterdir()) == ['20260101T000000Z', '20260103T000000Z']
 
 
+def test_retention_prunes_old_failure_recordings_with_their_run(tmp_path: Path) -> None:
+    old = tmp_path / '20260101T000000Z'
+    attempt = old / 'failures' / 'coins_quiz-attempt-1-20260101T000000Z'
+    attempt.mkdir(parents=True)
+    (attempt / 'frame-000.png').write_bytes(b'png')
+    (attempt / 'attempt.json').write_text('{}', encoding='utf-8')
+    current = tmp_path / '20260102T000000Z'
+    current.mkdir()
+
+    pruned = prune_runs(tmp_path, keep=1, current_run_id=current.name)
+
+    assert pruned == (old,)
+    assert not attempt.exists()
+    assert current.is_dir()
+
+
 def test_retention_does_not_touch_files_or_links(tmp_path: Path) -> None:
     (tmp_path / '20260101T000000Z').mkdir()
     (tmp_path / '20260102T000000Z').mkdir()
@@ -500,6 +518,45 @@ def test_retention_reports_a_directory_that_cannot_be_removed(
     monkeypatch.setattr('aliexpress_coins.runner.report.shutil.rmtree', broken_rmtree)
     with pytest.raises(ReportError, match='could not prune every old run'):
         prune_runs(tmp_path, keep=1, current_run_id='20260102T000000Z')
+
+
+def test_failure_recordings_are_listed_per_attempt_in_both_report_files(tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    report.record_failure_recording(
+        {
+            'task': 'Take the coins quiz',
+            'key': 'coins_quiz',
+            'attempt': 1,
+            'failure_code': 'task_unverified',
+            'frames': ['failures/coins_quiz-attempt-1-20261122T033000Z/frame-000.png'],
+            'directory': 'failures/coins_quiz-attempt-1-20261122T033000Z',
+            'sidecar': 'failures/coins_quiz-attempt-1-20261122T033000Z/attempt.json',
+        },
+    )
+    report.record_failure_recording(
+        {
+            'task': 'Take the coins quiz',
+            'key': 'coins_quiz',
+            'attempt': 2,
+            'failure_code': 'task_unverified',
+            'frames': [
+                'failures/coins_quiz-attempt-2-20261122T033100Z/frame-000.png',
+                'failures/coins_quiz-attempt-2-20261122T033100Z/frame-001.png',
+            ],
+            'directory': 'failures/coins_quiz-attempt-2-20261122T033100Z',
+            'sidecar': 'failures/coins_quiz-attempt-2-20261122T033100Z/attempt.json',
+        },
+    )
+    report.finish(RunStatus.COMPLETED, budget_used_seconds=1.0, finished_at=FINISHED)
+    report.write()
+
+    payload = json.loads(report.json_path.read_text(encoding='utf-8'))
+    summary = report.summary_path.read_text(encoding='utf-8')
+    assert len(payload['failure_recordings']) == 2
+    assert payload['failure_recordings'][0]['attempt'] == 1
+    assert payload['failure_recordings'][1]['frames'][1].endswith('frame-001.png')
+    assert '| Take the coins quiz | 1 | task_unverified | 1 | failures/coins_quiz-attempt-1-' in summary
+    assert '| Take the coins quiz | 2 | task_unverified | 2 | failures/coins_quiz-attempt-2-' in summary
 
 
 def test_a_named_failure_and_a_task_code_reach_both_report_files(tmp_path: Path) -> None:

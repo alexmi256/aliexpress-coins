@@ -55,6 +55,8 @@ ALLOWED: dict[tuple[str, int | float], _Allowed] = {
     ('runner/lock.py', 64): _Allowed(1, 'owner-record read limit factor, not a pixel size'),
     ('runner/lock.py', 384): _Allowed(1, 'owner file mode 0o600 as a decimal, not pixels'),
     ('runner/lock.py', 1024): _Allowed(1, 'owner-record read limit factor, not a pixel size'),
+    ('runner/recording.py', 30.0): _Allowed(1, 'failure-recording rolling window in seconds, not pixels'),
+    ('runner/recording.py', 120): _Allowed(1, 'failure-recording frame cap, not pixels'),
     ('runner/schedule.py', 300.0): _Allowed(1, 'run-lock wait grace after the budget, in seconds'),
     ('runner/device.py', 20.0): _Allowed(1, 'adb command timeout in seconds'),
     ('runner/device.py', 200): _Allowed(2, 'adb error-preview byte limit'),
