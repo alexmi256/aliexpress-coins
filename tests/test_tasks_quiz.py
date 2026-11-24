@@ -3619,6 +3619,15 @@ def test_trusted_surface_rejects_an_empty_boost_list() -> None:
     assert _trusted_surface(opened) is False
 
 
+def test_row_verdict_names_the_quiz_row_and_surface_when_it_is_absent() -> None:
+    from aliexpress_coins.tasks.quiz import _row_verdict
+
+    verdict = _row_verdict(_coins_frame(), TITLE, trusted=False)
+
+    assert verdict.status == 'no_observation'
+    assert verdict.detail == f'{TITLE!r} was not found on the coin page; the surface cannot prove it is gone'
+
+
 def test_run_quiz_task_stops_on_a_redeem_seen_while_waiting_for_the_result(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,

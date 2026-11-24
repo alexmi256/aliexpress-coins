@@ -60,7 +60,13 @@ from aliexpress_coins.perception.templates import TemplateStore
 from aliexpress_coins.runner.errors import RunInterrupted
 from aliexpress_coins.runner.safety import RunAborted
 from aliexpress_coins.runner.state import DailyStateStore
-from aliexpress_coins.tasks.browse import DONE_LABELS, ReturnResult, find_task_row, return_to_coins_page
+from aliexpress_coins.tasks.browse import (
+    DONE_LABELS,
+    ReturnResult,
+    find_task_row,
+    return_to_coins_page,
+    row_not_found_detail,
+)
 from aliexpress_coins.tasks.catalogue import AllowedTaskSpec, TaskCategory
 from aliexpress_coins.tasks.discovery import BoostList, DiscoveryRoute, RosterEntry, open_boost_list
 from aliexpress_coins.tasks.dispatch import authorization_of
@@ -1622,7 +1628,7 @@ def _row_verdict(
         return _Verdict(
             status='no_observation',
             decisive=False,
-            detail=f'{title!r} was not found and the surface cannot prove it is gone',
+            detail=row_not_found_detail(title, snapshot),
         )
     if _row_has_done_label(row):
         return _Verdict(

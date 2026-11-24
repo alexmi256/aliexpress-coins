@@ -56,7 +56,7 @@ from aliexpress_coins.perception.templates import TemplateStore
 from aliexpress_coins.runner.errors import RunInterrupted
 from aliexpress_coins.runner.safety import RunAborted
 from aliexpress_coins.runner.state import DailyStateStore
-from aliexpress_coins.tasks.browse import ReturnResult, find_task_row, return_to_coins_page
+from aliexpress_coins.tasks.browse import ReturnResult, find_task_row, return_to_coins_page, row_not_found_detail
 from aliexpress_coins.tasks.catalogue import AllowedTaskSpec, TaskCategory
 from aliexpress_coins.tasks.discovery import BoostList, RosterEntry, open_boost_list
 from aliexpress_coins.tasks.dispatch import authorization_of
@@ -1439,7 +1439,7 @@ def _row_verdict(snapshot: Snapshot, title: str, *, trusted: bool) -> _Verdict:
     if row is None:
         if trusted and is_boost_page(snapshot) and has_task_rows(snapshot):
             return _Verdict('row_gone', True, f'{title!r} is gone from the populated boost list')
-        return _Verdict('no_observation', False, f'{title!r} was not found and the surface cannot prove it is gone')
+        return _Verdict('no_observation', False, row_not_found_detail(title, snapshot))
     if action is None:
         return _Verdict('action_completed', True, f'{title!r} now carries its completed control')
     return _Verdict('no_change', False, f'{title!r} is still present with the same action')
