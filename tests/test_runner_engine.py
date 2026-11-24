@@ -1287,22 +1287,35 @@ def test_a_dry_run_names_a_terminal_state_that_arrives_during_the_row_wait(
 
 
 def test_a_dry_run_fails_when_the_row_set_never_settles(
-    full_roster: Roster,
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
 ) -> None:
-    reason = engine._unreadable_plan_reason(
-        full_roster,
-        Surface.BOOST_PAGE,
-        [],
-        [{'status': 'satisfied', 'elapsed': 1.0, 'bound': 10.0}],
-        [],
-        [{'status': 'timed_out', 'elapsed': 30.0, 'bound': 30.0}],
-        None,
-        ScreenState.PAGE,
-        ScreenState.PAGE,
+    partial = _boost_frame('coins_quiz')
+    other = _boost_frame('sponsored_items')
+    context = _context(
+        tmp_path,
+        capture=_Capture(partial, *([partial, other] * 40)),
+        catalogue=catalogue,
+        corpus=corpus,
     )
+    context.config = replace(context.config, dry_run=True)
+    device = _RecordingDevice()
+    context.controller = Controller.from_frame(device, partial, rng=random.Random(0))
 
-    assert reason is not None
-    assert reason.startswith('surface_unverified: task rows were read but the row set never settled')
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.FAILED
+    assert report.failure_code == FailureCode.NAVIGATION_FAILED.value
+    assert report.detail is not None
+    assert report.detail.startswith('surface_unverified: task rows were read but the row set never settled')
+    assert report.plan is not None
+    assert report.plan['probe_failed'] is True
+    roster_waits = report.plan['roster_waits']
+    assert isinstance(roster_waits, list)
+    assert roster_waits[-1]['status'] == 'timed_out'
+    assert context.controller.tap_count == 0
+    assert device.taps == []
 
 
 def test_a_dry_run_does_not_plan_rows_from_a_surface_that_never_settles(
