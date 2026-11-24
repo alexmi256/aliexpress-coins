@@ -12,6 +12,8 @@ style, not a marker (docs/07 §3), and there are no stored pixel constants.
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from enum import StrEnum
 from typing import Protocol
 
@@ -33,6 +35,20 @@ EMPTY_BOOST_MARKER = "There's nothing here yet"
 
 REDEEM_MARKER = 'YOU CAN NOW REDEEM!'
 """The post-task interstitial, which #24/#25 must exit rather than execute."""
+
+SURPRISE_GRID_TITLE = 'Browse surprise items'
+SURPRISE_GRID_SUBTITLE = 'Tap 3 items on this page'
+"""The surprise grid's header and instruction (docs/07 §3)."""
+
+PRODUCT_DETAIL_ITEM = re.compile(r'\bitem\s+\d+\s*/\s*\d+\b', re.IGNORECASE)
+"""The product page's own item counter; the stable detail-page marker."""
+
+PRODUCT_DETAIL_MARKERS = ('Add to cart', 'Buy now')
+"""The purchase captions every measured surprise product page carries.
+
+They are named, never tapped (docs/07 §3). A detail page that is scrolled far
+enough to hide them still carries ``Item N/n``.
+"""
 
 COIN_PAGE_MARKERS = ('Daily coins', 'Coins credits to redeem')
 """The two labels that identify the coin page rather than the Account card."""
@@ -82,6 +98,8 @@ class Surface(StrEnum):
     REDEEM_INTERSTITIAL = 'redeem_interstitial'
     EMPTY_BOOST = 'empty_boost'
     COIN_STORE = 'coin_store'
+    SURPRISE_GRID = 'surprise_grid'
+    PRODUCT_DETAIL = 'product_detail'
     UNKNOWN = 'unknown'
 
 
@@ -118,6 +136,9 @@ def classify_surface(snapshot: Snapshot) -> Surface:
     if contains_text(snapshot, REDEEM_MARKER):
         return Surface.REDEEM_INTERSTITIAL
 
+    if is_product_detail(snapshot):
+        return Surface.PRODUCT_DETAIL
+
     if is_coin_store(snapshot):
         return Surface.COIN_STORE
 
@@ -133,6 +154,9 @@ def classify_surface(snapshot: Snapshot) -> Surface:
     if _is_coin_page(snapshot):
         return Surface.ROWS_PRESENT if rows else Surface.ROWS_ABSENT
 
+    if is_surprise_grid(snapshot):
+        return Surface.SURPRISE_GRID
+
     return Surface.UNKNOWN
 
 
@@ -144,6 +168,36 @@ def is_boost_page(snapshot: Snapshot) -> bool:
 def is_coin_store(snapshot: Snapshot) -> bool:
     """Whether the frame is the sponsored product list opened from the coin page."""
     return contains_text(snapshot, COIN_STORE_MARKER)
+
+
+def is_product_detail(snapshot: Snapshot) -> bool:
+    """Whether the frame is the product page a surprise tile opens.
+
+    The measured page carries ``Add to cart`` and ``Buy now`` together; a
+    scrolled detail page can hide both, so its ``Item N/n`` counter is accepted
+    on its own. Naming the surface keeps a legitimate tile tap out of the
+    unexpected-screen streak (#100).
+    """
+    if any(
+        box.score >= DEFAULT_MIN_OCR_SCORE and PRODUCT_DETAIL_ITEM.search(unicodedata.normalize('NFKC', box.text))
+        for box in snapshot.boxes
+    ):
+        return True
+    return all(contains_text(snapshot, marker) for marker in PRODUCT_DETAIL_MARKERS)
+
+
+def is_surprise_grid(snapshot: Snapshot) -> bool:
+    """Whether the frame is the surprise grid's header page.
+
+    The boost row carries the same title and subtitle, so the row is explicitly
+    excluded. The headerless, scrolled grid is recognised by the surprise
+    executor and its guard, not by this global surface classifier.
+    """
+    return (
+        not is_boost_page(snapshot)
+        and contains_text(snapshot, SURPRISE_GRID_TITLE)
+        and contains_text(snapshot, SURPRISE_GRID_SUBTITLE)
+    )
 
 
 def is_empty_boost(snapshot: Snapshot) -> bool:
@@ -200,10 +254,14 @@ __all__ = [
     'COIN_PAGE_MARKERS',
     'COIN_STORE_MARKER',
     'EMPTY_BOOST_MARKER',
+    'PRODUCT_DETAIL_ITEM',
+    'PRODUCT_DETAIL_MARKERS',
     'REDEEM_MARKER',
     'SHORTCUT_DEEP_LINK',
     'SIGN_IN_MARKERS',
     'SURFACE_REFRESH_LIMIT',
+    'SURPRISE_GRID_SUBTITLE',
+    'SURPRISE_GRID_TITLE',
     'RouteFirer',
     'Surface',
     'SurfaceRoute',
@@ -214,4 +272,6 @@ __all__ = [
     'is_coin_store',
     'is_empty_boost',
     'is_logged_out',
+    'is_product_detail',
+    'is_surprise_grid',
 ]

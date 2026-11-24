@@ -1243,7 +1243,7 @@ def _attempt_dispatch(
         guard = context.safety
         if guard is None:  # pragma: no cover - run_once always installs one
             return _dispatch_entry(context, controller, entry)
-        with guard.task(entry.title):
+        with guard.task(entry.title, key=entry.key):
             return _dispatch_entry(context, controller, entry)
     except RunInterrupted:
         raise

@@ -532,6 +532,88 @@ def test_the_known_surprise_product_detail_does_not_abort_for_its_two_buttons() 
     assert guard.task_running is False
 
 
+def test_the_product_detail_discount_copy_is_not_a_dangerous_control() -> None:
+    detail = _snapshot(
+        _box('Item 1/6', 40, 100, 300, 140),
+        _box('Disc:C$31.27', 60, 300, 330, 340),
+        _box('Applied', 350, 300, 520, 340),
+        _box('C$30.00', 60, 350, 300, 390),
+        _box('Add to cart', 393, 1860, 510, 1887),
+        _box('Buy now', 895, 1859, 988, 1890),
+    )
+    guard = _guard()
+
+    assert find_dangerous_controls(detail) == ()
+    with guard.task('Browse surprise items'):
+        guard.inspect(detail)
+        guard.inspect(detail)
+        guard.inspect(detail)
+
+    assert guard.streak == 0
+
+
+def test_a_generic_discount_feed_still_trips_the_guard_in_another_task() -> None:
+    feed = _snapshot(
+        _box('Disc:C$31.27', 60, 300, 330, 340),
+        _box('Applied', 350, 300, 520, 340),
+        _box('C$30.00', 60, 350, 300, 390),
+        _box('Black Friday', 60, 420, 300, 460),
+        _box('Free shipping', 60, 480, 300, 520),
+        _box('7 sold', 60, 540, 240, 580),
+        _box('Wireless CarPlay interface', 60, 600, 560, 640),
+    )
+    guard = _guard()
+
+    def inspect_three() -> None:
+        for _ in range(3):
+            guard.inspect(feed)
+
+    with pytest.raises(RunAborted) as raised, guard.task('Explore sponsored items'):
+        inspect_three()
+
+    assert raised.value.code is AbortCode.UNEXPECTED_SCREEN
+
+
+def test_a_scrolled_surprise_grid_is_expected_only_for_the_surprise_task() -> None:
+    grid = _snapshot(
+        _box('Product A', 90, 300, 490, 355),
+        _box('Product B', 690, 300, 1090, 355),
+        _box('C$12.99', 90, 420, 300, 470),
+        _box('C$13.99', 690, 420, 900, 470),
+    )
+
+    surprise = _guard()
+
+    def inspect_surprise() -> None:
+        for _ in range(3):
+            surprise.inspect(grid)
+
+    with surprise.task('Browse surprise item', key='surprise_items'):
+        inspect_surprise()
+    assert surprise.streak == 0
+
+    one_card = _snapshot(_box('Product A', 90, 600, 490, 655), _box('C$12.99', 90, 700, 300, 750))
+    bottom = _guard()
+
+    def inspect_bottom() -> None:
+        for _ in range(3):
+            bottom.inspect(one_card)
+
+    with bottom.task('Browse surprise items', key='surprise_items'):
+        inspect_bottom()
+    assert bottom.streak == 0
+
+    other = _guard()
+
+    def inspect_other() -> None:
+        for _ in range(3):
+            other.inspect(grid)
+
+    with pytest.raises(RunAborted) as raised, other.task('Explore sponsored items', key='sponsored_items'):
+        inspect_other()
+    assert raised.value.code is AbortCode.UNEXPECTED_SCREEN
+
+
 def test_the_product_detail_suffixed_purchase_captions_are_exempt() -> None:
     guard = _guard()
     detail = _snapshot(

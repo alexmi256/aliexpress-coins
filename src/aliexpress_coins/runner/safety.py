@@ -123,6 +123,9 @@ _COUNTDOWN_TOP_FRACTION = 0.12
 _COUNTDOWN_BOTTOM_FRACTION = 0.88
 """The measured right-edge/content band of the browse timer chip (docs/01 §7b)."""
 
+_SURPRISE_TASK_KEY = 'surprise_items'
+"""The one executor that may legitimately sit on a headerless surprise grid."""
+
 
 class AbortCode(StrEnum):
     """The three structural abort conditions."""
@@ -195,6 +198,7 @@ class SafetyGuard:
         self.catalogue = catalogue
         self._task_depth = 0
         self._task_label: str | None = None
+        self._task_key: str | None = None
         self._streak_fingerprint: str | None = None
         self._streak = 0
         self._recovering = 0
@@ -228,20 +232,23 @@ class SafetyGuard:
         self._baseline_balance = None
         self._task_depth = 0
         self._task_label = None
+        self._task_key = None
         self._disarmed = True
         self._recovering = 0
         self._reset_streak()
 
     @contextmanager
-    def task(self, label: str | None = None) -> Iterator[None]:
+    def task(self, label: str | None = None, *, key: str | None = None) -> Iterator[None]:
         """Mark the dispatch window in which dangerous controls are fatal.
 
         The unexpected-screen streak starts fresh for each task: a product page
         inside a browse task is not the same surface as the task list that was
-        read before it.
+        read before it. ``key`` is the catalogue key, stable against OCR jitter
+        in ``label``; it scopes screens only one executor may legitimately see.
         """
         self._task_depth += 1
         self._task_label = label
+        self._task_key = key
         self._reset_streak()
         try:
             yield
@@ -249,6 +256,7 @@ class SafetyGuard:
             self._task_depth -= 1
             if self._task_depth == 0:
                 self._task_label = None
+                self._task_key = None
             self._reset_streak()
 
     @contextmanager
@@ -297,7 +305,12 @@ class SafetyGuard:
             if not self._recovering:
                 self._track_unexpected(
                     report,
-                    unexpected=_is_unexpected_inside_task(snapshot, classification, surface),
+                    unexpected=_is_unexpected_inside_task(
+                        snapshot,
+                        classification,
+                        surface,
+                        task_key=self._task_key,
+                    ),
                 )
             self._check_balance(snapshot, report)
             return snapshot
@@ -478,6 +491,8 @@ def _is_unexpected_inside_task(
     snapshot: Snapshot,
     classification: Classification,
     surface: Surface,
+    *,
+    task_key: str | None,
 ) -> bool:
     """A task page only counts as unexpected when its content is truly unknown.
 
@@ -492,6 +507,14 @@ def _is_unexpected_inside_task(
         return False
     if surface is Surface.EMPTY_BOOST:
         return False
+    if task_key == _SURPRISE_TASK_KEY:
+        # Only the surprise executor navigates to a headerless scrolled grid.
+        # The predicate lives with that executor so the two cannot drift; every
+        # other task on the same frame still counts as unexpected.
+        from aliexpress_coins.tasks.surprise import _is_scrolled_grid
+
+        if _is_scrolled_grid(snapshot):
+            return False
     if any(evidence.signal == 'blank_frame' for evidence in classification.evidence):
         return False
     if _has_countdown(snapshot):

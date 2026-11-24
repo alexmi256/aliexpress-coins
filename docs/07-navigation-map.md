@@ -85,7 +85,8 @@ flowchart TD
 | product collection | `Bundle Deals` / `Hot picks for you` + prices | — |
 | coin store (sponsored) | `Use coins for discounts` + `Disc:` / `Applied` + right-edge dwell chip | require header, not feed `discount` |
 | surprise grid | `Browse surprise items` + `Tap 3 items on this page` + `N /3` | boost row shares title; grid adds `N /3` |
-| product detail | `Add to cart` + `Buy now` + `Item 1/n` | BACK only; never tap purchase controls |
+| surprise grid (scrolled) | two columns of card titles with price lines for the guard; the executor matches labels already read this round | header and pill are above the viewport; generic discount copy is not enough, and the executor restores the top before reading the counter (#100) |
+| product detail | `Item 1/n` or `Add to cart` + `Buy now` | BACK only; never tap purchase controls |
 | mission overlay / coupon | `Mission Completed` over dimmed grid / `Sale coupons` + `Collect all: C$…` | — |
 
 **Portability (`1080×1920 @ 320 dpi`):** text markers, label lookups, and graph topology port;
