@@ -1840,6 +1840,11 @@ def collect_roster(
             if settle:
                 sleep(settle)
             after = _capture(capture)
+            # The restore gesture is still a gesture: a popup or a foreign
+            # surface means the read stopped being about the boost list.
+            if classify(after).state is ScreenState.POPUP or classify_surface(after) is not Surface.BOOST_PAGE:
+                surface_lost = True
+                break
             difference = frame_difference(frame, after)
             if difference <= STABLE_FRAME_MAX_DIFFERENCE:
                 break
