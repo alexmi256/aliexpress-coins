@@ -2230,10 +2230,12 @@ def test_make_live_context_wraps_the_real_seams(
     context.navigate(SurfaceRoute.SHORTCUT)
     assert navigated == [SurfaceRoute.SHORTCUT, SurfaceRoute.SHORTCUT]
     assert cast(Any, context.hygiene).warm_starts == 1
+    # Unreadable focus is not a proven loss: the route still fires, but no
+    # relaunch or settle is added.
     cast(Any, context.hygiene).foreground = None
     context.navigate(SurfaceRoute.SHORTCUT)
     assert navigated == [SurfaceRoute.SHORTCUT, SurfaceRoute.SHORTCUT, SurfaceRoute.SHORTCUT]
-    assert cast(Any, context.hygiene).warm_starts == 2
+    assert cast(Any, context.hygiene).warm_starts == 1
     assert context.controller is None
     assert context.controller_factory is not None
     controller = context.controller_factory(frame)
@@ -4037,10 +4039,14 @@ def test_run_once_wires_foreground_loss_frames_into_the_artifact_store(
 
     assert context.record_foreground_loss is not None
     context.record_foreground_loss('sponsored_items', frame)
-    name = 'browse-sponsored_items-foreground-lost'
-    assert report.shots[name] == f'shots/{name}.png'
+    context.record_foreground_loss('sponsored_items', frame)
+    first = 'browse-sponsored_items-foreground-lost'
+    second = 'browse-sponsored_items-foreground-lost-2'
+    assert report.shots[first] == f'shots/{first}.png'
+    assert report.shots[second] == f'shots/{second}.png'
     store = ArtifactStore(report.runs_dir, report.run_id)
-    assert store.load(name).boxes == frame.boxes
+    assert store.load(first).boxes == frame.boxes
+    assert store.load(second).boxes == frame.boxes
 
 
 def test_a_failure_frame_is_skipped_when_one_is_already_recorded(

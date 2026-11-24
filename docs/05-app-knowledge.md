@@ -82,16 +82,16 @@ shape, but #116 refuses it because its destination and completion contract were 
   its `GO` moved again by observation 9 as the server rotated rows through the run; that reflow is
   why the older boost-roster boxes cannot judge the tap. The requested point `[1020,1640]` matches
   the centre of the `GO` box in the returned inline row and the jittered point `[1020,1644]` remains
-  inside it ⬜.
-  That favours a hit on the fresh inline
-  control rather than either stale boost-roster box, but the pre-tap frame was not retained, so it is
-  not proven. The only post-tap OCR retained is `["3:36","0","日","24"]` with `surface=unknown`; there
-  is **no post-tap PNG or foreground-package record**, so the artifacts cannot prove the app left the
-  foreground or distinguish launcher, crash, external navigation or an interstitial ❓. One shortcut
-  navigation returned to the coin page ✅, where the row remained uncompleted. The destination page,
-  timer, badge/round count and completion contract are therefore unknown ❓. The family is explicitly
-  refused as `unrecognised_recently_viewed` until a supervised capture establishes them; its `Browse`
-  title is not a browse-wait contract. Sanitized evidence lives in
+  inside it ⬜. That favours a hit on the fresh inline control rather than either stale boost-roster
+  box, but the pre-tap frame was not retained, so it is not proven. The only post-tap OCR retained is
+  `["3:36","0","日","24"]` with `surface=unknown`; there is **no post-tap PNG or foreground-package
+  record**, so the artifacts cannot prove the app left the foreground or distinguish launcher, crash,
+  external navigation or an interstitial ❓. The `non_app` recogniser is therefore **unverified
+  against a captured frame**: its test uses the retained OCR labels, not the missing image. One
+  shortcut navigation returned to the coin page ✅, where the row remained uncompleted. The
+  destination page, timer, badge/round count and completion contract are therefore unknown ❓. The
+  family is explicitly refused as `unrecognised_recently_viewed` until a supervised capture
+  establishes them; its `Browse` title is not a browse-wait contract. Sanitized evidence lives in
   `tests/data/flows/recently_viewed_issue_116.json`.
 - **Launcher items ✅ (descoped #27):** adding earns the task row and a widget visit rendered
   `Collect`/inline rows in session 2; automation is descoped because the shortcut URI needs no

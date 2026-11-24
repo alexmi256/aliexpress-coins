@@ -289,10 +289,11 @@ def make_live_context(
     fire_route = _guarded_call(device.navigate, stop)
 
     def navigate(route: SurfaceRoute) -> None:
-        if route is SurfaceRoute.SHORTCUT and foreground() is not True:
-            # False proves another app is foregrounded; None means the probe is
-            # unreadable. In both cases a warm start is safer than a cold deep
-            # link, and screenshot NON_APP evidence may be the only signal.
+        if route is SurfaceRoute.SHORTCUT and foreground() is False:
+            # False proves another app is foregrounded. None is unreadable, not
+            # a loss: a warm start there would add a settle and relaunch the app
+            # on every route. Browse recovery forces its own warm start from
+            # screenshot NON_APP evidence even when the probe is unreadable.
             warm_start()
         fire_route(route)
 
@@ -387,9 +388,13 @@ def run_once(
 
         context.record_round_grid = record_round_grid
     if context.record_foreground_loss is None:
+        loss_counts: dict[str, int] = {}
 
         def record_foreground_loss(key: str, frame: Snapshot) -> None:
-            _record_frame(report, artifacts, frame, f'browse-{key}-foreground-lost', log)
+            count = loss_counts.get(key, 0) + 1
+            loss_counts[key] = count
+            name = f'browse-{key}-foreground-lost' if count == 1 else f'browse-{key}-foreground-lost-{count}'
+            _record_frame(report, artifacts, frame, name, log)
 
         context.record_foreground_loss = record_foreground_loss
     event_log = RunEventLog(report.event_log_path)

@@ -414,7 +414,8 @@ timezone. That is deliberate: run ids sort correctly across DST changes.
 A browse task checks the foreground package before its `GO` and before accepting an unknown
 destination. A measured clock/date `non_app` frame, or a package probe naming another app, stops the
 arrival wait: the executor does not wait for a timer or tap `Collect`, saves
-`browse-<key>-foreground-lost.*`, warm-starts AliExpress if needed, fires the shortcut route, and only
+`browse-<key>-foreground-lost.*` (a repeated loss for the same key gets `-2`, `-3`, … so an earlier
+frame is never overwritten), warm-starts AliExpress if needed, fires the shortcut route, and only
 then reopens the populated boost list for positive verification. `arrival.left_app` and the saved
 frame's labels are kept in `run.json`. If fresh proof is absent the task remains `task_unverified`;
 it is never called complete from the launcher frame. If foreground loss is detected before `GO`, the
