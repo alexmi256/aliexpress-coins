@@ -69,7 +69,13 @@ from aliexpress_coins.runner.levels import SKIPPED_ROW_LOG_LEVEL, run_log_level,
 from aliexpress_coins.runner.notify import Notification, NotificationSink, build_notifier
 from aliexpress_coins.runner.recording import FailureRecorder
 from aliexpress_coins.runner.report import RunEventLog, RunReport, RunStatus, TaskRecord, prune_runs
-from aliexpress_coins.runner.safety import UNEXPECTED_SCREEN_LIMIT, AbortCode, RunAborted, SafetyGuard
+from aliexpress_coins.runner.safety import (
+    UNEXPECTED_SCREEN_LIMIT,
+    AbortCode,
+    RunAborted,
+    SafetyGuard,
+    unwrap_capture,
+)
 from aliexpress_coins.runner.state import DailyStateStore, NightOutcome, NightRecord
 from aliexpress_coins.tasks.browse import return_to_coins_page, run_browse_task
 from aliexpress_coins.tasks.catalogue import AllowedTaskSpec, TaskCatalogue, TaskCategory, load_task_catalogue
@@ -470,7 +476,7 @@ def run_once(
 
         context.record_foreground_loss = record_foreground_loss
     event_log = RunEventLog(report.event_log_path)
-    raw_capture = context.capture
+    raw_capture = unwrap_capture(context.capture)
     log.addHandler(event_log)
     try:
         event_log.record(

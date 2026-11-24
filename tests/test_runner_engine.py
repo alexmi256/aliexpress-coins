@@ -7688,3 +7688,54 @@ def test_an_abort_or_stop_during_the_acted_recheck_flushes_the_buffer(
     sidecar = json.loads((report.run_dir / recording['sidecar']).read_text(encoding='utf-8'))
     assert sidecar['failure']['code'] == expected_code
     assert sidecar['frames']
+
+
+def test_a_prewrapped_capture_with_an_injected_guard_is_not_inspected_twice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    class _TriggerCapture:
+        def __init__(self, frame: Snapshot) -> None:
+            self.frames = (frame,)
+            self.frame = frame
+
+        def capture(self) -> Snapshot:
+            return self.frame
+
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    frame = _boost_frame('coins_quiz')
+    _surface(monkeypatch, roster, frame)
+    source = _TriggerCapture(frame)
+    guard = SafetyGuard(catalogue=catalogue)
+    context = _context(
+        tmp_path,
+        capture=cast(Any, source),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.capture = cast(Any, guard.wrap(source))
+    context.safety = guard
+    danger = replace(
+        _snapshot(_box('Wireless Earbuds', 60, 300, 600, 350), _box('Buy now', 400, 1800, 700, 1860)),
+        captured_at=CAPTURED_AT + timedelta(minutes=55),
+    )
+
+    def dispatch(current: RunContext, _controller: Controller, _entry: RosterEntry) -> EngineResult:
+        source.frame = danger
+        engine._capture(current.capture)
+        raise AssertionError('the safety guard must abort before this returns')
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.ABORTED
+    assert report.abort is not None
+    assert report.abort['code'] == AbortCode.DANGEROUS_CONTROL.value
+    assert len(report.failure_recordings) == 1
+    sidecar = json.loads((report.run_dir / report.failure_recordings[0]['sidecar']).read_text(encoding='utf-8'))
+    captured = [entry['captured_at'] for entry in sidecar['frames']]
+    assert danger.captured_at.isoformat() in captured
