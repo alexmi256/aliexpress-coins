@@ -302,6 +302,18 @@ def _coin_task_frame() -> Snapshot:
     )
 
 
+def _incomplete_coin_frame() -> Snapshot:
+    """One readable task plus a GO whose title the splitter cannot enumerate."""
+    return _snapshot(
+        _box('Coins', 100, 220, 300, 280),
+        _box('Coins credits to redeem', 100, 330, 700, 380),
+        _box('Daily coins', 100, 560, 500, 610),
+        _box('Take the coins quiz', 180, 1269, 700, 1305),
+        _box('GO', 982, 1273, 1040, 1310),
+        _box('GO', 982, 1473, 1040, 1510),
+    )
+
+
 def _home_frame() -> Snapshot:
     return _snapshot(_box('For you', 100, 200, 400, 260), _box('Search', 100, 300, 300, 360))
 
@@ -791,6 +803,40 @@ def test_a_controller_factory_is_used_after_the_first_frame(
     assert context.hygiene.restored == 1
 
 
+def test_an_incomplete_roster_does_not_complete_the_night(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _incomplete_coin_frame()
+    context = _context(tmp_path, capture=_Capture(frame), catalogue=catalogue, corpus=corpus)
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        assert entry.key is not None
+        assert entry.key == 'coins_quiz'
+        _context.state.record(entry.key)
+        return EngineResult('completed', 'fake', 'done', True, {'key': entry.key})
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.COMPLETED
+    assert len(report.tasks) == 1
+    assert report.tasks[0].completed
+    assert report.roster is not None
+    assert report.roster['incomplete'] is True
+    assert report.night is not None
+    assert report.night['outcome'] == NightOutcome.INCOMPLETE_ROSTER.value
+    snapshot = context.state.snapshot()
+    assert snapshot.completed_night is False
+    assert snapshot.last_night is not None
+    assert snapshot.last_night.outcome is NightOutcome.INCOMPLETE_ROSTER
+    assert '**Night:** open — the roster read was incomplete' in report.summary_path.read_text(encoding='utf-8')
+    assert any(event['event'] == 'roster_incomplete' for event in _events(report))
+
+
 def test_a_dry_run_does_not_mark_the_night_complete(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -892,6 +938,33 @@ def test_the_dry_run_plan_reports_every_reason_a_row_is_not_a_step(
     assert [step['key'] for step in report.plan['steps']] == ['coins_quiz']
     reasons = {skip.reason for skip in report.skipped}
     assert {'no action', 'no executor', 'daily limit', 'run budget'} <= reasons
+
+
+def test_a_dry_run_reports_a_visible_go_that_did_not_become_a_row(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _incomplete_coin_frame()
+    context = _context(tmp_path, capture=_Capture(frame), catalogue=catalogue, corpus=corpus)
+    context.config = replace(context.config, dry_run=True)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.PLANNED
+    assert report.plan is not None
+    assert report.plan['taps_issued'] == 0
+    assert report.roster is not None
+    assert report.roster['count'] == 1
+    assert report.roster['visible_action_count'] == 2
+    assert report.roster['unassigned_action_count'] == 1
+    assert report.roster['incomplete'] is True
+    assert 'not enumerated' in str(report.roster['warning'])
+    assert 'warning: 2 visible GO button(s)' in report.summary_path.read_text(encoding='utf-8')
+    warning = next(event for event in _events(report) if event['event'] == 'roster_incomplete')
+    assert warning['level'] == 'warning'
+    assert warning['unassigned_action_count'] == 1
+    assert context.state.snapshot().completed_night is False
 
 
 def test_a_dry_run_may_fire_the_shortcut_route_but_still_taps_nothing(

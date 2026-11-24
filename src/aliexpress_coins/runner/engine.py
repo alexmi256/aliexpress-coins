@@ -408,6 +408,7 @@ def run_once(
                 # no task can be collected until a human signs in.
                 _guard_signed_in(context, _capture(context.capture))
             report.roster = roster.as_dict()
+            _record_roster_diagnostics(roster, log)
             report.surface = roster.surface_variant.value if roster.surface_variant is not None else None
             gate.surface = report.surface
             report.write()
@@ -501,6 +502,7 @@ def run_once(
                 report.observations = observer.sequence
             if final_roster is not None:
                 report.roster = final_roster.as_dict()
+                _record_roster_diagnostics(final_roster, log)
                 report.surface = (
                     final_roster.surface_variant.value if final_roster.surface_variant is not None else report.surface
                 )
@@ -770,6 +772,7 @@ def _plan_dry_run(
 
     report.geometry = _geometry(frame)
     report.roster = roster.as_dict()
+    _record_roster_diagnostics(roster, log)
     report.surface = surface.value
     gate.surface = surface.value
     if _on_coin_page(frame):
@@ -1645,6 +1648,24 @@ def _skip(
         )
 
 
+def _record_roster_diagnostics(roster: Roster, logger: logging.Logger) -> None:
+    """Put a swallowed-row warning in the structured run log."""
+    if roster.warning is None:
+        return
+    logger.log(
+        logging.WARNING if roster.incomplete else logging.INFO,
+        '%s',
+        _event(
+            'roster_incomplete' if roster.incomplete else 'roster_split_failure',
+            detail=roster.warning,
+            roster_count=roster.count,
+            visible_action_count=roster.visible_action_count,
+            unassigned_action_count=roster.unassigned_action_count,
+            split_failures=[failure.as_dict() for failure in roster.split_failures],
+        ),
+    )
+
+
 def _record_policy_skips(
     report: RunReport,
     roster: Roster | None,
@@ -1765,7 +1786,13 @@ def _night_record(report: RunReport) -> NightRecord:
             completed += 1
         elif _retryable_task_failure(task):
             retryable += 1
-    outcome = NightOutcome.RETRYABLE_FAILURES if retryable else NightOutcome.EXHAUSTED
+    roster_incomplete = bool(report.roster and report.roster.get('incomplete', False))
+    if roster_incomplete:
+        outcome = NightOutcome.INCOMPLETE_ROSTER
+    elif retryable:
+        outcome = NightOutcome.RETRYABLE_FAILURES
+    else:
+        outcome = NightOutcome.EXHAUSTED
     return NightRecord(
         outcome=outcome,
         dispatched=len(report.tasks),

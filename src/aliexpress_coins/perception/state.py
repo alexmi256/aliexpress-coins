@@ -111,9 +111,24 @@ TASK_TITLES: tuple[str, ...] = (
     'Add a coins shortcut',
     'Add & start using our widget',
     'Search for what you love',
+    'View Super discounts',
     'Browse recently viewed items',
 )
 """Task rows measured on the coin and boost pages (docs/05 §4)."""
+
+MINI_APP_TITLES: tuple[str, ...] = (
+    'Merge Boss',
+    'Play & Earn',
+    'Prize Land',
+    'GoGo Match',
+    'Shelf Shuffle',
+)
+"""Mini-app shortcut tiles below the task rows (docs/05 §4).
+
+Each tile has its own badge and opens a game or promo. None of them is a task
+row: text from this strip must never be read as the subtitle of the row above
+it.
+"""
 
 _POPUP_LABELS: tuple[str, ...] = (
     'Welcome gifts',

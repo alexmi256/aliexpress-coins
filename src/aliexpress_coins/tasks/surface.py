@@ -53,6 +53,15 @@ enough to hide them still carries ``Item N/n``.
 COIN_PAGE_MARKERS = ('Daily coins', 'Coins credits to redeem')
 """The two labels that identify the coin page rather than the Account card."""
 
+STREAK_MARKER = 'Daily coins'
+"""The streak card's heading, which is also a roster task surface."""
+
+STREAK_CONTROL_LABELS: tuple[str, ...] = ('Collect', 'Claim', 'Sign in')
+"""The measured streak-card controls; ``GO`` belongs to the task rows below."""
+
+STREAK_CARD_HEIGHT_RATIO = 5.0
+"""How far below its heading the streak card may reach, in heading-row heights."""
+
 COIN_STORE_MARKER = 'Use coins for discounts'
 """The header of the sponsored product list that ``Explore sponsored items`` opens.
 
@@ -259,6 +268,9 @@ __all__ = [
     'REDEEM_MARKER',
     'SHORTCUT_DEEP_LINK',
     'SIGN_IN_MARKERS',
+    'STREAK_CARD_HEIGHT_RATIO',
+    'STREAK_CONTROL_LABELS',
+    'STREAK_MARKER',
     'SURFACE_REFRESH_LIMIT',
     'SURPRISE_GRID_SUBTITLE',
     'SURPRISE_GRID_TITLE',

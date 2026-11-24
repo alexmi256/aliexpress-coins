@@ -113,6 +113,40 @@ def test_a_full_report_round_trips_through_json_and_markdown(tmp_path: Path) -> 
     assert report.ok is True
 
 
+def test_an_incomplete_roster_warning_reaches_both_report_files(tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    report.roster = {
+        'status': 'available',
+        'count': 1,
+        'allowed_count': 1,
+        'denied_count': 0,
+        'visible_action_count': 2,
+        'unassigned_action_count': 1,
+        'incomplete': True,
+        'warning': '2 visible GO button(s) but 1 task action(s) were not enumerated',
+        'split_failures': [],
+    }
+    report.finish(RunStatus.COMPLETED, budget_used_seconds=1.0, finished_at=FINISHED)
+    report.write()
+
+    payload = json.loads(report.json_path.read_text(encoding='utf-8'))
+    summary = report.summary_path.read_text(encoding='utf-8')
+    assert payload['roster']['incomplete'] is True
+    assert payload['roster']['warning'] == report.roster['warning']
+    assert 'warning: 2 visible GO button(s) but 1 task action(s) were not enumerated' in summary
+
+
+def test_an_incomplete_roster_keeps_the_night_open_in_the_summary(tmp_path: Path) -> None:
+    report = _report(tmp_path)
+    report.night = {'outcome': 'incomplete_roster', 'dispatched': 1, 'completed': 1, 'retryable_failures': 0}
+    report.finish(RunStatus.COMPLETED, budget_used_seconds=1.0, finished_at=FINISHED)
+    report.write()
+
+    summary = report.summary_path.read_text(encoding='utf-8')
+    assert '**Night:** open — the roster read was incomplete' in summary
+    assert 'the day is not complete' in summary
+
+
 def test_a_dry_run_plan_and_an_abort_are_visible_in_the_summary(tmp_path: Path) -> None:
     report = _report(tmp_path)
     report.plan = {

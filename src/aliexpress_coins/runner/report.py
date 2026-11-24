@@ -735,6 +735,8 @@ def _night_summary(night: dict[str, Any]) -> str:
             'complete — the roster was walked and nothing dispatched is worth retrying '
             f'({completed}/{dispatched} task(s) completed)'
         )
+    if outcome == NightOutcome.INCOMPLETE_ROSTER.value:
+        return 'open — the roster read was incomplete; the day is not complete and a later run may retry'
     return (
         f'open — {retryable} retryable task failure(s) of {dispatched} dispatch(es) remain; '
         'the day is not complete and a later run may retry'
@@ -769,10 +771,12 @@ def _geometry_summary(geometry: dict[str, Any] | None) -> str:
 def _roster_summary(roster: dict[str, Any] | None) -> str:
     if not roster:
         return 'not read'
-    return (
+    summary = (
         f'{roster.get("status", "?")}; {roster.get("count", 0)} row(s), '
         f'{roster.get("allowed_count", 0)} allowed, {roster.get("denied_count", 0)} refused'
     )
+    warning = roster.get('warning')
+    return summary if not warning else f'{summary}; warning: {warning}'
 
 
 def _returned(returned: bool | None, error: str | None) -> str:

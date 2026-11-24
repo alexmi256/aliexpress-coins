@@ -1,6 +1,6 @@
 # Screen-state fixtures
 
-Thirteen recorded frames from the reference tablet, used by the screen-state classifier tests
+Fourteen recorded frames from the reference tablet, used by the screen-state classifier tests
 (`tests/test_perception_state.py`) and the #84 discovery/sign-in tests. They are **full 1200×2000
 frames**, exactly the shape `AdbSnapshotter.capture()`
 returns: the status-bar clock and the Android taskbar glyphs are retained. The classifier
@@ -28,6 +28,7 @@ reviewed the same way.
 | `ambiguous_feed.png` | full home feed with no modelled coins/collection marker | search bar and notification badge/bell masked; the lower `Bundle deals` feed section is not a top product-collection header |
 | `boost_daily_checkin.png` | full `Coins boost` page from the failed 2026-11-23 nightly run, first row `Daily check-in` (#84) | balance chip and hero, coin-credit chip, notification badge and status-bar clock masked; `Coins boost` and all task rows remain |
 | `coins_merged_card.png` | full coin page from the same run, where the daily card and the first task row share one OCR band (#84) | coin balance, worth, coin-credit and credits-to-use amounts, notification badge and status-bar clock masked; `Daily coins`, `Earn more`, `Collect` and `Daily check-in` remain |
+| `coins_search_row.png` | full coin page from the issue #107 occurrence on 2026-11-24 (run `20261124T042511Z`): the daily card absorbs `Search for what you love` and its `0/2` badge, and the mini-app strip abuts `View Super discounts` | coin balance, worth, coin-credit and credits-to-use amounts and status-bar clock masked; `Daily coins`, the streak chips, `Search for what you love`, `Place an order on this page`, `View Super discounts` and the `Merge Boss` / `Play & Earn` / `Prize Land` strip remain |
 | `coin_store.png` | full `Use coins for discounts` sponsored product list opened by `Explore sponsored items`, with its right-edge `13s` dwell chip, `Disc:` prices and `Applied` labels (#83) | no account data; product titles, prices, the system clock and taskbar are kept, and the header/`Disc:`/`Applied` labels remain for the classifier regression |
 
 `error_404.png` was dropped as an extra fixture: the bare advertised coin URL is recorded in
@@ -41,8 +42,8 @@ input.
 
 Every PNG is under the **550 KB** fixture budget, raised from ~300 KB on 2026-11-23. Fixtures
 must stay full 1200×2000 captures — downscaling would test a frame no run ever sees (#42/#36) —
-and the two dense gradient/photo frames added for #84 are 363 KB and 503 KB after a lossless
-`optimize=True, compress_level=9` pass (pixels unchanged, so OCR is unchanged). 550 KB is the new
-ceiling; anything larger needs a recorded reason. `.gitignore` has one negation for
+and the dense gradient/photo frames added for #84 and #107 are each under 515 KB after a lossless
+`optimize=True, compress_level=9` pass (pixels unchanged, so OCR is unchanged). 550 KB is
+the ceiling; anything larger needs a recorded reason. `.gitignore` has one negation for
 `tests/data/states/*.png`; that exception exists only because this directory is reviewed as a
 whole. It is not permission to drop arbitrary screenshots anywhere else in the tree.

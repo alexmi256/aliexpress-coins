@@ -69,7 +69,7 @@ def test_a_scaled_task_frame_yields_the_same_roster_keys(path: Path) -> None:
     assert all(entry.action is not None for entry in phone_roster.entries)
 
 
-@pytest.mark.parametrize(('path', 'count'), [(BOOST, 4), (COINS, 3)], ids=['boost-page', 'coin-page'])
+@pytest.mark.parametrize(('path', 'count'), [(BOOST, 4), (COINS, 4)], ids=['boost-page', 'coin-page'])
 @pytest.mark.slow
 def test_every_scaled_action_stays_right_of_its_title(path: Path, count: int) -> None:
     catalogue = load_task_catalogue(CATALOGUE)

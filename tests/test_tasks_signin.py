@@ -133,7 +133,7 @@ def _signin_authorization() -> DispatchAuthorization:
     catalogue = load_task_catalogue(ROOT / 'specs' / 'tasks.yaml')
     frame = _snapshot(
         _box('Daily coins', 100, 260, 700, 300),
-        _box('GO', 980, 280, 1040, 320),
+        _box('Collect', 980, 280, 1040, 320),
     )
     entry = next(item for item in enumerate_roster(frame, catalogue).entries if item.key == 'daily_checkin')
     authorization = DispatchGate(catalogue).authorize(entry).authorization

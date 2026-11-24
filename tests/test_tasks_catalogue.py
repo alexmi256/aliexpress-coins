@@ -124,6 +124,7 @@ def test_the_committed_catalogue_loads_and_covers_both_policies() -> None:
         'sponsored_items',
         'surprise_items',
         'recently_viewed',
+        'super_discounts',
         'shopping_credits_checkin',
         'learn_to_save',
         'coins_shortcut',

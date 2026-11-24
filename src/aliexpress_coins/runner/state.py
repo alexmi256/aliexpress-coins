@@ -30,14 +30,14 @@ mistaken for today's and stays on disk for the report.
       }
     }
 
-``completed_night`` is not "the walk finished". It is "the walk finished and
-nothing dispatched is worth retrying" (issue #97): every dispatched row either
-completed, was skipped/refused, or failed with a taxonomy entry that spends no
-retry. ``last_night`` records that decision so a later run and the report can
-explain it. A run with a retryable failure leaves the day open even when another
-row completed, because the retryable row is still unclaimed work. A task that
-acted without proof is named in ``acted_unverified`` so its next dispatch
-re-reads the fresh row before tapping.
+``completed_night`` is not "the walk finished". It is "the roster was read
+completely and nothing dispatched is worth retrying" (issues #97/#107): every
+dispatched row either completed, was skipped/refused, or failed with a taxonomy
+entry that spends no retry. ``last_night`` records that decision so a later run
+and the report can explain it. A run with a retryable failure or an incomplete
+roster leaves the day open even when another row completed, because unread work
+may still be hidden by the splitter. A task that acted without proof is named in
+``acted_unverified`` so its next dispatch re-reads the fresh row before tapping.
 
 ``last_balance_verified`` records the provenance of the stored value: ``true``
 means it came from a trusted coin-page balance band, ``false`` or ``null``
@@ -125,6 +125,9 @@ class NightOutcome(StrEnum):
 
     RETRYABLE_FAILURES = 'retryable_failures'
     """At least one dispatched task failed with a taxonomy row that spends a retry."""
+
+    INCOMPLETE_ROSTER = 'incomplete_roster'
+    """The frame proved a task row was not enumerated, so the walk is not exhaustive."""
 
 
 @dataclass(frozen=True, slots=True)

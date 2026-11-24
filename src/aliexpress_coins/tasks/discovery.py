@@ -42,12 +42,16 @@ from aliexpress_coins.perception.layout import (
     DEFAULT_ACTION_LABELS,
     ProgressBadge,
     Row,
+    count_action_boxes,
     find_action_in_row,
     find_progress_badge,
+    group_row_clusters,
     group_rows,
     parse_progress_badge,
+    row_tolerance,
 )
 from aliexpress_coins.perception.matching import (
+    DEFAULT_MIN_OCR_SCORE,
     DEFAULT_MIN_SCORE,
     find_text,
     normalize,
@@ -55,6 +59,8 @@ from aliexpress_coins.perception.matching import (
 )
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.state import (
+    MINI_APP_TITLES,
+    TASK_TITLES,
     CaptureSource,
     Classification,
     Observation,
@@ -76,6 +82,9 @@ from aliexpress_coins.tasks.errors import RosterLogError
 from aliexpress_coins.tasks.surface import (
     BOOST_MARKER,
     EMPTY_BOOST_MARKER,
+    STREAK_CARD_HEIGHT_RATIO,
+    STREAK_CONTROL_LABELS,
+    STREAK_MARKER,
     SURFACE_REFRESH_LIMIT,
     RouteFirer,
     Surface,
@@ -108,6 +117,7 @@ __all__ = [
     'RosterObservation',
     'RosterObserver',
     'RosterRow',
+    'RosterSplitFailure',
     'RosterStatus',
     'diff_rosters',
     'discover_roster',
@@ -156,6 +166,14 @@ _MAX_OBSERVATIONS_ENV = 'AECOINS_MAX_ROSTER_OBSERVATIONS'
 
 _REWARD = re.compile(r'^\s*[+\uff0b]\s*\d')
 _REWARD_WORDS = frozenset({'coin', 'coins'})
+
+_KNOWN_ROW_TITLES: tuple[str, ...] = (*TASK_TITLES, *MINI_APP_TITLES, STREAK_MARKER)
+"""Text that names a task surface or a shortcut tile, never another row's copy.
+
+The card heading is included because the streak card is a task surface. The
+mini-app strip is included because its tiles sit directly below the task rows
+and must not be read as the row above them.
+"""
 
 
 class DiscoveryRoute(StrEnum):
@@ -310,6 +328,32 @@ class RosterEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class RosterSplitFailure:
+    """A known task title consumed by another row's copy.
+
+    ``recovered`` means the title had its own OCR box and the row was split back
+    apart. An unrecovered failure leaves the action unassigned: dispatching the
+    container row with another task's button is never a safe fallback.
+    """
+
+    title: str
+    container_title: str | None
+    row: str
+    recovered: bool
+    detail: str
+
+    def as_dict(self) -> dict[str, object]:
+        """Render the failure for ``run.json`` and the roster log."""
+        return {
+            'title': self.title,
+            'container_title': self.container_title,
+            'row': self.row,
+            'recovered': self.recovered,
+            'detail': self.detail,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class Roster:
     """The ordered result of reading one task surface."""
 
@@ -321,11 +365,15 @@ class Roster:
     routes_taken: tuple[SurfaceRoute, ...] = ()
     refresh_attempted: bool = False
     variants_seen: tuple[Surface, ...] = ()
+    visible_action_count: int = 0
+    unassigned_action_count: int = 0
+    split_failures: tuple[RosterSplitFailure, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, 'entries', tuple(self.entries))
         object.__setattr__(self, 'routes_taken', tuple(self.routes_taken))
         object.__setattr__(self, 'variants_seen', tuple(self.variants_seen))
+        object.__setattr__(self, 'split_failures', tuple(self.split_failures))
 
     @property
     def tasks(self) -> tuple[RosterEntry, ...]:
@@ -378,6 +426,34 @@ class Roster:
         return tuple(entry.title for entry in self.entries)
 
     @property
+    def incomplete(self) -> bool:
+        """Whether the frame proves at least one task row was not enumerated."""
+        return self.unassigned_action_count > 0 or any(not failure.recovered for failure in self.split_failures)
+
+    @property
+    def warning(self) -> str | None:
+        """The operator-facing sanity warning, or ``None`` for a clean read.
+
+        A count mismatch and an unrecovered title can be true at once; report
+        both rather than letting the first hide the second. A recovered split is
+        still named, because the next frame may not be recoverable.
+        """
+        problems: list[str] = []
+        if self.unassigned_action_count:
+            problems.append(
+                f'{self.visible_action_count} visible GO button(s) but {self.unassigned_action_count} '
+                'task action(s) were not enumerated'
+            )
+        unrecovered = sum(not failure.recovered for failure in self.split_failures)
+        if unrecovered:
+            problems.append(f'{unrecovered} known task title(s) could not be split from another row')
+        if problems:
+            return '; '.join(problems)
+        if self.split_failures:
+            return f'{len(self.split_failures)} split failure(s) were recovered'
+        return None
+
+    @property
     def message(self) -> str:
         """The one-line status a report can print."""
         return self.status.value
@@ -395,6 +471,11 @@ class Roster:
             'allowed_count': len(self.allowed_entries),
             'denied_count': len(self.denied_entries),
             'nothing_available': self.nothing_available,
+            'visible_action_count': self.visible_action_count,
+            'unassigned_action_count': self.unassigned_action_count,
+            'incomplete': self.incomplete,
+            'warning': self.warning,
+            'split_failures': [failure.as_dict() for failure in self.split_failures],
             'catalogue': {
                 'version': self.catalogue_version,
                 'default_deny_reason': self.default_deny_reason,
@@ -558,7 +639,7 @@ class RosterObservation:
 
     def as_dict(self) -> dict[str, object]:
         """Render one durable ``roster.jsonl`` line."""
-        return {
+        record: dict[str, object] = {
             'schema': ROSTER_OBSERVATION_SCHEMA,
             'observation_seq': self.sequence,
             'timestamp': self.timestamp.isoformat(),
@@ -568,6 +649,15 @@ class RosterObservation:
             'rows': [row.as_dict() for row in self.rows],
             'diff': self.diff.as_dict(),
         }
+        if self.roster is not None and (self.roster.incomplete or self.roster.split_failures):
+            record['roster_diagnostics'] = {
+                'visible_action_count': self.roster.visible_action_count,
+                'unassigned_action_count': self.roster.unassigned_action_count,
+                'incomplete': self.roster.incomplete,
+                'warning': self.roster.warning,
+                'split_failures': [failure.as_dict() for failure in self.roster.split_failures],
+            }
+        return record
 
 
 def diff_rosters(
@@ -1006,9 +1096,19 @@ def _log_observation(
         'error': observation.error,
         'cap_reached': observation.cap_reached,
     }
+    roster = observation.roster
+    if roster is not None and (roster.incomplete or roster.split_failures):
+        payload['roster_diagnostics'] = {
+            'visible_action_count': roster.visible_action_count,
+            'unassigned_action_count': roster.unassigned_action_count,
+            'incomplete': roster.incomplete,
+            'warning': roster.warning,
+            'split_failures': [failure.as_dict() for failure in roster.split_failures],
+        }
     if note is not None:
         payload['note'] = note
-    logger.info('%s', json.dumps(payload, separators=(',', ':'), sort_keys=True))
+    level = logging.WARNING if roster is not None and (roster.incomplete or roster.split_failures) else logging.INFO
+    logger.log(level, '%s', json.dumps(payload, separators=(',', ':'), sort_keys=True))
 
 
 def _cap_from_environment(environment: Mapping[str, str]) -> int:
@@ -1486,22 +1586,54 @@ def enumerate_roster(
     route: DiscoveryRoute | None = None,
     action_labels: Sequence[str] = DEFAULT_ACTION_LABELS,
 ) -> Roster:
-    """Read every action-bearing task row in ``snapshot`` in reading order.
+    """Read every task surface in ``snapshot`` in reading order.
 
-    A row is a task row when :func:`find_action_in_row` finds its control. The
-    title is the first meaningful label above that control; progress badges,
-    rewards and the action itself are not part of the title or subtitle.
-    Duplicate titles are kept once, so a row that appears twice in one frame is
-    not dispatched twice.
+    The streak card is a task surface with its own ``Collect`` control. Task
+    rows below it are action-bearing rows whose title is the first meaningful
+    label in the action's band; progress badges, rewards and the action itself
+    are not part of the title or subtitle. The policy is *not* used to filter:
+    denied and unrecognised rows remain in the roster with their reason.
 
-    The policy is *not* used to filter: denied and unrecognised rows remain in
-    the roster with their reason. Only an allowed row exposes
-    :attr:`RosterEntry.dispatch_target`.
+    A known task title found in another row's copy is a split failure. The raw
+    nearest-neighbour cluster is checked before the action-aware split, so a
+    card or shortcut strip that chained onto a task row is reported even when
+    the splitter already repaired it. When a title shares one OCR box with the
+    container's copy, the action is left unassigned rather than handing another
+    task's button to the container row.
     """
+    rows = group_rows(snapshot.boxes, snapshot.geometry)
+    visible_action_count = count_action_boxes(snapshot.boxes, snapshot.geometry, action_labels=action_labels)
+    expanded: list[Row] = []
+    split_failures = _cluster_split_failures(snapshot, action_labels)
+    reported = {(failure.title, failure.container_title) for failure in split_failures}
+    for row in rows:
+        action = find_action_in_row(row, action_labels)
+        if action is None:
+            expanded.append(row)
+            continue
+        parts, failure = _split_known_title_row(row, action, action_labels)
+        expanded.extend(parts)
+        if failure is not None and (failure.title, failure.container_title) not in reported:
+            reported.add((failure.title, failure.container_title))
+            split_failures.append(failure)
+
+    streak_entry, streak_rows = _streak_roster_entry(expanded, catalogue, action_labels)
     entries: list[RosterEntry] = []
     seen: set[str] = set()
+    assigned_actions: set[TextBox] = set()
+    if streak_entry is not None and (streak_entry.action is not None or visible_action_count > 0):
+        entries.append(streak_entry)
+        seen.add(normalize(streak_entry.title))
+        # The card's Collect/Claim is a streak control, not one of the GO
+        # buttons the sanity count measures. Counting it as an assigned GO
+        # would hide a task row that lost its action.
+        if streak_entry.action is not None and _is_action_text(streak_entry.action.text, action_labels):
+            assigned_actions.add(streak_entry.action)
 
-    for row in group_rows(snapshot.boxes, snapshot.geometry):
+    unrecovered = {failure.row for failure in split_failures if not failure.recovered}
+    for index, row in enumerate(expanded):
+        if index in streak_rows or _row_has_text(row, STREAK_MARKER):
+            continue
         action = find_action_in_row(row, action_labels)
         if action is None:
             continue
@@ -1518,18 +1650,23 @@ def enumerate_roster(
             RosterEntry(
                 title=title,
                 subtitle=subtitle,
-                action=action,
+                action=None if row.text in unrecovered else action,
                 progress=find_progress_badge(row),
                 decision=decision,
                 row=row,
             ),
         )
+        if row.text not in unrecovered:
+            assigned_actions.add(action)
 
     return Roster(
         entries=tuple(entries),
         route=route,
         catalogue_version=catalogue.version,
         default_deny_reason=catalogue.default_deny_reason,
+        visible_action_count=visible_action_count,
+        unassigned_action_count=max(0, visible_action_count - len(assigned_actions)),
+        split_failures=tuple(split_failures),
     )
 
 
@@ -1665,20 +1802,182 @@ def _arrival_detail(snapshot: Snapshot) -> str:
     return f'{EARN_MORE_LABEL!r} opened the {BOOST_MARKER!r} task list'
 
 
-def _title_and_subtitle(
+def _cluster_split_failures(
+    snapshot: Snapshot,
+    action_labels: Sequence[str],
+) -> list[RosterSplitFailure]:
+    """Report raw clusters that joined a known title to a neighbouring row.
+
+    :func:`group_rows` splits an action-bearing cluster around the action's
+    derived band, which repairs both measured directions: card copy above a
+    task row (``Search for what you love``) and the mini-app strip below one
+    (``Play & Earn``). By then the text is no longer in a subtitle, so the
+    failure is invisible to :func:`_split_known_title_row`. Looking at the raw
+    cluster keeps the evidence: two or more known titles chained together, with
+    at least one of them outside the action's band.
+    """
+    clusters = group_row_clusters(snapshot.boxes, snapshot.geometry)
+    if not clusters:
+        return []
+    tolerance = row_tolerance(snapshot.boxes, snapshot.geometry)
+    failures: list[RosterSplitFailure] = []
+    for cluster in clusters:
+        action = find_action_in_row(Row(cluster), action_labels)
+        if action is None:
+            continue
+        titled = [(box, title) for box in cluster for title in (_whole_known_title(box.text),) if title is not None]
+        if len(titled) < 2:
+            continue
+        titled.sort(key=lambda item: item[0].center[1])
+        host_title = titled[0][1]
+        if not any(abs(box.center[1] - action.center[1]) > tolerance for box, _ in titled):
+            continue
+        row_text = Row(cluster).text
+        for _, title in titled[1:]:
+            failures.append(
+                RosterSplitFailure(
+                    title=title,
+                    container_title=host_title,
+                    row=row_text,
+                    recovered=True,
+                    detail=f'{title!r} was grouped into {host_title!r}; the splitter separated it',
+                ),
+            )
+    return failures
+
+
+def _whole_known_title(text: str) -> str | None:
+    """A known title that is its own OCR box, not a phrase inside a subtitle."""
+    for title in _KNOWN_ROW_TITLES:
+        if similarity(title, text) >= 0.9:
+            return title
+    return None
+
+
+def _split_known_title_row(
     row: Row,
     action: TextBox,
     action_labels: Sequence[str],
+) -> tuple[tuple[Row, ...], RosterSplitFailure | None]:
+    """Undo a known task title swallowed by another row's subtitle."""
+    title, _ = _title_and_subtitle(row, action, action_labels)
+    if title is None:
+        return (row,), None
+
+    embedded = _known_title_in_text(title, exclude=title, embedded=True)
+    if embedded is not None:
+        return (row,), RosterSplitFailure(
+            title=embedded,
+            container_title=title,
+            row=row.text,
+            recovered=False,
+            detail=f'{embedded!r} shares one OCR box with {title!r}; its action was left unassigned',
+        )
+
+    candidates = _title_candidates(row, action, action_labels)
+    for box in candidates[1:]:
+        consumed = _known_title_in_text(box.text)
+        if consumed is None:
+            continue
+        before = tuple(
+            item
+            for item in row.boxes
+            if item is not action and parse_progress_badge(item.text) is None and item.center[1] < box.center[1]
+        )
+        after = tuple(
+            item
+            for item in row.boxes
+            if item is action
+            or item is box
+            or parse_progress_badge(item.text) is not None
+            or item.center[1] >= box.center[1]
+        )
+        if not before:
+            continue
+        return (Row(before), Row(after)), RosterSplitFailure(
+            title=consumed,
+            container_title=title,
+            row=row.text,
+            recovered=True,
+            detail=f'{consumed!r} was grouped into {title!r}; split at its own title box',
+        )
+    return (row,), None
+
+
+def _streak_roster_entry(
+    rows: Sequence[Row],
+    catalogue: TaskCatalogue,
+    action_labels: Sequence[str],
+) -> tuple[RosterEntry | None, set[int]]:
+    """Read the Daily coins card with its own Collect control, never a task GO."""
+    for index, header in enumerate(rows):
+        if not _row_has_text(header, STREAK_MARKER):
+            continue
+        limit = header.top + header.height * STREAK_CARD_HEIGHT_RATIO
+        card_rows = [header]
+        consumed = {index}
+        for following in range(index + 1, len(rows)):
+            row = rows[following]
+            if row.center_y > limit or _is_task_boundary(row, action_labels):
+                break
+            card_rows.append(row)
+            consumed.add(following)
+        card = Row(tuple(box for row in card_rows for box in row.boxes))
+        control = find_action_in_row(card, STREAK_CONTROL_LABELS)
+        if control is None and len(card_rows) == 1 and not any('worth' in normalize(box.text) for box in card.boxes):
+            return None, set()
+        _, subtitle = _title_and_subtitle(card, control, STREAK_CONTROL_LABELS)
+        return RosterEntry(
+            title=STREAK_MARKER,
+            subtitle=subtitle,
+            action=control,
+            progress=None,
+            decision=catalogue.decide(STREAK_MARKER, subtitle=subtitle),
+            row=card,
+        ), consumed
+    return None, set()
+
+
+def _is_task_boundary(row: Row, action_labels: Sequence[str]) -> bool:
+    return find_action_in_row(row, action_labels) is not None or any(
+        _known_title_in_text(box.text) is not None for box in row.boxes if box.score >= DEFAULT_MIN_OCR_SCORE
+    )
+
+
+def _row_has_text(row: Row, label: str) -> bool:
+    return any(
+        box.score >= DEFAULT_MIN_OCR_SCORE and similarity(label, box.text) >= DEFAULT_MIN_SCORE for box in row.boxes
+    )
+
+
+def _known_title_in_text(text: str, *, exclude: str | None = None, embedded: bool = False) -> str | None:
+    """Return a measured task title named by OCR copy.
+
+    ``embedded`` allows a title to be found inside one box, which is how a
+    complete title merged into the container's copy is detected. Callers that
+    inspect a candidate *subtitle* leave it off: a legitimate sentence such as
+    ``Water your tree in Prize Land`` mentions a mini-app tile without being a
+    title box, and must not be split as one.
+    """
+    haystack = normalize(text)
+    for title in _KNOWN_ROW_TITLES:
+        if exclude is not None and normalize(title) == normalize(exclude):
+            continue
+        if similarity(title, text) >= 0.9:
+            return title
+        if embedded:
+            needle = normalize(title)
+            if f' {needle} ' in f' {haystack} ':
+                return title
+    return None
+
+
+def _title_and_subtitle(
+    row: Row,
+    action: TextBox | None,
+    action_labels: Sequence[str],
 ) -> tuple[str | None, str | None]:
-    candidates = [
-        box
-        for box in row.boxes
-        if box is not action
-        and not _is_action_text(box.text, action_labels)
-        and parse_progress_badge(box.text) is None
-        and any(character.isalpha() for character in box.text)
-        and not _is_reward_text(box.text)
-    ]
+    candidates = _title_candidates(row, action, action_labels)
     if not candidates:
         return None, None
 
@@ -1687,6 +1986,22 @@ def _title_and_subtitle(
         return None, None
     subtitle = ' '.join(box.text.strip() for box in candidates[1:] if box.text.strip())
     return title, subtitle or None
+
+
+def _title_candidates(
+    row: Row,
+    action: TextBox | None,
+    action_labels: Sequence[str],
+) -> tuple[TextBox, ...]:
+    return tuple(
+        box
+        for box in row.boxes
+        if (action is None or box is not action)
+        and not _is_action_text(box.text, action_labels)
+        and parse_progress_badge(box.text) is None
+        and any(character.isalpha() for character in box.text)
+        and not _is_reward_text(box.text)
+    )
 
 
 def _is_action_text(text: str, action_labels: Sequence[str]) -> bool:
