@@ -47,6 +47,7 @@ from aliexpress_coins.tasks.signin import read_coin_balance
 from aliexpress_coins.tasks.surface import (
     COIN_PAGE_MARKERS,
     REDEEM_MARKER,
+    SURPRISE_GRID_TITLE,
     Surface,
     classify_surface,
     contains_text,
@@ -297,7 +298,12 @@ class SafetyGuard:
             if not self._recovering:
                 self._track_unexpected(
                     report,
-                    unexpected=_is_unexpected_inside_task(snapshot, classification, surface),
+                    unexpected=_is_unexpected_inside_task(
+                        snapshot,
+                        classification,
+                        surface,
+                        task_label=self._task_label,
+                    ),
                 )
             self._check_balance(snapshot, report)
             return snapshot
@@ -478,6 +484,8 @@ def _is_unexpected_inside_task(
     snapshot: Snapshot,
     classification: Classification,
     surface: Surface,
+    *,
+    task_label: str | None,
 ) -> bool:
     """A task page only counts as unexpected when its content is truly unknown.
 
@@ -491,6 +499,10 @@ def _is_unexpected_inside_task(
     if _is_product_detail(snapshot) or is_logged_out(snapshot):
         return False
     if surface is Surface.EMPTY_BOOST:
+        return False
+    if surface is Surface.SURPRISE_GRID and task_label == SURPRISE_GRID_TITLE:
+        # Only the surprise executor navigates to this grid; every other task
+        # that lands on a two-column card page still counts as unexpected.
         return False
     if any(evidence.signal == 'blank_frame' for evidence in classification.evidence):
         return False

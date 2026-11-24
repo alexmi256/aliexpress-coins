@@ -1193,6 +1193,7 @@ def run_surprise_task(
                     return_state=return_state,
                     dismissals=dismissals,
                     stop=stop,
+                    recorded=state.count(spec.key) > done_before,
                     logger=log,
                 )
 
@@ -2024,9 +2025,13 @@ def _is_scrolled_grid(snapshot: Snapshot, known_labels: set[str]) -> bool:
     if is_surprise_grid(snapshot) or is_product_detail(snapshot) or is_coin_store(snapshot) or is_boost_page(snapshot):
         return False
     tiles = find_surprise_tiles(snapshot)
-    if len(tiles) < 2 or {tile.column for tile in tiles} != {0, 1}:
+    if not tiles:
         return False
-    return sum(1 for tile in tiles if tile.normalized_label in known_labels) >= 2
+    if {tile.column for tile in tiles} == {0, 1}:
+        return sum(1 for tile in tiles if tile.normalized_label in known_labels) >= 2
+    # The bottom of an odd grid can show only one column. A known card is still
+    # enough identity there; an unfamiliar page is not accepted on one label.
+    return all(tile.normalized_label in known_labels for tile in tiles)
 
 
 def _header_bottom(snapshot: Snapshot) -> float:

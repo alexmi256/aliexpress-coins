@@ -574,6 +574,35 @@ def test_a_generic_discount_feed_still_trips_the_guard_in_another_task() -> None
     assert raised.value.code is AbortCode.UNEXPECTED_SCREEN
 
 
+def test_a_scrolled_surprise_grid_is_expected_only_for_the_surprise_task() -> None:
+    grid = _snapshot(
+        _box('Product A', 90, 300, 490, 355),
+        _box('Product B', 690, 300, 1090, 355),
+        _box('C$12.99', 90, 420, 300, 470),
+        _box('C$13.99', 690, 420, 900, 470),
+    )
+
+    surprise = _guard()
+
+    def inspect_surprise() -> None:
+        for _ in range(3):
+            surprise.inspect(grid)
+
+    with surprise.task('Browse surprise items'):
+        inspect_surprise()
+    assert surprise.streak == 0
+
+    other = _guard()
+
+    def inspect_other() -> None:
+        for _ in range(3):
+            other.inspect(grid)
+
+    with pytest.raises(RunAborted) as raised, other.task('Explore sponsored items'):
+        inspect_other()
+    assert raised.value.code is AbortCode.UNEXPECTED_SCREEN
+
+
 def test_the_product_detail_suffixed_purchase_captions_are_exempt() -> None:
     guard = _guard()
     detail = _snapshot(

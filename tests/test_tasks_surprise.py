@@ -334,6 +334,7 @@ def _run(
     *,
     entry: RosterEntry | None = None,
     controller: Controller | None = None,
+    capture: Callable[[], Snapshot] | None = None,
     **kwargs: object,
 ) -> SurpriseResult:
     options: dict[str, object] = {
@@ -348,7 +349,7 @@ def _run(
     options.update(kwargs)
     return run_surprise_task(
         controller if controller is not None else _controller(world, world.frame),
-        world.capture,
+        capture if capture is not None else world.capture,
         corpus,
         state,
         entry if entry is not None else _entry(catalogue),
@@ -969,6 +970,8 @@ def test_a_tile_tap_that_lands_on_a_coupon_page_is_not_tapped_as_a_grid(
         _box('Applied', 920, 700, 1100, 750),
         _box('Black Friday', 60, 800, 300, 840),
     )
+    from aliexpress_coins.runner.safety import SafetyGuard
+
     world = _World(
         series={
             'boost': (_boost_frame(progress='1/2'),),
@@ -978,13 +981,35 @@ def test_a_tile_tap_that_lands_on_a_coupon_page_is_not_tapped_as_a_grid(
         },
         transitions={('boost', 'GO'): 'grid', ('grid', 'Product A'): 'coupon'},
     )
+    guard = SafetyGuard(catalogue=catalogue)
 
-    result = _run(world, catalogue, corpus, _state(tmp_path), max_rounds=1, arrival_timeout=0.2)
+    with guard.task(SURPRISE_TITLE):
+        result = _run(
+            world,
+            catalogue,
+            corpus,
+            _state(tmp_path),
+            max_rounds=1,
+            arrival_timeout=0.2,
+            capture=guard.wrap(world.capture),
+        )
 
     assert result.outcome is SurpriseOutcome.FAILED
     assert result.verification == 'grid_disappeared'
     product_taps = [tap.label for tap in result.taps if tap.label and tap.label.startswith('Product')]
     assert product_taps == ['Product A']
+
+
+def test_a_scrolled_grid_accepts_one_known_card_at_the_bottom() -> None:
+    from aliexpress_coins.tasks.surprise import _is_scrolled_grid
+
+    known = {'product a'}
+    one_card = _snapshot(_box('Product A', 90, 600, 490, 655))
+    unknown = _snapshot(_box('Product X', 90, 600, 490, 655))
+
+    assert _is_scrolled_grid(one_card, known) is True
+    assert _is_scrolled_grid(unknown, known) is False
+    assert _is_scrolled_grid(_snapshot(), known) is False
 
 
 def test_run_surprise_task_never_reopens_the_same_tile_on_a_fixed_grid(
@@ -1035,9 +1060,9 @@ def test_run_surprise_task_fails_when_the_badge_does_not_advance(
 
     assert result.outcome is SurpriseOutcome.FAILED
     assert result.verification == 'progress_unchanged'
-    assert result.recorded is False
     # The counter-proven round is persisted at the point it is proven; the
     # later badge disagreement is reported but cannot erase that evidence.
+    assert result.recorded is True
     assert state.count('surprise_items') == 1
     assert result.badge_change == '1/2 -> 1/2'
     assert 'progress_unchanged: expected 2/2, saw 1/2' in result.detail
