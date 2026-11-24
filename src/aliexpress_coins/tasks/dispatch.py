@@ -3,8 +3,9 @@
 Every task row reaches an executor through :class:`DispatchGate`. The gate does
 exactly four things, in this order:
 
-1. **resolves** the row against the catalogue again (the discovery decision is a
-   candidate, not a licence);
+1. **resolves** the row against the catalogue again, using the OCR-element
+   provenance captured by discovery (the discovery decision is a candidate,
+   not a licence);
 2. **records** the allow/deny decision as a structured event;
 3. **refuses** anything that is not allowed, with a stable code and an audit
    line carrying the label, rule, reason and surface;
@@ -124,7 +125,16 @@ class DispatchGate:
         decision. That keeps one answer authoritative even if a roster is built
         or mutated between enumeration and dispatch.
         """
-        decision = self.catalogue.decide(entry.title, subtitle=entry.subtitle)
+        decision = self.catalogue.decide(entry.title, subtitle=entry.subtitle, context=entry.policy_context)
+        if decision.denied and decision.rule is None and entry.policy_context is not None:
+            # A stale context (for example an entry whose title was replaced
+            # after enumeration) must not hide a denial on the row's displayed
+            # title. Falling back only for a *deny* keeps provenance strict for
+            # allows: a title the context does not own can still refuse, but it
+            # can never authorise a dispatch.
+            title_only = self.catalogue.decide(entry.title)
+            if title_only.denied and title_only.rule is not None:
+                decision = title_only
         self._sequence += 1
         if decision.decision is not DecisionKind.ALLOW or decision.spec is None:
             refusal = PolicyRefusal.from_decision(decision, surface=self.surface)

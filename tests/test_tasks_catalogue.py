@@ -19,6 +19,7 @@ import yaml
 from aliexpress_coins.tasks import (
     TaskCatalogueError,
     TaskCategory,
+    TaskPolicyContext,
     load_task_catalogue,
 )
 from aliexpress_coins.tasks.catalogue import _contains
@@ -57,6 +58,7 @@ ALLOWED_FAMILIES: tuple[tuple[str, TaskCategory, float], ...] = (
     ('Explore sponsored items', TaskCategory.BROWSE_WAIT, 15.0),
     ('Browse surprise items', TaskCategory.ITEM_TAP, 0.0),
     ('Browse recently viewed items', TaskCategory.BROWSE_WAIT, 15.0),
+    ('View Super discounts', TaskCategory.BROWSE_WAIT, 15.0),
     ('Check in to win Shopping credits', TaskCategory.BROWSE_WAIT, 15.0),
     ('Learn to save money with Coins Credits', TaskCategory.BROWSE_WAIT, 15.0),
     ('Add a coins shortcut', TaskCategory.SHORTCUT, 0.0),
@@ -258,6 +260,120 @@ def test_deny_beats_allow_and_records_the_deny_reason() -> None:
     assert decision.rule == 'currency_water'
     assert decision.reason == 'currency: converting water or playing the water-to-win promo is refused'
     assert decision.matched_field == 'subtitle'
+
+
+def test_a_deny_span_also_owned_by_a_neighbour_is_not_evidence_about_the_row() -> None:
+    catalogue = load_task_catalogue(CATALOGUE_PATH)
+    context = TaskPolicyContext(
+        title_elements=('View Super discounts',),
+        subtitle_elements=('Play & Earn Prize Land Merge Boss',),
+        neighbouring_elements=('Merge Boss', 'Play & Earn', 'Prize Land'),
+    )
+
+    decision = catalogue.decide(
+        'View Super discounts',
+        subtitle='Play & Earn Prize Land Merge Boss',
+        context=context,
+    )
+
+    assert decision.allowed
+    assert decision.spec is not None
+    assert decision.spec.key == 'super_discounts'
+    assert decision.matched_pattern == 'View Super discounts'
+    assert decision.matched_field == 'title'
+    # The strip spans are not silently forgotten: the report names what was
+    # ignored as contaminated so the next split regression is visible.
+    assert decision.contaminated_pattern == 'Play & Earn'
+    assert {(match.pattern, match.field) for match in decision.contaminated} == {
+        ('Play & Earn', 'subtitle'),
+        ('Prize Land', 'subtitle'),
+        ('Merge Boss', 'subtitle'),
+    }
+    assert decision.as_dict()['contaminated'] == [match.as_dict() for match in decision.contaminated]
+
+
+def test_a_true_game_row_is_still_refused_when_its_title_appears_elsewhere() -> None:
+    catalogue = load_task_catalogue(CATALOGUE_PATH)
+    context = TaskPolicyContext(
+        title_elements=('Play & Earn',),
+        subtitle_elements=('Win rewards',),
+        neighbouring_elements=('Play & Earn',),
+    )
+
+    decision = catalogue.decide('Play & Earn', subtitle='Win rewards', context=context)
+
+    assert decision.denied
+    assert decision.rule == 'game_play_and_earn'
+    assert decision.matched_pattern == 'Play & Earn'
+    assert decision.matched_field == 'title'
+
+
+def test_a_neighbouring_game_span_cannot_create_a_named_refusal() -> None:
+    catalogue = load_task_catalogue(CATALOGUE_PATH)
+    context = TaskPolicyContext(
+        title_elements=('Mystery task',),
+        subtitle_elements=('Play & Earn Prize Land Merge Boss',),
+        neighbouring_elements=('Merge Boss', 'Play & Earn', 'Prize Land'),
+    )
+
+    decision = catalogue.decide(
+        'Mystery task',
+        subtitle='Play & Earn Prize Land Merge Boss',
+        context=context,
+    )
+
+    assert decision.denied
+    assert decision.rule is None
+    assert decision.reason == 'unrecognised'
+    assert decision.matched_pattern is None
+    assert decision.matched_field is None
+
+
+def test_a_row_owned_deny_span_without_a_neighbour_still_refuses() -> None:
+    catalogue = load_task_catalogue(CATALOGUE_PATH)
+    context = TaskPolicyContext(
+        title_elements=('A card the OCR read badly',),
+        subtitle_elements=('Each order grants you rewards',),
+        neighbouring_elements=('Coins boost', 'GO'),
+    )
+
+    decision = catalogue.decide(
+        'A card the OCR read badly',
+        subtitle='Each order grants you rewards',
+        context=context,
+    )
+
+    assert decision.denied
+    assert decision.rule == 'spending_order'
+    assert decision.matched_pattern == 'Each order grants you rewards'
+    assert decision.matched_field == 'subtitle'
+
+
+def test_an_allow_span_owned_by_a_neighbour_cannot_authorise_the_row() -> None:
+    catalogue = load_task_catalogue(CATALOGUE_PATH)
+    context = TaskPolicyContext(
+        title_elements=('Unrelated title',),
+        subtitle_elements=('View Super discounts',),
+        neighbouring_elements=('View Super discounts',),
+    )
+
+    decision = catalogue.decide('Unrelated title', subtitle='View Super discounts', context=context)
+
+    assert decision.denied
+    assert decision.rule is None
+    assert decision.reason == 'unrecognised'
+
+
+def test_policy_context_cannot_authorise_copy_it_does_not_own() -> None:
+    catalogue = load_task_catalogue(CATALOGUE_PATH)
+    context = TaskPolicyContext(title_elements=('View Super discounts',))
+
+    decision = catalogue.decide('Play & Earn', subtitle='Merge Boss', context=context)
+
+    assert decision.denied
+    assert decision.rule is None
+    assert decision.reason == 'unrecognised'
+    assert decision.matched_pattern is None
 
 
 def test_a_deny_rule_can_match_the_subtitle_the_title_does_not_name() -> None:

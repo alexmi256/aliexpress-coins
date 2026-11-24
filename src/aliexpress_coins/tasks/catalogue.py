@@ -12,6 +12,12 @@ The policy is deliberately lopsided:
   pattern and a deny rule is refused with the deny reason;
 * a label that matches nothing is refused as ``unrecognised``.
 
+When discovery supplies a :class:`TaskPolicyContext`, only the row's own OCR
+elements are evidence. A span that also appears in a neighbouring element is
+ambiguous and matches neither an allow nor a deny rule: it may be copy the row
+splitter absorbed from somewhere else. Refusal remains the default when no
+unambiguous rule matches.
+
 Patterns are case-insensitive word sequences. Punctuation is ignored
 (``Play & Earn`` normalises to ``play earn``), but a pattern must match whole
 words: the pattern ``cart`` does not match the label ``cartoon``. That keeps a
@@ -197,6 +203,46 @@ class TaskCatalogueSpec(BaseModel):
 
 
 @dataclass(frozen=True, slots=True)
+class TaskPolicyContext:
+    """The OCR elements that belong to one row, and those beside it.
+
+    ``title_elements`` and ``subtitle_elements`` are the row's own copy, kept as
+    separate OCR elements rather than one flattened string. Discovery supplies
+    the frame's other elements in ``neighbouring_elements``. If the same policy
+    span appears there too, ownership is ambiguous and the span is not evidence
+    about this row (#109).
+    """
+
+    title_elements: tuple[str, ...]
+    subtitle_elements: tuple[str, ...] = ()
+    neighbouring_elements: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, 'title_elements', tuple(self.title_elements))
+        object.__setattr__(self, 'subtitle_elements', tuple(self.subtitle_elements))
+        object.__setattr__(self, 'neighbouring_elements', tuple(self.neighbouring_elements))
+
+
+@dataclass(frozen=True, slots=True)
+class ContaminatedMatch:
+    """A policy pattern found in copy that also belongs to a neighbouring element.
+
+    A splitter failure can attach a card or the mini-app strip to the row above
+    it. If the matched span is also present in a separate element on the frame,
+    it is not evidence about this row and must not decide an allow or a refusal.
+    The match is kept only so the run report can name what was ignored.
+    """
+
+    pattern: str
+    field: str
+    source: str
+
+    def as_dict(self) -> dict[str, object]:
+        """Render the ignored match for a run log or report."""
+        return {'pattern': self.pattern, 'field': self.field, 'source': self.source}
+
+
+@dataclass(frozen=True, slots=True)
 class TaskDecision:
     """The policy answer for one OCR label, ready for the run report."""
 
@@ -208,6 +254,15 @@ class TaskDecision:
     spec: AllowedTaskSpec | None = None
     matched_pattern: str | None = None
     matched_field: str | None = None
+    contaminated: tuple[ContaminatedMatch, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, 'contaminated', tuple(self.contaminated))
+
+    @property
+    def contaminated_pattern(self) -> str | None:
+        """The first matched span ignored as belonging to another element."""
+        return self.contaminated[0].pattern if self.contaminated else None
 
     @property
     def allowed(self) -> bool:
@@ -226,7 +281,7 @@ class TaskDecision:
 
     def as_dict(self) -> dict[str, object]:
         """Render the decision as the structured event a run log carries."""
-        return {
+        record: dict[str, object] = {
             'title': self.title,
             'subtitle': self.subtitle,
             'decision': self.decision.value,
@@ -238,6 +293,9 @@ class TaskDecision:
             'matched_pattern': self.matched_pattern,
             'matched_field': self.matched_field,
         }
+        if self.contaminated:
+            record['contaminated'] = [match.as_dict() for match in self.contaminated]
+        return record
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,7 +388,13 @@ class TaskCatalogue:
                 return spec
         raise KeyError(f'unknown denied task: {key!r}')
 
-    def decide(self, title: str, *, subtitle: str | None = None) -> TaskDecision:
+    def decide(
+        self,
+        title: str,
+        *,
+        subtitle: str | None = None,
+        context: TaskPolicyContext | None = None,
+    ) -> TaskDecision:
         """Decide whether a task row may be dispatched.
 
         Deny rules are checked against both the title and the subtitle before
@@ -342,12 +406,25 @@ class TaskCatalogue:
         in-cart items``). The title is preferred over the subtitle when an
         allowed row matches; the latter is the fallback for a title that OCR
         mangled.
+
+        ``context`` carries the row's own OCR elements and the frame's other
+        elements. When supplied, a field is evidence only if its owned elements
+        attest to the same copy, and a span also owned by a neighbouring element
+        is ignored. The display strings remain on the decision for the report.
         """
-        for field, text in (('title', title), ('subtitle', subtitle)):
+        fields = _policy_fields(title, subtitle, context)
+        contaminated: list[ContaminatedMatch] = []
+        for field, text in fields:
             if text is None:
                 continue
             for rule in self.denied:
-                pattern = _first_match(_denied_patterns(rule, field), text)
+                pattern, ignored = _first_match(
+                    _denied_patterns(rule, field),
+                    text,
+                    field=field,
+                    neighbouring_elements=context.neighbouring_elements if context is not None else (),
+                )
+                contaminated = _merge_contamination(contaminated, ignored)
                 if pattern is not None:
                     return TaskDecision(
                         title=title,
@@ -357,13 +434,20 @@ class TaskCatalogue:
                         reason=rule.deny_reason,
                         matched_pattern=pattern,
                         matched_field=field,
+                        contaminated=tuple(contaminated),
                     )
 
-        for field, text in (('title', title), ('subtitle', subtitle)):
+        for field, text in fields:
             if text is None:
                 continue
             for spec in self.allowed:
-                pattern = _first_match(_allowed_patterns(spec, field), text)
+                pattern, ignored = _first_match(
+                    _allowed_patterns(spec, field),
+                    text,
+                    field=field,
+                    neighbouring_elements=context.neighbouring_elements if context is not None else (),
+                )
+                contaminated = _merge_contamination(contaminated, ignored)
                 if pattern is not None:
                     return TaskDecision(
                         title=title,
@@ -374,6 +458,7 @@ class TaskCatalogue:
                         spec=spec,
                         matched_pattern=pattern,
                         matched_field=field,
+                        contaminated=tuple(contaminated),
                     )
 
         return TaskDecision(
@@ -382,6 +467,7 @@ class TaskCatalogue:
             decision=DecisionKind.DENY,
             rule=None,
             reason=self.default_deny_reason,
+            contaminated=tuple(contaminated),
         )
 
 
@@ -501,12 +587,71 @@ def _allowed_patterns(spec: AllowedTaskSpec, field: str) -> tuple[str, ...]:
     return tuple(pattern for pattern in spec.label_patterns if ' ' in _normalise(pattern))
 
 
-def _first_match(patterns: tuple[str, ...], text: str) -> str | None:
-    """Return the first authored pattern that matches the OCR label."""
+def _policy_fields(
+    title: str,
+    subtitle: str | None,
+    context: TaskPolicyContext | None,
+) -> tuple[tuple[str, str | None], tuple[str, str | None]]:
+    """Return the text the policy may inspect, in title-then-subtitle order."""
+    if context is None:
+        return (('title', title), ('subtitle', subtitle))
+    return (
+        ('title', _owned_field_text(title, context.title_elements)),
+        ('subtitle', _owned_field_text(subtitle, context.subtitle_elements)),
+    )
+
+
+def _owned_field_text(display: str | None, elements: tuple[str, ...]) -> str | None:
+    """Trust provenance only when it attests to the same copy being reported."""
+    if display is None or not elements:
+        return None
+    owned = ' '.join(elements)
+    return display if _normalise(owned) == _normalise(display) else None
+
+
+def _first_match(
+    patterns: tuple[str, ...],
+    text: str,
+    *,
+    field: str,
+    neighbouring_elements: tuple[str, ...] = (),
+) -> tuple[str | None, tuple[ContaminatedMatch, ...]]:
+    """Return the first authored pattern unambiguously owned by this row.
+
+    A subtitle span that also appears in a neighbouring element is not evidence
+    about this row, so it is skipped and returned as contamination for the run
+    report. The title is the row's own name; a duplicate tile elsewhere cannot
+    make a true game row's title ambiguous.
+    """
+    contaminated: list[ContaminatedMatch] = []
     for pattern in patterns:
-        if _contains(text, pattern):
-            return pattern
-    return None
+        if not _contains(text, pattern):
+            continue
+        source = None
+        if field == 'subtitle':
+            source = next(
+                (element for element in neighbouring_elements if _contains(element, pattern)),
+                None,
+            )
+        if source is not None:
+            contaminated.append(ContaminatedMatch(pattern=pattern, field=field, source=source))
+            continue
+        return pattern, tuple(contaminated)
+    return None, tuple(contaminated)
+
+
+def _merge_contamination(
+    current: list[ContaminatedMatch],
+    ignored: tuple[ContaminatedMatch, ...],
+) -> list[ContaminatedMatch]:
+    """Add newly ignored spans without repeating one in the report."""
+    seen = {(match.pattern, match.field, match.source) for match in current}
+    for match in ignored:
+        identity = (match.pattern, match.field, match.source)
+        if identity not in seen:
+            current.append(match)
+            seen.add(identity)
+    return current
 
 
 def _contains(text: str, pattern: str) -> bool:

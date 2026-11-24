@@ -315,6 +315,24 @@ def _boost_frame(
     return _snapshot(*boxes)
 
 
+def _super_discounts_frame(*, with_row: bool = True) -> Snapshot:
+    """The measured no-badge row shape: title, GO and its own +1 reward."""
+    boxes = [
+        _box('Coins boost', 80, 90, 400, 150),
+        _box('Place an order on this page', 60, 1000, 500, 1050),
+        _box('GO', 1000, 1050, 1080, 1100),
+    ]
+    if with_row:
+        boxes.extend(
+            [
+                _box('View Super discounts', 60, 420, 700, 470),
+                _box('+1', 200, 480, 300, 520),
+                _box('GO', 1000, 480, 1080, 530),
+            ],
+        )
+    return _snapshot(*boxes)
+
+
 def _coin_frame(*, inline: bool = False, badge: str = '1/6', earn_more: bool = True) -> Snapshot:
     boxes = [
         _box('Coins', 101, 194, 254, 242),
@@ -942,6 +960,69 @@ def test_run_browse_task_completes_and_quotes_the_badge_change(
     payload = result.as_dict()
     assert payload['badge_change'] == '0/6 -> 1/6'
     assert payload['outcome'] == 'completed'
+
+
+@pytest.mark.slow
+def test_run_super_discounts_dwells_and_verifies_the_plus_one_row_is_gone(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    world = _World(
+        series={
+            'boost': (_super_discounts_frame(),),
+            'destination': (
+                _destination(chip='12s'),
+                _destination(chip='6s'),
+                _destination(chip=None),
+                _destination(chip=None),
+            ),
+            'coins': (_coin_frame(),),
+            'boost_after': (_super_discounts_frame(with_row=False),),
+        },
+        transitions={
+            ('boost', 'go'): 'destination',
+            ('coins', 'earn more'): 'boost_after',
+        },
+    )
+    state = _state(tmp_path)
+    entry = DispatchGate(catalogue).authorize(
+        next(entry for entry in enumerate_roster(world.frame, catalogue).entries if entry.key == 'super_discounts')
+    )
+
+    result = run_browse_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        state,
+        entry,
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        load_timeout=1.0,
+        chip_interval=0.5,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is BrowseOutcome.COMPLETED
+    assert result.verification == 'row_gone'
+    assert result.detail == "'View Super discounts' is gone from the populated boost list"
+    assert result.before is not None
+    assert '+1' in (result.before.row or '')
+    assert result.badge_before is None
+    assert result.badge_after is None
+    assert result.chip is not None
+    assert result.chip.status is ChipStatus.CLEARED
+    assert result.chip.seen is True
+    assert result.wait_seconds == 15.0
+    assert result.chip.elapsed < result.wait_seconds
+    assert result.presses == 1
+    assert result.recorded is True
+    assert result.returned is True
+    assert state.count('super_discounts') == 1
+    assert world.current == 'coins'
 
 
 def test_run_browse_task_accepts_an_inline_badge_advance_without_reopening(

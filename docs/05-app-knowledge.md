@@ -1,7 +1,7 @@
 # 05 — What the app actually does
 
 Observed behaviour of AliExpress `8.180.1` on the reference tablet (`T3_US`, Android 15, Canada /
-`en`). Measured 2026-11-19 through 2026-11-22; reviewed flow fixtures live under `tests/data/flows/`.
+`en`). Measured 2026-11-19 through 2026-11-24; reviewed flow fixtures live under `tests/data/flows/`.
 
 Legend: ✅ observed · ⬜ inferred from an observation · ❓ unknown.
 
@@ -43,7 +43,7 @@ between loads (e.g., `Browse surprise items` rotated to `Search for what you lov
 | Add a coins shortcut | One tap away from your daily rewards | +1 | — | catalogued `shortcut`; descoped (#27, skipped `no executor`) |
 | Add & start using our widget | Add our widget to your homescreen to use | +1 | — | catalogued `widget`; descoped (#27, skipped `no executor`) |
 | Search for what you love | Earn by using keywords to explore items | +1 | `0/2` | **refused** (`unrecognised`, default-deny) |
-| View Super discounts | — | +1 | — | allowed: `super_discounts` (`browse_wait`, `browse.py`) |
+| View Super discounts | Check out this page for 15 seconds | +1 | — | allowed: `super_discounts` (`browse_wait`, `browse.py`) |
 | Place an order on this page | Each order grants you rewards | — | `0/3` | **refused** (`spending_order`) |
 | Add 5 items to your cart | — | — | — | **refused** (`spending_cart`) |
 | Water to win a US $0.10 prize | Water your tree in Prize Land | — | — | **refused** (`currency_water`) |
@@ -102,11 +102,18 @@ identical `GO` buttons — enforcing the deny list at dispatch is mandatory.
   and OS settings redirect (`routed_to_settings`, stops without toggling).
 - **`Search for what you love` ⚠️:** not dispatched (`unrecognised`). No timer chip; progress stayed
   `0/2` after one search ❓; two BACKs exit to the home feed.
-- **`View Super discounts` ✅ (2026-11-23):** a timed view task: the row carries `GO`, a `+1` coin
-  reward and no purchase step; the wait is ~15 s. It sits directly above the mini-app shortcut strip
-  (`Merge Boss`, `Play & Earn`, `Prize Land`), which is **not** its subtitle; the 2026-11-24 roster
-  refused it as `game_play_and_earn` only because the strip was absorbed into that subtitle. The
-  destination page's own marker, the exact timer-chip behaviour and whether the row repeats are
+- **`View Super discounts` ✅ (2026-11-24 00:35 EST, run `20261124T053441Z`):** a timed view task.
+  The row reads `View Super discounts`, subtitle `Check out this page for 15 seconds`, `GO`, and
+  `+1`; there is no purchase step. The `GO` opens a destination page; the live run read the
+  right-edge chip as `14s` then `13s` before it vanished, and the coin balance moved
+  `worth C$0.97 → C$0.98` (boost header `66 → 67`) — **the reward is +1 ✅**. The row was still
+  visible on the verifier's first boost read moments after the chip cleared, then gone on the next
+  load, so the run recorded `no_change` even though the coin had paid; that stale-row verification
+  lag is why the run is not quoted as a `row_gone` completion. The row sits directly above the
+  mini-app shortcut strip
+  (`Merge Boss`, `Play & Earn`, `Prize Land`), which is **not** its subtitle; the 2026-11-24
+  roster refused it as `game_play_and_earn` only because the strip was absorbed upward. The exact
+  destination page marker, the full countdown-to-check transition and whether the row repeats are
   ❓; do not infer them from the tiles below the row.
 
 ## 6. Interstitials seen ✅
