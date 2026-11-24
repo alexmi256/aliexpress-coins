@@ -9,6 +9,7 @@ import pytest
 
 from aliexpress_coins.runner.device import (
     APP_ACTIVITY,
+    APP_PACKAGE,
     AdbDevice,
     DeviceCommandResult,
     HygieneReport,
@@ -268,6 +269,59 @@ def test_navigate_fires_the_measured_shortcut_intent() -> None:
             SHORTCUT_DEEP_LINK,
         ),
     ]
+
+
+@pytest.mark.parametrize(
+    ('focus', 'expected'),
+    [
+        (f'mCurrentFocus=Window{{abc u0 {APP_PACKAGE}/com.aliexpress.app.AdcActivity}}', True),
+        ('mCurrentFocus=Window{abc u0 com.android.launcher3/com.android.launcher3.Launcher}', False),
+        (
+            'mCurrentFocus=Window{abc u0 com.android.launcher3/com.android.launcher3.Launcher}\n'
+            f'mFocusedApp=ActivityRecord{{abc u0 {APP_PACKAGE}/com.aliexpress.app.AdcActivity}}',
+            False,
+        ),
+        ('mCurrentFocus=null\nmFocusedApp=ActivityRecord{abc u0 com.android.settings/.Settings}', False),
+        ('no focus fields here', None),
+    ],
+)
+def test_the_foreground_probe_compares_the_current_package(focus: str, expected: bool | None) -> None:
+    runner = ScriptedAdbRunner(_ok('x' * 400 + '\n' + focus))
+    device = AdbDevice('usb-serial', runner=runner)
+
+    assert device.is_app_foreground() is expected
+    assert runner.calls == [('adb', '-s', 'usb-serial', 'shell', 'dumpsys', 'window', 'windows')]
+
+
+def test_a_failed_foreground_probe_is_a_device_error() -> None:
+    device = AdbDevice('usb-serial', runner=ScriptedAdbRunner(_fail('dumpsys failed')))
+
+    with pytest.raises(DeviceError, match='foreground window'):
+        device.is_app_foreground()
+
+
+def test_warm_start_reuses_the_normal_activity_and_settle_without_hygiene() -> None:
+    sleeps: list[float] = []
+    runner = ScriptedAdbRunner(_ok('Starting: Intent'))
+    device = AdbDevice(
+        'usb-serial',
+        runner=runner,
+        app_settle_seconds=3.0,
+        settle=sleeps.append,
+    )
+
+    started = device.warm_start()
+
+    assert started == 'Starting: Intent'
+    assert sleeps == [3.0]
+    assert runner.calls == [('adb', '-s', 'usb-serial', 'shell', 'am', 'start', '-n', APP_ACTIVITY)]
+
+
+def test_warm_start_refuses_a_failed_launch() -> None:
+    device = AdbDevice('usb-serial', runner=ScriptedAdbRunner(_ok('Error: activity missing')))
+
+    with pytest.raises(AppLaunchFailed, match='did not start'):
+        device.warm_start()
 
 
 def test_the_widget_route_is_refused_rather_than_guessed() -> None:

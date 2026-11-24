@@ -36,6 +36,7 @@ from aliexpress_coins.tasks.surface import (
     classify_surface,
     has_task_rows,
     is_logged_out,
+    is_non_app_surface,
     is_search_landing,
     is_surprise_grid,
 )
@@ -189,6 +190,7 @@ def frames(engine: RapidOcrEngine) -> dict[str, Snapshot]:
         'boost': _load(STATES / 'boost.png', engine),
         'coins': _load(STATES / 'coins.png', engine),
         'coin_store': _load(STATES / 'coin_store.png', engine),
+        'launcher': _load(STATES / 'launcher.png', engine),
     }
 
 
@@ -205,6 +207,70 @@ def test_classify_surface_names_the_recorded_coin_store(frames: dict[str, Snapsh
 
     assert surface is Surface.COIN_STORE
     assert not has_task_rows(frames['coin_store'])
+
+
+def test_the_recorded_launcher_with_icons_is_not_mistaken_for_a_bare_clock_surface(
+    frames: dict[str, Snapshot],
+) -> None:
+    # This recon frame proves why a clock alone is not a launcher marker. Its
+    # readable app icons keep it UNKNOWN; the package probe owns that case.
+    assert classify_surface(frames['launcher']) is Surface.UNKNOWN
+    assert not is_non_app_surface(frames['launcher'])
+
+
+def test_a_status_clock_and_date_widget_identify_the_measured_non_app_surface() -> None:
+    clock_surface = _snapshot(
+        _box('3:36', 20, 5, 100, 35),
+        _box('0', 1120, 5, 1160, 35),
+        _box('日', 500, 700, 560, 760),
+        _box('24', 580, 700, 640, 760),
+    )
+
+    assert is_non_app_surface(clock_surface)
+    assert classify_surface(clock_surface) is Surface.NON_APP
+
+
+@pytest.mark.parametrize(
+    'boxes',
+    [
+        (_box('3:36', 20, 5, 100, 35),),
+        (_box('3:36', 20, 5, 100, 35), _box('24', 580, 700, 640, 760)),
+        (
+            _box('3:36', 20, 5, 100, 35),
+            _box('日', 500, 700, 560, 760),
+            _box('24', 580, 900, 640, 960),
+        ),
+        (_box('3:36', 20, 5, 100, 35), _box('日', 500, 700, 560, 760)),
+        (
+            _box('3:36', 20, 5, 100, 35),
+            _box('日', 500, 700, 560, 760),
+            _box('24', 580, 1200, 640, 1260),
+        ),
+        (
+            _box('3:36', 20, 5, 100, 35),
+            _box('日', 500, 700, 560, 760),
+            _box('24', 580, 700, 640, 760),
+            _box('Shopping feed', 100, 900, 600, 950),
+        ),
+    ],
+)
+def test_a_clock_without_the_complete_date_widget_is_not_non_app(boxes: tuple[TextBox, ...]) -> None:
+    assert not is_non_app_surface(_snapshot(*boxes))
+    assert classify_surface(_snapshot(*boxes)) is not Surface.NON_APP
+
+
+def test_known_app_markers_win_over_a_date_widget() -> None:
+    app_page = _snapshot(
+        _box('3:36', 20, 5, 100, 35),
+        _box('日', 500, 700, 560, 760),
+        _box('24', 580, 700, 640, 760),
+        _box('Coins boost', 80, 90, 400, 150),
+        _box('Daily check-in', 60, 420, 700, 470),
+        _box('GO', 1000, 480, 1080, 530),
+    )
+
+    assert classify_surface(app_page) is Surface.BOOST_PAGE
+    assert not is_non_app_surface(app_page)
 
 
 @pytest.mark.slow

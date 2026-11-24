@@ -47,6 +47,7 @@ from aliexpress_coins.tasks.browse import (
     find_collect_control,
     find_task_row,
     find_timer_chip,
+    progress_unchanged_detail,
     return_to_coins_page,
     run_browse_task,
     wait_for_timer_chip,
@@ -179,6 +180,7 @@ class _World:
         self._on_tap = on_tap
         self.current = start
         self.taps: list[tuple[int, int]] = []
+        self.tap_labels: list[str | None] = []
         self.navigations: list[SurfaceRoute] = []
         self.captures = 0
 
@@ -204,6 +206,7 @@ class _World:
     def tap(self, x: int, y: int) -> None:
         self.taps.append((x, y))
         label = _label_at(self.current_frame, x, y)
+        self.tap_labels.append(label)
         target = None
         if self._on_tap is not None:
             target = self._on_tap(self.current, label, len(self.taps))
@@ -492,6 +495,11 @@ def coin_store(engine: RapidOcrEngine) -> Snapshot:
     return _load(DATA / 'states' / 'coin_store.png', engine)
 
 
+@pytest.fixture(scope='module')
+def launcher(engine: RapidOcrEngine) -> Snapshot:
+    return _load(DATA / 'states' / 'launcher.png', engine)
+
+
 def test_find_timer_chip_reads_the_right_edge_countdown() -> None:
     frame = _destination(chip='12s')
 
@@ -678,6 +686,12 @@ def test_find_collect_control_skips_a_wide_collect_control() -> None:
 def test_find_collect_control_is_none_for_body_text_and_empty_frames() -> None:
     assert find_collect_control(_snapshot(_box('Wireless Earbuds', 60, 400, 500, 450))) is None
     assert find_collect_control(_snapshot()) is None
+
+
+def test_progress_unchanged_detail_names_an_unreadable_expected_badge() -> None:
+    assert progress_unchanged_detail(TITLE, None, None) == (
+        "progress_unchanged: expected a changed badge, saw unreadable ('Explore sponsored items')"
+    )
 
 
 def test_find_task_row_resolves_the_rows_own_action() -> None:
@@ -1176,10 +1190,12 @@ def test_run_browse_task_fails_when_the_taps_change_nothing(
 
 
 @pytest.mark.slow
+@pytest.mark.parametrize('foreground', [None, True])
 def test_run_browse_task_returns_to_coins_when_the_destination_is_wrong(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
     tmp_path: Path,
+    foreground: bool | None,
 ) -> None:
     world = _World(
         series={
@@ -1201,6 +1217,7 @@ def test_run_browse_task_returns_to_coins_when_the_destination_is_wrong(
         _state(tmp_path),
         _entry(catalogue),
         navigate=world.navigate,
+        app_foreground=(lambda: foreground) if foreground is not None else None,
         arrival_timeout=1.0,
         load_timeout=1.0,
         chip_interval=0.5,
@@ -1215,9 +1232,337 @@ def test_run_browse_task_returns_to_coins_when_the_destination_is_wrong(
     assert result.returned is True
     assert result.arrival is not None
     assert result.arrival.arrived is True
+    assert result.arrival.left_app is False
     assert result.chip is not None
     assert result.chip.status is ChipStatus.ABSENT
     assert world.current == 'coins'
+
+
+def test_run_browse_task_fails_named_when_the_entry_frame_is_the_clock_surface(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    clock_surface = _snapshot(
+        _box('3:36', 20, 5, 100, 35),
+        _box('0', 1120, 5, 1160, 35),
+        _box('日', 500, 700, 560, 760),
+        _box('24', 580, 700, 640, 760),
+    )
+    world = _World(
+        series={'launcher': (clock_surface,), 'coins': (_coin_frame(),)},
+        transitions={},
+    )
+
+    result = run_browse_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        load_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is BrowseOutcome.FAILED
+    assert result.verification == 'task_surface_unavailable'
+    assert result.presses == 0
+    assert result.taps == ()
+    assert world.navigations == [SurfaceRoute.SHORTCUT]
+    assert world.current == 'coins'
+
+
+def test_run_browse_task_skips_the_foreground_recorder_when_none_is_supplied(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    world = _World(
+        series={
+            'boost': (_boost_frame(),),
+            'coins': (_coin_frame(),),
+            'boost_after': (_boost_frame(),),
+        },
+        transitions={('coins', 'earn more'): 'boost_after'},
+    )
+
+    result = run_browse_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        app_foreground=lambda: False,
+        arrival_timeout=1.0,
+        load_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is BrowseOutcome.FAILED
+    assert result.verification == 'foreground_lost_pre_action'
+    assert result.presses == 0
+    assert result.taps == ()
+    assert result.arrival is not None
+    assert result.arrival.left_app is True
+    assert result.arrival.app_foreground is False
+
+
+@pytest.mark.slow
+def test_run_browse_task_recovers_from_the_captured_launcher_after_go(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+    launcher: Snapshot,
+) -> None:
+    world = _World(
+        series={
+            'boost': (_boost_frame(),),
+            'launcher': (launcher,),
+            'coins': (_coin_frame(),),
+            'boost_after': (_boost_frame(with_row=False),),
+        },
+        transitions={
+            ('boost', 'go'): 'launcher',
+            ('coins', 'earn more'): 'boost_after',
+        },
+    )
+    state = _state(tmp_path)
+    recorded: list[tuple[str, Snapshot]] = []
+    probes: list[bool | None] = []
+    warm_starts: list[bool] = []
+
+    def app_foreground() -> bool | None:
+        foreground = world.current != 'launcher'
+        probes.append(foreground)
+        return foreground
+
+    result = run_browse_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        state,
+        _entry(catalogue),
+        navigate=world.navigate,
+        app_foreground=app_foreground,
+        warm_start=lambda: warm_starts.append(True),
+        record_foreground_loss=lambda key, frame: recorded.append((key, frame)),
+        arrival_timeout=1.0,
+        load_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is BrowseOutcome.COMPLETED
+    assert result.verification == 'row_gone'
+    assert result.returned is True
+    assert result.presses == 1
+    assert len(result.taps) == 1
+    assert result.collect is None
+    assert result.chip is not None
+    assert result.chip.status is ChipStatus.NOT_WAITED
+    assert result.arrival is not None
+    assert result.arrival.left_app is True
+    assert result.arrival.arrived is False
+    assert result.arrival.app_foreground is False
+    assert result.arrival.evidence is not None
+    assert result.arrival.evidence.surface == 'unknown'
+    assert '2:22' in result.arrival.evidence.labels
+    assert probes == [True, False]
+    assert warm_starts == [True]
+    assert recorded == [('sponsored_items', launcher)]
+    assert world.navigations == [SurfaceRoute.SHORTCUT, SurfaceRoute.SHORTCUT]
+    assert world.current == 'coins'
+    assert state.count('sponsored_items') == 1
+
+
+def test_run_browse_task_recognises_the_bare_clock_date_surface_without_a_probe(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    clock_surface = _snapshot(
+        _box('3:36', 20, 5, 100, 35),
+        _box('0', 1120, 5, 1160, 35),
+        _box('日', 500, 700, 560, 760),
+        _box('24', 580, 700, 640, 760),
+    )
+    world = _World(
+        series={
+            'boost': (_boost_frame(),),
+            'launcher': (clock_surface,),
+            'coins': (_coin_frame(),),
+            'boost_after': (_boost_frame(with_row=False),),
+        },
+        transitions={
+            ('boost', 'go'): 'launcher',
+            ('coins', 'earn more'): 'boost_after',
+        },
+    )
+    warm_starts: list[bool] = []
+
+    result = run_browse_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        warm_start=lambda: warm_starts.append(True),
+        arrival_timeout=1.0,
+        load_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is BrowseOutcome.COMPLETED
+    assert result.verification == 'row_gone'
+    assert result.arrival is not None
+    assert result.arrival.left_app is True
+    assert result.arrival.app_foreground is None
+    assert result.arrival.evidence is not None
+    assert result.arrival.evidence.surface == 'non_app'
+    assert result.arrival.evidence.labels == ('3:36', '0', '日', '24')
+    assert result.chip is not None
+    assert result.chip.status is ChipStatus.NOT_WAITED
+    assert warm_starts == [True]
+    assert world.navigations == [SurfaceRoute.SHORTCUT, SurfaceRoute.SHORTCUT]
+
+
+@pytest.mark.parametrize('record', [True, False])
+@pytest.mark.parametrize('row_after', [True, False])
+def test_run_browse_task_does_not_tap_when_the_pre_tap_probe_says_non_app(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+    record: bool,
+    row_after: bool,
+) -> None:
+    world = _World(
+        series={
+            'boost': (_boost_frame(),),
+            'coins': (_coin_frame(),),
+            'boost_after': (_boost_frame(with_row=row_after),),
+        },
+        transitions={('coins', 'earn more'): 'boost_after'},
+    )
+    state = _state(tmp_path)
+    recorded: list[tuple[str, Snapshot]] = []
+    warm_starts: list[bool] = []
+    initial = world.frame
+
+    result = run_browse_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        state,
+        _entry(catalogue),
+        navigate=world.navigate,
+        app_foreground=lambda: False,
+        warm_start=lambda: warm_starts.append(True),
+        record_foreground_loss=(lambda key, frame: recorded.append((key, frame))) if record else None,
+        arrival_timeout=1.0,
+        load_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is BrowseOutcome.FAILED
+    assert result.verification == 'foreground_lost_pre_action'
+    assert result.presses == 0
+    assert result.taps == ()
+    assert result.arrival is not None
+    assert result.arrival.left_app is True
+    assert result.arrival.app_foreground is False
+    assert recorded == ([('sponsored_items', initial)] if record else [])
+    assert warm_starts == [True]
+    assert world.tap_labels == []
+    assert state.count('sponsored_items') == 0
+
+
+def test_pre_tap_foreground_loss_forces_reentry_from_a_stale_inline_coin_snapshot(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    inline = _coin_frame(inline=True)
+    world = _World({'inline': (inline,), 'coins': (_coin_frame(),)}, {})
+
+    result = run_browse_task(
+        _controller(world, inline),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        snapshot=inline,
+        app_foreground=lambda: False,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is BrowseOutcome.FAILED
+    assert result.verification == 'foreground_lost_pre_action'
+    assert result.returned is True
+    assert result.return_state is not None
+    assert result.return_state.reentered is True
+    assert result.taps == ()
+    assert world.tap_labels == []
+    assert world.navigations == [SurfaceRoute.SHORTCUT]
+
+
+def test_run_browse_task_recovers_without_tapping_when_it_starts_on_non_app(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    clock_surface = _snapshot(
+        _box('3:36', 20, 5, 100, 35),
+        _box('0', 1120, 5, 1160, 35),
+        _box('日', 500, 700, 560, 760),
+        _box('24', 580, 700, 640, 760),
+    )
+    world = _World({'launcher': (clock_surface,), 'coins': (_coin_frame(),)}, {})
+    warm_starts: list[bool] = []
+
+    result = run_browse_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        snapshot=clock_surface,
+        warm_start=lambda: warm_starts.append(True),
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is BrowseOutcome.FAILED
+    assert result.verification == 'task_surface_unavailable'
+    assert result.presses == 0
+    assert result.taps == ()
+    assert result.returned is True
+    assert warm_starts == [True]
+    assert world.tap_labels == []
+    assert world.navigations == [SurfaceRoute.SHORTCUT]
 
 
 @pytest.mark.slow
@@ -2258,6 +2603,9 @@ def test_arrival_and_return_result_render_their_evidence() -> None:
     skipped = ChipWait(status=ChipStatus.ABSENT)
 
     assert arrival.as_dict()['arrived'] is True
+    assert arrival.as_dict()['left_app'] is False
+    assert arrival.as_dict()['app_foreground'] is None
+    assert arrival.as_dict()['evidence'] is None
     assert returned.as_dict()['navigations'] == ['shortcut']
     assert skipped.as_dict()['status'] == 'absent'
 

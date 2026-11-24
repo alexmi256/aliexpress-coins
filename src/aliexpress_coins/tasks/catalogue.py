@@ -403,10 +403,9 @@ class TaskCatalogue:
         ``cart`` is trusted only in the title, while action phrases and precise
         action verbs (``Add to cart``, ``Checkout``) are trusted in either
         field: the title names what the row does, while a subtitle may merely
-        describe it (for example ``Browse recently viewed items`` with ``...
-        in-cart items``). The title is preferred over the subtitle when an
-        allowed row matches; the latter is the fallback for a title that OCR
-        mangled.
+        describe it (for example a browse title with ``... in-cart items``). The
+        title is preferred over the subtitle when an allowed row matches; the
+        latter is the fallback for a title that OCR mangled.
 
         ``context`` carries the row's own OCR elements and the frame's other
         elements. When supplied, a field is *allowable* evidence only if its
@@ -567,9 +566,9 @@ def _denied_patterns(rule: DeniedTaskSpec, field: str) -> tuple[str, ...]:
     """Trust a generic deny word only on the title.
 
     A generic word (``cart``, ``order``, ``game``) says what the row does when
-    it is the title. In a subtitle it can describe an allowed row instead, as
-    ``in-cart items`` does for ``Browse recently viewed items``. Action phrases
-    (``Add to cart``, ``Place an order``) and precise one-word action verbs
+    it is the title. In a subtitle it can describe the merchandise instead, as
+    ``in-cart items`` does. Action phrases (``Add to cart``, ``Place an order``)
+    and precise one-word action verbs
     (``Checkout``, ``Purchase``) are trusted in either field.
     """
     if field == 'title':

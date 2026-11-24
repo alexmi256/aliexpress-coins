@@ -318,6 +318,15 @@ def _home_frame() -> Snapshot:
     return _snapshot(_box('For you', 100, 200, 400, 260), _box('Search', 100, 300, 300, 360))
 
 
+def _non_app_clock_frame() -> Snapshot:
+    return _snapshot(
+        _box('3:36', 20, 5, 100, 35),
+        _box('0', 1120, 5, 1160, 35),
+        _box('日', 500, 700, 560, 760),
+        _box('24', 580, 700, 640, 760),
+    )
+
+
 def _skeleton_frame() -> Snapshot:
     """The measured loading skeleton, with no OCR boxes to classify a page."""
     with Image.open(ROOT / 'tests' / 'data' / 'states' / 'skeleton.png') as opened:
@@ -1223,6 +1232,65 @@ def test_a_dry_run_fails_when_a_popup_covers_the_coin_page(
     assert device.taps == []
 
 
+def test_a_dry_run_recovers_from_a_non_app_surface_then_fails_without_a_plan(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _non_app_clock_frame()
+    context = _context(tmp_path, capture=_Capture(frame), catalogue=catalogue, corpus=corpus)
+    context.config = replace(context.config, dry_run=True)
+    device = _RecordingDevice()
+    context.controller = Controller.from_frame(device, frame, rng=random.Random(0))
+    assert isinstance(context.navigate, _Navigate)
+
+    report = engine.run_once(context)
+
+    assert context.navigate.routes == [SurfaceRoute.SHORTCUT]
+    assert report.status is RunStatus.FAILED
+    assert report.failure_code == FailureCode.NAVIGATION_FAILED.value
+    assert report.detail is not None
+    assert report.detail.startswith('surface_non_app')
+    assert report.plan is not None
+    assert report.plan['surface'] == 'non_app'
+    assert report.plan['steps'] == []
+    assert report.plan['taps_issued'] == 0
+    assert context.controller.tap_count == 0
+    assert device.taps == []
+    assert context.record_foreground_loss is not None
+    context.record_foreground_loss('sponsored_items', frame)
+    assert report.shots['browse-sponsored_items-foreground-lost'] == 'shots/browse-sponsored_items-foreground-lost.png'
+    assert (report.run_dir / 'shots' / 'browse-sponsored_items-foreground-lost.png').is_file()
+
+
+def test_a_live_run_fails_when_route_discovery_recovers_only_to_non_app(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _non_app_clock_frame()
+    context = _context(tmp_path, capture=_Capture(frame), catalogue=catalogue, corpus=corpus)
+    non_app_roster = Roster(
+        entries=(),
+        route=None,
+        catalogue_version=catalogue.version,
+        default_deny_reason=catalogue.default_deny_reason,
+        surface_variant=Surface.NON_APP,
+        routes_taken=(SurfaceRoute.SHORTCUT, SurfaceRoute.SHORTCUT),
+        refresh_attempted=True,
+    )
+    monkeypatch.setattr(engine, 'discover_roster', lambda *_args, **_kwargs: non_app_roster)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.FAILED
+    assert report.failure_code == FailureCode.NAVIGATION_FAILED.value
+    assert report.surface == 'non_app'
+    assert report.roster is not None
+    assert report.roster['incomplete'] is True
+
+
 def test_a_dry_run_fails_when_the_inline_rows_never_render(
     tmp_path: Path,
     catalogue: TaskCatalogue,
@@ -1864,6 +1932,50 @@ def test_dispatch_routes_each_category_to_its_executor(
         engine._dispatch_entry(context, controller, _entry(full_roster, 'coins_shortcut'))
 
 
+def test_browse_dispatch_receives_the_foreground_probe_and_frame_recorder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _boost_frame()
+    context = _context(tmp_path, capture=_Capture(frame), catalogue=catalogue, corpus=corpus)
+    assert context.controller is not None
+    probes: list[bool | None] = []
+    recorded: list[tuple[str, Snapshot]] = []
+    warm_starts: list[bool] = []
+
+    def probe() -> bool | None:
+        probes.append(True)
+        return True
+
+    context.app_foreground = probe
+    context.warm_start = lambda: warm_starts.append(True)
+    context.record_foreground_loss = lambda key, snapshot: recorded.append((key, snapshot))
+
+    def executor(*_args: Any, **kwargs: Any) -> _FakeResult:
+        foreground = cast(Callable[[], bool | None], kwargs['app_foreground'])
+        warm_start = cast(Callable[[], None], kwargs['warm_start'])
+        recorder = cast(Callable[[str, Snapshot], None], kwargs['record_foreground_loss'])
+        assert foreground is context.app_foreground
+        assert warm_start is context.warm_start
+        assert recorder is context.record_foreground_loss
+        assert foreground() is True
+        warm_start()
+        recorder('sponsored_items', frame)
+        return _FakeResult(completed=True)
+
+    monkeypatch.setattr(engine, 'run_browse_task', executor)
+
+    result = engine._dispatch_entry(context, context.controller, _entry(full_roster, 'sponsored_items'))
+
+    assert result.completed is True
+    assert probes == [True]
+    assert warm_starts == [True]
+    assert recorded == [('sponsored_items', frame)]
+
+
 def test_surprise_dispatch_receives_the_round_grid_recorder(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2051,15 +2163,25 @@ def test_make_live_context_wraps_the_real_seams(
             return frame
 
     class FakeDevice:
+        foreground = True
+
         def __init__(self, serial: str, *, app_settle_seconds: float, settle: Any) -> None:
             assert serial == '192.168.8.65:5555'
             assert app_settle_seconds == 10.0
+            self.warm_starts = 0
 
         def prepare(self) -> HygieneReport:
             return HygieneReport('192.168.8.65:5555', 'device', True, True, 'ready')
 
         def navigate(self, route: SurfaceRoute) -> None:
             navigated.append(route)
+
+        def is_app_foreground(self) -> bool | None:
+            return self.foreground
+
+        def warm_start(self) -> str:
+            self.warm_starts += 1
+            return 'Starting: Intent'
 
         def check_connected(self) -> None:
             return None
@@ -2098,8 +2220,20 @@ def test_make_live_context_wraps_the_real_seams(
     context = engine.make_live_context(config, stop=stop, wall_clock=lambda: CAPTURED_AT)
 
     assert engine._capture(context.capture) == frame
+    assert context.app_foreground is not None
+    assert context.app_foreground() is True
+    assert context.warm_start is not None
     context.navigate(SurfaceRoute.SHORTCUT)
     assert navigated == [SurfaceRoute.SHORTCUT]
+    assert cast(Any, context.hygiene).warm_starts == 0
+    cast(Any, context.hygiene).foreground = False
+    context.navigate(SurfaceRoute.SHORTCUT)
+    assert navigated == [SurfaceRoute.SHORTCUT, SurfaceRoute.SHORTCUT]
+    assert cast(Any, context.hygiene).warm_starts == 1
+    cast(Any, context.hygiene).foreground = None
+    context.navigate(SurfaceRoute.SHORTCUT)
+    assert navigated == [SurfaceRoute.SHORTCUT, SurfaceRoute.SHORTCUT, SurfaceRoute.SHORTCUT]
+    assert cast(Any, context.hygiene).warm_starts == 2
     assert context.controller is None
     assert context.controller_factory is not None
     controller = context.controller_factory(frame)
@@ -2110,7 +2244,7 @@ def test_make_live_context_wraps_the_real_seams(
     with pytest.raises(RunInterrupted):
         context.sleep(1)
     context.hygiene.restore()
-    assert navigated == [SurfaceRoute.SHORTCUT, SurfaceRoute.WIDGET]
+    assert navigated == [SurfaceRoute.SHORTCUT, SurfaceRoute.SHORTCUT, SurfaceRoute.SHORTCUT, SurfaceRoute.WIDGET]
 
 
 def test_make_live_context_requires_a_device(tmp_path: Path) -> None:
@@ -2746,6 +2880,31 @@ def test_a_route_timeout_falls_back_to_the_current_surface(
     assert roster.routes_taken == (SurfaceRoute.SHORTCUT,)
     assert roster.refresh_attempted is True
     assert roster.count == len(_ROWS)
+
+
+def test_a_route_timeout_on_a_non_app_surface_does_not_invent_an_inline_roster(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _non_app_clock_frame()
+    context = _context(tmp_path, capture=_Capture(frame), catalogue=catalogue, corpus=corpus)
+    assert context.controller is not None
+    monkeypatch.setattr(
+        engine,
+        'discover_roster',
+        lambda *args, **kwargs: (_ for _ in ()).throw(StateTimeout('no app page')),
+    )
+
+    roster, error = engine._discover_or_fallback(context, context.controller)
+
+    assert error is not None
+    assert roster.empty
+    assert roster.route is None
+    assert roster.surface_variant is Surface.NON_APP
+    assert roster.routes_taken == (SurfaceRoute.SHORTCUT,)
+    assert roster.refresh_attempted is True
 
 
 def test_a_stop_during_route_discovery_is_not_swallowed_by_the_fallback(
@@ -3858,6 +4017,27 @@ def test_run_once_wires_round_grid_frames_into_the_artifact_store(
     assert context.record_round_grid is not None
     context.record_round_grid(1, frame)
     name = 'surprise-items-round-1-grid'
+    assert report.shots[name] == f'shots/{name}.png'
+    store = ArtifactStore(report.runs_dir, report.run_id)
+    assert store.load(name).boxes == frame.boxes
+
+
+def test_run_once_wires_foreground_loss_frames_into_the_artifact_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _boost_header_frame()
+    _surface(monkeypatch, replace(full_roster, entries=()), frame)
+    context = _context(tmp_path, capture=_Capture(frame), catalogue=catalogue, corpus=corpus)
+
+    report = engine.run_once(context)
+
+    assert context.record_foreground_loss is not None
+    context.record_foreground_loss('sponsored_items', frame)
+    name = 'browse-sponsored_items-foreground-lost'
     assert report.shots[name] == f'shots/{name}.png'
     store = ArtifactStore(report.runs_dir, report.run_id)
     assert store.load(name).boxes == frame.boxes

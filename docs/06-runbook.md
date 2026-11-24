@@ -305,16 +305,17 @@ Read it like this:
 
 - **`surface`** is the screen the planner understood: `rows_present`, `rows_absent`, `boost_page`,
   `redeem_interstitial`, `empty_boost`, `coin_store`, `surprise_grid`, `search_landing`, `product_detail`,
-  or `unknown`. `unknown`,
-  `empty_boost`, a redeem interstitial, or a `rows_absent` with no readable task row is an unreadable report, not a
-  plan.
+  `non_app`, or `unknown`. `unknown`, `non_app`, `empty_boost`, a redeem interstitial, or a
+  `rows_absent` with no readable task row is an unreadable report, not a plan. `non_app` is the
+  measured status-clock plus date-widget frame with no app content; a launcher
+  with icons stays `unknown` and is identified by the foreground-package probe during browse recovery.
 - **steps** are the rows that would be dispatched, in order, with the catalogue key and executor
   category. `Daily coins` is the streak sign-in; it is allowed but not a boost row. When task rows are
   legible on an `unknown` surface, the run fails as `surface_unverified`; `steps` is then evidence of
   what was read, not a forecast that the day is workable.
-- **refusals** are the deny-list decisions. `unrecognised` is default-deny: the row is not in
-  `specs/tasks.yaml`, so the collector skips it. `spending_order` is an explicit refusal. A refusal
-  is a safety feature, not a failure.
+- **refusals** are the deny-list decisions. `unrecognised` is default-deny: no catalogue rule matched.
+  `unrecognised_recently_viewed` is an explicit refusal for the unmeasured family (#116).
+  `spending_order` is another explicit refusal. A refusal is a safety feature, not a failure.
 - **roster warnings** name visible `GO` buttons that did not become task rows, or known task titles
   that could not be split from another row's copy. A recovered split is still reported; an
   incomplete read keeps the night open instead of letting a swallowed row prove the day is done.
@@ -392,6 +393,8 @@ runs/<UTC timestamp>/          # e.g. runs/20261123T015402Z/
     ├── balance-before.json    # its OCR boxes and geometry sidecar
     ├── balance-after.png
     ├── balance-after.json
+    ├── browse-<key>-foreground-lost.png  # when a browse tap leaves the app
+    ├── browse-<key>-foreground-lost.json # its OCR evidence, before recovery
     └── failure.png            # best-effort, failed runs only
 ```
 
@@ -407,6 +410,17 @@ $ docker compose run --rm collector cat /app/runs/20261122T131125Z/summary.md
 
 The timestamp is **UTC**, even though the schedule and the daily state use the device's local
 timezone. That is deliberate: run ids sort correctly across DST changes.
+
+A browse task checks the foreground package before its `GO` and before accepting an unknown
+destination. A measured clock/date `non_app` frame, or a package probe naming another app, stops the
+arrival wait: the executor does not wait for a timer or tap `Collect`, saves
+`browse-<key>-foreground-lost.*`, warm-starts AliExpress if needed, fires the shortcut route, and only
+then reopens the populated boost list for positive verification. `arrival.left_app` and the saved
+frame's labels are kept in `run.json`. If fresh proof is absent the task remains `task_unverified`;
+it is never called complete from the launcher frame. If foreground loss is detected before `GO`, the
+executor recovers but records `foreground_lost_pre_action` without action-based verification, because
+a missing row after roster rotation is not proof that this task completed. If initial route discovery
+also returns only `non_app`, the run fails as `navigation_failed` instead of declaring an empty night.
 
 ---
 

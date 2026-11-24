@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "issue": 116,
+  "run_id": "20261124T083006Z",
+  "geometry": {
+    "width": 1200,
+    "height": 2000,
+    "density": 240,
+    "sdk": 35,
+    "profile_id": "c9b8f88670e295b5"
+  },
+  "row": {
+    "title": "Browse recently viewed items",
+    "subtitle": "Coins deal on viewed, in-cart items",
+    "reward": "+1",
+    "badge": null,
+    "destination": null,
+    "completion_contract": null
+  },
+  "retained_shots": [
+    "balance-before.png",
+    "balance-after.png"
+  ],
+  "post_tap_frame_retained": false,
+  "post_tap_labels": [
+    "3:36",
+    "0",
+    "日",
+    "24"
+  ],
+  "chronology": {
+    "evidence_source": ["roster.jsonl", "run.jsonl"],
+    "row_added_utc": "2026-11-24T08:31:53.457638Z",
+    "sponsored_rounds_completed_after_row_addition": 6,
+    "sponsored_rounds_completed_before_reflow": 6,
+    "roster_reflow_utc": "2026-11-24T08:35:58.871799Z",
+    "tap_utc": "2026-11-24T08:36:17.410323Z"
+  },
+  "tap": {
+    "requested": [1020, 1640],
+    "clamped": [1020, 1640],
+    "jitter": [0, 4],
+    "point": [1020, 1644]
+  },
+  "roster_targets": [
+    {
+      "observation": 3,
+      "surface": "boost",
+      "target": [1007, 1829.5]
+    },
+    {
+      "observation": 9,
+      "surface": "boost",
+      "target": [1007, 1497.5]
+    }
+  ],
+  "returned_inline_row": {
+    "title_box": [180, 1585, 700, 1628],
+    "action_box": [980, 1616, 1060, 1664],
+    "action_center": [1020, 1640],
+    "badge": null,
+    "reward": "+1"
+  },
+  "return": {
+    "navigations": ["shortcut"],
+    "history": ["page", "unknown", "loading", "loading", "loading", "loading", "page"],
+    "verified": false
+  },
+  "conclusions": {
+    "requested_point_matches_returned_inline_action": true,
+    "actual_tap_inside_returned_inline_action": true,
+    "roster_boxes_were_stale_after_reflow": true,
+    "foreground_loss_proven_by_retained_frame": false,
+    "cause": "unknown: no post-tap frame or foreground-package record was retained"
+  }
+}

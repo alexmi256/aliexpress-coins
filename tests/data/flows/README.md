@@ -49,6 +49,15 @@ reconstructed truthfully. The JSON fixture preserves what the report does prove 
 product taps, one scroll, a falsely complete round) and its replay test covers the headerless-digit
 failure mode.
 
+`recently_viewed_issue_116.json` is sanitized evidence from the same run for issue #116. No post-tap
+PNG or OCR sidecar was retained, so it preserves the serialized clock/date labels, the dispatched GO
+point and the later inline row's action box. It records the limits explicitly: the requested point
+matches the returned inline GO centre and the jittered point lies inside its box, while the older
+boost-roster boxes had become stale after
+reflow; the missing frame means neither launcher foreground ownership nor the cause of the transition
+can be proven retrospectively. `states/launcher.png` is a separate recon capture used only to replay
+recovery from a launcher that draws app icons.
+
 `surprise_items_issue_115_loading_grid.png` and `surprise_items_issue_115_loaded_grid.png` are the
 same `0/2` row reproduced live on 2026-11-24 after that run, while the tablet still offered the
 task. They are not frames from `20261124T083006Z`; they are the supervised capture of its load-timing

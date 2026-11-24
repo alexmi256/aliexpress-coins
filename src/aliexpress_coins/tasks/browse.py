@@ -2,9 +2,9 @@
 
 Most paying tasks in the roster share a shape: open a page, wait out a dwell
 requirement, collect if the page offers a control, come back, and verify that the
-badge moved. The sponsored-items, recently-viewed, check-in-to-win and
-learn-to-save families are all that shape, so they share this executor and only
-the catalogue's ``wait_seconds`` differs.
+badge moved. The sponsored-items, check-in-to-win and learn-to-save families are
+all that shape, so they share this executor and only the catalogue's
+``wait_seconds`` differs.
 
 The measured contract is the timer chip, not a fixed sleep
 (docs/05-app-knowledge.md §5):
@@ -97,12 +97,14 @@ from aliexpress_coins.tasks.surface import (
     COIN_PAGE_MARKERS,
     REDEEM_MARKER,
     RouteFirer,
+    Surface,
     SurfaceRoute,
     classify_surface,
     contains_text,
     has_task_rows,
     is_boost_page,
     is_empty_boost,
+    is_non_app_surface,
 )
 
 __all__ = [
@@ -363,6 +365,9 @@ class Arrival:
     history: tuple[str, ...] = ()
     dismiss: DismissReport | None = None
     stop: str | None = None
+    left_app: bool = False
+    app_foreground: bool | None = None
+    evidence: FrameEvidence | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, 'history', tuple(self.history))
@@ -376,6 +381,9 @@ class Arrival:
             'elapsed': self.elapsed,
             'history': list(self.history),
             'stop': self.stop,
+            'left_app': self.left_app,
+            'app_foreground': self.app_foreground,
+            'evidence': None if self.evidence is None else self.evidence.as_dict(),
         }
         if self.dismiss is not None:
             record['dismiss'] = self.dismiss.as_dict()
@@ -783,6 +791,7 @@ def return_to_coins_page(
     interval: float = DEFAULT_RETURN_INTERVAL,
     attempts: int = DEFAULT_RETURN_ATTEMPTS,
     settle: float = 0.0,
+    force_reentry: bool = False,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     logger: logging.Logger | None = None,
@@ -794,7 +803,9 @@ def return_to_coins_page(
     app (docs/05 §5b). Each attempt fires the route once and polls for the two
     coin-page markers. A popup that appears on arrival is swept through the one
     dismissal loop; the redeem interstitial is accepted as an arrival because the
-    coins page is what it covers.
+    coins page is what it covers. ``force_reentry`` ignores a coin-page-shaped
+    snapshot after foreground loss and fires the route anyway; the pre-loss
+    frame is not evidence that the app is currently foregrounded.
     """
     if timeout <= 0:
         raise ValueError(f'timeout must be positive, got {timeout!r}')
@@ -811,7 +822,7 @@ def return_to_coins_page(
     history: list[str] = []
     dismissals: list[DismissReport] = []
     current = snapshot if snapshot is not None else _capture(capture)
-    if _on_coins_page(current):
+    if not force_reentry and _on_coins_page(current):
         return ReturnResult(
             returned=True,
             reentered=False,
@@ -947,6 +958,9 @@ def run_browse_task(
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     logger: logging.Logger | None = None,
+    app_foreground: Callable[[], bool | None] | None = None,
+    warm_start: Callable[[], None] | None = None,
+    record_foreground_loss: Callable[[str, Snapshot], None] | None = None,
 ) -> BrowseResult:
     """Run one browse-and-wait task from an allowed roster row.
 
@@ -961,6 +975,15 @@ def run_browse_task(
     reached ``max_per_run`` is ``skipped`` before any tap. Only a verified
     completion is recorded, so an unchanged badge stays a failure the next run
     retries.
+
+    ``app_foreground`` is an optional package-level probe. It is consulted for
+    an otherwise unknown destination so a launcher with icons is not mistaken
+    for an app page. The measured clock/date frame is recognised from the
+    screenshot alone; either signal stops the arrival wait and sends the run
+    through the shortcut recovery route before completion is judged.
+    ``warm_start`` is called whenever foreground loss is detected, even if the
+    package probe could not confirm it, so a cold deep link cannot recreate the
+    documented empty-boost failure.
     """
     log = logger if logger is not None else logging.getLogger(LOGGER_NAME)
     spec = _allowed_spec(entry)
@@ -1041,6 +1064,11 @@ def run_browse_task(
             sleep=sleep,
             logger=log,
         )
+
+    if is_non_app_surface(frame) and warm_start is not None:
+        # The same forced warm start is needed when a dispatch begins on the
+        # launcher, before the normal arrival/recovery path is reached.
+        warm_start()
 
     if not _is_task_surface(frame):
         return _finish_failed(
@@ -1160,6 +1188,23 @@ def run_browse_task(
 
     try:
         while presses < MAX_PRESSES:
+            if app_foreground is not None and app_foreground() is False:
+                # The roster may have refreshed while OCR was running. Prove the
+                # app is still foregrounded before issuing the stored decision's
+                # tap; recover first when it is not.
+                if record_foreground_loss is not None:
+                    record_foreground_loss(spec.key, current)
+                arrival = Arrival(
+                    snapshot=current,
+                    arrived=False,
+                    on_task_list=is_boost_page(current),
+                    on_coin_page=_on_coins_page(current),
+                    elapsed=0.0,
+                    left_app=True,
+                    app_foreground=False,
+                    evidence=_evidence(current, entry.title),
+                )
+                break
             _, press_action, _ = find_task_row(current, entry.title)
             if press_action is None:
                 break
@@ -1200,6 +1245,10 @@ def run_browse_task(
                 clock=clock,
                 sleep=sleep,
                 logger=log,
+                title=entry.title,
+                task_key=spec.key,
+                app_foreground=app_foreground,
+                record_foreground_loss=record_foreground_loss,
             )
             current = arrival.snapshot
             if arrival.dismiss is not None:
@@ -1207,7 +1256,7 @@ def run_browse_task(
             if arrival.stop is not None:
                 stop = arrival.stop
                 break
-            if arrival.arrived or arrival.on_coin_page:
+            if arrival.arrived or arrival.on_coin_page or arrival.left_app:
                 break
 
         if stop is None and arrival is not None and arrival.arrived:
@@ -1272,6 +1321,12 @@ def run_browse_task(
                         dismissals.append(sweep)
                     current = sweep.frames[-1].snapshot if sweep is not None and sweep.frames else _capture(capture)
 
+        if arrival is not None and arrival.left_app and warm_start is not None:
+            # Screenshot evidence is sufficient to force a warm start. Waiting
+            # for a second package probe could return None and fire a cold deep
+            # link into the documented empty-boost state.
+            warm_start()
+
         return_state = return_to_coins_page(
             controller,
             capture,
@@ -1284,6 +1339,7 @@ def run_browse_task(
             interval=return_interval,
             attempts=return_attempts,
             settle=settle,
+            force_reentry=arrival is not None and arrival.left_app,
             clock=clock,
             sleep=sleep,
             logger=log,
@@ -1301,6 +1357,33 @@ def run_browse_task(
                 wait_seconds=spec.wait_seconds,
                 progress_before=progress_before,
                 before=before_evidence,
+                presses=presses,
+                taps=taps,
+                collect=collect_tap,
+                chip=chip_wait,
+                arrival=arrival,
+                return_state=return_state,
+                dismissals=dismissals,
+                stop=stop,
+                logger=log,
+            )
+
+        if presses == 0 and arrival is not None and arrival.left_app:
+            # No task action was taken. A row missing after recovery may simply
+            # be roster rotation, so it must not become row_gone completion.
+            return _result(
+                spec,
+                entry.title,
+                BrowseOutcome.FAILED,
+                verification='foreground_lost_pre_action',
+                detail='the app was not in the foreground before GO; no tap was issued and the coins page was recovered',
+                limit=limit,
+                done_before=done_before,
+                done_after=state.count(spec.key),
+                wait_seconds=spec.wait_seconds,
+                progress_before=progress_before,
+                before=before_evidence,
+                after=_evidence(return_state.snapshot, entry.title) if return_state.snapshot is not None else None,
                 presses=presses,
                 taps=taps,
                 collect=collect_tap,
@@ -1636,6 +1719,10 @@ def _settle_surface(
     dismiss: DismissReport | None = None
     while True:
         state = classify(frame).state
+        if is_non_app_surface(frame):
+            # A fresh dispatch that starts on the launcher is not a loading app
+            # page. Let the caller take its guaranteed shortcut return now.
+            return frame, True, dismiss
         if state is ScreenState.LOADING:
             remaining = deadline - clock()
             if remaining <= 0:
@@ -1688,13 +1775,22 @@ def _wait_for_arrival(
     clock: Callable[[], float],
     sleep: Callable[[float], None],
     logger: logging.Logger,
+    title: str,
+    task_key: str,
+    app_foreground: Callable[[], bool | None] | None = None,
+    record_foreground_loss: Callable[[str, Snapshot], None] | None = None,
 ) -> Arrival:
     """Poll until the task list is left for a settled destination page.
 
     A chip on the frame is definitive. Otherwise the task list is the boost page;
-    the coin page is a bounced tap, not a destination. Every other settled page
-    (including an unknown feed) is allowed to be the destination, because the
-    executor must not need to understand the shopping surface to wait on it.
+    the coin page is a bounced tap, not a destination. Every other settled app
+    page (including an unknown feed) is allowed to be the destination, because
+    the executor must not need to understand the shopping surface to wait on it.
+
+    A measured clock/date frame, or an unknown frame whose package probe says
+    another app owns the foreground, is not a destination. It ends the wait
+    immediately and is recorded as ``left_app`` so the caller re-enters through
+    the shortcut route before attempting verification (#116).
     """
     started = clock()
     deadline = started + timeout
@@ -1705,6 +1801,28 @@ def _wait_for_arrival(
     while True:
         classification = classify(current)
         history.append(classification.state.value)
+        surface = classify_surface(current)
+        foreground: bool | None = None
+        left_app = surface is Surface.NON_APP
+        if not left_app and surface is Surface.UNKNOWN and app_foreground is not None:
+            foreground = app_foreground()
+            left_app = foreground is False
+        if left_app:
+            if record_foreground_loss is not None:
+                record_foreground_loss(task_key, current)
+            return Arrival(
+                snapshot=current,
+                arrived=False,
+                on_task_list=False,
+                on_coin_page=False,
+                elapsed=max(0.0, clock() - started),
+                history=tuple(history),
+                dismiss=dismiss,
+                left_app=True,
+                app_foreground=foreground,
+                evidence=_evidence(current, title),
+            )
+
         if find_timer_chip(current) is not None:
             return Arrival(
                 snapshot=current,

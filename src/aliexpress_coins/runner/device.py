@@ -32,6 +32,7 @@ back both settings and is called in the engine's ``finally``, before delivery.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import time
 from collections.abc import Callable, Sequence
@@ -220,14 +221,12 @@ class AdbDevice:
             )
 
         try:
-            started = self._shell('am', 'start', '-n', APP_ACTIVITY, why='warm the app before the route')
+            started = self.warm_start()
+        except AppLaunchFailed:
+            raise
         except DeviceError as exc:
             self.check_connected()
             raise AppLaunchFailed(f'{self.serial}: {APP_ACTIVITY} could not be started: {exc}') from exc
-        if _launch_failed(started):
-            raise AppLaunchFailed(f'{self.serial}: {APP_ACTIVITY} did not start: {started.strip()}')
-        if self._app_settle_seconds:
-            self._settle(self._app_settle_seconds)
         sleep_note = 'device was asleep' if was_asleep else 'device was awake'
         awake_note = 'stay-awake on' if kept_awake else 'stay-awake not changed'
         return HygieneReport(
@@ -241,6 +240,20 @@ class AdbDevice:
             detail=f'woke {self.serial} ({sleep_note}; {awake_note}) and started {APP_ACTIVITY}; '
             f'launcher said {started.strip() or "ok"}',
         )
+
+    def warm_start(self) -> str:
+        """Start the normal activity and let the process settle before a route.
+
+        Mid-run foreground recovery uses this without repeating hygiene writes
+        such as rotation or stay-awake. The shortcut intent alone is not a cold
+        launch: the measured cold-start route can render an empty boost list.
+        """
+        started = self._shell('am', 'start', '-n', APP_ACTIVITY, why='warm the app before the route')
+        if _launch_failed(started):
+            raise AppLaunchFailed(f'{self.serial}: {APP_ACTIVITY} did not start: {started.strip()}')
+        if self._app_settle_seconds:
+            self._settle(self._app_settle_seconds)
+        return started.strip()
 
     def check_connected(self) -> None:
         """Prove the serial still answers; used when a mid-run capture fails."""
@@ -261,6 +274,21 @@ class AdbDevice:
             SHORTCUT_DEEP_LINK,
             why='take the measured shortcut route to the coin page',
         )
+
+    def is_app_foreground(self) -> bool | None:
+        """Whether AliExpress owns the current window, or ``None`` if unreadable.
+
+        The screenshot classifier recognises the measured clock/launcher frame,
+        but another launcher may draw app icons and look like an unknown page.
+        Android's current focus names the owning package directly. Only an
+        explicit, parseable focus is evidence: a missing key is ``None`` rather
+        than an accusation that the app left the foreground.
+        """
+        result = self._run(('adb', '-s', self.serial, 'shell', 'dumpsys', 'window', 'windows'))
+        if result.returncode != 0:
+            raise DeviceError(f'read the foreground window: adb dumpsys window windows exited {result.returncode}')
+        package = _foreground_package(result.stdout_text)
+        return None if package is None else package == APP_PACKAGE
 
     def restore(self) -> None:
         """Put the stay-awake and rotation settings back exactly as they were.
@@ -446,6 +474,28 @@ def _keyguard_showing(output: str) -> bool:
             if key in stripped and stripped.partition(key)[2].strip().casefold() == 'true':
                 return True
     return False
+
+
+_FOCUS_COMPONENT = re.compile(r'\bu0\s+([A-Za-z0-9_.]+)/[A-Za-z0-9_.$]+')
+
+
+def _foreground_package(output: str) -> str | None:
+    """Read the current focus's package, falling back to the focused activity.
+
+    Android 15 prints e.g. ``mCurrentFocus=Window{... u0
+    com.android.launcher3/...}``. The full output is intentionally parsed rather
+    than the device client's bounded error preview: the focus line can occur
+    well beyond the first 200 bytes.
+    """
+    for key in ('mCurrentFocus', 'mFocusedApp'):
+        for line in output.splitlines():
+            if f'{key}=' not in line:
+                continue
+            value = line.partition(f'{key}=')[2]
+            match = _FOCUS_COMPONENT.search(value)
+            if match is not None:
+                return match.group(1)
+    return None
 
 
 def _package_installed(output: str) -> bool:

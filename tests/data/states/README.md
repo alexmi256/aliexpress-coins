@@ -1,6 +1,6 @@
 # Screen-state fixtures
 
-Fifteen recorded frames from the reference tablet, used by the screen-state classifier tests
+Sixteen recorded frames from the reference tablet, used by the screen-state classifier tests
 (`tests/test_perception_state.py`) and the #84 discovery/sign-in tests. They are **full 1200×2000
 frames**, exactly the shape `AdbSnapshotter.capture()`
 returns: the status-bar clock and the Android taskbar glyphs are retained. The classifier
@@ -31,6 +31,7 @@ reviewed the same way.
 | `coins_search_row.png` | full coin page from the issue #107 occurrence on 2026-11-24 (run `20261124T042511Z`): the daily card absorbs `Search for what you love` and its `0/2` badge, and the mini-app strip abuts `View Super discounts` | coin balance, worth, coin-credit and credits-to-use amounts and status-bar clock masked; `Daily coins`, the streak chips, `Search for what you love`, `Place an order on this page`, `View Super discounts` and the `Merge Boss` / `Play & Earn` / `Prize Land` strip remain |
 | `search_landing.png` | full search landing opened by `Search for what you love` on 2026-11-24 01:53 EST: `Search history`, `Discover more` and its category cards (#108) | the current search-field text and both `Search history` entries masked pixel-by-pixel; the two section headings, category titles and item counts remain, with no account nickname, balance, order, cart or address |
 | `coin_store.png` | full `Use coins for discounts` sponsored product list opened by `Explore sponsored items`, with its right-edge `13s` dwell chip, `Disc:` prices and `Applied` labels (#83) | no account data; product titles, prices, the system clock and taskbar are kept, and the header/`Disc:`/`Applied` labels remain for the classifier regression |
+| `launcher.png` | full Android launcher captured during recon on 2026-11-21, with app icons and the `2:22` / `Sat, Nov 21` widget (#116) | no account, notification, order or cart data; app labels and wallpaper only. This is **not** the missing post-tap frame from run `20261124T083006Z`; it drives the package-probe recovery replay for a launcher with icons |
 
 `error_404.png` was dropped as an extra fixture: the bare advertised coin URL is recorded in
 `docs/01-recon-findings.md` as landing on a blank WebView, while the capture session saw a 404

@@ -49,6 +49,8 @@ from aliexpress_coins.tasks.discovery import (
     RosterLog,
     RosterObserver,
     RosterStatus,
+    _observation_problem,
+    _surface_family,
     discover_roster,
     enumerate_roster,
     is_boost_page,
@@ -60,7 +62,7 @@ from aliexpress_coins.tasks.discovery import (
 )
 from aliexpress_coins.tasks.dispatch import DispatchGate
 from aliexpress_coins.tasks.errors import RosterLogError
-from aliexpress_coins.tasks.surface import Surface, classify_surface, has_task_rows
+from aliexpress_coins.tasks.surface import Surface, SurfaceRoute, classify_surface, has_task_rows
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / 'tests' / 'data'
@@ -202,6 +204,7 @@ def frames(engine: RapidOcrEngine) -> dict[str, Snapshot]:
         'launch': _load(DATA / 'popups' / 'launch_welcome_gifts.png', engine),
         'sheet': _load(DATA / 'popups' / 'coins_boost_sheet.png', engine),
         'skeleton': _load(STATES / 'skeleton.png', engine),
+        'launcher': _load(STATES / 'launcher.png', engine),
     }
 
 
@@ -243,7 +246,7 @@ _EXPECTED_BOOST: dict[str, tuple[tuple[str, str, TaskCategory | None, str | None
         ('Explore sponsored items', 'sponsored_items', TaskCategory.BROWSE_WAIT, None),
         ('Browse surprise items', 'surprise_items', TaskCategory.ITEM_TAP, None),
         ('Place an order on this page', 'spending_order', None, 'spending'),
-        ('Browse recently viewed items', 'recently_viewed', TaskCategory.BROWSE_WAIT, None),
+        ('Browse recently viewed items', 'unrecognised_recently_viewed', None, 'unrecognised'),
     ),
 }
 
@@ -296,8 +299,8 @@ def test_the_measured_boost_fixtures_enumerate_every_row_with_its_decision(
 
     assert any(entry.denied for entry in roster.entries)
     assert any(entry.title == 'Place an order on this page' for entry in roster.denied_entries)
-    assert len(roster.allowed_entries) == 3
-    assert len(roster.denied_entries) == 1
+    assert len(roster.allowed_entries) == sum(category is not None for _, _, category, _ in _EXPECTED_BOOST[fixture])
+    assert len(roster.denied_entries) == sum(category is None for _, _, category, _ in _EXPECTED_BOOST[fixture])
 
 
 def test_the_measured_fixtures_keep_their_progress_badges(
@@ -722,6 +725,113 @@ def test_a_missing_earn_more_degrades_to_the_inline_rows(
     assert opened_payload['route'] == 'inline'
     assert 'tap' not in opened_payload
     assert 'dismiss' not in opened_payload
+
+
+def test_a_non_app_clock_surface_returns_from_the_coin_wait_without_spending_the_deadline() -> None:
+    frame = _snapshot(
+        _box('3:36', 20, 5, 100, 35),
+        _box('0', 1120, 5, 1160, 35),
+        _box('日', 500, 700, 560, 760),
+        _box('24', 580, 700, 640, 760),
+    )
+    capture = _Capture((frame,))
+    clock = _SteppingClock()
+
+    arrival = wait_for_coin_page(
+        capture,
+        timeout=30.0,
+        interval=1.0,
+        clock=clock,
+        sleep=lambda _seconds: pytest.fail('a non-app frame must not spend the settle deadline'),
+    )
+
+    assert arrival.snapshot is frame
+    assert arrival.timed_out is False
+    assert arrival.settled is False
+    assert capture._index == 1
+
+
+def test_the_coin_wait_also_stops_when_a_non_app_frame_follows_loading(
+    frames: dict[str, Snapshot],
+) -> None:
+    clock_surface = _snapshot(
+        _box('3:36', 20, 5, 100, 35),
+        _box('0', 1120, 5, 1160, 35),
+        _box('日', 500, 700, 560, 760),
+        _box('24', 580, 700, 640, 760),
+    )
+    capture = _Capture((frames['skeleton'], clock_surface))
+    clock = _SteppingClock()
+    sleeps: list[float] = []
+
+    arrival = wait_for_coin_page(capture, timeout=30.0, interval=1.0, clock=clock, sleep=sleeps.append)
+
+    assert arrival.snapshot is clock_surface
+    assert arrival.timed_out is False
+    assert arrival.settled is False
+    assert arrival.history == (ScreenState.LOADING, ScreenState.LOADING)
+    assert sleeps == [1.0]
+
+
+def test_a_non_app_surface_is_named_in_the_observation_family_and_problem() -> None:
+    assert _surface_family(Surface.NON_APP) == 'non_app'
+    assert (
+        _observation_problem(ScreenState.PAGE, Surface.NON_APP)
+        == 'a non-app clock/launcher surface is in the foreground'
+    )
+
+
+def test_a_non_app_clock_surface_is_an_incomplete_roster_observation(
+    frames: dict[str, Snapshot],
+) -> None:
+    clock_boxes = (
+        _box('3:36', 20, 5, 100, 35),
+        _box('0', 1120, 5, 1160, 35),
+        _box('日', 500, 700, 560, 760),
+        _box('24', 580, 700, 640, 760),
+    )
+    # Keep the launcher's wallpaper so the pixel classifier does not call this
+    # sparse synthetic text a loading skeleton; only the clock/date OCR remains.
+    frame = replace(frames['launcher'], boxes=clock_boxes)
+
+    observation = observe_roster(
+        lambda: frame,
+        load_task_catalogue(CATALOGUE_PATH),
+        sequence=1,
+    )
+
+    assert observation.surface_variant is Surface.NON_APP
+    assert _surface_family(Surface.NON_APP) == 'non_app'
+    assert observation.error is not None
+    assert 'non-app clock/launcher surface' in observation.error
+
+
+def test_a_launcher_with_icons_is_never_an_inline_task_surface(
+    frames: dict[str, Snapshot],
+    corpus: PopupCorpus,
+    catalogue: TaskCatalogue,
+) -> None:
+    device = _RecordingDevice()
+    controller = _controller(device, frames['launcher'])
+    routes: list[SurfaceRoute] = []
+
+    def navigate(route: SurfaceRoute) -> None:
+        routes.append(route)
+
+    roster = discover_roster(
+        controller,
+        lambda: frames['launcher'],
+        corpus,
+        catalogue,
+        navigate=navigate,
+        timeout=2,
+        interval=1,
+    )
+
+    assert routes == [SurfaceRoute.SHORTCUT, SurfaceRoute.SHORTCUT]
+    assert roster.empty
+    assert roster.surface_variant is Surface.UNKNOWN
+    assert device.taps == []
 
 
 def test_a_claimed_card_without_any_task_action_is_not_a_usable_roster() -> None:
