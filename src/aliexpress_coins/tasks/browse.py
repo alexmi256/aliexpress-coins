@@ -129,6 +129,7 @@ __all__ = [
     'find_timer_chip',
     'progress_unchanged_detail',
     'return_to_coins_page',
+    'row_not_found_detail',
     'run_browse_task',
     'wait_for_timer_chip',
 ]
@@ -441,10 +442,12 @@ class BrowseResult:
     """One browse-task attempt, the evidence behind it and whether state changed.
 
     ``verification`` names the proof: ``progress_advanced``, ``progress_complete``,
+    ``progress_unchanged`` (the row was read and its badge did not advance),
     ``row_gone``, ``action_completed``, ``action_gone``, ``daily_limit``,
-    ``row_complete``, ``row_vanished``, ``no_change``, ``no_observation``,
-    ``return_failed``, ``redeem_interstitial`` or ``not_settled``. ``detail`` is
-    the report-safe sentence.
+    ``row_complete``, ``row_vanished``, ``no_change`` (present with no readable
+    badge baseline), ``no_observation`` (the row was absent and no positive
+    signal could prove it gone), ``return_failed``, ``redeem_interstitial`` or
+    ``not_settled``. ``detail`` is the report-safe sentence.
     """
 
     key: str
@@ -776,6 +779,26 @@ def progress_unchanged_detail(
         expected = f'{expected_value}/{before.total}'
     seen = 'unreadable' if observed is None else observed.text
     return f'progress_unchanged: expected {expected}, saw {seen} ({title!r})'
+
+
+def _surface_name(snapshot: Snapshot) -> str:
+    """Name the task surface a verification frame showed, for a failure detail."""
+    if is_boost_page(snapshot):
+        return 'boost list'
+    if _is_coin_page(snapshot):
+        return 'coin page'
+    return 'current surface'
+
+
+def row_not_found_detail(title: str, snapshot: Snapshot) -> str:
+    """Name the row that was searched for and why its absence is not proof.
+
+    ``no_observation`` is reserved for an absent row that no positive signal can
+    prove gone. Naming the surface keeps it distinct from ``progress_unchanged``,
+    where the row was read and its badge did not move (#99). Browse, quiz and
+    notifications share this sentence so their reports cannot drift apart.
+    """
+    return f'{title!r} was not found on the {_surface_name(snapshot)}; the surface cannot prove it is gone'
 
 
 def return_to_coins_page(
@@ -2002,17 +2025,9 @@ def _verify_completion(
 
         trusted = _trusted_surface(opened)
         verdict = _verdict(opened.snapshot, title, before, trusted=trusted)
-        if verdict.status == 'no_change' and not trusted:
-            verdict = _Verdict(
-                status='no_observation',
-                decisive=False,
-                detail='the verification frame showed no task rows, so the row could not be checked',
-                badge=verdict.badge,
-                evidence=verdict.evidence,
-            )
         opened_dismiss = _merge_dismiss_reports(opened_dismiss, opened.dismiss)
 
-        if attempt > 0 or verdict.status != 'no_change' or not trusted:
+        if attempt > 0 or verdict.status not in ('no_change', 'progress_unchanged') or not trusted:
             break
 
         # A paid task can leave its row rendered for a moment after the chip
@@ -2126,7 +2141,7 @@ def _verdict(
         return _Verdict(
             status='no_observation',
             decisive=False,
-            detail=f'{title!r} was not found and the surface cannot prove it is gone',
+            detail=row_not_found_detail(title, snapshot),
             badge=badge,
             evidence=evidence,
         )
@@ -2146,13 +2161,18 @@ def _verdict(
             badge=badge,
             evidence=evidence,
         )
-    detail = f'{title!r} is still present with an unchanged badge or action'
     if before is not None:
-        detail = progress_unchanged_detail(title, before, badge)
+        return _Verdict(
+            status='progress_unchanged',
+            decisive=False,
+            detail=progress_unchanged_detail(title, before, badge),
+            badge=badge,
+            evidence=evidence,
+        )
     return _Verdict(
         status='no_change',
         decisive=False,
-        detail=detail,
+        detail=f'{title!r} is still present with an unchanged badge or action',
         badge=badge,
         evidence=evidence,
     )

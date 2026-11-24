@@ -49,6 +49,7 @@ from aliexpress_coins.tasks.browse import (
     find_timer_chip,
     progress_unchanged_detail,
     return_to_coins_page,
+    row_not_found_detail,
     run_browse_task,
     wait_for_timer_chip,
 )
@@ -694,6 +695,23 @@ def test_progress_unchanged_detail_names_an_unreadable_expected_badge() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ('frame', 'surface'),
+    [
+        (_boost_frame(), 'boost list'),
+        (_coin_frame(), 'coin page'),
+        (_snapshot(_box('Wireless Earbuds', 60, 400, 500, 450)), 'current surface'),
+    ],
+)
+def test_row_not_found_detail_names_the_title_and_the_surface_it_searched(
+    frame: Snapshot,
+    surface: str,
+) -> None:
+    assert row_not_found_detail(TITLE, frame) == (
+        f"'Explore sponsored items' was not found on the {surface}; the surface cannot prove it is gone"
+    )
+
+
 def test_find_task_row_resolves_the_rows_own_action() -> None:
     row, action, badge = find_task_row(_boost_frame(), TITLE)
 
@@ -950,6 +968,7 @@ def test_run_browse_task_completes_and_quotes_the_badge_change(
 
     assert result.outcome is BrowseOutcome.COMPLETED
     assert result.verification == 'progress_advanced'
+    assert result.detail == "'Explore sponsored items' advanced from '0/6' to '1/6'"
     assert result.badge_before == '0/6'
     assert result.badge_after == '1/6'
     assert result.badge_change == '0/6 -> 1/6'
@@ -1175,7 +1194,8 @@ def test_run_browse_task_fails_when_the_taps_change_nothing(
     )
 
     assert result.outcome is BrowseOutcome.FAILED
-    assert result.verification == 'no_change'
+    assert result.verification == 'progress_unchanged'
+    assert result.detail == "progress_unchanged: expected 1/6, saw 0/6 ('Explore sponsored items')"
     assert result.completed is False
     assert result.recorded is False
     assert result.presses == MAX_PRESSES
@@ -1228,7 +1248,7 @@ def test_run_browse_task_returns_to_coins_when_the_destination_is_wrong(
     )
 
     assert result.outcome is BrowseOutcome.FAILED
-    assert result.verification == 'no_change'
+    assert result.verification == 'progress_unchanged'
     assert result.returned is True
     assert result.arrival is not None
     assert result.arrival.arrived is True
@@ -1426,7 +1446,7 @@ def test_an_unreadable_probe_keeps_an_unknown_launcher_as_destination_but_warms_
     )
 
     assert result.outcome is BrowseOutcome.FAILED
-    assert result.verification == 'no_change'
+    assert result.verification == 'progress_unchanged'
     assert result.arrival is not None
     assert result.arrival.arrived is True
     assert result.arrival.left_app is False
@@ -1477,7 +1497,7 @@ def test_a_readable_foreground_skips_the_warm_start_for_an_unknown_destination(
     )
 
     assert result.outcome is BrowseOutcome.FAILED
-    assert result.verification == 'no_change'
+    assert result.verification == 'progress_unchanged'
     assert result.arrival is not None
     assert result.arrival.arrived is True
     assert result.arrival.left_app is False
@@ -3239,7 +3259,7 @@ def test_run_browse_task_fails_on_the_inline_route_when_the_row_is_unchanged(
     )
 
     assert result.outcome is BrowseOutcome.FAILED
-    assert result.verification == 'no_change'
+    assert result.verification == 'progress_unchanged'
     assert result.returned is True
 
 
@@ -3284,6 +3304,8 @@ def test_run_browse_task_does_not_trust_row_absence_on_the_inline_coin_page(
 
     assert result.outcome is BrowseOutcome.FAILED
     assert result.verification == 'no_observation'
+    assert "'Explore sponsored items' was not found" in result.detail
+    assert 'cannot prove it is gone' in result.detail
     assert result.recorded is False
     assert result.returned is True
     assert state.count('sponsored_items') == 0
@@ -3326,6 +3348,9 @@ def test_run_browse_task_reports_no_observation_on_an_empty_boost_list(
 
     assert result.outcome is BrowseOutcome.FAILED
     assert result.verification == 'no_observation'
+    assert result.detail == (
+        "'Explore sponsored items' was not found on the boost list; the surface cannot prove it is gone"
+    )
     assert result.returned is True
 
 

@@ -1869,6 +1869,9 @@ def test_verify_row_can_stop_on_an_inline_coin_page(
 
     assert result.outcome is NotificationOutcome.FAILED
     assert result.verification == 'no_observation'
+    assert result.detail == (
+        f'{NOTIFICATIONS_TITLE!r} was not found on the coin page; the surface cannot prove it is gone'
+    )
 
 
 def test_return_quietly_swallows_a_return_fault(
