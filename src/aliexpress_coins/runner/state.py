@@ -22,6 +22,7 @@ mistaken for today's and stays on disk for the report.
       "last_run_at": "2026-11-21T03:42:11+00:00",
       "completed_night": true,
       "acted_unverified": [],
+      "blacklist": {"coins_quiz": 2},
       "last_night": {
         "outcome": "exhausted",
         "dispatched": 4,
@@ -38,6 +39,10 @@ and the report can explain it. A run with a retryable failure or an incomplete
 roster leaves the day open even when another row completed, because unread work
 may still be hidden by the splitter. A task that acted without proof is named in
 ``acted_unverified`` so its next dispatch re-reads the fresh row before tapping.
+``blacklist`` maps a task key to the attempts it spent before the in-night loop
+skipped it (#123). It lives in this day-keyed file, so the next local day starts
+empty, and :meth:`DailyStateStore.record` clears a key as soon as the task
+really completes.
 
 ``last_balance_verified`` records the provenance of the stored value: ``true``
 means it came from a trusted coin-page balance band, ``false`` or ``null``
@@ -67,7 +72,7 @@ import logging
 import math
 import os
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -167,14 +172,17 @@ class DailySnapshot:
     completed_night: bool = False
     acted_unverified: tuple[str, ...] = ()
     last_night: NightRecord | None = None
+    blacklist: Mapping[str, int] = field(default_factory=dict)
+    """Tasks skipped for the rest of this local day, with the attempts spent."""
 
     def __post_init__(self) -> None:
         # A snapshot is a value: callers must not mutate the store through it.
         object.__setattr__(self, 'completions', MappingProxyType(dict(self.completions)))
+        object.__setattr__(self, 'blacklist', MappingProxyType(dict(self.blacklist)))
 
     def as_dict(self) -> dict[str, Any]:
         """The on-disk/report payload, with the schema and ISO timestamp."""
-        return {
+        payload: dict[str, Any] = {
             'schema': DAILY_STATE_SCHEMA,
             'date': self.day.isoformat(),
             'completions': dict(self.completions),
@@ -186,6 +194,9 @@ class DailySnapshot:
             'acted_unverified': list(self.acted_unverified),
             'last_night': None if self.last_night is None else self.last_night.as_dict(),
         }
+        if self.blacklist:
+            payload['blacklist'] = dict(self.blacklist)
+        return payload
 
 
 class DailyStateStore:
@@ -277,12 +288,14 @@ class DailyStateStore:
         completions[key] = completions.get(key, 0) + 1
         last_balance = current.last_balance if balance is None else _balance(balance)
         last_balance_verified = current.last_balance_verified if balance is None else balance_verified
+        blacklist = {item: value for item, value in current.blacklist.items() if item != key}
         self._commit(
             replace(
                 current,
                 completions=completions,
                 last_balance=last_balance,
                 last_balance_verified=last_balance_verified,
+                blacklist=blacklist,
             ),
         )
         return completions[key]
@@ -353,6 +366,41 @@ class DailyStateStore:
             return
         keys = tuple(item for item in current.acted_unverified if item != key)
         self._commit(replace(current, acted_unverified=keys))
+
+    def is_blacklisted(self, task_key: str) -> bool:
+        """Whether ``task_key`` failed its night's attempt budget and is skipped today."""
+        return _task_key(task_key) in self._loaded().blacklist
+
+    def blacklist_attempts(self, task_key: str) -> int | None:
+        """How many attempts a blacklisted task spent, or ``None`` when not blacklisted."""
+        return self._loaded().blacklist.get(_task_key(task_key))
+
+    def blacklist_task(self, task_key: str, attempts: int) -> None:
+        """Skip ``task_key`` for the rest of this local day after ``attempts`` failures.
+
+        The blacklist lives in the day-keyed state file, so a new local day reads
+        a fresh file and starts with no entries. Recording a real completion
+        clears the key as well, which keeps a task that later succeeds from
+        staying blocked.
+        """
+        key = _task_key(task_key)
+        if isinstance(attempts, bool) or not isinstance(attempts, int) or attempts < 1:
+            raise StateError(f'blacklist attempts must be a positive integer, got {attempts!r}')
+        current = self._loaded()
+        if current.blacklist.get(key) == attempts:
+            return
+        blacklist = dict(current.blacklist)
+        blacklist[key] = attempts
+        self._commit(replace(current, blacklist=blacklist))
+
+    def clear_blacklist(self, task_key: str) -> None:
+        """Forget a task's blacklist entry, for example after a real completion."""
+        key = _task_key(task_key)
+        current = self._loaded()
+        if key not in current.blacklist:
+            return
+        blacklist = {item: value for item, value in current.blacklist.items() if item != key}
+        self._commit(replace(current, blacklist=blacklist))
 
     def observe_balance(self, balance: float | None, *, verified: bool = True) -> None:
         """Store the last balance seen, without recording a task completion.
@@ -502,6 +550,17 @@ def _parse(raw: bytes, day: date) -> DailySnapshot:
             raise _CorruptState(f"'acted_unverified' contains duplicate key {key!r}")
         acted_unverified.append(key)
 
+    blacklist_raw = data.get('blacklist', {})
+    if not isinstance(blacklist_raw, dict):
+        raise _CorruptState("'blacklist' must be a JSON object")
+    blacklist: dict[str, int] = {}
+    for key, value in cast(dict[str, Any], blacklist_raw).items():
+        if not isinstance(key, str) or not key.strip() or key != key.strip():
+            raise _CorruptState('blacklist keys must be non-empty without surrounding whitespace')
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise _CorruptState(f'blacklist attempts for {key!r} must be a positive integer')
+        blacklist[key] = value
+
     last_balance_raw = _field(data, 'last_balance')
     if last_balance_raw is None:
         last_balance = None
@@ -555,6 +614,7 @@ def _parse(raw: bytes, day: date) -> DailySnapshot:
         completed_night=completed_night,
         acted_unverified=tuple(acted_unverified),
         last_night=last_night,
+        blacklist=blacklist,
     )
 
 

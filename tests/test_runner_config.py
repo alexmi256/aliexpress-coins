@@ -172,3 +172,23 @@ def test_explicit_timezone_wins_over_tz() -> None:
 def test_invalid_values_raise_a_configuration_error(environment: dict[str, str], message: str) -> None:
     with pytest.raises(ConfigError, match=message):
         RunConfig.from_environment(environment)
+
+
+def test_retry_loop_bounds_default_and_read_from_the_environment() -> None:
+    plain = RunConfig.from_environment({})
+
+    assert plain.max_passes == 4
+    assert plain.max_task_attempts == 2
+
+    configured = RunConfig.from_environment(
+        {'AECOINS_MAX_PASSES': '6', 'AECOINS_MAX_TASK_ATTEMPTS': '3'},
+    )
+
+    assert configured.max_passes == 6
+    assert configured.max_task_attempts == 3
+
+
+@pytest.mark.parametrize('name', ['AECOINS_MAX_PASSES', 'AECOINS_MAX_TASK_ATTEMPTS'])
+def test_retry_loop_bounds_reject_a_non_positive_value(name: str) -> None:
+    with pytest.raises(ConfigError, match='must be positive'):
+        RunConfig.from_environment({name: '0'})

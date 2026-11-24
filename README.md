@@ -161,48 +161,37 @@ quiz, surprise items, search and notifications — lives in the executors under
    with an executor, a dispatch target and daily allowance left.
    [`DispatchGate`](src/aliexpress_coins/tasks/dispatch.py) re-checks it against
    [`specs/tasks.yaml`](specs/tasks.yaml) before an executor can act.
-3. **Re-enumerate and continue.** After a verified completion,
+3. **Re-enumerate and continue.** After every real attempt,
    [`_observe()`](src/aliexpress_coins/runner/engine.py) re-opens the task surface and logs a fresh
-   roster to `roster.jsonl`; the loop then selects the next row. A row that does not complete is
-   blocked by identity for the rest of that run (the `blocked` set), while other rows can still run.
-   When no dispatchable row remains, the run exits.
-
-Today this is **one roster walk, then exit**. It claims every allowed row it can dispatch from that
-walk, and sees rows that appear during the re-enumerations after successful tasks, but a row that
-fails is not offered again in the same night. Once the current roster has no dispatchable row the run
-exits instead of starting another full pass.
-
-Bounded shortcut recovery does ship, but only at two points:
-[`discover_roster()`](src/aliexpress_coins/tasks/discovery.py) may make one warm re-entry when the
-surface has no usable rows (`SURFACE_REFRESH_LIMIT` in
-[`surface.py`](src/aliexpress_coins/tasks/surface.py)), and a task that hits an unknown screen gets
-three shortcut attempts back to the coins page (`TASK_RECOVERY_ATTEMPTS` in
-[`engine.py`](src/aliexpress_coins/runner/engine.py)) before the run aborts. Neither starts a new
-roster walk. The repeating collect → dispatch → re-enumerate loop, with its passes and per-task
-attempts, is planned in [#123](https://github.com/alexmi256/aliexpress-coins/issues/123), not
-shipped.
+   roster to `roster.jsonl`; the loop then selects the next row. A completed repeatable row is
+   offered again on the next pass while its daily allowance remains, a retryable failure stays
+   pending for a fresh pass, and the rest of the roster continues. An unknown or unreadable surface
+   fires the shortcut again rather than dispatching from the stale roster. When a full pass finds
+   nothing allowed and unblacklisted, the run exits.
 
 ### Bounds and unfinished nights
 
 - **Shipped bounds:** [`RunConfig`](src/aliexpress_coins/runner/config.py) defaults to a 2700-second
-  wall-clock budget and 12 dispatched rows per run (`AECOINS_RUN_BUDGET_SECONDS` and
-  `AECOINS_MAX_TASKS_PER_RUN`). The engine checks both before each dispatch; an internal safe retry
-  does not consume another row slot. Each task also has its own `max_per_run` daily limit in
-  `specs/tasks.yaml`. There is no separate pass-count bound yet.
-- **Shipped retry bounds:** [`_dispatch_with_retry()`](src/aliexpress_coins/runner/engine.py) allows at
-  most two attempts for `task_unverified`, and only when the first attempt took no action. A row that
-  acted without proof is not repeated within the run. The exact stage/task retry policy is in
+  wall-clock budget, 12 dispatched rows per run, 4 full passes and 2 attempts per task
+  (`AECOINS_RUN_BUDGET_SECONDS`, `AECOINS_MAX_TASKS_PER_RUN`, `AECOINS_MAX_PASSES` and
+  `AECOINS_MAX_TASK_ATTEMPTS`). The engine checks the wall-clock and task bounds before each
+  dispatch; each task also has its own `max_per_run` daily limit in `specs/tasks.yaml`.
+- **Shipped retry bounds:** the outer pass loop retries `task_unverified` after a fresh enumeration,
+  and only when the attempt took no action. A row that acted without proof is not repeated within
+  the run. A task that spends `AECOINS_MAX_TASK_ATTEMPTS` is blacklisted for the rest of that local
+  day with its attempt count in `summary.md`; the blacklist is stored in the day-keyed state file and
+  clears on the next day or a real completion. The exact stage/task retry policy is in
   [`src/aliexpress_coins/runner/failures.py`](src/aliexpress_coins/runner/failures.py).
 - **Honest completion:** when a roster walk finishes,
   [`_night_record()`](src/aliexpress_coins/runner/engine.py) leaves `completed_night: false` if a task
   failure is still retryable or the roster was incomplete. Only an `exhausted` decision records
   `completed_night: true` through [`DailyStateStore.record_night()`](src/aliexpress_coins/runner/state.py),
   so the scheduler does not mistake an unfinished night for success.
-- **Planned bounds and blacklist (#123):** maximum passes, a configurable per-task attempt limit, and
-  a self-clearing per-day blacklist after repeated failures are **not implemented**. The current
-  `blocked` set is only a remainder-of-this-run block after a failed dispatch, not a failure-count
-  blacklist. The planned outer loop will also restart from the shortcut when a pass ends on an unknown
-  surface or an allowed row cannot be dispatched.
+- **Pass and attempt bounds (#123):** a pass is a full re-enumerated sweep; reaching
+  `AECOINS_MAX_PASSES` ends the run as `budget`, never as complete. A blacklisted row is skipped for
+  the rest of the local day, while the rest of the roster continues; the run stays open for a later
+  day. An unreadable, unknown or capped observation never dispatches from or completes on the stale
+  roster.
 
 ### Permanent refusals
 
@@ -229,7 +218,7 @@ and [`ArtifactStore`](src/aliexpress_coins/perception/artifacts.py) define those
 pruned to `AECOINS_KEEP_RUNS` (default 30). A successful dry run writes its plan and reports but no
 roster log or screenshots; a failed dry run may also retain the best-effort failure frame described
 above. The atomic daily file `state/daily-<YYYY-MM-DD>.json` records completion counts,
-`acted_unverified`, the last balance and `last_night`/`completed_night` through
+`acted_unverified`, the last balance, the per-day `blacklist` and `last_night`/`completed_night` through
 [`DailyStateStore`](src/aliexpress_coins/runner/state.py). Learned quiz answers persist separately in
 [`data/quiz_bank.json`](data/README.md), not in the run directory.
 

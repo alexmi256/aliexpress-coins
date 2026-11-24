@@ -492,6 +492,19 @@ executor outcome — and every dispatch while it remains re-checks instead of ta
 roster. The decision is recorded as `last_night` in the daily state and printed by the report as
 one `Night:` line.
 
+**The in-night loop (#123).** A night is no longer one roster sweep. After every real attempt —
+completed, failed, or a row that vanished between enumeration and dispatch — the engine
+re-enumerates the surface and continues while something is still dispatchable. An unreadable or
+unknown surface restarts from the shortcut route instead of ending the night. A full pass that
+finds no allowed, unblacklisted work may complete the day. Three bounds keep this finite:
+`AECOINS_MAX_PASSES` (default 4 full sweeps), `AECOINS_MAX_TASK_ATTEMPTS` (default 2 real dispatches
+of one task) and the existing wall-clock/task budgets. A task that spends its attempt budget is
+blacklisted for the remainder of that local day with `reason: blacklisted after N attempts`; the
+rest of the roster continues and the report records the attempts and the blacklist. The blacklist
+lives in the day-keyed state file, so a new local day starts empty, and a real completion clears the
+entry. A policy refusal is permanent by design and is never counted as a blacklist attempt. Hitting
+the pass bound ends the run as `budget`, never as complete.
+
 A real schedule wait looks like this ✅:
 
 ```console
@@ -526,6 +539,9 @@ gate in #41.
 |---|---|
 | **Status** | `completed`, `budget`, `stopped`, `planned`, `aborted` or `failed` |
 | **Budget** | seconds used of the wall-clock budget |
+| **Passes** | full re-enumerated sweeps used, of the configured `AECOINS_MAX_PASSES` |
+| **Attempts per task** | real dispatches per catalogue key, with the configured per-task limit |
+| **Blacklist** | tasks skipped after their attempt budget, with the attempt count |
 | **Device** | serial, adb state, whether the device was asleep and whether stay-awake was set |
 | **Geometry** | frame size, density, SDK, orientation and calibration profile id |
 | **Surface** | the screen family the roster was read from (`rows_present`, `boost_page`, ...) |
@@ -565,7 +581,7 @@ mid-task, and otherwise the executor's own outcome. A task that was running when
 keeps its row with `outcome=aborted`; its `code` and `evidence` name the abort and the `detail`
 names the screen. `Skipped` lists rows that were never dispatched and groups
 them by `reason`: `policy` (deny list), `no executor`, `no action`, `daily limit`, `run budget`,
-`stopped` or `not selected`.
+`blacklisted after N attempts`, `stopped` or `not selected`.
 
 ### A budget-exhausted night
 
@@ -574,8 +590,8 @@ A budget stop is a **clean end**, not an error:
 - `Status: budget`;
 - `Failure: budget_exhausted — The run used its whole time or task budget; the remaining rows wait
   for tomorrow.`;
-- `Detail` names either `wall-clock budget of ...s exhausted` or `task budget of N dispatch(es)
-  exhausted`;
+- `Detail` names either `wall-clock budget of ...s exhausted`, `task budget of N dispatch(es)
+  exhausted`, or `pass budget of N exhausted` when the in-night loop reached its sweep bound;
 - remaining rows appear under `Skipped` with reason `run budget`;
 - the process exits `0`, and the nightly daemon treats the night as finished for scheduling
   purposes only if the walk reached `completed` **and** left nothing worth retrying. A manual budget
@@ -583,8 +599,9 @@ A budget stop is a **clean end**, not an error:
 
 If the budget is routinely exhausted, look at the wall-clock budget
 (`AECOINS_RUN_BUDGET_SECONDS`, default 2700 s), the task cap
-(`AECOINS_MAX_TASKS_PER_RUN`, default 12) and the per-task time in the table. Raise a limit only
-deliberately; a larger budget is not a fix for a slow network or a stuck screen.
+(`AECOINS_MAX_TASKS_PER_RUN`, default 12), the pass bound (`AECOINS_MAX_PASSES`, default 4), the
+per-task attempt bound (`AECOINS_MAX_TASK_ATTEMPTS`, default 2) and the per-task time in the table.
+Raise a limit only deliberately; a larger budget is not a fix for a slow network or a stuck screen.
 
 ### `run.json`
 
@@ -603,6 +620,7 @@ deliberately; a larger budget is not a fix for a slow network or a stuck screen.
 | `plan`, `plan_note` | the dry-run plan, when there was one; `plan.probe_failed` distinguishes an unreadable probe from evidence about the day, and `stable_waits` / `content_waits` / `roster_waits` record settling, row re-reads and row-set confirmation |
 | `abort` | safety code, reason and the screen that triggered it |
 | `night` | the completion decision: `outcome`, dispatched/completed counts and retryable failures |
+| `passes`, `max_passes`, `max_task_attempts`, `attempts`, `blacklist` | the in-night loop's sweeps, per-task dispatch attempts and tasks skipped at their attempt bound (#123) |
 | `failure` | code, stage, retry scope, retries, `abort_run`, sentence and detail |
 | `error` | the raw exception for a failed run, in addition to the named failure |
 | `tasks[]`, `skipped[]` | the task and skip tables in structured form; each task carries `state` (`in_flight`, `aborted`, or the executor outcome) |
@@ -741,8 +759,10 @@ notifier cannot leave rotation pinned.
 
 State files are one per local day: `state/daily-<YYYY-MM-DD>.json`. Each file carries the day's
 completion counts, `completed_night` (the scheduler's skip flag), `last_night` (the outcome of the
-last finished walk: `exhausted` or `retryable_failures`, with counts) and `acted_unverified` (tasks
-that acted without proof and must be re-read before another tap). The directory also holds
+last finished walk: `exhausted` or `retryable_failures`, with counts), `acted_unverified` (tasks
+that acted without proof and must be re-read before another tap) and `blacklist` (tasks skipped for
+the rest of that local day, with the attempts spent; the next day's file starts empty). The
+directory also holds
 `state/run.lock`, the exclusive run lock described in §6; leave it in place while a run is active.
 Keep at least the days you want to audit; the store does not prune them itself. Do not hand-edit a
 state file while a run is using it. A corrupt file is quarantined, not silently reused.

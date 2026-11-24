@@ -6,14 +6,18 @@ surprise-item and notification executors, and it hands each one the roster row i
 was allowed to run. The surface functions (#22/#38/#43) decide what is allowed
 and what is still available.
 
-Two budgets bound the walk:
+The walk is an outer loop (#123): after every real attempt the roster is
+re-enumerated, and the next pass dispatches anything still allowed. Four
+budgets bound it:
 
 * ``AECOINS_MAX_TASKS_PER_RUN`` is the task budget, counted in dispatches;
 * ``AECOINS_RUN_BUDGET_SECONDS`` is the wall-clock budget, checked before every
-  dispatch and after every completion.
+  dispatch and after every completion;
+* ``AECOINS_MAX_PASSES`` bounds the full re-enumerated sweeps;
+* ``AECOINS_MAX_TASK_ATTEMPTS`` blacklists one task for the rest of the day.
 
-When either stops the walk, the remaining rows are written to the report with
-the reason they were not attempted. The final ``finally`` asks the existing
+When any bound stops the walk, the remaining rows are written to the report
+with the reason they were not attempted. The final ``finally`` asks the existing
 return route to prove the coins page, so a budget stop is still a clean stop.
 """
 
@@ -22,7 +26,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -248,6 +252,14 @@ The same number as the sighting limit keeps the rule easy to state: three
 sightings fail the task, three unsuccessful returns fail the night (#83).
 """
 
+_RETRYABLE_SKIP_VERIFICATIONS = frozenset({'row_vanished'})
+"""Skips that mean the roster was stale, not that the app finished the task.
+
+A ``row_vanished`` skip is re-enumerated and may be dispatched again in a later
+pass. ``row_complete``, ``daily_limit`` and ``already_done`` are terminal: the
+app or the day has already accounted for the row.
+"""
+
 
 def make_live_context(
     config: RunConfig,
@@ -457,10 +469,28 @@ def run_once(
                 if observer is not None
                 else _observer(context, report, roster, max_observations=task_limit + 2)
             )
-            _observe(context, controller, observer, route=roster.route, on_dismiss=record_dismissal)
+            last_observation = _observe(
+                context,
+                controller,
+                observer,
+                route=roster.route,
+                on_dismiss=record_dismissal,
+            )
             _record_policy_skips(report, roster, logger=log, gate=gate)
             report.observations = observer.sequence
             report.write()
+
+            max_passes = context.config.max_passes
+            max_attempts = context.config.max_task_attempts
+            report.max_passes = max_passes
+            report.max_task_attempts = max_attempts
+            attempts: dict[str, int] = {}
+            blacklist: dict[str, int] = dict(context.state.snapshot().blacklist)
+            report.blacklist = dict(blacklist)
+            attempted_this_pass: set[str] = set()
+            settled: set[str] = set()
+            passes = 1
+            report.passes = passes
 
             while True:
                 if context.stop.is_set():
@@ -482,15 +512,94 @@ def run_once(
                 current = observer.roster if observer.roster is not None else roster
                 if current is None:  # pragma: no cover - set immediately above
                     break
-                entry = _next_entry(current, context.state, blocked)
+                surface_reason = _pass_restart_reason(current, last_observation)
+                if surface_reason is not None:
+                    if passes >= max_passes:
+                        status = RunStatus.BUDGET
+                        detail = f'pass budget of {max_passes} exhausted; {surface_reason}'
+                        report.record_failure(failure(FailureCode.BUDGET_EXHAUSTED, detail=detail))
+                        break
+                    passes += 1
+                    report.passes = passes
+                    attempted_this_pass.clear()
+                    last_observation = _restart_surface(
+                        context,
+                        controller,
+                        observer,
+                        on_dismiss=record_dismissal,
+                        reason=surface_reason,
+                    )
+                    _record_policy_skips(
+                        report,
+                        observer.roster or current,
+                        logger=log,
+                        gate=gate,
+                    )
+                    report.observations = observer.sequence
+                    report.write()
+                    continue
+
+                entry = _next_entry(
+                    current,
+                    context.state,
+                    blocked,
+                    blacklisted=blacklist,
+                    attempted=attempted_this_pass,
+                    settled=settled,
+                )
                 if entry is None:
-                    detail = 'no dispatchable row remains'
-                    break
+                    pending = _next_entry(
+                        current,
+                        context.state,
+                        blocked,
+                        blacklisted=blacklist,
+                        settled=settled,
+                    )
+                    restart_reason = _stuck_row_reason(
+                        current,
+                        context.state,
+                        settled=settled,
+                        blocked=blocked,
+                        blacklisted=blacklist,
+                    )
+                    if pending is None and restart_reason is None:
+                        detail = 'no dispatchable row remains'
+                        break
+                    if passes >= max_passes:
+                        status = RunStatus.BUDGET
+                        detail = f'pass budget of {max_passes} exhausted'
+                        if pending is not None:
+                            detail = f'{detail}; {_identity(pending)!r} is still dispatchable'
+                        elif restart_reason is not None:
+                            detail = f'{detail}; {restart_reason}'
+                        report.record_failure(failure(FailureCode.BUDGET_EXHAUSTED, detail=detail))
+                        break
+                    passes += 1
+                    report.passes = passes
+                    attempted_this_pass.clear()
+                    if restart_reason is not None:
+                        last_observation = _restart_surface(
+                            context,
+                            controller,
+                            observer,
+                            on_dismiss=record_dismissal,
+                            reason=restart_reason,
+                        )
+                        _record_policy_skips(
+                            report,
+                            observer.roster or current,
+                            logger=log,
+                            gate=gate,
+                        )
+                        report.observations = observer.sequence
+                    report.write()
+                    continue
 
                 spec = entry.spec
                 if spec is None:  # pragma: no cover - _next_entry only returns allowed rows
                     continue
                 identity = _identity(entry)
+                attempts_before = attempts.get(identity, 0)
                 task_started = context.clock()
                 task_index = report.begin_task(
                     title=entry.title,
@@ -498,9 +607,21 @@ def run_once(
                     category=spec.category.value,
                 )
                 report.write()
-                result = _dispatch_with_retry(context, controller, entry)
+
+                def note_attempt(_identity: str = identity) -> None:
+                    attempts[_identity] = attempts.get(_identity, 0) + 1
+
+                result = _dispatch_with_retry(
+                    context,
+                    controller,
+                    entry,
+                    attempts_left=max(1, max_attempts - attempts_before),
+                    on_attempt=note_attempt,
+                )
+                made = attempts.get(identity, 0) - attempts_before
                 duration = max(0.0, context.clock() - task_started)
                 attempted.add(identity)
+                attempted_this_pass.add(identity)
                 _record_dismissals(report, result.as_dict())
                 report.finish_task(
                     task_index,
@@ -525,18 +646,66 @@ def run_once(
                         completed=result.completed,
                         code=None if result.failure is None else result.failure.code.value,
                         seconds=round(duration, 3),
+                        attempt=attempts.get(identity, 0),
+                        pass_number=passes,
                     ),
                 )
-                if result.completed:
-                    _observe(context, controller, observer, route=None, on_dismiss=record_dismissal)
-                    _record_policy_skips(report, observer.roster or roster, logger=log, gate=gate)
+                if result.completed or made > 0:
+                    # Re-enumerate after every real attempt, including a failure
+                    # and a row that vanished between enumeration and dispatch.
+                    # A no-tap refusal/re-check did not change the surface.
+                    last_observation = _observe(
+                        context,
+                        controller,
+                        observer,
+                        route=None,
+                        on_dismiss=record_dismissal,
+                    )
+                    _record_policy_skips(report, observer.roster or current, logger=log, gate=gate)
                     report.observations = observer.sequence
-                else:
+
+                if result.completed:
+                    settled.add(identity)
+                    blacklist.pop(identity, None)
+                elif made == 0:
+                    # Nothing was tapped and no attempt was spent. Keep the
+                    # #93 safety rule and do not spin the same refusal in a
+                    # later pass; the row's failure remains in the report.
                     blocked.add(identity)
+                elif _needs_another_pass(result):
+                    count = attempts.get(identity, 0)
+                    if result.acted:
+                        # #93: an action whose effect is unknown is never repeated
+                        # inside the same run. The next day re-checks the fresh row.
+                        blocked.add(identity)
+                    elif count >= max_attempts:
+                        blacklist = _blacklist_task(
+                            report,
+                            context.state,
+                            entry,
+                            attempts=count,
+                            blacklist=blacklist,
+                            logger=log,
+                        )
+                    # Otherwise the row stays pending for the next pass.
+                else:
+                    settled.add(identity)
                 report.write()
 
+            report.passes = passes
+            report.attempts = dict(attempts)
+            report.blacklist = dict(blacklist)
             final_roster = observer.roster if observer is not None and observer.roster is not None else roster
-            _record_unrun(report, final_roster, context.state, attempted, status=status, detail=detail, logger=log)
+            _record_unrun(
+                report,
+                final_roster,
+                context.state,
+                attempted,
+                status=status,
+                detail=detail,
+                logger=log,
+                blacklisted=blacklist,
+            )
             if observer is not None:
                 report.observations = observer.sequence
             if final_roster is not None:
@@ -1262,6 +1431,9 @@ def _dispatch_with_retry(
     context: RunContext,
     controller: Controller,
     entry: RosterEntry,
+    *,
+    attempts_left: int | None = None,
+    on_attempt: Callable[[], None] | None = None,
 ) -> EngineResult:
     """Dispatch one row, spending the task retry only when no action was taken.
 
@@ -1324,7 +1496,12 @@ def _dispatch_with_retry(
         authorized = _authorize(context, fresh)
         log.info('%s', _event('acted_recheck', key=authorized.key, claimable=True))
 
-    result = _attempt_dispatch(context, controller, authorized)
+    def attempt() -> EngineResult:
+        if on_attempt is not None:
+            on_attempt()
+        return _attempt_dispatch(context, controller, authorized)
+
+    result = attempt()
     # Persist the safety marker before the signed-out guard: if the session
     # expired after the task acted, the next run still needs the re-check.
     _remember_acted_result(context, authorized, result)
@@ -1335,6 +1512,8 @@ def _dispatch_with_retry(
         _guard_signed_in(context, _capture(context.capture))
     named = result.failure
     if named is None or not named.retryable or named.retry is not RetryScope.TASK or result.acted:
+        return result
+    if attempts_left is not None and attempts_left <= 1:
         return result
 
     delay = retry_delay(0)
@@ -1350,7 +1529,7 @@ def _dispatch_with_retry(
         ),
     )
     context.sleep(delay)
-    result = _attempt_dispatch(context, controller, authorized)
+    result = attempt()
     _remember_acted_result(context, authorized, result)
     return result
 
@@ -1834,6 +2013,145 @@ def _observe(
             return None
 
 
+def _pass_restart_reason(
+    roster: Roster | None,
+    observation: RosterObservation | None,
+) -> str | None:
+    """Name why a finished pass should re-fire the shortcut, or return ``None``.
+
+    A normal pass that simply found no work is complete. An unreadable or
+    unknown surface is not evidence that the day is empty, and an allowed row
+    with no action is a stuck surface rather than a clean zero, so both restart
+    from the shortcut before the night may end.
+    """
+    if roster is None:
+        return 'the roster was not read'
+    if not roster.entries:
+        # An empty surface has no work to lose. A readable empty page is a
+        # clean zero; an unknown one with no rows is named by the route/report
+        # path instead of burning the pass budget on restarts.
+        return None
+    if observation is not None and observation.failed:
+        unknown = observation.surface_variant is Surface.UNKNOWN or (
+            observation.error is not None
+            and any(
+                token in observation.error
+                for token in ('still loading', 'popup covers', 'error state', 'reward interstitial')
+            )
+        )
+        # A surface-family change keeps the previous roster and is still
+        # dispatchable; only an unreadable/unknown frame is the stuck surface
+        # that #123 restarts from the shortcut.
+        if unknown:
+            return f'the re-enumerated surface could not be read: {observation.error}'
+    if roster.surface_variant is Surface.UNKNOWN:
+        return 'the task surface is unknown'
+    if roster.surface_variant is Surface.EMPTY_BOOST:
+        return 'the Coins boost page is the documented load fault'
+    return None
+
+
+def _stuck_row_reason(
+    roster: Roster | None,
+    state: DailyStateStore,
+    *,
+    settled: set[str],
+    blocked: set[str],
+    blacklisted: Mapping[str, int],
+) -> str | None:
+    """Name an allowed row a finished pass could not turn into a dispatch."""
+    if roster is None:
+        return None
+    for entry in roster.entries:
+        if not entry.allowed or entry.spec is None or entry.spec.category not in _EXECUTORS:
+            continue
+        identity = _identity(entry)
+        if identity in settled or identity in blocked or identity in blacklisted:
+            continue
+        if state.count(entry.spec.key) >= entry.spec.max_per_run:
+            continue
+        if entry.dispatch_target is None:
+            return f'{entry.title!r} was allowed but had no dispatchable action'
+    return None
+
+
+def _restart_surface(
+    context: RunContext,
+    controller: Controller,
+    observer: RosterObserver,
+    *,
+    on_dismiss: Callable[[DismissReport], None] | None,
+    reason: str,
+) -> RosterObservation | None:
+    """Fire the shortcut again, then re-read the best task surface."""
+    log = context.logger if context.logger is not None else LOG
+    try:
+        context.navigate(SurfaceRoute.SHORTCUT)
+        _guard_signed_in(context, _capture(context.capture))
+    except RunAborted, RunInterrupted, AppLoggedOut:
+        raise
+    except Exception as exc:
+        detail = f'{type(exc).__name__}: {exc}'
+        log.warning('%s', _event('surface_restart_failed', reason=reason, detail=detail))
+        return None
+    log.info('%s', _event('surface_restart', reason=reason, route=SurfaceRoute.SHORTCUT.value))
+    return _observe(context, controller, observer, route=None, on_dismiss=on_dismiss)
+
+
+def _needs_another_pass(result: EngineResult) -> bool:
+    """Whether this outcome leaves the row worth dispatching in a later pass."""
+    if result.completed:
+        return False
+    if result.outcome == 'failed':
+        return result.failure is None or result.failure.retryable
+    if result.outcome == 'skipped':
+        return result.verification in _RETRYABLE_SKIP_VERIFICATIONS
+    return False
+
+
+def _blacklist_task(
+    report: RunReport,
+    state: DailyStateStore,
+    entry: RosterEntry,
+    *,
+    attempts: int,
+    blacklist: Mapping[str, int],
+    logger: logging.Logger | None,
+) -> dict[str, int]:
+    """Skip one task for the rest of the night and say why in the report."""
+    key = _identity(entry)
+    updated = dict(blacklist)
+    updated[key] = attempts
+    spec = entry.spec
+    if spec is not None:
+        try:
+            state.blacklist_task(spec.key, attempts)
+        except Exception as exc:
+            if logger is not None:
+                logger.warning(
+                    '%s',
+                    _event(
+                        'state_blacklist_failed',
+                        key=spec.key,
+                        detail=f'{type(exc).__name__}: {exc}',
+                    ),
+                )
+    reason = f'blacklisted after {attempts} attempts'
+    _skip(
+        report,
+        logger,
+        title=entry.title,
+        key=entry.key,
+        category=spec.category.value if spec is not None else None,
+        reason=reason,
+        detail=(
+            f'{entry.title!r} failed {attempts} time(s) in this night; '
+            'it is skipped until the next local day so the rest of the roster continues'
+        ),
+    )
+    return updated
+
+
 def _skip(
     report: RunReport,
     logger: logging.Logger | None,
@@ -1941,6 +2259,7 @@ def _record_unrun(
     status: RunStatus,
     detail: str | None,
     logger: logging.Logger | None = None,
+    blacklisted: Mapping[str, int] | None = None,
 ) -> None:
     if roster is None:
         return
@@ -1956,7 +2275,22 @@ def _record_unrun(
         spec = entry.spec
         if spec.category not in _EXECUTORS:
             continue
-        if _identity(entry) in attempted:
+        identity = _identity(entry)
+        if identity in attempted:
+            continue
+        if blacklisted is not None and identity in blacklisted:
+            attempts = blacklisted[identity]
+            _skip(
+                report,
+                logger,
+                title=entry.title,
+                key=spec.key,
+                category=spec.category.value,
+                reason=f'blacklisted after {attempts} attempts',
+                detail=(
+                    f'{entry.title!r} already spent {attempts} attempt(s) today; it is skipped until the next local day'
+                ),
+            )
             continue
         if entry.dispatch_target is None:
             continue
@@ -2007,8 +2341,12 @@ def _night_record(report: RunReport) -> NightRecord:
     roster_incomplete = bool(report.roster and report.roster.get('incomplete', False))
     if roster_incomplete:
         outcome = NightOutcome.INCOMPLETE_ROSTER
-    elif retryable:
+    elif retryable or report.blacklist:
+        # A blacklisted task is an exhausted attempt bound, not proof that the
+        # day is finished. Keep the day open so the next local day's fresh
+        # blacklist can try it again.
         outcome = NightOutcome.RETRYABLE_FAILURES
+        retryable = max(retryable, len(report.blacklist))
     else:
         outcome = NightOutcome.EXHAUSTED
     return NightRecord(
@@ -2034,13 +2372,28 @@ def _retryable_task_failure(task: TaskRecord) -> bool:
     return bool(task.failure.get('retryable', True))
 
 
-def _next_entry(roster: Roster, state: DailyStateStore, blocked: set[str]) -> RosterEntry | None:
+def _next_entry(
+    roster: Roster,
+    state: DailyStateStore,
+    blocked: set[str],
+    *,
+    blacklisted: Mapping[str, int] | None = None,
+    attempted: set[str] | None = None,
+    settled: set[str] | None = None,
+) -> RosterEntry | None:
     for entry in roster.entries:
         if not entry.allowed or entry.spec is None or entry.dispatch_target is None:
             continue
         if entry.spec.category not in _EXECUTORS:
             continue
-        if _identity(entry) in blocked:
+        identity = _identity(entry)
+        if identity in blocked:
+            continue
+        if blacklisted is not None and identity in blacklisted:
+            continue
+        if attempted is not None and identity in attempted:
+            continue
+        if settled is not None and identity in settled:
             continue
         if state.count(entry.spec.key) >= entry.spec.max_per_run:
             continue

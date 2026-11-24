@@ -183,6 +183,11 @@ class RunReport:
         self.plan_note: str | None = None
         self.abort: dict[str, Any] | None = None
         self.night: dict[str, Any] | None = None
+        self.passes = 0
+        self.max_passes: int | None = None
+        self.max_task_attempts: int | None = None
+        self.attempts: dict[str, int] = {}
+        self.blacklist: dict[str, int] = {}
         self.artifact_errors: list[str] = []
         self.tasks: list[TaskRecord] = []
         self.skipped: list[SkippedRecord] = []
@@ -471,6 +476,11 @@ class RunReport:
             'plan_note': self.plan_note,
             'abort': self.abort,
             'night': self.night,
+            'passes': self.passes,
+            'max_passes': self.max_passes,
+            'max_task_attempts': self.max_task_attempts,
+            'attempts': dict(self.attempts),
+            'blacklist': dict(self.blacklist),
             'artifact_errors': list(self.artifact_errors),
             'returned_to_coins_page': self.returned_to_coins_page,
             'return_error': self.return_error,
@@ -504,6 +514,9 @@ class RunReport:
             f'- **Started:** {self.started_at.isoformat()}',
             f'- **Finished:** {finished}',
             f'- **Budget:** {self.budget_used_seconds:.1f}s used of {self.budget_seconds:.1f}s',
+            f'- **Passes:** {self.passes} of {_bound(self.max_passes)}',
+            f'- **Attempts per task:** {_attempts_summary(self.attempts, self.max_task_attempts)}',
+            f'- **Blacklist:** {_blacklist_summary(self.blacklist)}',
             f'- **Device:** {_device_summary(self.hygiene)}',
             f'- **Geometry:** {_geometry_summary(self.geometry)}',
             f'- **Surface:** {self.surface or "unknown"}',
@@ -675,6 +688,23 @@ def _screen_summary(screen: dict[str, Any]) -> str:
 
 def _cell(value: str) -> str:
     return value.replace('|', '\\|').replace('\n', ' ')
+
+
+def _bound(value: int | None) -> str:
+    return 'an unbounded walk' if value is None else str(value)
+
+
+def _attempts_summary(attempts: dict[str, int], limit: int | None) -> str:
+    if not attempts:
+        return 'none'
+    listed = ', '.join(f'{key}: {count}' for key, count in sorted(attempts.items()))
+    return listed if limit is None else f'{listed} (limit {limit} per task)'
+
+
+def _blacklist_summary(blacklist: dict[str, int]) -> str:
+    if not blacklist:
+        return 'none'
+    return ', '.join(f'{key}: blacklisted after {count} attempt(s)' for key, count in sorted(blacklist.items()))
 
 
 def _balance(value: float | None) -> str:
