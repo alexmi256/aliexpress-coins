@@ -108,9 +108,10 @@ identical `GO` buttons — enforcing the deny list at dispatch is mandatory.
   right-edge chip as `14s` then `13s` before it vanished, and the coin balance moved
   `worth C$0.97 → C$0.98` (boost header `66 → 67`) — **the reward is +1 ✅**. The row was still
   visible on the verifier's first boost read moments after the chip cleared, then gone on the next
-  load, so the run recorded `no_change` even though the coin had paid; that stale-row verification
-  lag is why the run is not quoted as a `row_gone` completion. The row sits directly above the
-  mini-app shortcut strip
+  load. The executor now re-enters the list once when the first verification read is still
+  unchanged, and judges that settled read; the original run predates that guard, so it recorded
+  `no_change` despite the coin having paid and is not quoted as a `row_gone` completion. The row
+  sits directly above the mini-app shortcut strip
   (`Merge Boss`, `Play & Earn`, `Prize Land`), which is **not** its subtitle; the 2026-11-24
   roster refused it as `game_play_and_earn` only because the strip was absorbed upward. The exact
   destination page marker, the full countdown-to-check transition and whether the row repeats are

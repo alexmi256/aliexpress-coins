@@ -364,16 +364,28 @@ def test_an_allow_span_owned_by_a_neighbour_cannot_authorise_the_row() -> None:
     assert decision.reason == 'unrecognised'
 
 
-def test_policy_context_cannot_authorise_copy_it_does_not_own() -> None:
+def test_an_unattested_title_still_faces_the_deny_list() -> None:
     catalogue = load_task_catalogue(CATALOGUE_PATH)
     context = TaskPolicyContext(title_elements=('View Super discounts',))
 
     decision = catalogue.decide('Play & Earn', subtitle='Merge Boss', context=context)
 
     assert decision.denied
-    assert decision.rule is None
-    assert decision.reason == 'unrecognised'
-    assert decision.matched_pattern is None
+    assert decision.rule == 'game_play_and_earn'
+    assert decision.matched_pattern == 'Play & Earn'
+    assert decision.matched_field == 'title'
+
+
+def test_an_unattested_subtitle_cannot_hide_a_denial_behind_an_allowed_title() -> None:
+    catalogue = load_task_catalogue(CATALOGUE_PATH)
+    context = TaskPolicyContext(title_elements=('View Super discounts',))
+
+    decision = catalogue.decide('View Super discounts', subtitle='Add to cart', context=context)
+
+    assert decision.denied
+    assert decision.rule == 'spending_cart'
+    assert decision.matched_pattern == 'Add to cart'
+    assert decision.matched_field == 'subtitle'
 
 
 def test_a_deny_rule_can_match_the_subtitle_the_title_does_not_name() -> None:

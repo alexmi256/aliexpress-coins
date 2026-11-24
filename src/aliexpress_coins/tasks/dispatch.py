@@ -31,6 +31,7 @@ from dataclasses import dataclass, replace
 
 from aliexpress_coins.tasks.catalogue import (
     DEFAULT_DENY_REASON,
+    ContaminatedMatch,
     DecisionKind,
     DispatchAuthorization,
     TaskCatalogue,
@@ -59,6 +60,10 @@ class PolicyRefusal:
     surface: str | None = None
     matched_pattern: str | None = None
     matched_field: str | None = None
+    contaminated: tuple[ContaminatedMatch, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, 'contaminated', tuple(self.contaminated))
 
     @classmethod
     def from_decision(cls, decision: TaskDecision, *, surface: str | None) -> PolicyRefusal:
@@ -72,6 +77,7 @@ class PolicyRefusal:
             surface=surface,
             matched_pattern=decision.matched_pattern,
             matched_field=decision.matched_field,
+            contaminated=decision.contaminated,
         )
 
     @property
@@ -81,7 +87,7 @@ class PolicyRefusal:
 
     def as_dict(self) -> dict[str, object]:
         """The complete structured event; no executor sees this row."""
-        return {
+        record: dict[str, object] = {
             'event': 'policy_refusal',
             'code': self.code,
             'label': self.label,
@@ -92,6 +98,9 @@ class PolicyRefusal:
             'matched_pattern': self.matched_pattern,
             'matched_field': self.matched_field,
         }
+        if self.contaminated:
+            record['contaminated'] = [match.as_dict() for match in self.contaminated]
+        return record
 
 
 class PolicyRefused(TaskError):
@@ -126,15 +135,6 @@ class DispatchGate:
         or mutated between enumeration and dispatch.
         """
         decision = self.catalogue.decide(entry.title, subtitle=entry.subtitle, context=entry.policy_context)
-        if decision.denied and decision.rule is None and entry.policy_context is not None:
-            # A stale context (for example an entry whose title was replaced
-            # after enumeration) must not hide a denial on the row's displayed
-            # title. Falling back only for a *deny* keeps provenance strict for
-            # allows: a title the context does not own can still refuse, but it
-            # can never authorise a dispatch.
-            title_only = self.catalogue.decide(entry.title)
-            if title_only.denied and title_only.rule is not None:
-                decision = title_only
         self._sequence += 1
         if decision.decision is not DecisionKind.ALLOW or decision.spec is None:
             refusal = PolicyRefusal.from_decision(decision, surface=self.surface)

@@ -408,21 +408,25 @@ class TaskCatalogue:
         mangled.
 
         ``context`` carries the row's own OCR elements and the frame's other
-        elements. When supplied, a field is evidence only if its owned elements
-        attest to the same copy, and a span also owned by a neighbouring element
-        is ignored. The display strings remain on the decision for the report.
+        elements. When supplied, a field is *allowable* evidence only if its
+        owned elements attest to the same copy. Denial is stricter: an
+        unattested field is still displayed text, so the deny list is checked
+        against it anyway. Only an attested subtitle whose duplicated span is
+        explicitly contaminated may be skipped (#109).
         """
         fields = _policy_fields(title, subtitle, context)
+        attested = {field for field, text in fields if text is not None}
         contaminated: list[ContaminatedMatch] = []
-        for field, text in fields:
+        for field, text in (('title', title), ('subtitle', subtitle)):
             if text is None:
                 continue
+            neighbouring = context.neighbouring_elements if context is not None and field in attested else ()
             for rule in self.denied:
                 pattern, ignored = _first_match(
                     _denied_patterns(rule, field),
                     text,
                     field=field,
-                    neighbouring_elements=context.neighbouring_elements if context is not None else (),
+                    neighbouring_elements=neighbouring,
                 )
                 contaminated = _merge_contamination(contaminated, ignored)
                 if pattern is not None:

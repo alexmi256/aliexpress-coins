@@ -25,9 +25,14 @@ from aliexpress_coins.perception.geometry import DeviceGeometry
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks.browse import run_browse_task
-from aliexpress_coins.tasks.catalogue import DispatchAuthorization, TaskCatalogue, load_task_catalogue
+from aliexpress_coins.tasks.catalogue import (
+    DispatchAuthorization,
+    TaskCatalogue,
+    TaskPolicyContext,
+    load_task_catalogue,
+)
 from aliexpress_coins.tasks.discovery import RosterEntry, enumerate_roster
-from aliexpress_coins.tasks.dispatch import DispatchGate, PolicyRefused, authorization_of
+from aliexpress_coins.tasks.dispatch import DispatchGate, PolicyRefusal, PolicyRefused, authorization_of
 from aliexpress_coins.tasks.errors import TaskError
 from aliexpress_coins.tasks.notifications import run_notifications_task
 from aliexpress_coins.tasks.quiz import run_quiz_task
@@ -229,6 +234,25 @@ def test_an_unrecognised_label_is_refused_by_default(catalogue: TaskCatalogue) -
     assert raised.value.refusal.code == 'unrecognised'
     assert raised.value.refusal.rule is None
     assert raised.value.refusal.reason == catalogue.default_deny_reason
+
+
+def test_a_refusal_audit_names_a_contaminated_match_instead_of_hiding_it(
+    catalogue: TaskCatalogue,
+) -> None:
+    context = TaskPolicyContext(
+        title_elements=('Mystery task',),
+        subtitle_elements=('Play & Earn',),
+        neighbouring_elements=('Play & Earn',),
+    )
+    decision = catalogue.decide('Mystery task', subtitle='Play & Earn', context=context)
+
+    refusal = PolicyRefusal.from_decision(decision, surface='boost_page')
+    payload = refusal.as_dict()
+
+    assert payload['code'] == 'unrecognised'
+    assert payload['contaminated'] == [
+        {'pattern': 'Play & Earn', 'field': 'subtitle', 'source': 'Play & Earn'},
+    ]
 
 
 def test_refusal_for_returns_the_audit_refusal_and_none_for_an_allowed_row(

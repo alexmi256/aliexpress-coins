@@ -1809,32 +1809,88 @@ def _verify_completion(
     is not proof, because the plain/shortcut coin page may render no task rows at
     all. In that case the boost list is re-opened and read; after that read the
     run returns to the coins page once more.
+
+    A paid row can remain rendered for a moment after the chip clears. If the
+    first boost read still shows the unchanged row, the executor re-enters the
+    list exactly once through the measured route and judges that settled read
+    instead of recording a paid task as failed.
     """
     current = frame if frame is not None else _capture(capture)
     first = _verdict(current, title, before, trusted=False)
     if first.decisive:
         return first, None, None
 
-    try:
-        opened = open_boost_list(
-            controller,
-            capture,
-            corpus,
-            templates=templates,
-            timeout=timeout,
-            interval=interval,
-            settle=settle,
-            clock=clock,
-            sleep=sleep,
-            logger=logger,
-        )
-    except (StateTimeout, PopupUnclosable) as exc:
-        final = return_to_coins_page(
+    opened = None
+    opened_dismiss: DismissReport | None = None
+    refresh_return: ReturnResult | None = None
+    for attempt in range(2):
+        try:
+            opened = open_boost_list(
+                controller,
+                capture,
+                corpus,
+                templates=templates,
+                timeout=timeout,
+                interval=interval,
+                settle=settle,
+                clock=clock,
+                sleep=sleep,
+                logger=logger,
+            )
+        except (StateTimeout, PopupUnclosable) as exc:
+            final = (
+                refresh_return
+                if refresh_return is not None
+                else return_to_coins_page(
+                    controller,
+                    capture,
+                    corpus,
+                    navigate,
+                    snapshot=None,
+                    templates=templates,
+                    route=route,
+                    timeout=return_timeout,
+                    interval=return_interval,
+                    attempts=return_attempts,
+                    settle=settle,
+                    clock=clock,
+                    sleep=sleep,
+                    logger=logger,
+                )
+            )
+            verdict = _Verdict(
+                status='no_observation',
+                decisive=False,
+                detail=f'the boost list could not be read for verification: {exc}',
+                badge=None,
+                evidence=_evidence(current, title),
+            )
+            return verdict, opened_dismiss, final
+
+        trusted = _trusted_surface(opened)
+        verdict = _verdict(opened.snapshot, title, before, trusted=trusted)
+        if verdict.status == 'no_change' and not trusted:
+            verdict = _Verdict(
+                status='no_observation',
+                decisive=False,
+                detail='the verification frame showed no task rows, so the row could not be checked',
+                badge=verdict.badge,
+                evidence=verdict.evidence,
+            )
+        opened_dismiss = _merge_dismiss_reports(opened_dismiss, opened.dismiss)
+
+        if attempt > 0 or verdict.status != 'no_change' or not trusted:
+            break
+
+        # A paid task can leave its row rendered for a moment after the chip
+        # clears. Re-enter once through the measured route and read the settled
+        # list again before calling the unchanged row a failure.
+        refresh_return = return_to_coins_page(
             controller,
             capture,
             corpus,
             navigate,
-            snapshot=None,
+            snapshot=opened.snapshot,
             templates=templates,
             route=route,
             timeout=return_timeout,
@@ -1845,29 +1901,13 @@ def _verify_completion(
             sleep=sleep,
             logger=logger,
         )
-        verdict = _Verdict(
-            status='no_observation',
-            decisive=False,
-            detail=f'the boost list could not be read for verification: {exc}',
-            badge=None,
-            evidence=_evidence(current, title),
-        )
-        return verdict, None, final
+        if not refresh_return.returned:
+            return verdict, opened_dismiss, refresh_return
 
-    trusted = _trusted_surface(opened)
-    verdict = _verdict(opened.snapshot, title, before, trusted=trusted)
-    if verdict.status == 'no_change' and not trusted:
-        verdict = _Verdict(
-            status='no_observation',
-            decisive=False,
-            detail='the verification frame showed no task rows, so the row could not be checked',
-            badge=verdict.badge,
-            evidence=verdict.evidence,
-        )
-
+    assert opened is not None
     if _on_coins_page(opened.snapshot):
         # The inline route was already on the coins page; no second entry.
-        return verdict, opened.dismiss, None
+        return verdict, opened_dismiss, refresh_return
 
     final = return_to_coins_page(
         controller,
@@ -1885,7 +1925,31 @@ def _verify_completion(
         sleep=sleep,
         logger=logger,
     )
-    return verdict, opened.dismiss, final
+    if refresh_return is not None:
+        final = refresh_return.merged(final)
+    return verdict, opened_dismiss, final
+
+
+def _merge_dismiss_reports(
+    first: DismissReport | None,
+    second: DismissReport | None,
+) -> DismissReport | None:
+    """Keep both sweeps when verification re-enters the list once."""
+    if first is None:
+        return second
+    if second is None:
+        return first
+    return replace(
+        first,
+        closed=first.closed + second.closed,
+        attempts=first.attempts + second.attempts,
+        frames=first.frames + second.frames,
+        remaining=second.remaining,
+        stop=second.stop,
+        final=second.final,
+        dry_run=first.dry_run or second.dry_run,
+        unclosed=first.unclosed + second.unclosed,
+    )
 
 
 def _verdict(
