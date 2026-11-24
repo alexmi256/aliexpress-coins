@@ -7,8 +7,9 @@ was allowed to run. The surface functions (#22/#38/#43) decide what is allowed
 and what is still available.
 
 The walk is an outer loop (#123): after every real attempt the roster is
-re-enumerated, and the next pass dispatches anything still allowed. Four
-budgets bound it:
+re-enumerated, and the next pass dispatches anything still allowed. Selection
+uses an explicit cost order (:data:`_CATEGORY_COST`), not the reading order in
+which the frame happened to enumerate its rows (#131). Four budgets bound it:
 
 * ``AECOINS_MAX_TASKS_PER_RUN`` is the task budget, counted in dispatches;
 * ``AECOINS_RUN_BUDGET_SECONDS`` is the wall-clock budget, checked before every
@@ -16,9 +17,16 @@ budgets bound it:
 * ``AECOINS_MAX_PASSES`` bounds the full re-enumerated sweeps;
 * ``AECOINS_MAX_TASK_ATTEMPTS`` blacklists one task for the rest of the day.
 
-When any bound stops the walk, the remaining rows are written to the report
-with the reason they were not attempted. The final ``finally`` asks the existing
-return route to prove the coins page, so a budget stop is still a clean stop.
+Selection never inherits OCR reading order. Eligible rows are ordered by
+category cost (:data:`_CATEGORY_COST`), then catalogue key, then case-folded
+title and subtitle; :func:`_next_entry` takes the first row under that rule. The
+roster itself stays in reading order for ``roster.jsonl`` and diagnostics.
+
+When any bound stops the walk, every row still eligible under the daily,
+blacklist, block and settle rules is written to the report with the bound that
+stopped it, including repeatable rows already completed once and retryable rows
+already attempted. The final ``finally`` asks the existing return route to prove
+the coins page, so a budget stop is still a clean stop.
 """
 
 from __future__ import annotations
@@ -26,7 +34,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -265,6 +273,35 @@ _RETRYABLE_SKIP_VERIFICATIONS = frozenset({'row_vanished'})
 A ``row_vanished`` skip is re-enumerated and may be dispatched again in a later
 pass. ``row_complete``, ``daily_limit`` and ``already_done`` are terminal: the
 app or the day has already accounted for the row.
+"""
+
+_CATEGORY_COST: dict[TaskCategory, int] = {
+    TaskCategory.SIGN_IN: 0,
+    TaskCategory.QUIZ: 1,
+    TaskCategory.BROWSE: 2,
+    TaskCategory.ITEM_TAP: 3,
+    TaskCategory.BROWSE_WAIT: 4,
+    TaskCategory.NOTIFICATION: 5,
+    TaskCategory.SHORTCUT: 6,
+    TaskCategory.WIDGET: 7,
+}
+"""How expensive one attempt is expected to be, cheapest first.
+
+The walk is bounded, so *which* rows are left undone when a budget or pass ends
+must be a policy, not whichever row OCR happened to put at the bottom. The
+ranking is deliberately coarse and independent of the frame:
+
+* ``sign_in`` is one tap and the most reliable coin;
+* ``quiz`` is one page transition;
+* ``browse`` is one category tap on the landing page;
+* ``item_tap`` needs several item taps and BACKs;
+* ``browse_wait`` must sit out a timer before it can be collected;
+* ``notification`` crosses into an OS dialog and is the least predictable;
+* ``shortcut``/``widget`` have no executor yet, but still need a stable rank.
+
+Within a cost rank the catalogue key is stable across runs; the title and
+subtitle only break the rare tie where OCR enumerated two rows for the same
+family. Reading order is not part of the key.
 """
 
 
@@ -742,6 +779,8 @@ def run_once(
                 detail=detail,
                 logger=log,
                 blacklisted=blacklist,
+                blocked=blocked,
+                settled=settled,
             )
             if observer is not None:
                 report.observations = observer.sequence
@@ -1142,7 +1181,7 @@ def _plan_dry_run(
 
     steps: list[dict[str, object]] = []
     refusals: list[dict[str, object]] = []
-    for entry in roster.entries:
+    for entry in _ordered_entries(roster.entries):
         try:
             authorized = gate.authorize(entry)
         except PolicyRefused as exc:
@@ -1278,8 +1317,12 @@ def _row_wait_target(snapshot: Snapshot, catalogue: TaskCatalogue) -> Snapshot |
 
 
 def _roster_signature(roster: Roster) -> tuple[tuple[str, str | None, tuple[int, int] | None, str | None], ...]:
-    """The title/key/badge/action set that must stay unchanged before planning."""
-    return tuple(
+    """The title/key/badge/action set that must stay unchanged before planning.
+
+    Sorting makes this a content signature: a pure frame reorder is not a
+    rendering change. The roster's own reading order is deliberately untouched.
+    """
+    rows = tuple(
         (
             entry.title,
             entry.key,
@@ -1287,6 +1330,12 @@ def _roster_signature(roster: Roster) -> tuple[tuple[str, str | None, tuple[int,
             entry.action.text if entry.action is not None else None,
         )
         for entry in roster.entries
+    )
+    return tuple(
+        sorted(
+            rows,
+            key=lambda row: (row[0], row[1] or '', row[2] or (-1, -1), row[3] or ''),
+        ),
     )
 
 
@@ -2135,7 +2184,7 @@ def _stuck_row_reason(
     """Name an allowed row a finished pass could not turn into a dispatch."""
     if roster is None:
         return None
-    for entry in roster.entries:
+    for entry in _ordered_entries(roster.entries):
         if not entry.allowed or entry.spec is None or entry.spec.category not in _EXECUTORS:
             continue
         identity = _identity(entry)
@@ -2333,24 +2382,37 @@ def _record_unrun(
     detail: str | None,
     logger: logging.Logger | None = None,
     blacklisted: Mapping[str, int] | None = None,
+    blocked: set[str] | None = None,
+    settled: set[str] | None = None,
 ) -> None:
+    """Name every row still eligible when the walk stops.
+
+    An attempted row is not necessarily finished: a repeatable task can remain
+    below its daily limit, and a retryable failure can still be pending when the
+    pass bound wins. Blocked, settled and blacklisted rows are not eligible and
+    keep their more specific reason. On a normally exhausted walk, attempted
+    rows stay out of the ``not selected`` table as before.
+    """
     if roster is None:
         return
     if status is RunStatus.BUDGET:
-        reason, why = 'run budget', detail or 'the run budget stopped the walk'
+        if detail is not None and detail.startswith('pass budget'):
+            reason, why = 'pass budget', detail
+        else:
+            reason, why = 'run budget', detail or 'the run budget stopped the walk'
     elif status is RunStatus.STOPPED:
         reason, why = 'stopped', detail or 'a stop was requested'
     else:
         reason, why = 'not selected', detail or 'the roster was exhausted'
-    for entry in roster.entries:
+    blocked = blocked or set()
+    settled = settled or set()
+    for entry in _ordered_entries(roster.entries):
         if not entry.allowed or entry.spec is None:
             continue
         spec = entry.spec
         if spec.category not in _EXECUTORS:
             continue
         identity = _identity(entry)
-        if identity in attempted:
-            continue
         if blacklisted is not None and identity in blacklisted:
             attempts = blacklisted[identity]
             _skip(
@@ -2365,18 +2427,21 @@ def _record_unrun(
                 ),
             )
             continue
-        if entry.dispatch_target is None:
+        if identity in blocked or identity in settled or entry.dispatch_target is None:
             continue
         if state.count(spec.key) >= spec.max_per_run:
-            _skip(
-                report,
-                logger,
-                title=entry.title,
-                key=spec.key,
-                category=spec.category.value,
-                reason='daily limit',
-                detail=f'{spec.key!r} already reached its {spec.max_per_run} completion(s) today',
-            )
+            if identity not in attempted:
+                _skip(
+                    report,
+                    logger,
+                    title=entry.title,
+                    key=spec.key,
+                    category=spec.category.value,
+                    reason='daily limit',
+                    detail=f'{spec.key!r} already reached its {spec.max_per_run} completion(s) today',
+                )
+            continue
+        if identity in attempted and status not in (RunStatus.BUDGET, RunStatus.STOPPED):
             continue
         _skip(
             report,
@@ -2445,6 +2510,24 @@ def _retryable_task_failure(task: TaskRecord) -> bool:
     return bool(task.failure.get('retryable', True))
 
 
+def _selection_key(entry: RosterEntry) -> tuple[int, str, str, str]:
+    """Order one roster row by policy, never by its position in the frame."""
+    spec = entry.spec
+    if spec is None:
+        return (len(_CATEGORY_COST), '', entry.title.casefold(), (entry.subtitle or '').casefold())
+    return (
+        _CATEGORY_COST[spec.category],
+        spec.key,
+        entry.title.casefold(),
+        (entry.subtitle or '').casefold(),
+    )
+
+
+def _ordered_entries(entries: Iterable[RosterEntry]) -> list[RosterEntry]:
+    """Rank rows for selection without changing the roster's recorded order."""
+    return sorted(entries, key=_selection_key)
+
+
 def _next_entry(
     roster: Roster,
     state: DailyStateStore,
@@ -2454,7 +2537,16 @@ def _next_entry(
     attempted: set[str] | None = None,
     settled: set[str] | None = None,
 ) -> RosterEntry | None:
-    for entry in roster.entries:
+    """Return the next dispatching row in explicit cost order.
+
+    The roster is a description of a frame, so its order is reading order and is
+    not stable between runs (rows rotate in place; a scrolled list will grow and
+    reorder). Selection therefore sorts the eligible rows with
+    :func:`_selection_key`: category cost first, then catalogue key, then the
+    case-folded title and subtitle. Two runs over the same set of rows make the
+    same choice even when OCR enumerated them in a different order.
+    """
+    for entry in _ordered_entries(roster.entries):
         if not entry.allowed or entry.spec is None or entry.dispatch_target is None:
             continue
         if entry.spec.category not in _EXECUTORS:

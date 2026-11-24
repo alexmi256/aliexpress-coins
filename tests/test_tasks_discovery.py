@@ -53,6 +53,7 @@ from aliexpress_coins.tasks.discovery import (
     _merge_frame_rosters,
     _observation_problem,
     _surface_family,
+    _task_signature,
     collect_roster,
     discover_roster,
     enumerate_roster,
@@ -1992,6 +1993,23 @@ def _boost_frame(*rows: tuple[TextBox, ...]) -> Snapshot:
     """A synthetic boost page: header plus the supplied task rows."""
     boxes = (_box('Coins boost', 100, 10, 500, 40), *[box for row in rows for box in row])
     return _snapshot(*boxes)
+
+
+def test_task_stability_signature_ignores_the_order_rows_were_read(catalogue: TaskCatalogue) -> None:
+    rows = (
+        ('Daily check-in', None),
+        ('Explore sponsored items', '0/6'),
+        ('Browse surprise items', '0/2'),
+    )
+    first = _boost_frame(
+        *(_task_row(title, 100 + index * 200, badge=badge) for index, (title, badge) in enumerate(rows))
+    )
+    reordered = _boost_frame(
+        *(_task_row(title, 100 + index * 200, badge=badge) for index, (title, badge) in enumerate(reversed(rows)))
+    )
+
+    assert enumerate_roster(first, catalogue).titles != enumerate_roster(reordered, catalogue).titles
+    assert _task_signature(first) == _task_signature(reordered)
 
 
 def _observe(

@@ -66,10 +66,42 @@ acquire run.lock → timezone check → hygiene (wake, keyguard check, portrait 
   → read balance-before [shots/balance-before.{png,json}]
   → open Coins boost ("Earn more"; warm re-entry if empty_boost) → enumerate roster
   → claim daily sign-ins (streak Collect + boost Daily check-in)
-  → for each row: DispatchGate → budget/daily-limit check → executor → verify → roster diff
+  → select next row by category cost/key/title → DispatchGate → budget/daily-limit check
+  → executor → verify → roster diff
   → return to coins page → read balance-after → restore device settings
   → write run.json + summary.md → prune old runs → notify → release run.lock
 ```
+
+### Roster order and selection
+
+A roster describes a frame, so `roster.jsonl` and the roster block in `run.json` keep the reading
+order discovery found. That order is **not stable by design**: rows rotate in place, and the
+scroll-and-collect work grows and reorders the visible set. Nothing may select a task by its index or
+assume that the row below a card is the same task on the next run. Geometry may still attach a
+control to the row whose vertical position it occupies (#107); identity is always the OCR text and
+the catalogue key, never the position.
+
+The nightly walk chooses its next row with
+[`_next_entry()`](../src/aliexpress_coins/runner/engine.py), which sorts eligible rows by an explicit
+cost rule rather than reading order:
+
+1. **Category cost**, cheapest and most reliable first: `sign_in`, `quiz`, `browse`, `item_tap`,
+   `browse_wait`, `notification` (then the not-yet-dispatched `shortcut`/`widget`). A one-tap
+   check-in is claimed before a 15-second dwell or an OS notification dialog, so an early budget
+   stop costs the least valuable work.
+2. **Catalogue key**, so the same family is ordered the same way on every run.
+3. **Case-folded title and subtitle**, only to break a tie when OCR enumerated two rows for one
+   family.
+
+The dry-run roster signature and boost-arrival task signature sort their row-content fields before
+comparison, so a pure reorder is not mistaken for unfinished rendering. This does not reorder the
+roster written to `roster.jsonl` or `run.json`.
+
+Repeated failures are handled by the pass and attempt bounds (`_needs_another_pass`,
+`_blacklist_task`), not by moving a row around in the sort. When a budget, pass or attempt bound
+ends the walk while allowed rows remain, those rows are written to `summary.md`/`run.json` under
+`Skipped` with the bound as the reason (`run budget`, `pass budget`, or `blacklisted after N
+attempts`) instead of claiming that no dispatchable row remains.
 
 ## Geometry independence
 

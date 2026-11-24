@@ -2034,7 +2034,11 @@ def _boost_arrived(snapshot: Snapshot) -> bool:
 
 
 def _task_signature(snapshot: Snapshot) -> tuple[tuple[str, str, tuple[int, int] | None], ...]:
-    """The title/action/progress set used to prove the list stopped changing."""
+    """The title/action/progress set used to prove the list stopped changing.
+
+    This is a content signature, not a frame description: sorting prevents a
+    pure row reorder from looking like unfinished rendering or a changed page.
+    """
     signature: list[tuple[str, str, tuple[int, int] | None]] = []
     for row in group_rows(snapshot.boxes, snapshot.geometry):
         action = find_action_in_row(row)
@@ -2046,7 +2050,7 @@ def _task_signature(snapshot: Snapshot) -> tuple[tuple[str, str, tuple[int, int]
         badge = find_progress_badge(row)
         progress = (badge.completed, badge.total) if badge is not None else None
         signature.append((normalize(title), normalize(action.text), progress))
-    return tuple(signature)
+    return tuple(sorted(signature, key=lambda item: (item[0], item[1], item[2] or (-1, -1))))
 
 
 def _arrival_detail(snapshot: Snapshot) -> str:

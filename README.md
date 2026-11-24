@@ -158,8 +158,10 @@ quiz, surprise items, search and notifications — lives in the executors under
    [`discover_roster()`](src/aliexpress_coins/tasks/discovery.py) taps `Earn more` and enumerates the
    `Coins boost` task rows, falling back to the coin page's inline rows if that list cannot be opened.
 2. **Dispatch one allowed row.** [`_next_entry()`](src/aliexpress_coins/runner/engine.py) selects a row
-   with an executor, a dispatch target and daily allowance left.
-   [`DispatchGate`](src/aliexpress_coins/tasks/dispatch.py) re-checks it against
+   with an executor, a dispatch target and daily allowance left. Selection uses an explicit cost
+   order (cheap sign-ins before long dwells, catalogue key as the tie-break), never the reading order
+   OCR happened to return. The reading order is still recorded in `roster.jsonl` for frame diagnostics.
+   [`DispatchGate`](src/aliexpress_coins/tasks/dispatch.py) re-checks the row against
    [`specs/tasks.yaml`](specs/tasks.yaml) before an executor can act.
 3. **Re-enumerate and continue.** After every real attempt,
    [`_observe()`](src/aliexpress_coins/runner/engine.py) re-opens the task surface and logs a fresh
