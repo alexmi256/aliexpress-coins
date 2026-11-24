@@ -41,8 +41,8 @@ __all__ = [
     'prune_runs',
 ]
 
-RUN_REPORT_SCHEMA = 5
-"""The on-disk schema this module reads or writes; 5 adds the night completion record."""
+RUN_REPORT_SCHEMA = 6
+"""The on-disk schema this module reads or writes; 6 adds per-attempt failure recordings."""
 
 _RUN_ID_PATTERN = re.compile(r'^\d{8}T\d{6}Z$')
 """The only directory names retention may delete."""
@@ -189,6 +189,7 @@ class RunReport:
         self.attempts: dict[str, int] = {}
         self.blacklist: dict[str, int] = {}
         self.artifact_errors: list[str] = []
+        self.failure_recordings: list[dict[str, Any]] = []
         self.tasks: list[TaskRecord] = []
         self.skipped: list[SkippedRecord] = []
         self._skip_keys: set[tuple[str, str]] = set()
@@ -268,6 +269,10 @@ class RunReport:
     def record_artifact_error(self, detail: str) -> None:
         """Keep a best-effort artifact failure visible without failing the run."""
         self.artifact_errors.append(detail)
+
+    def record_failure_recording(self, recording: dict[str, Any]) -> None:
+        """Remember one per-attempt failure artifact and its frame paths."""
+        self.failure_recordings.append(recording)
 
     def record_failure(self, failure: Failure) -> None:
         """Name the run-level failure once; the code is the report contract."""
@@ -482,6 +487,7 @@ class RunReport:
             'attempts': dict(self.attempts),
             'blacklist': dict(self.blacklist),
             'artifact_errors': list(self.artifact_errors),
+            'failure_recordings': list(self.failure_recordings),
             'returned_to_coins_page': self.returned_to_coins_page,
             'return_error': self.return_error,
             'failure': self.failure,
@@ -565,6 +571,23 @@ class RunReport:
                 )
         else:
             lines.append('No task was dispatched.')
+        if self.failure_recordings:
+            lines.extend(
+                (
+                    '',
+                    '## Failure recordings',
+                    '',
+                    '| task | attempt | code | frames | artifact |',
+                    '|---|---|---|---|---|',
+                ),
+            )
+            for recording in self.failure_recordings:
+                frames = recording.get('frames') or []
+                lines.append(
+                    f'| {_cell(str(recording.get("task", "")))} | {recording.get("attempt", "")} | '
+                    f'{_cell(str(recording.get("failure_code") or ""))} | {len(frames)} | '
+                    f'{_cell(str(recording.get("directory", "")))} |',
+                )
         lines.extend(('', '## Skipped', ''))
         if self.skipped:
             lines.extend(('| task | reason | detail |', '|---|---|---|'))

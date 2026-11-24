@@ -72,7 +72,8 @@ tapping a guessed coordinate ([`06-runbook.md`](06-runbook.md) §14).
   devices and timezone mismatches (`AECOINS_TIMEZONE` ≠ `persist.sys.timezone`). Persist daily state
   atomically and serialise runs sharing a state directory with `state/run.lock`.
 - **FR-15 / FR-18** Always write `runs/<UTC timestamp>/` (`summary.md`, `run.json`, `run.jsonl`,
-  `roster.jsonl`, `shots/*.png` + OCR sidecars) and prune to `AECOINS_KEEP_RUNS` (default 30).
+  `roster.jsonl`, `shots/*.png` + OCR sidecars, per-attempt `failures/`) and prune to
+  `AECOINS_KEEP_RUNS` (default 30).
 - **FR-16 / FR-23** Emit structured log levels and deliver optional notifications via Apprise
   (primary) or legacy webhook/ntfy; delivery failure never fails the run.
 - **FR-19 / FR-20 / FR-21** Python 3.14, ruff + mypy strict (`src/` and `tests/`) + pytest coverage

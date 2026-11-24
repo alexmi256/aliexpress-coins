@@ -394,18 +394,34 @@ Local runs write under the current directory:
 ```text
 runs/<UTC timestamp>/          # e.g. runs/20261123T015402Z/
 ├── summary.md                 # the human report
-├── run.json                   # the machine-readable twin (schema 5)
+├── run.json                   # the machine-readable twin (schema 6)
 ├── run.jsonl                  # structured process log, one JSON object per line
 ├── roster.jsonl               # every roster observation and its diff
-└── shots/
-    ├── balance-before.png     # the frame the starting balance was read from
-    ├── balance-before.json    # its OCR boxes and geometry sidecar
-    ├── balance-after.png
-    ├── balance-after.json
-    ├── browse-<key>-foreground-lost.png  # when a browse tap leaves the app
-    ├── browse-<key>-foreground-lost.json # its OCR evidence, before recovery
-    └── failure.png            # best-effort, failed runs only
+├── shots/
+│   ├── balance-before.png     # the frame the starting balance was read from
+│   ├── balance-before.json    # its OCR boxes and geometry sidecar
+│   ├── balance-after.png
+│   ├── balance-after.json
+│   ├── browse-<key>-foreground-lost.png  # when a browse tap leaves the app
+│   ├── browse-<key>-foreground-lost.json # its OCR evidence, before recovery
+│   └── failure.png            # best-effort, failed runs only
+└── failures/
+    └── <key>-attempt-<n>-<UTC timestamp>/
+        ├── attempt.json       # failure/abort code, verification, taps/keys/swipes
+        └── frame-000.jpg ...  # pinned pre-action frame, last 30 s, three aftermath frames
 ```
+
+A successful or skipped task writes nothing under `failures/`: the rolling buffer is discarded. A
+failed attempt keeps its own directory, so two failures of the same task in one run leave two
+artifacts instead of overwriting one name. Frames are JPEG-encoded because encoding happens on the
+capture path; reviewed 1200x2000 fixtures measured about 3 ms as JPEG versus about 48-61 ms as PNG
+on the development machine. The buffer keeps the last 30 s, capped at 120 frames and 4 MiB per
+attempt, with the pre-attempt and last pre-action frames pinned so a long attempt does not lose the
+tap. A failure adds three aftermath frames at about 2.5 fps. The worst case is about 4 MiB per
+attempt plus the pinned frames, roughly 48 MiB for a 12-attempt run and about 1.4 GiB across 30
+retained runs. A run-level abort or operator stop writes the buffer already collected, with the
+abort/stop code, and does not spend aftermath frames. The normal run retention
+(`AECOINS_KEEP_RUNS`, default 30) removes those directories with the rest of the run.
 
 `AECOINS_RUNS_DIR` overrides the root. In the container it is `/app/runs`, backed by the named
 volume `aliexpress-coins_runs`; `AECOINS_STATE_DIR` is `/app/state`, backed by
@@ -554,6 +570,7 @@ gate in #41.
 | **Popups closed** | verified dismissals by family, or `none` |
 | **Back on coins page** | whether the cleanup route proved the coin page |
 | **Detail / Failure / Abort / Run error** | the terminal sentence and the named failure, when present |
+| **Failure recordings** | one row per recorded attempt, naming its artifact directory and frame count |
 
 ### A good night
 
@@ -585,6 +602,11 @@ names the screen. `Skipped` lists rows that were never dispatched and groups
 them by `reason`: `policy` (deny list), `no executor`, `no action`, `daily limit`, `run budget`,
 `blacklisted after N attempts`, `stopped` or `not selected`.
 
+When a task fails, a `## Failure recordings` table follows the task table with one row per recorded
+attempt: the task, attempt number, failure code, frame count and the artifact directory under
+`failures/`. A run-level abort or operator stop also flushes the frames already collected. A run
+with no recorded failure has no such section and no recording paths.
+
 ### A budget-exhausted night
 
 A budget stop is a **clean end**, not an error:
@@ -607,17 +629,18 @@ Raise a limit only deliberately; a larger budget is not a fix for a slow network
 
 ### `run.json`
 
-`run.json` is the same report plus every field a script may need. Schema `5`. The important keys:
+`run.json` is the same report plus every field a script may need. Schema `6`. The important keys:
 
 | key | meaning |
 |---|---|
-| `schema` | report schema; `5` is this build |
+| `schema` | report schema; `6` is this build |
 | `run_id`, `status`, `detail` | identity and terminal sentence |
 | `started_at`, `finished_at`, `budget` | wall-clock evidence |
 | `hygiene`, `geometry` | what the device said before the first capture |
 | `surface`, `roster`, `route_error`, `observations` | what the roster looked like |
 | `balance_before`, `balance_after`, `balance_delta`, `balance_note` | the two recorded frames, or why one is unknown |
 | `popups_closed`, `shots`, `artifact_errors` | artifacts and best-effort write failures |
+| `failure_recordings` | one entry per recorded attempt: task/key/attempt, failure or abort code, artifact directory, frame and sidecar paths |
 | `notification` | attempted, sink, ok and a class-plus-status error |
 | `plan`, `plan_note` | the dry-run plan, when there was one; `plan.probe_failed` distinguishes an unreadable probe from evidence about the day, and `stable_waits` / `content_waits` / `roster_waits` record settling, row re-reads and row-set confirmation |
 | `abort` | safety code, reason and the screen that triggered it |
@@ -714,7 +737,7 @@ swipe or page press. A result that may already have acted is reported, never rep
 | `app_logged_out` | The app shows a sign-in prompt instead of the account surface. | Sign in on the tablet; confirm the Account tab loads; `adb shell dumpsys window` for the focused app; run again. The run stops at the first detection. | none |
 | `navigation_failed` | The route did not reach the screen it promised; a live run records a fallback and may continue from the inline surface, while a dry run has no fallback and exits non-zero with a `surface_*` detail. When rows were legible but the surface was unrecognised, the detail is `surface_unverified` and the rows stay in `steps` as evidence. | Read `Route fallback` and `route_error`; for a dry run, read the `surface_*` detail and `plan.probe_failed`, then retry once the page settles; start the app normally, settle ~10 s, then send the shortcut intent; check for the empty `Coins boost` page and an app update that changed labels. | none |
 | `popup_unclosable` | A popup had no safe dismissal: no known label, no template match and no calibration for this profile. | Open the failure frame in `shots/`; note the app version and the `doctor` profile id; update the popup corpus (#11) or the profile calibration (#42). Never tap a guessed coordinate. | none |
-| `task_unverified` | The task did not prove completion on screen. | Read the task row's `code`, `outcome`, `verification` and `detail`; inspect `run.jsonl`; check `tasks[i].result.acted`. A task that acted is not retried, so verify by hand before the next night. | task ×1 |
+| `task_unverified` | The task did not prove completion on screen. | Read the task row's `code`, `outcome`, `verification` and `detail`; open the attempt directory named in `failure_recordings` (or the summary's `Failure recordings` row) and watch the frames around the tap; inspect `run.jsonl`; check `tasks[i].result.acted`. A task that acted is not retried, so verify by hand before the next night. | task ×1 |
 | `unexpected_screen` | The same unrecognised or dead screen was seen three times in a row. Inside a task that fails the task and the run tries three shortcut entries back to the coins page; the run aborts only when that recovery fails. | Read `tasks[i].result.payload.screen` for a task-scoped failure, or `abort.screen` labels and fingerprint when the run aborted; check for an app update, a new popup or a hybrid page that did not render; capture a fixture for #11. | none |
 | `dangerous_control` | A short buy/checkout/cart/redeem action caption (for example `Buy now`, `Add to cart` or `Place order`) appeared while a task was running; the run aborted before tapping it. | Read `abort.screen`; do not tap it; confirm no purchase or redemption happened; check whether the app changed a row or layout; file an issue with the redacted frame and the label that triggered it. | none |
 | `balance_decreased` | The coin balance is lower than the baseline recorded before the first task. | Compare `shots/balance-before.*` and `shots/balance-after.*`; check account activity and orders; something acted outside the policy or a human used the tablet. Do not rerun until the cause is known. | none |

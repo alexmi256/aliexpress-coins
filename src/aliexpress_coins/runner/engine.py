@@ -67,8 +67,15 @@ from aliexpress_coins.runner.failures import (
 )
 from aliexpress_coins.runner.levels import SKIPPED_ROW_LOG_LEVEL, run_log_level, task_log_level
 from aliexpress_coins.runner.notify import Notification, NotificationSink, build_notifier
+from aliexpress_coins.runner.recording import FailureRecorder
 from aliexpress_coins.runner.report import RunEventLog, RunReport, RunStatus, TaskRecord, prune_runs
-from aliexpress_coins.runner.safety import UNEXPECTED_SCREEN_LIMIT, AbortCode, RunAborted, SafetyGuard
+from aliexpress_coins.runner.safety import (
+    UNEXPECTED_SCREEN_LIMIT,
+    AbortCode,
+    RunAborted,
+    SafetyGuard,
+    unwrap_capture,
+)
 from aliexpress_coins.runner.state import DailyStateStore, NightOutcome, NightRecord
 from aliexpress_coins.tasks.browse import return_to_coins_page, run_browse_task
 from aliexpress_coins.tasks.catalogue import AllowedTaskSpec, TaskCatalogue, TaskCategory, load_task_catalogue
@@ -444,6 +451,13 @@ def run_once(
     blacklist: dict[str, int] = {}
     task_started: float | None = None
     artifacts = ArtifactStore(report.runs_dir, report.run_id)
+    recorder = FailureRecorder(
+        report,
+        clock=context.clock,
+        sleep=context.sleep,
+        wall_clock=context.wall_clock,
+        logger=log,
+    )
     record_dismissal = _popup_recorder(report)
     if context.record_round_grid is None:
 
@@ -462,7 +476,7 @@ def run_once(
 
         context.record_foreground_loss = record_foreground_loss
     event_log = RunEventLog(report.event_log_path)
-    raw_capture = context.capture
+    raw_capture = unwrap_capture(context.capture)
     log.addHandler(event_log)
     try:
         event_log.record(
@@ -472,9 +486,25 @@ def run_once(
         log.warning('%s', _event('run_log_failed', detail=f'{type(exc).__name__}: {exc}'))
 
     safety = context.safety if context.safety is not None else SafetyGuard(catalogue=context.catalogue)
-    if context.safety is None:
-        context.safety = safety
-        context.capture = safety.wrap(context.capture)
+    context.safety = safety
+    context.capture = safety.wrap(recorder.wrap(raw_capture))
+
+    def attach_action_hook(current: object) -> None:
+        setter = getattr(current, 'set_action_hook', None)
+        if callable(setter):
+            setter(recorder.pin_action)
+
+    if context.controller is not None:
+        attach_action_hook(context.controller)
+    if context.controller_factory is not None:
+        factory = context.controller_factory
+
+        def controller_factory(frame: Snapshot) -> Controller:
+            created = factory(frame)
+            attach_action_hook(created)
+            return created
+
+        context.controller_factory = controller_factory
     gate = context.gate if context.gate is not None else DispatchGate(context.catalogue, logger=log)
     context.gate = gate
 
@@ -673,6 +703,7 @@ def run_once(
                     controller,
                     entry,
                     on_attempt=note_attempt,
+                    recorder=recorder,
                 )
                 made = attempts.get(identity, 0) - attempts_before
                 duration = max(0.0, context.clock() - task_started)
@@ -1575,6 +1606,7 @@ def _dispatch_with_retry(
     entry: RosterEntry,
     *,
     on_attempt: Callable[[], None] | None = None,
+    recorder: FailureRecorder | None = None,
 ) -> EngineResult:
     """Dispatch one row once; the outer pass loop owns the task retry.
 
@@ -1603,10 +1635,28 @@ def _dispatch_with_retry(
             payload=refusal.as_dict(),
         )
 
+    if recorder is not None:
+        recorder.begin(
+            key=authorized.key if authorized.key is not None else authorized.title.casefold(),
+            title=authorized.title,
+            category=authorized.spec.category.value if authorized.spec is not None else None,
+        )
+
     if authorized.key is not None and context.state.is_acted_unverified(authorized.key):
-        readable, fresh = _recheck_acted_row(context, controller, authorized)
+        try:
+            readable, fresh = _recheck_acted_row(context, controller, authorized)
+        except RunAborted as exc:
+            _flush_abort_recording(context, recorder, code=exc.code.value, detail=exc.reason)
+            raise
+        except RunInterrupted as exc:
+            _flush_abort_recording(context, recorder, code='stopped', detail=str(exc))
+            raise
+        except BaseException:
+            if recorder is not None:
+                recorder.abandon()
+            raise
         if not readable:
-            return EngineResult(
+            result = EngineResult(
                 outcome='failed',
                 verification='acted_recheck_unavailable',
                 detail=(
@@ -1618,11 +1668,13 @@ def _dispatch_with_retry(
                 failure=failure(FailureCode.TASK_UNVERIFIED, detail='the acted-row re-check was unreadable'),
                 acted=False,
             )
+            _record_attempt_result(context, recorder, result)
+            return result
         if fresh is None:
             # Keep the marker: the row's control may still be present on a
             # partial/stale roster, so a later dispatch must re-check again
             # rather than tap without proof.
-            return EngineResult(
+            result = EngineResult(
                 outcome='skipped',
                 verification='already_done',
                 detail=(
@@ -1632,21 +1684,74 @@ def _dispatch_with_retry(
                 completed=False,
                 payload={'key': authorized.key, 'recheck': 'claimed'},
             )
+            _record_attempt_result(context, recorder, result)
+            return result
         authorized = _authorize(context, fresh)
         log.info('%s', _event('acted_recheck', key=authorized.key, claimable=True))
 
     if on_attempt is not None:
         on_attempt()
-    result = _attempt_dispatch(context, controller, authorized)
+    try:
+        result = _attempt_dispatch(context, controller, authorized)
+    except RunAborted as exc:
+        _flush_abort_recording(context, recorder, code=exc.code.value, detail=exc.reason)
+        raise
+    except RunInterrupted as exc:
+        _flush_abort_recording(context, recorder, code='stopped', detail=str(exc))
+        raise
+    except BaseException:
+        if recorder is not None:
+            recorder.abandon()
+        raise
     # Persist the safety marker before the signed-out guard: if the session
     # expired after the task acted, the next run still needs the re-check.
     _remember_acted_result(context, authorized, result)
+    _record_attempt_result(context, recorder, result)
     if not result.completed:
         # A failed task is the first place a session that expired mid-walk is
         # visible. Detect it before the next pass, so a signed-out app stops
         # the run instead of producing more task failures.
         _guard_signed_in(context, _capture(context.capture))
     return result
+
+
+def _record_attempt_result(context: RunContext, recorder: FailureRecorder | None, result: EngineResult) -> None:
+    """Let the recorder discard a success/skip or write one failed attempt's artifact."""
+    if recorder is None:
+        return
+    window = context.safety.recovering() if result.outcome == 'failed' and context.safety is not None else nullcontext()
+    with window:
+        recorder.finish(
+            outcome=result.outcome,
+            verification=result.verification,
+            detail=result.detail,
+            completed=result.completed,
+            failure_code=None if result.failure is None else result.failure.code.value,
+            payload=result.payload,
+        )
+
+
+def _flush_abort_recording(
+    context: RunContext,
+    recorder: FailureRecorder | None,
+    *,
+    code: str,
+    detail: str,
+) -> None:
+    """Write the frames already buffered when a run-level abort or stop arrives."""
+    if recorder is None:
+        return
+    window = context.safety.recovering() if context.safety is not None else nullcontext()
+    with window:
+        recorder.finish(
+            outcome='failed',
+            verification=code,
+            detail=detail,
+            completed=False,
+            failure_code=code,
+            payload={'abort': {'code': code, 'reason': detail}},
+            aftermath=False,
+        )
 
 
 def _recheck_acted_row(

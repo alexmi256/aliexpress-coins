@@ -30,7 +30,7 @@ loop wrapped in safety guards, daily state, and structured reporting.
 | perception | `perception/{capture,ocr,snapshot,geometry,layout,matching,templates,state,waits,scroll,artifacts,errors}.py` | screencap, RapidOCR, frame geometry profiles, row grouping, fuzzy matching, scaled templates, screen classification, waits, search-scrolling, artifact sidecars |
 | control | `control/{device,controller,popups,errors}.py` | typed adb input (`AdbInputDevice`), clamped/jittered/dry-run `Controller`, layered popup dismissal (`PopupDismisser`, `specs/popups.yaml`) |
 | tasks | `tasks/{catalogue,dispatch,surface,discovery,signin,browse,search,quiz,quiz_bank,surprise,notifications,errors}.py` | Pydantic task policy (`specs/tasks.yaml`), sealed `DispatchGate`, surface routing & roster observation, and the six task executors + `data/quiz_bank.json` |
-| runner | `runner/{config,device,engine,safety,failures,state,lock,report,notify,levels,schedule,timezone,errors}.py` | env config, device hygiene & routes (`AdbDevice`), nightly walk (`engine`), `SafetyGuard`, failure taxonomy, atomic daily state, exclusive `run.lock`, reports, notifications, scheduler, timezone check |
+| runner | `runner/{config,device,engine,safety,failures,state,lock,report,notify,recording,levels,schedule,timezone,errors}.py` | env config, device hygiene & routes (`AdbDevice`), nightly walk (`engine`), `SafetyGuard`, failure taxonomy, atomic daily state, exclusive `run.lock`, reports, per-attempt failure recordings, notifications, scheduler, timezone check |
 | entry & tools | `cli.py`, `doctor.py`, `tools/capture_frames.py` | `version`, `doctor`, `idle`, `run` (`--once` / `--schedule`, `--dry-run`); developer fixture capture |
 
 Runtime specs and data live beside the package: `specs/` (`tasks.yaml`, `popups.yaml`, `flows.yaml`),
@@ -56,7 +56,8 @@ autouse guards in `tests/conftest.py` that forbid real sockets and process spawn
    progress badge, completed control, or row gone from a complete surface).
 6. **Atomic state, exclusive lock, always-written report:** `state/daily-<date>.json` writes
    atomically, `state/run.lock` serialises runs sharing a state dir, and `runs/<UTC timestamp>/`
-   (`summary.md`, `run.json`, `run.jsonl`, `roster.jsonl`, `shots/`) is written on every path.
+   (`summary.md`, `run.json`, `run.jsonl`, `roster.jsonl`, `shots/`, `failures/`) is written on
+   every path.
 
 ## Data flow of one night
 
@@ -67,7 +68,8 @@ acquire run.lock → timezone check → hygiene (wake, keyguard check, portrait 
   → open Coins boost ("Earn more"; warm re-entry if empty_boost) → enumerate roster
   → claim daily sign-ins (streak Collect + boost Daily check-in)
   → select next row by category cost/key/title → DispatchGate → budget/daily-limit check
-  → executor → verify → roster diff
+  → executor (failure frames observed inside the safety seam) → verify → roster diff
+  → failed/aborted attempt? write failures/<key>-attempt-<n>-<timestamp>/ (pinned frames + sidecar)
   → return to coins page → read balance-after → restore device settings
   → write run.json + summary.md → prune old runs → notify → release run.lock
 ```

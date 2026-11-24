@@ -62,7 +62,10 @@ __all__ = [
     'SafetyGuard',
     'ScreenReport',
     'find_dangerous_controls',
+    'unwrap_capture',
 ]
+
+_SAFETY_SOURCE_ATTRIBUTE = '_aliexpress_coins_safety_source'
 
 UNEXPECTED_SCREEN_LIMIT = 3
 """How many identical unexpected frames in a row abort the run."""
@@ -287,6 +290,7 @@ class SafetyGuard:
             snapshot = source() if callable(source) else source.capture()
             return self.inspect(snapshot)
 
+        setattr(capture, _SAFETY_SOURCE_ATTRIBUTE, source)
         return capture
 
     def inspect(self, snapshot: Snapshot) -> Snapshot:
@@ -354,6 +358,23 @@ class SafetyGuard:
     def _reset_streak(self) -> None:
         self._streak_fingerprint = None
         self._streak = 0
+
+
+def unwrap_capture(
+    source: CaptureSource | Callable[[], Snapshot],
+) -> CaptureSource | Callable[[], Snapshot]:
+    """Return the raw capture below any number of safety wrappers.
+
+    The engine rebuilds the live chain as ``safety.wrap(recorder.wrap(raw))``.
+    A caller may already have supplied a safety-wrapped capture, and reusing a
+    context leaves the previous run's wrapper in place; stripping every marked
+    layer prevents the same frame from being inspected twice.
+    """
+    while True:
+        inner = getattr(source, _SAFETY_SOURCE_ATTRIBUTE, None)
+        if inner is None:
+            return source
+        source = inner
 
 
 def find_dangerous_controls(

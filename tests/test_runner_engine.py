@@ -5403,7 +5403,8 @@ def test_an_unverified_task_is_retried_once_and_the_second_result_stands(
     report = engine.run_once(context)
 
     assert len(attempts) == 2
-    assert clock.value == 1.0
+    # 1.2s of aftermath capture (3 frames x 0.4s) plus the taxonomy's 1s retry pause.
+    assert clock.value == 2.2
     assert report.passes == 2
     assert [task.completed for task in report.tasks] == [False, True]
     assert report.tasks[1].code is None
@@ -7273,3 +7274,468 @@ def test_successful_repeatable_attempts_do_not_count_towards_the_failure_blackli
     )
     assert context.state.count('sponsored_items') == 3
     assert context.state.snapshot().completed_night is False
+
+
+def test_a_failed_task_records_the_tap_sequence_and_both_reports_reference_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    frame = _boost_frame('coins_quiz')
+    _surface(monkeypatch, roster, frame)
+    clock = _Clock()
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+        clock=clock,
+    )
+
+    def dispatch(current: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        for _ in range(3):
+            engine._capture(current.capture)
+            clock.sleep(0.4)
+        return EngineResult(
+            'failed',
+            'no_change',
+            'the quiz question never replaced the row',
+            False,
+            {'taps': [{'label': 'GO', 'point': [982, 1273], 'reason': 'start the quiz'}]},
+            failure=failure(FailureCode.TASK_UNVERIFIED, detail='the row did not move'),
+            acted=True,
+        )
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.COMPLETED
+    assert report.tasks[0].code == FailureCode.TASK_UNVERIFIED.value
+    assert len(report.failure_recordings) == 1
+    recording = report.failure_recordings[0]
+    assert recording['key'] == 'coins_quiz'
+    assert recording['attempt'] == 1
+    assert '-attempt-1-' in recording['directory']
+    assert recording['frames']
+    for frame_path in recording['frames']:
+        assert (report.run_dir / frame_path).is_file()
+    sidecar = json.loads((report.run_dir / recording['sidecar']).read_text(encoding='utf-8'))
+    assert sidecar['failure']['code'] == FailureCode.TASK_UNVERIFIED.value
+    assert sidecar['failure']['verification'] == 'no_change'
+    assert sidecar['tap'] == [982, 1273]
+    assert sidecar['action']['taps'][0]['reason'] == 'start the quiz'
+
+    payload = json.loads(report.json_path.read_text(encoding='utf-8'))
+    summary = report.summary_path.read_text(encoding='utf-8')
+    assert payload['failure_recordings'] == report.failure_recordings
+    assert recording['directory'] in summary
+    assert '| Take the coins quiz | 1 | task_unverified |' in summary
+
+
+def test_two_failures_of_one_task_in_one_run_produce_two_distinct_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    frame = _boost_frame('coins_quiz')
+    _surface(monkeypatch, roster, frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    attempts: list[int] = []
+
+    def dispatch(current: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        attempts.append(len(attempts) + 1)
+        engine._capture(current.capture)
+        return EngineResult(
+            'failed',
+            'no_change',
+            'the row did not move',
+            False,
+            {'key': entry.key},
+            failure=failure(FailureCode.TASK_UNVERIFIED, detail='the row did not move'),
+        )
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert attempts == [1, 2]
+    assert len(report.failure_recordings) == 2
+    assert [recording['attempt'] for recording in report.failure_recordings] == [1, 2]
+    directories = [recording['directory'] for recording in report.failure_recordings]
+    assert directories[0] != directories[1]
+    assert '-attempt-1-' in directories[0]
+    assert '-attempt-2-' in directories[1]
+    for recording in report.failure_recordings:
+        assert recording['frames']
+        assert (report.run_dir / recording['sidecar']).is_file()
+    summary = report.summary_path.read_text(encoding='utf-8')
+    assert directories[0] in summary
+    assert directories[1] in summary
+
+
+def test_a_failed_failure_capture_degrades_to_a_warning_and_the_task_still_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class _ToggleCapture:
+        def __init__(self, frame: Snapshot) -> None:
+            self.frames = (frame,)
+            self.frame = frame
+            self.fail_calls = 0
+
+        def capture(self) -> Snapshot:
+            if self.fail_calls > 0:
+                self.fail_calls -= 1
+                raise SnapshotError('screencap died during the aftermath')
+            return self.frame
+
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    frame = _boost_frame('coins_quiz')
+    _surface(monkeypatch, roster, frame)
+    source = _ToggleCapture(frame)
+    context = _context(
+        tmp_path,
+        capture=cast(Any, source),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    caplog.set_level(logging.WARNING)
+
+    def dispatch(current: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        engine._capture(current.capture)
+        source.fail_calls = 3
+        return EngineResult(
+            'failed',
+            'no_change',
+            'the row did not move',
+            False,
+            {'key': entry.key},
+            failure=failure(FailureCode.TASK_UNVERIFIED, detail='the row did not move'),
+            acted=True,
+        )
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.COMPLETED
+    assert report.ok is True
+    assert report.tasks[0].code == FailureCode.TASK_UNVERIFIED.value
+    assert len(report.failure_recordings) == 1
+    assert report.failure_recordings[0]['frames']
+    assert 'failure_recording_capture_failed' in caplog.text
+    assert report.artifact_errors == []
+
+
+def test_a_failed_task_whose_aftermath_is_empty_boost_does_not_abort_the_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    class _SwapCapture:
+        def __init__(self, frame: Snapshot, aftermath: Snapshot) -> None:
+            self.frames = (frame,)
+            self.frame = frame
+            self.aftermath = aftermath
+            self.empty_remaining = 0
+
+        def capture(self) -> Snapshot:
+            if self.empty_remaining > 0:
+                self.empty_remaining -= 1
+                return self.aftermath
+            return self.frame
+
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    frame = _boost_frame('coins_quiz')
+    _surface(monkeypatch, roster, frame)
+    source = _SwapCapture(frame, _empty_boost_frame())
+    context = _context(
+        tmp_path,
+        capture=cast(Any, source),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        source.empty_remaining = 3
+        return EngineResult(
+            'failed',
+            'no_change',
+            'the row did not move',
+            False,
+            {'key': entry.key},
+            failure=failure(FailureCode.TASK_UNVERIFIED, detail='the row did not move'),
+            acted=True,
+        )
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.COMPLETED
+    assert report.abort is None
+    assert report.tasks[0].outcome == 'failed'
+    assert len(report.failure_recordings) == 1
+    assert report.failure_recordings[0]['frames']
+    assert (report.run_dir / report.failure_recordings[0]['sidecar']).is_file()
+
+
+@pytest.mark.parametrize('injected_safety', [False, True])
+def test_a_dangerous_control_abort_flushes_the_buffered_frames(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    injected_safety: bool,
+) -> None:
+    class _TriggerCapture:
+        def __init__(self, frame: Snapshot) -> None:
+            self.frames = (frame,)
+            self.frame = frame
+
+        def capture(self) -> Snapshot:
+            return self.frame
+
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    frame = _boost_frame('coins_quiz')
+    _surface(monkeypatch, roster, frame)
+    source = _TriggerCapture(frame)
+    context = _context(
+        tmp_path,
+        capture=cast(Any, source),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    if injected_safety:
+        context.safety = SafetyGuard(catalogue=catalogue)
+
+    def dispatch(current: RunContext, _controller: Controller, _entry: RosterEntry) -> EngineResult:
+        source.frame = _snapshot(_box('Wireless Earbuds', 60, 300, 600, 350), _box('Buy now', 400, 1800, 700, 1860))
+        engine._capture(current.capture)
+        raise AssertionError('the safety guard must abort before this returns')
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.ABORTED
+    assert report.abort is not None
+    assert report.abort['code'] == AbortCode.DANGEROUS_CONTROL.value
+    assert len(report.failure_recordings) == 1
+    recording = report.failure_recordings[0]
+    assert recording['failure_code'] == AbortCode.DANGEROUS_CONTROL.value
+    assert recording['frames']
+    sidecar = json.loads((report.run_dir / recording['sidecar']).read_text(encoding='utf-8'))
+    assert sidecar['failure']['code'] == AbortCode.DANGEROUS_CONTROL.value
+    assert sidecar['frames']
+    assert sidecar['frames'][-1]['file'].startswith('frame-')
+
+
+def test_a_stop_during_a_task_flushes_the_buffered_frames_without_an_aftermath(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    frame = _boost_frame('coins_quiz')
+    _surface(monkeypatch, roster, frame)
+    clock = _Clock()
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+        clock=clock,
+    )
+
+    def dispatch(current: RunContext, _controller: Controller, _entry: RosterEntry) -> EngineResult:
+        engine._capture(current.capture)
+        raise RunInterrupted('stop requested')
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.STOPPED
+    assert len(report.failure_recordings) == 1
+    recording = report.failure_recordings[0]
+    assert recording['failure_code'] == 'stopped'
+    sidecar = json.loads((report.run_dir / recording['sidecar']).read_text(encoding='utf-8'))
+    assert sidecar['failure']['code'] == 'stopped'
+    assert sidecar['frames']
+
+
+def test_run_once_attaches_the_action_hook_to_factory_created_controllers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    frame = _boost_frame('coins_quiz')
+    _surface(monkeypatch, roster, frame)
+    frames = [replace(_coin_frame(), captured_at=CAPTURED_AT + timedelta(seconds=index)) for index in range(12)]
+    clock = _Clock()
+    context = _context(
+        tmp_path,
+        capture=_Capture(*frames),
+        catalogue=catalogue,
+        corpus=corpus,
+        clock=clock,
+    )
+    context.controller = None
+    created: list[Controller] = []
+
+    def factory(snapshot: Snapshot) -> Controller:
+        controller = Controller.from_frame(_RecordingDevice(), snapshot, rng=random.Random(0))
+        created.append(controller)
+        return controller
+
+    context.controller_factory = factory
+    tapped: list[Snapshot] = []
+
+    def dispatch(current: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        tapped.append(engine._capture(current.capture))
+        assert current.controller is not None
+        current.controller.tap((600, 1000), why='tap from the factory controller')
+        clock.value += 100.0
+        engine._capture(current.capture)
+        clock.value += 1.0
+        engine._capture(current.capture)
+        return EngineResult(
+            'failed',
+            'no_change',
+            'the row did not move',
+            False,
+            {'key': entry.key, 'taps': [{'point': [600, 1000]}]},
+            failure=failure(FailureCode.TASK_UNVERIFIED, detail='the row did not move'),
+            acted=True,
+        )
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert len(created) == 1
+    assert len(report.failure_recordings) == 1
+    sidecar = json.loads((report.run_dir / report.failure_recordings[0]['sidecar']).read_text(encoding='utf-8'))
+    captured = [entry['captured_at'] for entry in sidecar['frames']]
+    assert tapped[0].captured_at.isoformat() in captured
+
+
+@pytest.mark.parametrize(
+    ('error', 'expected_status', 'expected_code'),
+    [
+        (RunInterrupted('stop requested'), RunStatus.STOPPED, 'stopped'),
+        (_safety_abort(AbortCode.DANGEROUS_CONTROL), RunStatus.ABORTED, AbortCode.DANGEROUS_CONTROL.value),
+    ],
+)
+def test_an_abort_or_stop_during_the_acted_recheck_flushes_the_buffer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    error: Exception,
+    expected_status: RunStatus,
+    expected_code: str,
+) -> None:
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    frame = _boost_frame('coins_quiz')
+    _surface(monkeypatch, roster, frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.state.mark_acted_unverified('coins_quiz')
+
+    def recheck(current: RunContext, _controller: Controller, _entry: RosterEntry) -> tuple[bool, RosterEntry | None]:
+        engine._capture(current.capture)
+        raise error
+
+    monkeypatch.setattr(engine, '_recheck_acted_row', recheck)
+
+    report = engine.run_once(context)
+
+    assert report.status is expected_status
+    assert len(report.failure_recordings) == 1
+    recording = report.failure_recordings[0]
+    assert recording['failure_code'] == expected_code
+    sidecar = json.loads((report.run_dir / recording['sidecar']).read_text(encoding='utf-8'))
+    assert sidecar['failure']['code'] == expected_code
+    assert sidecar['frames']
+
+
+def test_a_prewrapped_capture_with_an_injected_guard_is_not_inspected_twice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    class _TriggerCapture:
+        def __init__(self, frame: Snapshot) -> None:
+            self.frames = (frame,)
+            self.frame = frame
+
+        def capture(self) -> Snapshot:
+            return self.frame
+
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    frame = _boost_frame('coins_quiz')
+    _surface(monkeypatch, roster, frame)
+    source = _TriggerCapture(frame)
+    guard = SafetyGuard(catalogue=catalogue)
+    context = _context(
+        tmp_path,
+        capture=cast(Any, source),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.capture = cast(Any, guard.wrap(source))
+    context.safety = guard
+    danger = replace(
+        _snapshot(_box('Wireless Earbuds', 60, 300, 600, 350), _box('Buy now', 400, 1800, 700, 1860)),
+        captured_at=CAPTURED_AT + timedelta(minutes=55),
+    )
+
+    def dispatch(current: RunContext, _controller: Controller, _entry: RosterEntry) -> EngineResult:
+        source.frame = danger
+        engine._capture(current.capture)
+        raise AssertionError('the safety guard must abort before this returns')
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.ABORTED
+    assert report.abort is not None
+    assert report.abort['code'] == AbortCode.DANGEROUS_CONTROL.value
+    assert len(report.failure_recordings) == 1
+    sidecar = json.loads((report.run_dir / report.failure_recordings[0]['sidecar']).read_text(encoding='utf-8'))
+    captured = [entry['captured_at'] for entry in sidecar['frames']]
+    assert danger.captured_at.isoformat() in captured
