@@ -72,11 +72,12 @@ DEFAULT_MAX_PASSES = 4
 """How many full re-enumerated roster sweeps one night may make (issue #123)."""
 
 DEFAULT_MAX_TASK_ATTEMPTS = 2
-"""How many real dispatches of one task a night may spend before blacklisting it.
+"""How many failed attempts of one task a night may spend before blacklisting it.
 
-The taxonomy already retries an unverified task once when it did not act, so two
-attempts is the measured pair: the first dispatch and its safe retry. A task
-that spends both without proof is skipped for the rest of the night.
+A successful dispatch resets that task's failure streak, so repeatable rows are
+bounded by their daily ``max_per_run`` rather than by this blacklist limit. A
+task that keeps failing is skipped for the rest of the night after this many
+failures.
 """
 
 DEFAULT_APP_SETTLE_SECONDS = 10.0

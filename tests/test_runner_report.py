@@ -578,5 +578,8 @@ def test_the_retry_loop_bounds_and_attempts_reach_both_report_files(tmp_path: Pa
     assert payload['attempts'] == {'coins_quiz': 2, 'notifications': 1}
     assert payload['blacklist'] == {'coins_quiz': 2}
     assert '**Passes:** 2 of 4' in summary
-    assert '**Attempts per task:** coins_quiz: 2, notifications: 1 (limit 2 per task)' in summary
+    assert (
+        '**Attempts per task:** coins_quiz: 2, notifications: 1 (blacklist after 2 failed attempt(s) per task)'
+        in summary
+    )
     assert '**Blacklist:** coins_quiz: blacklisted after 2 attempt(s)' in summary

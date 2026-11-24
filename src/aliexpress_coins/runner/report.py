@@ -698,7 +698,7 @@ def _attempts_summary(attempts: dict[str, int], limit: int | None) -> str:
     if not attempts:
         return 'none'
     listed = ', '.join(f'{key}: {count}' for key, count in sorted(attempts.items()))
-    return listed if limit is None else f'{listed} (limit {limit} per task)'
+    return listed if limit is None else f'{listed} (blacklist after {limit} failed attempt(s) per task)'
 
 
 def _blacklist_summary(blacklist: dict[str, int]) -> str:

@@ -178,9 +178,10 @@ quiz, surprise items, search and notifications — lives in the executors under
   dispatch; each task also has its own `max_per_run` daily limit in `specs/tasks.yaml`.
 - **Shipped retry bounds:** the outer pass loop retries `task_unverified` after a fresh enumeration,
   and only when the attempt took no action. A row that acted without proof is not repeated within
-  the run. A task that spends `AECOINS_MAX_TASK_ATTEMPTS` is blacklisted for the rest of that local
-  day with its attempt count in `summary.md`; the blacklist is stored in the day-keyed state file and
-  clears on the next day or a real completion. The exact stage/task retry policy is in
+  the run. A task that fails `AECOINS_MAX_TASK_ATTEMPTS` times is blacklisted for the rest of that
+  local day with its failure count in `summary.md`; a verified success resets that failure streak,
+  so a repeatable row is bounded by its daily `max_per_run`. The blacklist is stored in the day-keyed
+  state file and clears on the next day or a real completion. The exact stage/task retry policy is in
   [`src/aliexpress_coins/runner/failures.py`](src/aliexpress_coins/runner/failures.py).
 - **Honest completion:** when a roster walk finishes,
   [`_night_record()`](src/aliexpress_coins/runner/engine.py) leaves `completed_night: false` if a task

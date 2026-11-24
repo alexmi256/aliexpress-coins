@@ -5963,7 +5963,7 @@ def test_a_row_that_vanished_is_dispatched_again_in_a_second_pass(
     assert context.state.snapshot().completed_night is True
     summary = report.summary_path.read_text(encoding='utf-8')
     assert '**Passes:** 2 of 4' in summary
-    assert '**Attempts per task:** coins_quiz: 2 (limit 2 per task)' in summary
+    assert '**Attempts per task:** coins_quiz: 2 (blacklist after 2 failed attempt(s) per task)' in summary
     assert '**Blacklist:** none' in summary
 
 
@@ -6021,7 +6021,10 @@ def test_a_repeatedly_failing_task_is_blacklisted_and_the_rest_of_the_roster_con
     summary = report.summary_path.read_text(encoding='utf-8')
     assert 'blacklisted after 2 attempts' in summary
     assert '**Blacklist:** coins_quiz: blacklisted after 2 attempt(s)' in summary
-    assert '**Attempts per task:** coins_quiz: 2, notifications: 1 (limit 2 per task)' in summary
+    assert (
+        '**Attempts per task:** coins_quiz: 2, notifications: 1 (blacklist after 2 failed attempt(s) per task)'
+        in summary
+    )
 
 
 @pytest.mark.slow
@@ -6661,5 +6664,58 @@ def test_an_abort_after_a_blacklist_still_reports_attempts_and_the_blacklist(
     assert report.attempts == {'coins_quiz': 2, 'notifications': 2}
     assert report.blacklist == {'coins_quiz': 2}
     summary = report.summary_path.read_text(encoding='utf-8')
-    assert '**Attempts per task:** coins_quiz: 2, notifications: 2 (limit 2 per task)' in summary
+    assert (
+        '**Attempts per task:** coins_quiz: 2, notifications: 2 (blacklist after 2 failed attempt(s) per task)'
+        in summary
+    )
     assert '**Blacklist:** coins_quiz: blacklisted after 2 attempt(s)' in summary
+
+
+@pytest.mark.slow
+def test_successful_repeatable_attempts_do_not_count_towards_the_failure_blacklist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    roster = replace(full_roster, entries=(_entry(full_roster, 'sponsored_items'),))
+    frame = _boost_frame('sponsored_items')
+    _surface(monkeypatch, roster, frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, max_passes=5)
+    calls: list[int] = []
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        calls.append(1)
+        if len(calls) <= 3:
+            _context.state.record(entry.key or '')
+            return EngineResult('completed', 'progress_badge', 'a round completed', True, {'key': entry.key})
+        return EngineResult(
+            'failed',
+            'no_change',
+            'the round did not move',
+            False,
+            {'key': entry.key},
+            failure=failure(FailureCode.TASK_UNVERIFIED, detail='the round did not move'),
+        )
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert len(calls) == 5
+    assert report.passes == 5
+    assert [task.completed for task in report.tasks] == [True, True, True, False, False]
+    assert report.attempts == {'sponsored_items': 5}
+    assert report.blacklist == {'sponsored_items': 2}
+    assert any(
+        skip.key == 'sponsored_items' and skip.reason == 'blacklisted after 2 attempts' for skip in report.skipped
+    )
+    assert context.state.count('sponsored_items') == 3
+    assert context.state.snapshot().completed_night is False

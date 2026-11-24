@@ -391,6 +391,7 @@ def run_once(
     blocked: set[str] = set()
     passes = 0
     attempts: dict[str, int] = {}
+    failures: dict[str, int] = {}
     blacklist: dict[str, int] = {}
     task_started: float | None = None
     artifacts = ArtifactStore(report.runs_dir, report.run_id)
@@ -673,7 +674,10 @@ def run_once(
                 if result.completed:
                     # Completion is per-pass: a repeatable row below its daily
                     # limit is offered again on the next sweep. The daily limit
-                    # itself is still state.count() in _next_entry.
+                    # itself is still state.count() in _next_entry. A success
+                    # resets the failure streak; it is not an attempt against
+                    # the blacklist bound.
+                    failures.pop(identity, None)
                     blacklist.pop(identity, None)
                 elif made == 0:
                     # Nothing was tapped and no attempt was spent. Keep the
@@ -681,24 +685,25 @@ def run_once(
                     # later pass; the row's failure remains in the report.
                     blocked.add(identity)
                 elif _needs_another_pass(result):
-                    count = attempts.get(identity, 0)
+                    failed = failures.get(identity, 0) + 1
+                    failures[identity] = failed
                     if result.acted:
                         # #93: an action whose effect is unknown is never repeated
                         # inside the same run. The next day re-checks the fresh row.
                         blocked.add(identity)
-                    elif count >= max_attempts:
+                    elif failed >= max_attempts:
                         blacklist = _blacklist_task(
                             report,
                             context.state,
                             entry,
-                            attempts=count,
+                            attempts=failed,
                             blacklist=blacklist,
                             logger=log,
                         )
                     else:
                         named = result.failure
                         if named is not None and named.retryable:
-                            delay = retry_delay(count - 1)
+                            delay = retry_delay(failed - 1)
                             log.warning(
                                 '%s',
                                 _event(
@@ -707,7 +712,7 @@ def run_once(
                                     scope=named.retry.value,
                                     stage='task',
                                     key=spec.key,
-                                    attempt=count,
+                                    attempt=failed,
                                     delay_seconds=delay,
                                 ),
                             )

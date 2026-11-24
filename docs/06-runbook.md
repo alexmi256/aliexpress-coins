@@ -497,10 +497,12 @@ completed, failed, or a row that vanished between enumeration and dispatch — t
 re-enumerates the surface and continues while something is still dispatchable. An unreadable or
 unknown surface restarts from the shortcut route instead of ending the night. A full pass that
 finds no allowed, unblacklisted work may complete the day. Three bounds keep this finite:
-`AECOINS_MAX_PASSES` (default 4 full sweeps), `AECOINS_MAX_TASK_ATTEMPTS` (default 2 real dispatches
-of one task) and the existing wall-clock/task budgets. A task that spends its attempt budget is
-blacklisted for the remainder of that local day with `reason: blacklisted after N attempts`; the
-rest of the roster continues and the report records the attempts and the blacklist. The blacklist
+`AECOINS_MAX_PASSES` (default 4 full sweeps), `AECOINS_MAX_TASK_ATTEMPTS` (default 2 failed
+attempts of one task) and the existing wall-clock/task budgets. A verified success resets that
+task's failure streak, so repeatable rows continue until their daily `max_per_run`. A task that
+keeps failing is blacklisted for the remainder of that local day with
+`reason: blacklisted after N attempts`; the rest of the roster continues and the report records the
+attempts and the blacklist. The blacklist
 lives in the day-keyed state file, so a new local day starts empty, and a real completion clears the
 entry. A policy refusal is permanent by design and is never counted as a blacklist attempt. Hitting
 the pass bound ends the run as `budget`, never as complete.
