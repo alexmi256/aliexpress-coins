@@ -19,10 +19,11 @@ Three facts keep this executor honest:
   bounded number of genuinely new products fail to move the counter, switches
   once to the whole-task set and records ``rule_path: reset``. When #63 lands,
   the losing branch can be deleted without changing the rest of the executor.
-* **the ledger follows a successful, counter-proven task.** A round counts only
-  when its counter advances to the target during this visit, and completions are
-  written only after the returned row agrees. A failed task therefore cannot
-  consume the day's limit and foreclose its retry.
+* **the ledger follows a successful, attributed, counter-proven task.** A round
+  is recorded only when this visit moves its counter to the target and the
+  returned row agrees. A counter seen before any tile tap, or read from a
+  headerless crop, is not that evidence. A failed task writes no completion and
+  cannot consume the day's limit or foreclose its retry.
 
 The run never taps a purchase control: only a product card, the page's own
 ``Next round``, the overlay, and BACK. Every completion is recorded from a
@@ -88,6 +89,7 @@ __all__ = [
     'DEFAULT_RETURN_ATTEMPTS',
     'DEFAULT_RETURN_INTERVAL',
     'DEFAULT_RETURN_TIMEOUT',
+    'DEFAULT_TILE_TIMEOUT',
     'MAX_INERT_TAPS',
     'MAX_ROUNDS',
     'MAX_TAPS_PER_ROUND',
@@ -137,12 +139,32 @@ DEFAULT_EXIT_TIMEOUT = 10.0
 DEFAULT_INTERVAL = 0.5
 """How often capture is polled while a page is loading or settling."""
 
-DEFAULT_COUNTER_TIMEOUT = 2.0
-"""How long the round pill may take to show the credit after BACK.
+DEFAULT_COUNTER_TIMEOUT = 8.0
+"""How long the round pill may keep changing before its reading is final.
 
-The measured frame already read ``1/3`` one second after BACK, so two seconds
-is generous. The wait is a poll of the counter, never a blind sleep: an inert
-tile ends it at the bound and is reported as an unchanged counter (#100).
+A credit can arrive in more than one increment, and the last increment can land
+after the old fixed two-second dwell. The executor therefore polls until the
+counter value has been quiet for ``_COUNTER_STABLE_HOLD`` (or the target is
+reached), with this deadline as the hard bound. A counter that stops short still
+ends at the bound and is reported as unchanged for the expected-vs-observed
+detail (#100, #115).
+"""
+
+_COUNTER_STABLE_HOLD = 3.0
+"""How long the counter must keep one value before that value is final.
+
+Longer than the old fixed two-second dwell, so an increment that used to arrive
+after that dwell resets the quiet window instead of being missed (#115).
+"""
+
+DEFAULT_TILE_TIMEOUT = 5.0
+"""How long a newly opened or scrolled grid may take to paint product tiles.
+
+The header and counter can arrive before the product cards. An empty first
+read is therefore polled, not treated as proof that the grid has no products
+(#115). The measured gap between the header frame and the painted cards was
+under a second; five seconds leaves room for a slow render without turning a
+genuinely empty grid into a long stall.
 """
 
 DEFAULT_BADGE_TIMEOUT = 2.0
@@ -632,6 +654,19 @@ def read_surprise_counter(
     return _counter_from_boxes(boxes, total)
 
 
+def _read_grid_counter(snapshot: Snapshot) -> CounterState | None:
+    """Read the pill only while the grid header proves it is still on screen.
+
+    A scrolled grid can put a product's bare ``3`` under the fixed pill crop.
+    Accepting that as ``3/3`` once turned a zero-tap scroll into a completed
+    round (#115). The public counter reader remains useful on a pill crop; the
+    executor uses this header-guarded wrapper.
+    """
+    if not is_surprise_grid(snapshot):
+        return None
+    return read_surprise_counter(snapshot)
+
+
 def _counter_ocr() -> OcrEngine:
     """Load the crop reader once; it is only needed on frames full OCR fails."""
     global _DEFAULT_COUNTER_OCR
@@ -650,11 +685,13 @@ def _counter_from_boxes(boxes: Sequence[TextBox], total: int) -> CounterState | 
                 return CounterState(completed=done, total=found_total, box=box)
 
     digits = [box for box in boxes if _BARE_DIGIT.match(unicodedata.normalize('NFKC', box.text))]
-    if digits:
+    if len(digits) == 2:
         digits.sort(key=lambda box: box.center[0])
-        value = int(_BARE_DIGIT.match(unicodedata.normalize('NFKC', digits[0].text)).group('value'))  # type: ignore[union-attr]
-        if 0 <= value <= total:
-            return CounterState(completed=value, total=total, box=digits[0])
+        matches = [_BARE_DIGIT.match(unicodedata.normalize('NFKC', box.text)) for box in digits]
+        if all(match is not None for match in matches):
+            value, found_total = (int(match.group('value')) for match in matches if match is not None)
+            if found_total == total and 0 <= value <= total:
+                return CounterState(completed=value, total=total, box=digits[0])
     return None
 
 
@@ -734,6 +771,7 @@ def run_surprise_task(
     arrival_timeout: float = DEFAULT_ARRIVAL_TIMEOUT,
     exit_timeout: float = DEFAULT_EXIT_TIMEOUT,
     counter_timeout: float = DEFAULT_COUNTER_TIMEOUT,
+    tile_timeout: float = DEFAULT_TILE_TIMEOUT,
     badge_timeout: float = DEFAULT_BADGE_TIMEOUT,
     interval: float = DEFAULT_INTERVAL,
     return_timeout: float = DEFAULT_RETURN_TIMEOUT,
@@ -743,6 +781,7 @@ def run_surprise_task(
     max_rounds: int = MAX_ROUNDS,
     back: Callable[[], None] | None = None,
     scroll: Callable[[Snapshot], bool] | None = None,
+    record_round_grid: Callable[[int, Snapshot], None] | None = None,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     logger: logging.Logger | None = None,
@@ -759,7 +798,9 @@ def run_surprise_task(
     ``back`` and ``scroll`` are injectable seams. When they are omitted, BACK
     goes through :meth:`Controller.press_key` and scrolling through
     :meth:`Controller.swipe`, with a visible back chevron as the fallback for a
-    device that cannot press keys.
+    device that cannot press keys. ``record_round_grid`` receives each round's
+    first frame so a run can retain the image and OCR sidecar behind a tile
+    perception failure.
     """
     log = logger if logger is not None else logging.getLogger(LOGGER_NAME)
     spec = _allowed_spec(entry)
@@ -785,6 +826,8 @@ def run_surprise_task(
         raise ValueError(f'exit_timeout must be positive, got {exit_timeout!r}')
     if counter_timeout <= 0:
         raise ValueError(f'counter_timeout must be positive, got {counter_timeout!r}')
+    if tile_timeout <= 0:
+        raise ValueError(f'tile_timeout must be positive, got {tile_timeout!r}')
     if badge_timeout <= 0:
         raise ValueError(f'badge_timeout must be positive, got {badge_timeout!r}')
     if interval <= 0:
@@ -979,7 +1022,7 @@ def run_surprise_task(
                 sleep=sleep,
                 logger=log,
             )
-        if read_surprise_counter(current) is None:
+        if _read_grid_counter(current) is None:
             return _finish_failed(
                 controller,
                 capture,
@@ -1019,10 +1062,12 @@ def run_surprise_task(
                 arrival_timeout=arrival_timeout,
                 exit_timeout=exit_timeout,
                 counter_timeout=counter_timeout,
+                tile_timeout=tile_timeout,
                 interval=interval,
                 settle=settle,
                 back=back,
                 scroll=scroll,
+                record_round_grid=record_round_grid,
                 clock=clock,
                 sleep=sleep,
                 logger=log,
@@ -1082,7 +1127,7 @@ def run_surprise_task(
                 dismissals.append(dismiss)
             if stop is not None:
                 break
-            if not arrived or read_surprise_counter(current) is None:
+            if not arrived or _read_grid_counter(current) is None:
                 return _finish_failed(
                     controller,
                     capture,
@@ -1279,10 +1324,12 @@ def _run_round(
     arrival_timeout: float,
     exit_timeout: float,
     counter_timeout: float,
+    tile_timeout: float,
     interval: float,
     settle: float,
     back: Callable[[], None] | None,
     scroll: Callable[[Snapshot], bool] | None,
+    record_round_grid: Callable[[int, Snapshot], None] | None,
     clock: Callable[[], float],
     sleep: Callable[[float], None],
     logger: logging.Logger,
@@ -1292,7 +1339,9 @@ def _run_round(
     dismissals: list[DismissReport],
 ) -> tuple[RoundRecord, Snapshot, str | None]:
     """Walk one round until its counter is complete or the round proves stuck."""
-    first = read_surprise_counter(snapshot)
+    if record_round_grid is not None:
+        record_round_grid(index, snapshot)
+    first = _read_grid_counter(snapshot)
     total = first.total if first is not None else 3
     before = first.completed if first is not None else None
     current = snapshot
@@ -1303,6 +1352,7 @@ def _run_round(
     round_taps = 0
     scrolls = 0
     scroll_stable = False
+    mission_seen = False
     items: list[str] = []
     pending_item: str | None = None
     grid_labels = _grid_labels(snapshot)
@@ -1333,7 +1383,19 @@ def _run_round(
             None,
         )
 
+    current = _wait_for_tiles(
+        capture,
+        current,
+        round_tried,
+        timeout=tile_timeout,
+        interval=interval,
+        clock=clock,
+        sleep=sleep,
+    )
+    grid_labels.update(_grid_labels(current))
+
     while True:
+        mission_seen = mission_seen or find_mission_overlay(current) is not None
         current, stop = _dismiss_mission(
             controller,
             capture,
@@ -1351,14 +1413,13 @@ def _run_round(
             detail = 'the reward interstitial appeared before the round completed'
             break
 
-        counter = read_surprise_counter(current)
+        counter = _read_grid_counter(current)
         if counter is not None and counter.complete:
             before = counter.completed
-            detail = (
-                'the round counter was complete but no tile was opened; no completion was proven'
-                if round_taps == 0
-                else 'the round counter advanced to its target'
-            )
+            if round_taps == 0 and not mission_seen:
+                detail = 'the round counter was complete but no tile was opened; no completion was proven'
+            else:
+                detail = 'the round counter advanced to its target'
             break
 
         if round_taps >= MAX_TAPS_PER_ROUND:
@@ -1381,15 +1442,30 @@ def _run_round(
                         swipes.append(swipe)
                     scrolls += 1
                     current = _capture(capture)
+                    current = _wait_for_tiles(
+                        capture,
+                        current,
+                        tracker,
+                        timeout=tile_timeout,
+                        interval=interval,
+                        clock=clock,
+                        sleep=sleep,
+                    )
                     grid_labels.update(_grid_labels(current))
-                    if _grid_signature(current) == before_scroll:
+                    if before_scroll and _grid_signature(current) == before_scroll:
                         scroll_stable = True
                     continue
-            detail = _round_stall_detail(
-                last_miss,
-                total,
-                'no unopened product tile was available and the grid could not be scrolled further',
-            )
+            if not grid_labels and round_taps == 0:
+                detail = (
+                    'the freshly opened grid showed no product tile after the settle; '
+                    'no tile was opened and the counter did not advance'
+                )
+            else:
+                detail = _round_stall_detail(
+                    last_miss,
+                    total,
+                    'no unopened product tile was available and the grid could not be scrolled further',
+                )
             break
 
         taps.append(
@@ -1535,8 +1611,17 @@ def _run_round(
                         swipes.append(swipe)
                     scrolls += 1
                     current = _capture(capture)
+                    current = _wait_for_tiles(
+                        capture,
+                        current,
+                        tracker,
+                        timeout=tile_timeout,
+                        interval=interval,
+                        clock=clock,
+                        sleep=sleep,
+                    )
                     grid_labels.update(_grid_labels(current))
-                    if _grid_signature(current) == before_scroll:
+                    if before_scroll and _grid_signature(current) == before_scroll:
                         scroll_stable = True
                     inert = 0
                     continue
@@ -1567,6 +1652,35 @@ def _next_tile(snapshot: Snapshot, tried: _TriedTiles) -> SurpriseTile | None:
     return None
 
 
+def _wait_for_tiles(
+    capture: CaptureSource,
+    snapshot: Snapshot,
+    tried: _TriedTiles,
+    *,
+    timeout: float,
+    interval: float,
+    clock: Callable[[], float],
+    sleep: Callable[[float], None],
+) -> Snapshot:
+    """Let a newly opened or scrolled grid paint its cards before searching.
+
+    The grid header and round pill are server-rendered before product tiles. A
+    first frame with no tile is therefore inconclusive, not an empty grid. The
+    wait is bounded and returns immediately as soon as an untried card appears.
+    """
+    current = snapshot
+    if _next_tile(current, tried) is not None:
+        return current
+    deadline = clock() + timeout
+    while clock() < deadline:
+        remaining = deadline - clock()
+        sleep(min(interval, max(0.0, remaining)))
+        current = _capture(capture)
+        if _next_tile(current, tried) is not None:
+            break
+    return current
+
+
 def _round_stall_detail(last_miss: tuple[int, int] | None, total: int, fallback: str) -> str:
     """Name an unchanged counter with the expected and observed values.
 
@@ -1589,25 +1703,37 @@ def _read_counter_after_dwell(
     clock: Callable[[], float],
     sleep: Callable[[float], None],
 ) -> tuple[Snapshot, CounterState | None]:
-    """Re-read the round pill until BACK's credit appears or the bound ends.
+    """Poll the round pill until BACK's credit lands and stops moving.
 
-    The first read is the frame that proved the grid returned. When it has not
-    advanced yet, capture is polled instead of trusting that one early read;
-    the measured credit can lag the transition by a frame (#100).
+    The first read is the frame that proved the grid returned. A credit can
+    arrive in more than one increment, and the last increment can land after a
+    fixed dwell, so the value must stay quiet for ``_COUNTER_STABLE_HOLD``
+    before it is final. A target reading returns immediately: no further credit
+    is needed. Reaching the deadline with an unchanged or short counter is still
+    the evidence for ``progress_unchanged`` (#100, #115).
     """
     current = snapshot
-    reading = read_surprise_counter(current)
-    if before is None or (reading is not None and reading.completed > before):
+    reading = _read_grid_counter(current)
+    if before is None:
         return current, reading
     deadline = clock() + timeout
-    while clock() < deadline:
-        remaining = deadline - clock()
-        sleep(min(interval, max(0.0, remaining)))
+    last = reading.completed if reading is not None else None
+    changed_at = clock() if last is not None and last > before else None
+    while True:
+        now = clock()
+        if reading is not None and reading.complete:
+            return current, reading
+        if changed_at is not None and now - changed_at >= _COUNTER_STABLE_HOLD:
+            return current, reading
+        if now >= deadline:
+            return current, reading
+        sleep(min(interval, max(0.0, deadline - now)))
         current = _capture(capture)
-        reading = read_surprise_counter(current)
-        if reading is not None and reading.completed > before:
-            break
-    return current, reading
+        reading = _read_grid_counter(current)
+        value = reading.completed if reading is not None else None
+        if value != last:
+            changed_at = clock() if value is not None and value > before else None
+            last = value
 
 
 def _restore_grid_top(

@@ -211,6 +211,7 @@ class RunContext:
     notifier: NotificationSink | None = None
     gate: DispatchGate | None = None
     safety: SafetyGuard | None = None
+    record_round_grid: Callable[[int, Snapshot], None] | None = None
 
 
 _EXECUTORS: frozenset[TaskCategory] = frozenset(
@@ -362,6 +363,12 @@ def run_once(
     task_started: float | None = None
     artifacts = ArtifactStore(report.runs_dir, report.run_id)
     record_dismissal = _popup_recorder(report)
+    if context.record_round_grid is None:
+
+        def record_round_grid(index: int, frame: Snapshot) -> None:
+            _record_frame(report, artifacts, frame, f'surprise-items-round-{index}-grid', log)
+
+        context.record_round_grid = record_round_grid
     event_log = RunEventLog(report.event_log_path)
     raw_capture = context.capture
     log.addHandler(event_log)
@@ -1037,6 +1044,8 @@ def _dispatch_entry(context: RunContext, controller: Controller, entry: RosterEn
             run_browse_task(controller, context.capture, context.corpus, context.state, entry, **common),
         )
     if category is TaskCategory.ITEM_TAP:
+        if context.record_round_grid is not None:
+            common['record_round_grid'] = context.record_round_grid
         return _from_executor(
             run_surprise_task(controller, context.capture, context.corpus, context.state, entry, **common),
         )

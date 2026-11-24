@@ -1864,6 +1864,35 @@ def test_dispatch_routes_each_category_to_its_executor(
         engine._dispatch_entry(context, controller, _entry(full_roster, 'coins_shortcut'))
 
 
+def test_surprise_dispatch_receives_the_round_grid_recorder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _boost_frame()
+    context = _context(tmp_path, capture=_Capture(frame), catalogue=catalogue, corpus=corpus)
+    assert context.controller is not None
+    recorded: list[tuple[int, Snapshot]] = []
+
+    def recorder(index: int, snapshot: Snapshot) -> None:
+        recorded.append((index, snapshot))
+
+    def executor(*_args: Any, **kwargs: Any) -> _FakeResult:
+        callback = kwargs['record_round_grid']
+        callback(1, frame)
+        return _FakeResult(completed=True)
+
+    context.record_round_grid = recorder
+    monkeypatch.setattr(engine, 'run_surprise_task', executor)
+
+    result = engine._dispatch_entry(context, context.controller, _entry(full_roster, 'surprise_items'))
+
+    assert result.completed is True
+    assert recorded == [(1, frame)]
+
+
 @pytest.mark.parametrize(
     ('outcome', 'verification', 'expected'),
     [
@@ -3811,6 +3840,27 @@ def test_an_artifact_write_failure_is_recorded_but_the_run_still_reads_the_frame
     assert returned is frame
     assert report.shots == {}
     assert report.artifact_errors == ['balance-before: OSError: disk full']
+
+
+def test_run_once_wires_round_grid_frames_into_the_artifact_store(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _boost_header_frame()
+    _surface(monkeypatch, replace(full_roster, entries=()), frame)
+    context = _context(tmp_path, capture=_Capture(frame), catalogue=catalogue, corpus=corpus)
+
+    report = engine.run_once(context)
+
+    assert context.record_round_grid is not None
+    context.record_round_grid(1, frame)
+    name = 'surprise-items-round-1-grid'
+    assert report.shots[name] == f'shots/{name}.png'
+    store = ArtifactStore(report.runs_dir, report.run_id)
+    assert store.load(name).boxes == frame.boxes
 
 
 def test_a_failure_frame_is_skipped_when_one_is_already_recorded(
