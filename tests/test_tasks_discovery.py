@@ -11,6 +11,7 @@ import json
 import logging
 import random
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -30,6 +31,7 @@ from aliexpress_coins.tasks.catalogue import (
     DecisionKind,
     TaskCatalogue,
     TaskCategory,
+    TaskPolicyContext,
     load_task_catalogue,
 )
 from aliexpress_coins.tasks.discovery import (
@@ -56,6 +58,7 @@ from aliexpress_coins.tasks.discovery import (
     read_roster_log,
     wait_for_coin_page,
 )
+from aliexpress_coins.tasks.dispatch import DispatchGate
 from aliexpress_coins.tasks.errors import RosterLogError
 from aliexpress_coins.tasks.surface import Surface, classify_surface, has_task_rows
 
@@ -357,6 +360,27 @@ def test_the_search_row_capture_enumerates_the_card_and_every_task_separately(
     # not part of this row and is not a task row of its own.
     assert '+1' in discounts.row.text
     assert all(tile not in discounts.row.text for tile in ('Merge Boss', 'Play & Earn', 'Prize Land'))
+    assert discounts.policy_context is not None
+    assert discounts.policy_context.title_elements == ('View Super discounts',)
+    assert discounts.policy_context.subtitle_elements == ()
+    assert {'Merge Boss', 'Play & Earn', 'Prize Land'} <= set(discounts.policy_context.neighbouring_elements)
+    # Replay the exact bad parse from #109 through the dispatch gate. The tile
+    # text is still a separate element in this captured frame, so it cannot
+    # become evidence about the row even if a future splitter absorbs it again.
+    tiles = tuple(
+        box.text for box in frames['search_row'].boxes if box.text in {'Merge Boss', 'Play & Earn', 'Prize Land'}
+    )
+    polluted_subtitle = ' '.join(tiles)
+    polluted_context = TaskPolicyContext(
+        title_elements=('View Super discounts',),
+        subtitle_elements=(polluted_subtitle,),
+        neighbouring_elements=tiles,
+    )
+    polluted = replace(discounts, subtitle=polluted_subtitle, policy_context=polluted_context)
+    authorized = DispatchGate(catalogue).authorize(polluted)
+    assert authorized.key == 'super_discounts'
+    assert authorized.category is TaskCategory.BROWSE_WAIT
+    assert authorized.dispatch_target is not None
     assert roster.visible_action_count == 3
     assert roster.unassigned_action_count == 0
     assert roster.incomplete is False

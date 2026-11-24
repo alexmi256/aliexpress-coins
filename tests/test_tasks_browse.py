@@ -43,6 +43,7 @@ from aliexpress_coins.tasks.browse import (
     ChipStatus,
     ChipWait,
     ReturnResult,
+    _merge_dismiss_reports,
     find_collect_control,
     find_task_row,
     find_timer_chip,
@@ -310,6 +311,24 @@ def _boost_frame(
                 *([] if badge is None else [_box(badge, 980, 430, 1080, 470)]),
                 *([] if action is None else [_box(action, 1000, 480, 1080, 530)]),
                 *([] if done_label is None else [_box(done_label, 820, 480, 980, 520)]),
+            ],
+        )
+    return _snapshot(*boxes)
+
+
+def _super_discounts_frame(*, with_row: bool = True) -> Snapshot:
+    """The measured no-badge row shape: title, GO and its own +1 reward."""
+    boxes = [
+        _box('Coins boost', 80, 90, 400, 150),
+        _box('Place an order on this page', 60, 1000, 500, 1050),
+        _box('GO', 1000, 1050, 1080, 1100),
+    ]
+    if with_row:
+        boxes.extend(
+            [
+                _box('View Super discounts', 60, 420, 700, 470),
+                _box('+1', 200, 480, 300, 520),
+                _box('GO', 1000, 480, 1080, 530),
             ],
         )
     return _snapshot(*boxes)
@@ -944,6 +963,130 @@ def test_run_browse_task_completes_and_quotes_the_badge_change(
     assert payload['outcome'] == 'completed'
 
 
+@pytest.mark.slow
+def test_run_super_discounts_dwells_and_verifies_the_plus_one_row_is_gone(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    world = _World(
+        series={
+            'boost': (_super_discounts_frame(),),
+            'destination': (
+                _destination(chip='12s'),
+                _destination(chip='6s'),
+                _destination(chip=None),
+                _destination(chip=None),
+            ),
+            'coins': (_coin_frame(),),
+            'boost_after': (_super_discounts_frame(with_row=False),),
+        },
+        transitions={
+            ('boost', 'go'): 'destination',
+            ('coins', 'earn more'): 'boost_after',
+        },
+    )
+    state = _state(tmp_path)
+    entry = DispatchGate(catalogue).authorize(
+        next(entry for entry in enumerate_roster(world.frame, catalogue).entries if entry.key == 'super_discounts')
+    )
+
+    result = run_browse_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        state,
+        entry,
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        load_timeout=1.0,
+        chip_interval=0.5,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is BrowseOutcome.COMPLETED
+    assert result.verification == 'row_gone'
+    assert result.detail == "'View Super discounts' is gone from the populated boost list"
+    assert result.before is not None
+    assert '+1' in (result.before.row or '')
+    assert result.badge_before is None
+    assert result.badge_after is None
+    assert result.chip is not None
+    assert result.chip.status is ChipStatus.CLEARED
+    assert result.chip.seen is True
+    assert result.wait_seconds == 15.0
+    assert result.chip.elapsed < result.wait_seconds
+    assert result.presses == 1
+    assert result.recorded is True
+    assert result.returned is True
+    assert state.count('super_discounts') == 1
+    assert world.current == 'coins'
+
+
+@pytest.mark.slow
+def test_run_super_discounts_refreshes_a_stale_row_before_declaring_failure(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    reads = 0
+
+    def on_tap(screen: str, label: str | None, _count: int) -> str | None:
+        nonlocal reads
+        if screen == 'coins' and label == 'earn more':
+            reads += 1
+            return 'boost_after' if reads == 1 else 'boost_refreshed'
+        return None
+
+    world = _World(
+        series={
+            'boost': (_super_discounts_frame(),),
+            'destination': (
+                _destination(chip='12s'),
+                _destination(chip='6s'),
+                _destination(chip=None),
+                _destination(chip=None),
+            ),
+            'coins': (_coin_frame(),),
+            'boost_after': (_super_discounts_frame(),),
+            'boost_refreshed': (_super_discounts_frame(with_row=False),),
+        },
+        transitions={('boost', 'go'): 'destination'},
+        on_tap=on_tap,
+    )
+    state = _state(tmp_path)
+    entry = DispatchGate(catalogue).authorize(
+        next(entry for entry in enumerate_roster(world.frame, catalogue).entries if entry.key == 'super_discounts')
+    )
+
+    result = run_browse_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        state,
+        entry,
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        load_timeout=1.0,
+        chip_interval=0.5,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert reads == 2
+    assert result.outcome is BrowseOutcome.COMPLETED
+    assert result.verification == 'row_gone'
+    assert result.recorded is True
+    assert result.returned is True
+    assert state.count('super_discounts') == 1
+    assert world.current == 'coins'
+
+
 def test_run_browse_task_accepts_an_inline_badge_advance_without_reopening(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -1022,7 +1165,8 @@ def test_run_browse_task_fails_when_the_taps_change_nothing(
     assert result.completed is False
     assert result.recorded is False
     assert result.presses == MAX_PRESSES
-    assert len(world.taps) == MAX_PRESSES + 1  # three presses and the verification's Earn more
+    # Three presses plus the first verification's Earn more and one refresh.
+    assert len(world.taps) == MAX_PRESSES + 2
     assert result.badge_before == '0/6'
     assert result.badge_after == '0/6'
     assert result.badge_change == '0/6 -> 0/6'
@@ -1814,6 +1958,109 @@ def test_run_browse_task_fails_when_the_verification_return_fails(
     assert result.recorded is False
 
 
+@pytest.mark.slow
+def test_a_refresh_after_a_stale_row_reports_a_failed_return(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    world = _World(
+        series={
+            'boost': (_boost_frame(),),
+            'destination': (_destination(chip=None), _destination(chip=None)),
+            'coins': (_coin_frame(),),
+            'boost_after': (_boost_frame(),),
+            'wrong': (_wrong_page(),),
+        },
+        transitions={
+            ('boost', 'go'): 'destination',
+            ('coins', 'earn more'): 'boost_after',
+        },
+    )
+
+    def navigate(route: SurfaceRoute) -> None:
+        world.navigations.append(route)
+        if len(world.navigations) == 1:
+            world.go('coins')
+        else:
+            world.go('wrong')
+
+    result = run_browse_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=navigate,
+        arrival_timeout=1.0,
+        load_timeout=1.0,
+        chip_interval=0.5,
+        return_timeout=0.5,
+        return_interval=0.5,
+        clock=_SteppingClock(step=1.0),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is BrowseOutcome.FAILED
+    assert result.verification == 'return_failed'
+    assert result.recorded is False
+
+
+@pytest.mark.slow
+def test_a_timed_out_refresh_cleans_up_from_the_current_screen(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    reads = 0
+
+    def on_tap(screen: str, label: str | None, _count: int) -> str | None:
+        nonlocal reads
+        if screen == 'coins' and label == 'earn more':
+            reads += 1
+            return 'boost_after' if reads == 1 else 'wrong'
+        return None
+
+    world = _World(
+        series={
+            'boost': (_boost_frame(),),
+            'destination': (_destination(chip=None), _destination(chip=None)),
+            'coins': (_coin_frame(),),
+            'boost_after': (_boost_frame(),),
+            'wrong': (_wrong_page(),),
+        },
+        transitions={('boost', 'go'): 'destination'},
+        on_tap=on_tap,
+    )
+
+    def navigate(route: SurfaceRoute) -> None:
+        world.navigations.append(route)
+        world.go('coins' if len(world.navigations) <= 2 else 'wrong')
+
+    result = run_browse_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=navigate,
+        arrival_timeout=1.0,
+        load_timeout=0.5,
+        load_interval=0.5,
+        chip_interval=0.5,
+        return_timeout=0.5,
+        return_interval=0.5,
+        clock=_SteppingClock(step=1.0),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert reads == 2
+    assert result.outcome is BrowseOutcome.FAILED
+    assert result.verification == 'return_failed'
+    assert result.returned is False
+    assert world.current == 'wrong'
+
+
 def test_a_failed_verification_return_keeps_the_first_return_dismissals(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -2056,6 +2303,32 @@ def test_merged_return_keeps_the_earlier_sweeps_dismissals() -> None:
     assert merged.history == ('popup', 'page', 'page')
     assert merged.elapsed == 3.0
     assert [report.closed for report in merged.dismissals] == [('launch_modal',), ('promo_modal',)]
+
+
+def test_merge_dismiss_reports_combines_both_sweeps_and_keeps_either_alone() -> None:
+    first = DismissReport(
+        closed=('first',),
+        attempts=(),
+        frames=(),
+        remaining=False,
+        stop=DismissStop.CLEAR,
+    )
+    second = DismissReport(
+        closed=('second',),
+        attempts=(),
+        frames=(),
+        remaining=True,
+        stop=DismissStop.MAX_ROUNDS,
+    )
+
+    merged = _merge_dismiss_reports(first, second)
+
+    assert merged is not None
+    assert merged.closed == ('first', 'second')
+    assert merged.remaining is True
+    assert merged.stop is DismissStop.MAX_ROUNDS
+    assert _merge_dismiss_reports(first, None) is first
+    assert _merge_dismiss_reports(None, second) is second
 
 
 def test_chip_reading_without_a_box_has_no_target_fields() -> None:

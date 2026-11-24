@@ -3,8 +3,9 @@
 Every task row reaches an executor through :class:`DispatchGate`. The gate does
 exactly four things, in this order:
 
-1. **resolves** the row against the catalogue again (the discovery decision is a
-   candidate, not a licence);
+1. **resolves** the row against the catalogue again, using the OCR-element
+   provenance captured by discovery (the discovery decision is a candidate,
+   not a licence);
 2. **records** the allow/deny decision as a structured event;
 3. **refuses** anything that is not allowed, with a stable code and an audit
    line carrying the label, rule, reason and surface;
@@ -30,6 +31,7 @@ from dataclasses import dataclass, replace
 
 from aliexpress_coins.tasks.catalogue import (
     DEFAULT_DENY_REASON,
+    ContaminatedMatch,
     DecisionKind,
     DispatchAuthorization,
     TaskCatalogue,
@@ -58,6 +60,10 @@ class PolicyRefusal:
     surface: str | None = None
     matched_pattern: str | None = None
     matched_field: str | None = None
+    contaminated: tuple[ContaminatedMatch, ...] = ()
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, 'contaminated', tuple(self.contaminated))
 
     @classmethod
     def from_decision(cls, decision: TaskDecision, *, surface: str | None) -> PolicyRefusal:
@@ -71,6 +77,7 @@ class PolicyRefusal:
             surface=surface,
             matched_pattern=decision.matched_pattern,
             matched_field=decision.matched_field,
+            contaminated=decision.contaminated,
         )
 
     @property
@@ -80,7 +87,7 @@ class PolicyRefusal:
 
     def as_dict(self) -> dict[str, object]:
         """The complete structured event; no executor sees this row."""
-        return {
+        record: dict[str, object] = {
             'event': 'policy_refusal',
             'code': self.code,
             'label': self.label,
@@ -91,6 +98,9 @@ class PolicyRefusal:
             'matched_pattern': self.matched_pattern,
             'matched_field': self.matched_field,
         }
+        if self.contaminated:
+            record['contaminated'] = [match.as_dict() for match in self.contaminated]
+        return record
 
 
 class PolicyRefused(TaskError):
@@ -124,7 +134,7 @@ class DispatchGate:
         decision. That keeps one answer authoritative even if a roster is built
         or mutated between enumeration and dispatch.
         """
-        decision = self.catalogue.decide(entry.title, subtitle=entry.subtitle)
+        decision = self.catalogue.decide(entry.title, subtitle=entry.subtitle, context=entry.policy_context)
         self._sequence += 1
         if decision.decision is not DecisionKind.ALLOW or decision.spec is None:
             refusal = PolicyRefusal.from_decision(decision, surface=self.surface)

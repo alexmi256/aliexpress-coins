@@ -77,6 +77,7 @@ from aliexpress_coins.tasks.catalogue import (
     TaskCatalogue,
     TaskCategory,
     TaskDecision,
+    TaskPolicyContext,
 )
 from aliexpress_coins.tasks.errors import RosterLogError
 from aliexpress_coins.tasks.surface import (
@@ -198,7 +199,9 @@ class RosterEntry:
 
     ``action`` is the row's own control box. ``dispatch_target`` is deliberately
     the only target an executor should read: it is ``None`` for a denied entry,
-    so a refused row cannot be tapped by accident.
+    so a refused row cannot be tapped by accident. ``policy_context`` preserves
+    which OCR elements belong to the row and which belong to its neighbours, so
+    the dispatch gate can repeat the decision without trusting flattened copy.
     """
 
     title: str
@@ -208,6 +211,7 @@ class RosterEntry:
     decision: TaskDecision
     row: Row
     authorization: DispatchAuthorization | None = None
+    policy_context: TaskPolicyContext | None = None
 
     @property
     def allowed(self) -> bool:
@@ -1619,7 +1623,7 @@ def enumerate_roster(
             reported.add((failure.title, failure.container_title))
             split_failures.append(failure)
 
-    streak_entry, streak_rows = _streak_roster_entry(expanded, catalogue, action_labels)
+    streak_entry, streak_rows = _streak_roster_entry(snapshot, expanded, catalogue, action_labels)
     entries: list[RosterEntry] = []
     seen: set[str] = set()
     assigned_actions: set[TextBox] = set()
@@ -1639,7 +1643,8 @@ def enumerate_roster(
         action = find_action_in_row(row, action_labels)
         if action is None:
             continue
-        title, subtitle = _title_and_subtitle(row, action, action_labels)
+        candidates = _title_candidates(row, action, action_labels)
+        title, subtitle = _copy_text(candidates)
         if title is None:
             continue
         identity = normalize(title)
@@ -1647,7 +1652,8 @@ def enumerate_roster(
             continue
         seen.add(identity)
 
-        decision = catalogue.decide(title, subtitle=subtitle)
+        policy_context = _policy_context(snapshot, row, candidates, action=action)
+        decision = catalogue.decide(title, subtitle=subtitle, context=policy_context)
         entries.append(
             RosterEntry(
                 title=title,
@@ -1656,6 +1662,7 @@ def enumerate_roster(
                 progress=find_progress_badge(row),
                 decision=decision,
                 row=row,
+                policy_context=policy_context,
             ),
         )
         if row.text not in unrecovered:
@@ -1927,6 +1934,7 @@ def _split_known_title_row(
 
 
 def _streak_roster_entry(
+    snapshot: Snapshot,
     rows: Sequence[Row],
     catalogue: TaskCatalogue,
     action_labels: Sequence[str],
@@ -1949,13 +1957,22 @@ def _streak_roster_entry(
         if control is None and len(card_rows) == 1 and not any('worth' in normalize(box.text) for box in card.boxes):
             return None, set()
         _, subtitle = _title_and_subtitle(card, control, STREAK_CONTROL_LABELS)
+        candidates = _title_candidates(card, control, STREAK_CONTROL_LABELS)
+        policy_context = _policy_context(
+            snapshot,
+            card,
+            candidates,
+            action=control,
+            title_elements=(STREAK_MARKER,),
+        )
         return RosterEntry(
             title=STREAK_MARKER,
             subtitle=subtitle,
             action=control,
             progress=None,
-            decision=catalogue.decide(STREAK_MARKER, subtitle=subtitle),
+            decision=catalogue.decide(STREAK_MARKER, subtitle=subtitle, context=policy_context),
             row=card,
+            policy_context=policy_context,
         ), consumed
     return None, set()
 
@@ -1999,7 +2016,11 @@ def _title_and_subtitle(
     action: TextBox | None,
     action_labels: Sequence[str],
 ) -> tuple[str | None, str | None]:
-    candidates = _title_candidates(row, action, action_labels)
+    return _copy_text(_title_candidates(row, action, action_labels))
+
+
+def _copy_text(candidates: Sequence[TextBox]) -> tuple[str | None, str | None]:
+    """Flatten title/subtitle candidates only for display and report fields."""
     if not candidates:
         return None, None
 
@@ -2008,6 +2029,37 @@ def _title_and_subtitle(
         return None, None
     subtitle = ' '.join(box.text.strip() for box in candidates[1:] if box.text.strip())
     return title, subtitle or None
+
+
+def _policy_context(
+    snapshot: Snapshot,
+    row: Row,
+    candidates: Sequence[TextBox],
+    *,
+    action: TextBox | None = None,
+    title_elements: tuple[str, ...] | None = None,
+) -> TaskPolicyContext:
+    """Keep row-owned OCR elements separate from the rest of the frame.
+
+    A row's own copy is confined to its action's vertical band. A box that the
+    splitter has not detached yet but that sits outside that band is treated as
+    a neighbouring element too, which is what stops the mini-app strip below a
+    row from becoming the row's subtitle even when the splitter regresses.
+    """
+    owned = {id(box) for box in row.boxes}
+    neighbouring = [box.text for box in snapshot.boxes if id(box) not in owned and box.score >= DEFAULT_MIN_OCR_SCORE]
+    if action is not None:
+        tolerance = row_tolerance(snapshot.boxes, snapshot.geometry)
+        neighbouring.extend(
+            box.text
+            for box in row.boxes
+            if box.score >= DEFAULT_MIN_OCR_SCORE and abs(box.center[1] - action.center[1]) > tolerance
+        )
+    return TaskPolicyContext(
+        title_elements=title_elements if title_elements is not None else ((candidates[0].text,) if candidates else ()),
+        subtitle_elements=tuple(box.text for box in candidates[1:]),
+        neighbouring_elements=tuple(neighbouring),
+    )
 
 
 def _title_candidates(

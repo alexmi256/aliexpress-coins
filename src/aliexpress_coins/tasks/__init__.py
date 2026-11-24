@@ -20,11 +20,13 @@ the surface after a completion and diffs it against the previous observation;
 
 from aliexpress_coins.tasks.catalogue import (
     AllowedTaskSpec,
+    ContaminatedMatch,
     DecisionKind,
     DeniedTaskSpec,
     TaskCatalogue,
     TaskCategory,
     TaskDecision,
+    TaskPolicyContext,
     load_task_catalogue,
 )
 from aliexpress_coins.tasks.discovery import (
@@ -66,6 +68,7 @@ __all__ = [
     'AllowedTaskSpec',
     'BoostList',
     'BoostOpenResult',
+    'ContaminatedMatch',
     'DecisionKind',
     'DeniedTaskSpec',
     'DiscoveryResult',
@@ -88,6 +91,7 @@ __all__ = [
     'TaskCategory',
     'TaskDecision',
     'TaskError',
+    'TaskPolicyContext',
     'classify_surface',
     'diff_rosters',
     'discover_roster',
