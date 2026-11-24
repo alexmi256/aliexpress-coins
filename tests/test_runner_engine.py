@@ -4038,15 +4038,17 @@ def test_run_once_wires_foreground_loss_frames_into_the_artifact_store(
     report = engine.run_once(context)
 
     assert context.record_foreground_loss is not None
+    second_frame = _coin_frame()
+    assert second_frame.boxes != frame.boxes
     context.record_foreground_loss('sponsored_items', frame)
-    context.record_foreground_loss('sponsored_items', frame)
+    context.record_foreground_loss('sponsored_items', second_frame)
     first = 'browse-sponsored_items-foreground-lost'
     second = 'browse-sponsored_items-foreground-lost-2'
     assert report.shots[first] == f'shots/{first}.png'
     assert report.shots[second] == f'shots/{second}.png'
     store = ArtifactStore(report.runs_dir, report.run_id)
     assert store.load(first).boxes == frame.boxes
-    assert store.load(second).boxes == frame.boxes
+    assert store.load(second).boxes == second_frame.boxes
 
 
 def test_a_failure_frame_is_skipped_when_one_is_already_recorded(

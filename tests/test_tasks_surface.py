@@ -218,9 +218,9 @@ def test_the_recorded_launcher_with_icons_is_not_mistaken_for_a_bare_clock_surfa
     assert not is_non_app_surface(frames['launcher'])
 
 
-def test_the_retained_post_tap_ocr_boxes_classify_as_non_app_without_a_frame() -> None:
-    # These are the run's retained OCR labels, not a captured PNG. The
-    # recogniser is therefore not proved against the missing post-tap frame.
+def test_the_retained_post_tap_labels_in_synthetic_boxes_classify_as_non_app() -> None:
+    # Only the labels are retained; the boxes are synthetic, not a captured
+    # PNG. The recogniser is therefore not proved against the missing frame.
     clock_surface = _snapshot(
         _box('3:36', 20, 5, 100, 35),
         _box('0', 1120, 5, 1160, 35),

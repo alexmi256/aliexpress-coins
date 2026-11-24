@@ -1321,10 +1321,15 @@ def run_browse_task(
                         dismissals.append(sweep)
                     current = sweep.frames[-1].snapshot if sweep is not None and sweep.frames else _capture(capture)
 
-        if arrival is not None and arrival.left_app and warm_start is not None:
-            # Screenshot evidence is sufficient to force a warm start. Waiting
-            # for a second package probe could return None and fire a cold deep
-            # link into the documented empty-boost state.
+        if (
+            arrival is not None
+            and warm_start is not None
+            and (arrival.left_app or classify_surface(arrival.snapshot) is Surface.UNKNOWN)
+        ):
+            # Screenshot evidence is sufficient to force a warm start. A probe
+            # that returns None cannot separate an icon launcher from a real
+            # unknown page, so the unknown destination is still accepted, but
+            # the return route must not cold-link into the empty-boost state.
             warm_start()
 
         return_state = return_to_coins_page(

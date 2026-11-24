@@ -1385,6 +1385,61 @@ def test_run_browse_task_recovers_from_the_captured_launcher_after_go(
     assert state.count('sponsored_items') == 1
 
 
+@pytest.mark.slow
+def test_an_unreadable_probe_keeps_an_unknown_launcher_as_destination_but_warms_the_return(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+    launcher: Snapshot,
+) -> None:
+    world = _World(
+        series={
+            'boost': (_boost_frame(),),
+            'launcher': (launcher,),
+            'coins': (_coin_frame(),),
+            'boost_after': (_boost_frame(),),
+        },
+        transitions={
+            ('boost', 'go'): 'launcher',
+            ('coins', 'earn more'): 'boost_after',
+        },
+    )
+    recorded: list[tuple[str, Snapshot]] = []
+    warm_starts: list[bool] = []
+
+    result = run_browse_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        _entry(catalogue),
+        navigate=world.navigate,
+        app_foreground=lambda: None,
+        warm_start=lambda: warm_starts.append(True),
+        record_foreground_loss=lambda key, frame: recorded.append((key, frame)),
+        arrival_timeout=1.0,
+        load_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is BrowseOutcome.FAILED
+    assert result.verification == 'no_change'
+    assert result.arrival is not None
+    assert result.arrival.arrived is True
+    assert result.arrival.left_app is False
+    assert result.arrival.app_foreground is None
+    assert result.chip is not None
+    assert result.chip.status is ChipStatus.ABSENT
+    assert result.returned is True
+    assert warm_starts == [True]
+    assert recorded == []
+    assert world.navigations
+    assert set(world.navigations) == {SurfaceRoute.SHORTCUT}
+
+
 def test_run_browse_task_recognises_the_bare_clock_date_surface_without_a_probe(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,

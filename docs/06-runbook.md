@@ -420,8 +420,11 @@ then reopens the populated boost list for positive verification. `arrival.left_a
 frame's labels are kept in `run.json`. If fresh proof is absent the task remains `task_unverified`;
 it is never called complete from the launcher frame. If foreground loss is detected before `GO`, the
 executor recovers but records `foreground_lost_pre_action` without action-based verification, because
-a missing row after roster rotation is not proof that this task completed. If initial route discovery
-also returns only `non_app`, the run fails as `navigation_failed` instead of declaring an empty night.
+a missing row after roster rotation is not proof that this task completed. If the package probe is
+unreadable on an unknown destination, that page is still accepted as the destination, but the
+executor warm-starts before the return route so an icon launcher cannot cold-link into the empty-boost
+state. If initial route discovery also returns only `non_app`, the run fails as `navigation_failed`
+instead of declaring an empty night.
 
 ---
 
