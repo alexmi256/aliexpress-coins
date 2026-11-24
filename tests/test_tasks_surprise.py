@@ -929,7 +929,7 @@ def test_a_counter_jump_before_any_tile_tap_is_not_a_completed_round(
     )
 
     assert result.outcome is SurpriseOutcome.FAILED
-    assert result.verification == 'counter_stalled'
+    assert result.verification == 'tile_not_opened'
     assert result.round_records[0].complete is False
     assert result.round_records[0].taps == 0
     assert result.round_records[0].counter_change == '0/3 -> 3/3'
@@ -1585,7 +1585,7 @@ def test_run_surprise_task_reports_no_observation_when_no_round_ran(
     result = _run(world, catalogue, corpus, _state(tmp_path), max_rounds=1)
 
     assert result.outcome is SurpriseOutcome.FAILED
-    assert result.verification == 'counter_stalled'
+    assert result.verification == 'tile_not_opened'
     assert result.recorded is False
 
 
@@ -1644,7 +1644,7 @@ def test_issue_115_report_replay_cannot_turn_a_headerless_digit_into_completion(
     )
 
     assert result.outcome is SurpriseOutcome.FAILED
-    assert result.verification == 'counter_stalled'
+    assert result.verification == 'tile_not_opened'
     assert result.round_records[0].complete is False
     assert result.round_records[0].taps == 0
     assert result.round_records[0].scrolls == observed['scrolls']
@@ -1833,6 +1833,33 @@ def test_run_surprise_task_records_a_round_that_was_already_complete(
     assert result.round_records[0].complete is True
     assert result.round_records[0].taps == 0
     assert result.recorded is True
+
+
+def test_run_surprise_task_does_not_record_a_stale_complete_grid_for_a_zero_of_two_row(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    world = _World(
+        series={
+            'boost': (_boost_frame(progress='0/2'),),
+            'grid': (_grid_frame(3),),
+            'coins': (_coins_frame(),),
+        },
+        transitions={('boost', 'GO'): 'grid'},
+    )
+    state = _state(tmp_path)
+
+    result = _run(world, catalogue, corpus, state, max_rounds=1)
+
+    assert result.outcome is SurpriseOutcome.FAILED
+    assert result.verification == 'tile_not_opened'
+    assert result.round_records[0].complete is False
+    assert result.round_records[0].taps == 0
+    assert result.recorded is False
+    assert state.count('surprise_items') == 0
+    assert [tap.label for tap in result.taps] == ['GO']
+    assert 'before the row had any completed round' in result.detail
 
 
 def test_run_surprise_task_fails_when_back_has_no_key_and_no_visible_control(
@@ -2122,6 +2149,7 @@ def test_surprise_private_helpers_cover_the_bounded_paths() -> None:
         'BACK did not return to the grid; no completion was recorded': 'back_not_reached',
         'the reward interstitial appeared while returning from a product': 'redeem_interstitial',
         'no unopened product tile was available and the grid could not be scrolled further': 'counter_stalled',
+        'the round counter reached its target but no tile was opened; no completion was recorded': 'tile_not_opened',
         'something else': 'counter_stalled',
     }
     for detail, expected in cases.items():
@@ -2169,6 +2197,170 @@ def test_surprise_counter_recheck_waits_for_a_late_advance() -> None:
     assert reading is not None
     assert reading.completed == 1
     assert current is world.frame
+
+
+def test_surprise_counter_recheck_waits_for_increments_past_the_old_dwell() -> None:
+    from aliexpress_coins.tasks.surprise import _read_counter_after_dwell
+
+    world = _World(
+        {'frames': (_grid_frame(1), _grid_frame(2), _grid_frame(3))},
+        {},
+        start='frames',
+    )
+    clock = _SleepClock()
+
+    current, reading = _read_counter_after_dwell(
+        world.capture,
+        _grid_frame(0),
+        0,
+        timeout=8.0,
+        interval=1.0,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert reading is not None
+    assert reading.completed == 3
+    assert current is world.current_frame
+    assert clock.value > 2.0
+
+
+def test_surprise_counter_recheck_returns_a_counter_that_stops_short() -> None:
+    from aliexpress_coins.tasks.surprise import _read_counter_after_dwell, _round_stall_detail
+
+    world = _World({'frames': (_grid_frame(1), _grid_frame(2))}, {}, start='frames')
+    clock = _SleepClock()
+
+    current, reading = _read_counter_after_dwell(
+        world.capture,
+        _grid_frame(0),
+        0,
+        timeout=5.0,
+        interval=1.0,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert reading is not None
+    assert reading.completed == 2
+    assert current is world.current_frame
+    assert clock.value >= 5.0
+    assert _round_stall_detail((3, 2), 3, 'unused') == 'progress_unchanged: expected 3/3, saw 2/3'
+
+
+def test_a_staggered_credit_that_passes_the_old_dwell_completes_the_round(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    final = _snapshot(
+        *_coins_frame().boxes,
+        _box(SURPRISE_TITLE, 60, 1200, 700, 1250),
+        _box('1/2', 1000, 1200, 1080, 1250),
+        _box('GO', 1090, 1200, 1160, 1250),
+    )
+    pending: dict[str, str] = {}
+
+    def on_tap(screen: str, label: str | None, _count: int) -> str | None:
+        if screen == 'grid0' and label == 'Product A':
+            pending['return'] = 'after_a'
+            return 'detail'
+        return None
+
+    def on_key(screen: str, key: str, _count: int) -> str | None:
+        if screen == 'detail' and key == 'KEYCODE_BACK':
+            return pending.pop('return')
+        return None
+
+    world = _World(
+        series={
+            'boost': (_boost_frame(progress='0/2'),),
+            'grid0': (_grid_frame(0),),
+            'after_a': (_grid_frame(1), _grid_frame(2), _grid_frame(3)),
+            'detail': (_detail_frame(),),
+            'coins': (final,),
+        },
+        transitions={('boost', 'GO'): 'grid0'},
+        on_tap=on_tap,
+        on_key=on_key,
+    )
+    clock = _SleepClock()
+
+    result = _run(
+        world,
+        catalogue,
+        corpus,
+        _state(tmp_path),
+        entry=_entry(catalogue, progress='0/2'),
+        max_rounds=1,
+        counter_timeout=8.0,
+        interval=1.5,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert result.outcome is SurpriseOutcome.COMPLETED
+    assert result.badge_change == '0/2 -> 1/2'
+    assert result.round_records[0].counter_change == '0/3 -> 3/3'
+    assert result.round_records[0].taps == 1
+    assert clock.value > 2.0
+
+
+def test_a_counter_that_stops_short_fails_with_expected_and_observed_detail(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    pending: dict[str, str] = {}
+    short = _snapshot(
+        _box(SURPRISE_TITLE, 270, 200, 930, 270),
+        _box('Tap 3 items on this page to earn coins', 253, 332, 946, 384),
+        _box('2/3', 480, 440, 573, 490),
+    )
+
+    def on_tap(screen: str, label: str | None, _count: int) -> str | None:
+        if screen == 'grid0' and label == 'Product A':
+            pending['return'] = 'short'
+            return 'detail'
+        return None
+
+    def on_key(screen: str, key: str, _count: int) -> str | None:
+        if screen == 'detail' and key == 'KEYCODE_BACK':
+            return pending.pop('return')
+        return None
+
+    world = _World(
+        series={
+            'boost': (_boost_frame(progress='1/2'),),
+            'grid0': (_grid_frame(2),),
+            'short': (short,),
+            'detail': (_detail_frame(),),
+            'coins': (_coins_frame(),),
+        },
+        transitions={('boost', 'GO'): 'grid0'},
+        on_tap=on_tap,
+        on_key=on_key,
+    )
+    clock = _SleepClock()
+
+    result = _run(
+        world,
+        catalogue,
+        corpus,
+        _state(tmp_path),
+        max_rounds=1,
+        counter_timeout=2.0,
+        interval=0.5,
+        scroll=lambda _frame: True,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert result.outcome is SurpriseOutcome.FAILED
+    assert result.verification == 'progress_unchanged'
+    assert result.round_records[0].taps == 1
+    assert 'progress_unchanged: expected 3/3, saw 2/3' in result.detail
+    assert clock.value >= 2.0
 
 
 def test_surprise_grid_restore_returns_on_the_header_and_handles_no_swipe() -> None:
@@ -2463,7 +2655,7 @@ def test_run_surprise_task_scrolls_for_new_products_before_giving_up(
     result = _run(world, catalogue, corpus, _state(tmp_path), max_rounds=1, scroll=lambda _frame: True)
 
     assert result.outcome is SurpriseOutcome.FAILED
-    assert result.verification == 'counter_stalled'
+    assert result.verification == 'tile_not_opened'
     assert result.round_records[0].scrolls == MAX_SCROLLS
 
 

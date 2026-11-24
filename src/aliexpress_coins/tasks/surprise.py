@@ -139,12 +139,22 @@ DEFAULT_EXIT_TIMEOUT = 10.0
 DEFAULT_INTERVAL = 0.5
 """How often capture is polled while a page is loading or settling."""
 
-DEFAULT_COUNTER_TIMEOUT = 2.0
-"""How long the round pill may take to show the credit after BACK.
+DEFAULT_COUNTER_TIMEOUT = 8.0
+"""How long the round pill may keep changing before its reading is final.
 
-The measured frame already read ``1/3`` one second after BACK, so two seconds
-is generous. The wait is a poll of the counter, never a blind sleep: an inert
-tile ends it at the bound and is reported as an unchanged counter (#100).
+A credit can arrive in more than one increment, and the last increment can land
+after the old fixed two-second dwell. The executor therefore polls until the
+counter value has been quiet for ``_COUNTER_STABLE_HOLD`` (or the target is
+reached), with this deadline as the hard bound. A counter that stops short still
+ends at the bound and is reported as unchanged for the expected-vs-observed
+detail (#100, #115).
+"""
+
+_COUNTER_STABLE_HOLD = 3.0
+"""How long the counter must keep one value before that value is final.
+
+Longer than the old fixed two-second dwell, so an increment that used to arrive
+after that dwell resets the quiet window instead of being missed (#115).
 """
 
 DEFAULT_TILE_TIMEOUT = 5.0
@@ -420,9 +430,9 @@ class SurpriseResult:
     ``verification`` names the proof: ``counter_complete`` on the success path;
     ``daily_limit``, ``row_complete`` or ``row_vanished`` when no work was
     possible; ``not_settled``, ``task_surface_unavailable``, ``grid_not_arrived``,
-    ``counter_unreadable``, ``counter_stalled``, ``grid_disappeared``,
-    ``back_not_reached``, ``next_round_not_arrived``, ``return_failed``,
-    ``redeem_interstitial`` or ``no_observation`` on the others.
+    ``counter_unreadable``, ``counter_stalled``, ``tile_not_opened``,
+    ``grid_disappeared``, ``back_not_reached``, ``next_round_not_arrived``,
+    ``return_failed``, ``redeem_interstitial`` or ``no_observation`` on the others.
     """
 
     key: str
@@ -1061,6 +1071,15 @@ def run_surprise_task(
                 swipes=swipes,
                 dismissals=dismissals,
             )
+            if record.complete and record.taps == 0 and (badge_before is None or badge_before.completed == 0):
+                record = replace(
+                    record,
+                    complete=False,
+                    detail=(
+                        'the grid counter read complete before the row had any completed round; '
+                        'no tile was opened and no completion was recorded'
+                    ),
+                )
             round_records.append(record)
             opened_items.extend(record.items)
             if not record.complete:
@@ -1402,7 +1421,7 @@ def _run_round(
         if counter is not None and counter.complete:
             before = counter.completed
             if round_taps == 0 and not mission_seen:
-                detail = 'the round counter reached its target before any product tile was opened; no completion was recorded'
+                detail = 'the round counter reached its target but no tile was opened; no completion was recorded'
                 break
             detail = 'the round counter advanced to its target'
             break
@@ -1688,25 +1707,37 @@ def _read_counter_after_dwell(
     clock: Callable[[], float],
     sleep: Callable[[float], None],
 ) -> tuple[Snapshot, CounterState | None]:
-    """Re-read the round pill until BACK's credit appears or the bound ends.
+    """Poll the round pill until BACK's credit lands and stops moving.
 
-    The first read is the frame that proved the grid returned. When it has not
-    advanced yet, capture is polled instead of trusting that one early read;
-    the measured credit can lag the transition by a frame (#100).
+    The first read is the frame that proved the grid returned. A credit can
+    arrive in more than one increment, and the last increment can land after a
+    fixed dwell, so the value must stay quiet for ``_COUNTER_STABLE_HOLD``
+    before it is final. A target reading returns immediately: no further credit
+    is needed. Reaching the deadline with an unchanged or short counter is still
+    the evidence for ``progress_unchanged`` (#100, #115).
     """
     current = snapshot
     reading = _read_grid_counter(current)
-    if before is None or (reading is not None and reading.completed > before):
+    if before is None:
         return current, reading
     deadline = clock() + timeout
-    while clock() < deadline:
-        remaining = deadline - clock()
-        sleep(min(interval, max(0.0, remaining)))
+    last = reading.completed if reading is not None else None
+    changed_at = clock() if last is not None and last > before else None
+    while True:
+        now = clock()
+        if reading is not None and reading.complete:
+            return current, reading
+        if changed_at is not None and now - changed_at >= _COUNTER_STABLE_HOLD:
+            return current, reading
+        if now >= deadline:
+            return current, reading
+        sleep(min(interval, max(0.0, deadline - now)))
         current = _capture(capture)
         reading = _read_grid_counter(current)
-        if reading is not None and reading.completed > before:
-            break
-    return current, reading
+        value = reading.completed if reading is not None else None
+        if value != last:
+            changed_at = clock() if value is not None and value > before else None
+            last = value
 
 
 def _restore_grid_top(
@@ -2316,6 +2347,8 @@ def _failure_verification(record: RoundRecord) -> str:
     detail = record.detail.lower()
     if 'progress_unchanged' in detail:
         return 'progress_unchanged'
+    if 'no tile was opened' in detail:
+        return 'tile_not_opened'
     if 'counter could not be read' in detail:
         return 'counter_unreadable'
     if 'grid disappeared' in detail:
