@@ -299,6 +299,13 @@ pass. ``row_complete``, ``daily_limit`` and ``already_done`` are terminal: the
 app or the day has already accounted for the row.
 """
 
+_SIGNIN_KEYS = frozenset({'daily_checkin', 'boost_checkin'})
+"""Catalogue keys the combined sign-in executor can claim in one dispatch.
+
+The streak and the boost row are independent claims behind one task record, so
+a failure on either key must be judged against both daily counters (#143).
+"""
+
 _CATEGORY_COST: dict[TaskCategory, int] = {
     TaskCategory.SIGN_IN: 0,
     TaskCategory.QUIZ: 1,
@@ -432,10 +439,16 @@ def run_once(
 
     ``budget_seconds`` and ``max_tasks`` default to the configuration. The
     returned report's :attr:`~aliexpress_coins.runner.report.RunReport.ok` is
-    true for a completed or budget-ended run; a hygiene, route or report failure
-    is a run-level failure. Every run-level failure is named by
-    :mod:`aliexpress_coins.runner.failures` and recorded in ``run.json`` under
-    ``failure``; a task that did not verify carries its own code in the task row.
+    true for a completed or budget-ended run **unless** an allowed task was lost;
+    a hygiene, route or report failure is a run-level failure. A walk that ends
+    while an allowed task failed and is still claimable is not a success: it ends
+    ``failed`` with a run failure whose detail names the task and its reason,
+    even though every row that still looked dispatchable was consumed. A
+    budget-ended walk that lost a task keeps ``budget_exhausted`` as its run
+    failure code but is also reported ``failed`` with the task named. Every
+    run-level failure is named by :mod:`aliexpress_coins.runner.failures` and
+    recorded in ``run.json`` under ``failure``; a task that did not verify also
+    carries its own code in the task row.
     """
     log = context.logger if context.logger is not None else LOG
     budget = context.config.budget_seconds if budget_seconds is None else budget_seconds
@@ -987,27 +1000,41 @@ def run_once(
                 duration_seconds=_task_duration(context, task_started),
             )
             log.error('%s', _event('run_aborted', code=exc.code.value, detail=detail))
-        if status is RunStatus.COMPLETED and not context.config.dry_run:
-            night = _night_record(report)
-            try:
-                context.state.record_night(night)
-            except Exception as exc:
-                # The report must not claim a day state the store never accepted.
-                log.warning('%s', _event('state_complete_failed', detail=f'{type(exc).__name__}: {exc}'))
-            else:
-                report.night = night.as_dict()
-                log.log(
-                    logging.INFO if night.complete else logging.WARNING,
-                    '%s',
-                    _event(
-                        'night_decided',
-                        outcome=night.outcome.value,
-                        complete=night.complete,
-                        dispatched=night.dispatched,
-                        completed=night.completed,
-                        retryable_failures=night.retryable_failures,
-                    ),
-                )
+        if status in (RunStatus.COMPLETED, RunStatus.BUDGET) and not context.config.dry_run:
+            finished_walk = status is RunStatus.COMPLETED
+            incomplete = _incomplete_run_detail(report, context.state, context.catalogue)
+            if incomplete is not None:
+                # A finished walk is not a finished day. Every allowed row that
+                # ended failed, or is still blacklisted, remains unclaimed work;
+                # the run must not look like a clean night (#143). A budget stop
+                # that already lost a task is not a clean budget stop either.
+                if status is RunStatus.BUDGET:
+                    detail = f'{detail}; {incomplete}' if detail else incomplete
+                else:
+                    detail = incomplete
+                    report.record_failure(failure(FailureCode.TASK_UNVERIFIED, detail=incomplete))
+                status = RunStatus.FAILED
+            if finished_walk or incomplete is not None:
+                night = _night_record(report, context.state, context.catalogue)
+                try:
+                    context.state.record_night(night)
+                except Exception as exc:
+                    # The report must not claim a day state the store never accepted.
+                    log.warning('%s', _event('state_complete_failed', detail=f'{type(exc).__name__}: {exc}'))
+                else:
+                    report.night = night.as_dict()
+                    log.log(
+                        logging.INFO if night.complete else logging.WARNING,
+                        '%s',
+                        _event(
+                            'night_decided',
+                            outcome=night.outcome.value,
+                            complete=night.complete,
+                            dispatched=night.dispatched,
+                            completed=night.completed,
+                            retryable_failures=night.retryable_failures,
+                        ),
+                    )
         finalized = False
         try:
             report.passes = passes
@@ -2813,28 +2840,22 @@ def _record_unrun(
         )
 
 
-def _night_record(report: RunReport) -> NightRecord:
+def _night_record(report: RunReport, state: DailyStateStore, catalogue: TaskCatalogue) -> NightRecord:
     """Decide what a finished roster walk leaves for the rest of the day (#97).
 
     A night is ``exhausted`` when nothing dispatched is worth retrying: every
-    row completed, was skipped/refused (policy, daily limit, the app reporting
-    it unavailable), or failed with a taxonomy entry that spends no retry.
-    Terminal-versus-retryable comes from :class:`~aliexpress_coins.runner.failures.Failure`:
-    ``TaskRecord.failure['retryable']`` is the taxonomy's own ``retries > 0``.
-    A failed row with no named failure is treated as retryable because "unknown"
-    must not consume the day.
+    row completed or was skipped/refused (policy, daily limit, the app reporting
+    it unavailable), and no claimable row's final dispatch ended ``failed``. A
+    failed row is still unclaimed work for a later run while its daily limit has
+    room; a row that failed and then completed, or whose card already reached its
+    limit, is not unfinished work (#143).
 
-    Any retryable failure keeps the day open even when another row completed:
-    the retryable row is still unclaimed work, and the operator most needs the
+    Any unresolved failure keeps the day open even when another row completed:
+    the failed row is still unclaimed work, and the operator most needs the
     daemon to try it while asleep.
     """
-    completed = 0
-    retryable = 0
-    for task in report.tasks:
-        if task.completed:
-            completed += 1
-        elif _retryable_task_failure(task):
-            retryable += 1
+    completed = sum(1 for task in report.tasks if task.completed)
+    retryable = len(_claimable_task_failures(report, state, catalogue))
     roster_incomplete = bool(report.roster and report.roster.get('incomplete', False))
     if roster_incomplete:
         outcome = NightOutcome.INCOMPLETE_ROSTER
@@ -2854,19 +2875,91 @@ def _night_record(report: RunReport) -> NightRecord:
     )
 
 
-def _retryable_task_failure(task: TaskRecord) -> bool:
-    """Whether one dispatched row still has work worth another run.
+def _final_task_records(tasks: Iterable[TaskRecord]) -> list[TaskRecord]:
+    """The last dispatch of each task identity, in first-dispatch order.
 
-    Only a ``failed`` outcome can be retryable. A skipped row, a refusal, an
-    ``already_done``/``unavailable`` executor outcome and a completed row are
-    terminal. A failed row is retryable when the taxonomy says its class spends
-    a retry (``retries > 0``); an unnamed failure defaults to retryable.
+    A row can be dispatched more than once in one night: a safe retry after a
+    no-tap failure, or a repeatable task below its daily limit. Only the last
+    dispatch says whether that row ended completed or failed.
     """
-    if task.outcome != 'failed':
-        return False
-    if task.failure is None:
-        return True
-    return bool(task.failure.get('retryable', True))
+    latest: dict[str, TaskRecord] = {}
+    for task in tasks:
+        latest[task.key or task.title.casefold()] = task
+    return list(latest.values())
+
+
+def _claimable_task_failures(
+    report: RunReport,
+    state: DailyStateStore,
+    catalogue: TaskCatalogue,
+) -> list[TaskRecord]:
+    """Final failed rows that still have room under their daily limit.
+
+    A failed dispatch is not always unclaimed work: the search executor can
+    record both rounds and then fail only on its return route. When the card is
+    already at ``max_per_run``, the day has accounted for it and the failure must
+    not keep the night open or be described as claimable (#143).
+
+    A combined sign-in dispatch owns two independent claims, so it is only
+    exhausted when both keys have reached their limit. A state read failure is
+    treated as claimable: hiding a failed row behind an unreadable counter is the
+    same defect this check exists to prevent.
+    """
+    failures: list[TaskRecord] = []
+    for task in _final_task_records(report.tasks):
+        if task.outcome != 'failed':
+            continue
+        keys = _SIGNIN_KEYS if task.key in _SIGNIN_KEYS else {task.key}
+        specs = [candidate for candidate in catalogue.allowed if candidate.key in keys]
+        exhausted = True
+        for spec in specs:
+            count = _daily_count(state, spec.key)
+            if count is None or count < spec.max_per_run:
+                exhausted = False
+                break
+        if not exhausted:
+            failures.append(task)
+    return failures
+
+
+def _daily_count(state: DailyStateStore, key: str) -> int | None:
+    """Read a daily completion count without letting a state fault escape finalisation."""
+    try:
+        return state.count(key)
+    except Exception as exc:
+        LOG.warning(
+            '%s',
+            _event('state_claimability_failed', key=key, detail=f'{type(exc).__name__}: {exc}'),
+        )
+        return None
+
+
+def _incomplete_run_detail(
+    report: RunReport,
+    state: DailyStateStore,
+    catalogue: TaskCatalogue,
+) -> str | None:
+    """Name the allowed rows that make a finished walk an incomplete night.
+
+    A failed row carries its taxonomy code and executor detail, so the report
+    and the notification say which task failed and why. A row blacklisted in an
+    earlier run is named by key and attempt count. Policy-excluded rows never
+    enter either list, so exclusion remains a successful day; a failed row whose
+    daily card is already exhausted is likewise not unfinished work (#143).
+    """
+    failed = _claimable_task_failures(report, state, catalogue)
+    named = [f'{task.title!r} ({task.code or "failed"}: {task.detail})' for task in failed]
+    failed_keys = {task.key or task.title.casefold() for task in failed}
+    named.extend(
+        f'{key!r} (blacklisted after {attempts} attempt(s))'
+        for key, attempts in sorted(report.blacklist.items())
+        if key not in failed_keys
+    )
+    if not named:
+        return None
+    count = len(named)
+    noun = 'task' if count == 1 else 'tasks'
+    return f'{count} allowed {noun} did not complete and remain claimable: ' + '; '.join(named)
 
 
 def _selection_key(entry: RosterEntry) -> tuple[int, str, str, str]:
