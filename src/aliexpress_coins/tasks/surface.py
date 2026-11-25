@@ -61,26 +61,24 @@ _SEARCH_RESULT_PRICE = re.compile(r'(?:C\$|US\s*\$|CS|\$)\s*\d', re.IGNORECASE)
 _SEARCH_RESULT_SOLD = re.compile(r'\b\d[\d,.]*\s*sold\b', re.IGNORECASE)
 _SEARCH_RESULT_FIELD_TEXT_TOP_FRACTION = 0.07
 _SEARCH_RESULT_FIELD_TOP_FRACTION = 0.15
-"""The search field text sits between these frame fractions."""
+_SEARCH_RESULT_FIELD_LEFT_FRACTION = 0.15
+"""The search field text sits between these frame fractions and left inset."""
 
 _QUERY_CONFUSABLES = str.maketrans({'0': 'o', '1': 'l', '2': 'z', '5': 's', '8': 'b'})
 """Letter/digit shapes OCR confuses inside the submitted query field."""
-
-_NON_QUERY_TOP_HEADERS = frozenset({'coupon center', 'sale coupons', 'coupons'})
-"""Validated page headers that are not a submitted search query."""
 
 
 def _fold_query_confusables(text: str) -> str:
     return text.translate(_QUERY_CONFUSABLES)
 
 
-def _read_field_band(
+def _field_band_boxes(
     snapshot: Snapshot,
     *,
     top_fraction: float = _SEARCH_RESULT_FIELD_TEXT_TOP_FRACTION,
     bottom_fraction: float = _SEARCH_RESULT_FIELD_TOP_FRACTION,
-) -> str:
-    """Join readable text in the field band, excluding the status bar and header."""
+) -> list[TextBox]:
+    """Readable boxes in the search field band, ordered for reading."""
     top = snapshot.height * top_fraction
     bottom = snapshot.height * bottom_fraction
     boxes = [
@@ -89,7 +87,12 @@ def _read_field_band(
         if box.score >= DEFAULT_MIN_OCR_SCORE and box.bbox[1] >= top and box.bbox[3] <= bottom and box.text.strip()
     ]
     boxes.sort(key=lambda box: (box.bbox[1], box.bbox[0]))
-    return ' '.join(box.text for box in boxes)
+    return boxes
+
+
+def _read_field_band(snapshot: Snapshot) -> str:
+    """Join readable text in the search field band."""
+    return ' '.join(box.text for box in _field_band_boxes(snapshot))
 
 
 SEARCH_RESULTS_MARKERS = ('sold',)
@@ -400,7 +403,7 @@ def is_search_results(snapshot: Snapshot, *, query: str | None = None) -> bool:
     the measured field band, with the matching layer's fuzzy threshold, so OCR
     may split ``wireless phone`` into two boxes or misspell it slightly. Without
     a query (the generic classifier used by the safety guard), field-like text
-    must sit below the header/status bands, must not be a known coupon header,
+    must sit below the header/status bands, start inside the field's left inset,
     and the frame must show at least two product prices and two ``N sold`` lines.
     Landing, coin/boost, coin-store and product-detail frames are explicitly
     excluded.
@@ -436,8 +439,12 @@ def is_search_results(snapshot: Snapshot, *, query: str | None = None) -> bool:
             return True
         return max(similarity(query_text, field_text), similarity(folded_query, folded_field)) >= DEFAULT_MIN_SCORE
 
-    top_copy = normalize(_read_field_band(snapshot))
-    if not any(character.isalpha() for character in top_copy) or top_copy in _NON_QUERY_TOP_HEADERS:
+    field_boxes = _field_band_boxes(snapshot)
+    field_left = snapshot.width * _SEARCH_RESULT_FIELD_LEFT_FRACTION
+    field_text = normalize(' '.join(box.text for box in field_boxes))
+    if not any(character.isalpha() for character in field_text):
+        return False
+    if not any(box.bbox[0] >= field_left for box in field_boxes):
         return False
     sold = [
         box for box in snapshot.boxes if box.score >= DEFAULT_MIN_OCR_SCORE and _SEARCH_RESULT_SOLD.search(box.text)

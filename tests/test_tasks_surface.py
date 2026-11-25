@@ -379,10 +379,18 @@ def test_a_query_outside_the_field_band_is_not_enough() -> None:
     assert not is_search_results(results, query='wireless phone')
 
 
-@pytest.mark.parametrize('top', [150, 180, 250])
-def test_a_coupon_header_inside_the_field_band_is_not_search_results(top: int) -> None:
+@pytest.mark.parametrize(
+    ('header', 'top'),
+    [
+        ('Coupon Center', 150),
+        ('Coupon Center Search', 180),
+        ('Coupons All', 180),
+        ('Deals for you', 250),
+    ],
+)
+def test_a_coupon_header_inside_the_field_band_is_not_search_results(header: str, top: int) -> None:
     coupon_page = _snapshot(
-        _box('Coupon Center', 60, top, 500, top + 40),
+        _box(header, 60, top, 500, top + 40),
         _box('C$31.27', 70, 1017, 257, 1076),
         _box('C$30.00', 631, 1017, 821, 1076),
         _box('7 sold', 60, 940, 240, 980),
@@ -391,6 +399,19 @@ def test_a_coupon_header_inside_the_field_band_is_not_search_results(top: int) -
 
     assert not is_search_results(coupon_page)
     assert classify_surface(coupon_page) is Surface.UNKNOWN
+
+
+def test_a_real_coupon_query_inside_the_field_is_search_results() -> None:
+    results = _snapshot(
+        _box('Coupons', 235, 186, 413, 220),
+        _box('200 sold 4.9', 47, 940, 301, 980),
+        _box('80 sold 4.7', 610, 940, 840, 980),
+        _box('C$32.99', 70, 1017, 257, 1076),
+        _box('C$24.58', 631, 1017, 821, 1076),
+    )
+
+    assert is_search_results(results)
+    assert classify_surface(results) is Surface.SEARCH_RESULTS
 
 
 def test_a_status_bar_glyph_is_not_search_field_copy() -> None:
