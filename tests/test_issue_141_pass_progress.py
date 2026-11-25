@@ -183,6 +183,7 @@ def test_a_revealed_row_resets_the_idle_streak_without_a_dispatch(
 ) -> None:
     initial = replace(_roster('coins_quiz'), entries=(), surface_variant=Surface.UNKNOWN)
     quiz = _roster('coins_quiz')
+    lost = replace(quiz, scroll_surface_lost=True)
     observations = [
         RosterObservation(
             sequence=1,
@@ -191,16 +192,15 @@ def test_a_revealed_row_resets_the_idle_streak_without_a_dispatch(
             surface_variant=Surface.UNKNOWN,
             roster=initial,
         ),
-        # The restart reveals a row, but the read is untrustworthy, so the loop
-        # restarts again instead of dispatching from it. The reveal alone must
-        # reset the idle streak and earn the pass that eventually claims it.
+        # The restart reveals a row, but scrolling lost the boost surface, so the
+        # loop restarts again instead of dispatching from it. The reveal alone
+        # must reset the idle streak and earn the pass that eventually claims it.
         RosterObservation(
             sequence=2,
             timestamp=CAPTURED_AT,
             rows=(),
             surface_variant=Surface.BOOST_PAGE,
-            error='unreadable',
-            roster=quiz,
+            roster=lost,
         ),
         RosterObservation(
             sequence=3,
@@ -241,12 +241,13 @@ def test_a_revealed_row_resets_the_idle_streak_without_a_dispatch(
 
 
 @pytest.mark.slow
-def test_a_revealed_row_is_counted_once_when_the_surface_stays_unreadable(
+def test_a_revealed_row_is_counted_once_when_the_surface_stays_lost(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     initial = replace(_roster('coins_quiz'), entries=(), surface_variant=Surface.UNKNOWN)
     quiz = _roster('coins_quiz')
+    lost = replace(quiz, scroll_surface_lost=True)
     observations = [
         RosterObservation(
             sequence=1,
@@ -260,8 +261,7 @@ def test_a_revealed_row_is_counted_once_when_the_surface_stays_unreadable(
             timestamp=CAPTURED_AT,
             rows=(),
             surface_variant=Surface.BOOST_PAGE,
-            error='unreadable',
-            roster=quiz,
+            roster=lost,
         ),
     ]
     scripted = _ScriptedObserver(initial, observations)
@@ -284,7 +284,7 @@ def test_a_revealed_row_is_counted_once_when_the_surface_stays_unreadable(
     assert report.status is RunStatus.BUDGET
     assert report.detail is not None
     assert 'consecutive no-progress pass' in report.detail
-    assert 'could not be read' in report.detail
+    assert 'surface_lost' in report.detail
 
 
 @pytest.mark.slow
@@ -390,15 +390,16 @@ def test_a_ceiling_below_the_largest_family_limit_warns_at_startup(
     )
     assert warning['event'] == 'pass_budget_below_daily_capacity'
     assert warning['max_passes'] == 4
-    assert warning['recommended_passes'] == 7
+    assert warning['recommended_passes'] == 12
     assert warning['largest_max_per_run'] == 6
     assert warning['max_task_attempts'] == 2
     assert warning['key'] == 'sponsored_items'
     detail = str(warning['detail'])
     assert 'AECOINS_MAX_PASSES=4' in detail
-    assert '7 sweeps needed' in detail
+    assert '12 sweeps needed' in detail
     assert '6 rounds for' in detail
-    assert 'retry headroom for 2 attempt(s)' in detail
+    assert 'up to 2 attempt(s) per round' in detail
+    assert 'success resets the failure streak' in detail
 
 
 def test_the_ceiling_warning_boundary_is_retry_aware(caplog: pytest.LogCaptureFixture) -> None:
@@ -406,22 +407,23 @@ def test_the_ceiling_warning_boundary_is_retry_aware(caplog: pytest.LogCaptureFi
     logger = logging.getLogger('test.ceiling')
     caplog.set_level(logging.WARNING)
 
-    engine._warn_pass_ceiling(replace(config, max_passes=6), CATALOGUE, logger)
+    engine._warn_pass_ceiling(replace(config, max_passes=11), CATALOGUE, logger)
     warnings = [
         json.loads(record.message) for record in caplog.records if 'pass_budget_below_daily_capacity' in record.message
     ]
     assert len(warnings) == 1
-    assert warnings[0]['max_passes'] == 6
-    assert warnings[0]['recommended_passes'] == 7
+    assert warnings[0]['max_passes'] == 11
+    assert warnings[0]['recommended_passes'] == 12
 
     caplog.clear()
-    engine._warn_pass_ceiling(replace(config, max_passes=7), CATALOGUE, logger)
+    engine._warn_pass_ceiling(replace(config, max_passes=12), CATALOGUE, logger)
     assert not [record for record in caplog.records if 'pass_budget_below_daily_capacity' in record.message]
 
 
 def test_the_shipped_ceiling_covers_every_family_daily_limit() -> None:
     largest = max(spec.max_per_run for spec in CATALOGUE.allowed)
-    recommended = largest + RunConfig.from_environment({}).max_task_attempts - 1
+    config = RunConfig.from_environment({})
+    recommended = largest * config.max_task_attempts
 
     assert recommended <= DEFAULT_MAX_PASSES
-    assert RunConfig.from_environment({}).max_passes == DEFAULT_MAX_PASSES
+    assert config.max_passes == DEFAULT_MAX_PASSES

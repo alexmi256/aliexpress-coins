@@ -86,8 +86,10 @@ The loop normally ends by progress, not by this number: it stops after two
 consecutive sweeps that dispatch nothing and reveal nothing (#141). This
 ceiling is a backstop for a surface that keeps changing without progress. A
 sweep can dispatch at most one row per family, so a family with ``max_per_run``
-rounds needs that many productive sweeps; the largest shipped limit is six
-(``sponsored_items``), and twelve leaves headroom for a retry while
+rounds needs that many productive sweeps. A success resets the failure streak,
+so the retry can repeat for every round: the safe worst case is
+``max_per_run * max_task_attempts``. The largest shipped limit is six
+(``sponsored_items``) with two attempts, so twelve covers the worst case while
 ``AECOINS_MAX_TASKS_PER_RUN`` caps the dispatches themselves.
 """
 

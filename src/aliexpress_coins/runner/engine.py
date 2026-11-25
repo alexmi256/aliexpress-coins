@@ -2499,15 +2499,15 @@ def _dispatchable_identities(
 def _warn_pass_ceiling(config: RunConfig, catalogue: TaskCatalogue, log: logging.Logger) -> None:
     """Name a pass ceiling that cannot finish the largest daily family (#141).
 
-    The minimum is ``max_per_run + max_task_attempts - 1``: completing every
-    round takes ``max_per_run`` sweeps, and up to ``max_task_attempts - 1``
-    retryable failures can spend a sweep without completing a round before the
-    final attempt blacklists the row. The default 12 leaves headroom above the
-    shipped maximum of seven. The run still starts: the ceiling is a hard bound,
-    and the report will say which row is still dispatchable when it stops.
+    The safe worst case is ``max_per_run * max_task_attempts``: every round can
+    spend a failed attempt before a later pass succeeds, and a success resets
+    the failure streak, so the retry can repeat for every round. The shipped
+    maximum is twelve (six ``sponsored_items`` rounds times two attempts), which
+    is also the default. The run still starts: the ceiling is a hard bound, and
+    the report will say which row is still dispatchable when it stops.
     """
     largest = max(catalogue.allowed, key=lambda spec: spec.max_per_run)
-    recommended = largest.max_per_run + config.max_task_attempts - 1
+    recommended = largest.max_per_run * config.max_task_attempts
     if config.max_passes >= recommended:
         return
     log.warning(
@@ -2521,9 +2521,10 @@ def _warn_pass_ceiling(config: RunConfig, catalogue: TaskCatalogue, log: logging
             key=largest.key,
             detail=(
                 f'AECOINS_MAX_PASSES={config.max_passes} is below the {recommended} sweeps needed '
-                f'for the largest family ({largest.max_per_run} rounds for {largest.key!r} plus '
-                f'retry headroom for {config.max_task_attempts} attempt(s) per task); the ceiling '
-                'can end a night before that family finishes its rounds'
+                f'for the largest family ({largest.max_per_run} rounds for {largest.key!r} times '
+                f'up to {config.max_task_attempts} attempt(s) per round); a success resets the '
+                'failure streak, so a retry can spend a sweep before every round and the ceiling '
+                'can end a night before that family finishes'
             ),
         ),
     )
