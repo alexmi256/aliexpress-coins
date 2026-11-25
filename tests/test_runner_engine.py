@@ -23,7 +23,7 @@ from urllib.error import HTTPError
 import pytest
 from PIL import Image
 
-from aliexpress_coins.control.controller import Controller, SwipeRecord
+from aliexpress_coins.control.controller import Controller, SwipeRecord, TapRecord
 from aliexpress_coins.control.errors import PopupUnclosable
 from aliexpress_coins.control.popups import DismissReport, DismissStop, PopupCorpus, load_popup_corpus
 from aliexpress_coins.perception.artifacts import ArtifactStore
@@ -6413,6 +6413,38 @@ def test_a_failed_task_at_its_daily_limit_is_not_unclaimed_work(
     assert snapshot.last_night.outcome is NightOutcome.EXHAUSTED
 
 
+def test_a_claimability_read_failure_keeps_the_failed_row_visible(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unreadable day counter must not let finalisation hide a failed row or escape."""
+    report = RunReport(tmp_path / 'runs', 'run-1', budget_seconds=60.0, started_at=CAPTURED_AT)
+    report.record_task(
+        title='Take the coins quiz',
+        key='coins_quiz',
+        category='quiz',
+        outcome='failed',
+        verification='no_change',
+        detail='the row did not move',
+        duration_seconds=0.0,
+        completed=False,
+        result={},
+        failure=failure(FailureCode.TASK_UNVERIFIED, detail='the row did not move'),
+    )
+
+    class _BrokenState:
+        def count(self, key: str) -> int:
+            raise OSError(f'{key} state is unreadable')
+
+    caplog.set_level(logging.WARNING)
+
+    failures = engine._claimable_task_failures(report, cast(Any, _BrokenState()), catalogue)
+
+    assert [task.key for task in failures] == ['coins_quiz']
+    assert 'state_claimability_failed' in caplog.text
+
+
 @pytest.mark.slow
 def test_a_roster_with_only_policy_excluded_rows_still_completes_the_day(
     tmp_path: Path,
@@ -6697,6 +6729,78 @@ def test_an_unverified_sign_in_is_dispatched_once_and_taps_once(
     assert report.detail is not None
     assert "'Daily check-in'" in report.detail
     assert context.state.snapshot().completed_night is False
+
+
+@pytest.mark.slow
+def test_a_completed_sign_in_key_does_not_hide_the_other_keys_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    """The combined sign-in row owns two keys; one completed key cannot hide the other's failure."""
+    roster = replace(full_roster, entries=(_entry(full_roster, 'boost_checkin'),))
+    frame = _boost_frame('daily_checkin')
+    _surface(monkeypatch, roster, frame)
+    notifier = _Notifier()
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+        notifier=notifier,
+    )
+    streak = ClaimResult(
+        key='daily_checkin',
+        outcome=SigninOutcome.UNVERIFIED,
+        detail='the streak was tapped but no fresh frame proved it',
+        verification='no_evidence',
+        tap=TapRecord(
+            index=1,
+            label='Collect',
+            reason='claim the daily streak',
+            requested=(100, 200),
+            clamped=(100, 200),
+            jitter=(0, 0),
+            point=(100, 200),
+            suppressed=False,
+        ),
+    )
+    boost = ClaimResult(
+        key='boost_checkin',
+        outcome=SigninOutcome.COMPLETED,
+        detail='the boost row was claimed and recorded',
+        verification='claimed_marker',
+        recorded=True,
+    )
+    claims = SigninReport(streak=streak, boost=boost)
+
+    def claim(*args: Any, **kwargs: Any) -> SigninReport:
+        context.state.record('boost_checkin')
+        return claims
+
+    monkeypatch.setattr(engine, 'claim_daily_signins', claim)
+
+    report = engine.run_once(context)
+
+    assert report.tasks[0].key == 'boost_checkin'
+    assert report.tasks[0].outcome == 'failed'
+    assert report.status is RunStatus.FAILED
+    assert report.ok is False
+    assert report.detail is not None
+    assert "'Daily check-in'" in report.detail
+    assert 'daily_checkin' in report.detail
+    assert 'no fresh frame proved it' in report.detail
+    assert context.state.count('boost_checkin') == 1
+    assert context.state.count('daily_checkin') == 0
+    snapshot = context.state.snapshot()
+    assert snapshot.completed_night is False
+    assert snapshot.last_night is not None
+    assert snapshot.last_night.outcome is NightOutcome.RETRYABLE_FAILURES
+    assert len(notifier.messages) == 1
+    assert 'daily_checkin' in notifier.messages[0].body
+    assert 'no fresh frame proved it' in notifier.messages[0].body
 
 
 class _UnverifiedClaim:

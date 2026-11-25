@@ -283,6 +283,13 @@ pass. ``row_complete``, ``daily_limit`` and ``already_done`` are terminal: the
 app or the day has already accounted for the row.
 """
 
+_SIGNIN_KEYS = frozenset({'daily_checkin', 'boost_checkin'})
+"""Catalogue keys the combined sign-in executor can claim in one dispatch.
+
+The streak and the boost row are independent claims behind one task record, so
+a failure on either key must be judged against both daily counters (#143).
+"""
+
 _CATEGORY_COST: dict[TaskCategory, int] = {
     TaskCategory.SIGN_IN: 0,
     TaskCategory.QUIZ: 1,
@@ -2738,15 +2745,39 @@ def _claimable_task_failures(
     record both rounds and then fail only on its return route. When the card is
     already at ``max_per_run``, the day has accounted for it and the failure must
     not keep the night open or be described as claimable (#143).
+
+    A combined sign-in dispatch owns two independent claims, so it is only
+    exhausted when both keys have reached their limit. A state read failure is
+    treated as claimable: hiding a failed row behind an unreadable counter is the
+    same defect this check exists to prevent.
     """
     failures: list[TaskRecord] = []
     for task in _final_task_records(report.tasks):
         if task.outcome != 'failed':
             continue
-        spec = next((candidate for candidate in catalogue.allowed if candidate.key == task.key), None)
-        if spec is None or state.count(spec.key) < spec.max_per_run:
+        keys = _SIGNIN_KEYS if task.key in _SIGNIN_KEYS else {task.key}
+        specs = [candidate for candidate in catalogue.allowed if candidate.key in keys]
+        exhausted = True
+        for spec in specs:
+            count = _daily_count(state, spec.key)
+            if count is None or count < spec.max_per_run:
+                exhausted = False
+                break
+        if not exhausted:
             failures.append(task)
     return failures
+
+
+def _daily_count(state: DailyStateStore, key: str) -> int | None:
+    """Read a daily completion count without letting a state fault escape finalisation."""
+    try:
+        return state.count(key)
+    except Exception as exc:
+        LOG.warning(
+            '%s',
+            _event('state_claimability_failed', key=key, detail=f'{type(exc).__name__}: {exc}'),
+        )
+        return None
 
 
 def _incomplete_run_detail(
