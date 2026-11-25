@@ -379,9 +379,10 @@ def test_a_query_outside_the_field_band_is_not_enough() -> None:
     assert not is_search_results(results, query='wireless phone')
 
 
-def test_a_coupon_header_with_two_product_tiles_is_not_search_results() -> None:
+@pytest.mark.parametrize('top', [150, 180, 250])
+def test_a_coupon_header_inside_the_field_band_is_not_search_results(top: int) -> None:
     coupon_page = _snapshot(
-        _box('Coupon Center', 60, 100, 500, 140),
+        _box('Coupon Center', 60, top, 500, top + 40),
         _box('C$31.27', 70, 1017, 257, 1076),
         _box('C$30.00', 631, 1017, 821, 1076),
         _box('7 sold', 60, 940, 240, 980),

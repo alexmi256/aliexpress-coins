@@ -66,6 +66,9 @@ _SEARCH_RESULT_FIELD_TOP_FRACTION = 0.15
 _QUERY_CONFUSABLES = str.maketrans({'0': 'o', '1': 'l', '2': 'z', '5': 's', '8': 'b'})
 """Letter/digit shapes OCR confuses inside the submitted query field."""
 
+_NON_QUERY_TOP_HEADERS = frozenset({'coupon center', 'sale coupons', 'coupons'})
+"""Validated page headers that are not a submitted search query."""
+
 
 def _fold_query_confusables(text: str) -> str:
     return text.translate(_QUERY_CONFUSABLES)
@@ -397,9 +400,10 @@ def is_search_results(snapshot: Snapshot, *, query: str | None = None) -> bool:
     the measured field band, with the matching layer's fuzzy threshold, so OCR
     may split ``wireless phone`` into two boxes or misspell it slightly. Without
     a query (the generic classifier used by the safety guard), field-like text
-    must sit below the header/status bands and the frame must show at least two
-    product prices and two ``N sold`` lines. Landing, coin/boost, coin-store and
-    product-detail frames are explicitly excluded.
+    must sit below the header/status bands, must not be a known coupon header,
+    and the frame must show at least two product prices and two ``N sold`` lines.
+    Landing, coin/boost, coin-store and product-detail frames are explicitly
+    excluded.
     """
     if (
         is_search_landing(snapshot)
@@ -432,8 +436,8 @@ def is_search_results(snapshot: Snapshot, *, query: str | None = None) -> bool:
             return True
         return max(similarity(query_text, field_text), similarity(folded_query, folded_field)) >= DEFAULT_MIN_SCORE
 
-    top_copy = _read_field_band(snapshot)
-    if not any(character.isalpha() for character in top_copy):
+    top_copy = normalize(_read_field_band(snapshot))
+    if not any(character.isalpha() for character in top_copy) or top_copy in _NON_QUERY_TOP_HEADERS:
         return False
     sold = [
         box for box in snapshot.boxes if box.score >= DEFAULT_MIN_OCR_SCORE and _SEARCH_RESULT_SOLD.search(box.text)
