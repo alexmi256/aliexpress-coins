@@ -318,6 +318,19 @@ def test_readme_claim_section_pins_the_shipped_bounds() -> None:
     assert not absent, f'README.md claim section does not name the shipped bounds: {", ".join(absent)}'
 
 
+def test_shipped_budget_defaults_agree_with_the_configuration() -> None:
+    expected = f'{DEFAULT_RUN_BUDGET_SECONDS:g}'
+    env_example = (ROOT / '.env.example').read_text(encoding='utf-8')
+    compose = (ROOT / 'compose.yaml').read_text(encoding='utf-8')
+    brief = (DOCS_DIR / '00-brief.md').read_text(encoding='utf-8')
+    runbook = RUNBOOK_PATH.read_text(encoding='utf-8')
+
+    assert f'AECOINS_RUN_BUDGET_SECONDS={expected}' in env_example
+    assert f'AECOINS_RUN_BUDGET_SECONDS:-{expected}' in compose
+    assert f'default {expected} s' in brief
+    assert f'default {expected} s' in runbook
+
+
 def test_readme_claim_section_names_the_required_refusal_codes() -> None:
     section = _claim_section()
     absent = [code for code in _REQUIRED_REFUSAL_CODES if f'`{code}`' not in section]

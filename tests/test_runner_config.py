@@ -50,6 +50,10 @@ def test_defaults_keep_the_container_paths_and_the_local_zone() -> None:
     assert config.notify_balance_delta is False
 
 
+def test_the_default_run_budget_is_the_measured_twenty_minute_safety_net() -> None:
+    assert DEFAULT_RUN_BUDGET_SECONDS == 1200.0
+
+
 def test_every_documented_variable_is_read() -> None:
     config = RunConfig.from_environment(
         {

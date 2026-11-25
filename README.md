@@ -173,11 +173,13 @@ quiz, surprise items, search and notifications — lives in the executors under
 
 ### Bounds and unfinished nights
 
-- **Shipped bounds:** [`RunConfig`](src/aliexpress_coins/runner/config.py) defaults to a 2700-second
-  wall-clock budget, 12 dispatched rows per run, 4 full passes and 2 attempts per task
+- **Shipped bounds:** [`RunConfig`](src/aliexpress_coins/runner/config.py) defaults to a 1200-second
+  (20-minute) wall-clock safety net, 12 dispatched rows per run, 4 full passes and 2 attempts per task
   (`AECOINS_RUN_BUDGET_SECONDS`, `AECOINS_MAX_TASKS_PER_RUN`, `AECOINS_MAX_PASSES` and
-  `AECOINS_MAX_TASK_ATTEMPTS`). The engine checks the wall-clock and task bounds before each
-  dispatch; each task also has its own `max_per_run` daily limit in `specs/tasks.yaml`.
+  `AECOINS_MAX_TASK_ATTEMPTS`). The engine checks both bounds before each dispatch and reapplies the
+  wall-clock deadline at the running task's clock, sleep and capture seams, so a stuck executor
+  cannot poll past it silently; each task also has its own `max_per_run` daily limit in
+  `specs/tasks.yaml`.
 - **Shipped retry bounds:** the outer pass loop retries `task_unverified` after a fresh enumeration,
   and only when the attempt took no action. A row that acted without proof is not repeated within
   the run. A task that fails `AECOINS_MAX_TASK_ATTEMPTS` times is blacklisted for the rest of that

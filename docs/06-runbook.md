@@ -621,8 +621,27 @@ A budget stop is a **clean end**, not an error:
   purposes only if the walk reached `completed` **and** left nothing worth retrying. A manual budget
   stop does **not** mark the day complete, so it does not swallow the nightly window.
 
+The `AECOINS_RUN_BUDGET_SECONDS` default of **1200 s (20 minutes)** is a safety net, not an expected
+duration. The worst night observed (run `20261124T083006Z`) took **386.7 s — 6.4 minutes — with ten
+dispatches**, and a night with nothing dispatchable exits in under a minute. The retry loop and the
+daily `max_per_run` limits allow about twelve dispatches at roughly 25-40 s each over at most four
+passes, so a legitimate worst case is about 8-12 minutes. Twenty minutes covers that with headroom
+while still ending a stuck executor loop within 20 minutes. The setting stays operator-overridable:
+raise it for a slower device or a deliberately larger `AECOINS_MAX_PASSES`, not to paper over a slow
+network or a stuck screen.
+
+The budget is checked between dispatches and, while a task is running, at that task's own clock,
+sleep and capture seams (`engine._task_budget`), so a stuck executor cannot poll past the deadline.
+A task cut off this way leaves its in-flight row as `aborted` with `budget_exhausted`, while the
+report still lists every row that was allowed at the stop. The budget does not interrupt an adb
+command already in flight, but each command has its own subprocess timeout (30 s for a screenshot,
+20 s for a route/hygiene command, 10 s for an input tap or swipe), so the worst overrun from an adb
+command is that command plus report and cleanup time. A native OCR/PIL decode has no in-process
+timeout, so a native call that never returns is bounded only by the container's stop grace and
+SIGKILL.
+
 If the budget is routinely exhausted, look at the wall-clock budget
-(`AECOINS_RUN_BUDGET_SECONDS`, default 2700 s), the task cap
+(`AECOINS_RUN_BUDGET_SECONDS`, default 1200 s), the task cap
 (`AECOINS_MAX_TASKS_PER_RUN`, default 12), the pass bound (`AECOINS_MAX_PASSES`, default 4), the
 per-task attempt bound (`AECOINS_MAX_TASK_ATTEMPTS`, default 2) and the per-task time in the table.
 Raise a limit only deliberately; a larger budget is not a fix for a slow network or a stuck screen.
