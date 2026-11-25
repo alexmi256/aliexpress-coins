@@ -1,0 +1,138 @@
+{
+  "issue": 137,
+  "run_id": "20261125T143832Z",
+  "date": "2026-11-25",
+  "image": "61f4644",
+  "device": "192.168.8.65:5555",
+  "balance_before": 88,
+  "balance_after": 88,
+  "log_events": [
+    {
+      "event": "tap",
+      "label": "Earn more",
+      "point": [1025, 944],
+      "tap": 1
+    },
+    {
+      "event": "tap",
+      "label": "Earn more",
+      "point": [1021, 942],
+      "reason": "retry opening the Coins boost task list; the first tap left the coin page unchanged",
+      "tap": 2
+    },
+    {
+      "event": "boost_retap",
+      "attempt": 2,
+      "difference": 0.0037,
+      "fresh_difference": 0.0034,
+      "state": "page"
+    },
+    {
+      "event": "swipe",
+      "label": "roster scroll",
+      "reason": "read every row of the Coins boost list",
+      "swipe": 1
+    },
+    {
+      "event": "swipe",
+      "label": "roster scroll",
+      "reason": "read every row of the Coins boost list",
+      "swipe": 2
+    },
+    {
+      "event": "swipe",
+      "label": "roster scroll",
+      "reason": "restore the Coins boost list to its top",
+      "swipe": 3
+    },
+    {
+      "event": "swipe",
+      "label": "roster scroll",
+      "reason": "read every row of the Coins boost list",
+      "swipe": 4
+    },
+    {
+      "event": "roster_observation",
+      "observation_seq": 1,
+      "surface_variant": "boost_page",
+      "added": [],
+      "candidates": [],
+      "removed": [
+        "Daily check-in",
+        "Explore sponsored items",
+        "Browse surprise items",
+        "Place an order on this page",
+        "Water to win a US $0.10 prize",
+        "Visit the page via coins"
+      ]
+    },
+    {
+      "event": "night_decided",
+      "outcome": "exhausted",
+      "complete": true,
+      "dispatched": 0,
+      "completed": 0
+    },
+    {
+      "event": "run_finished",
+      "status": "completed",
+      "tasks": 0,
+      "skipped": 3
+    }
+  ],
+  "captured_roster": {
+    "schema": 1,
+    "observation_seq": 1,
+    "surface_variant": "boost_page",
+    "error": null,
+    "cap_reached": false,
+    "rows": [
+      {
+        "key": null,
+        "label": "Share coins with friends",
+        "subtitle": "Win rewards together",
+        "badge": "0/3",
+        "decision": "deny",
+        "reason": "social: sharing coins or inviting friends is refused",
+        "action": "GO",
+        "candidate": false,
+        "dispatch_target": null
+      }
+    ],
+    "diff": {
+      "added": [],
+      "removed": [
+        {"label": "Daily check-in", "badge": null, "action": "GO"},
+        {"label": "Explore sponsored items", "badge": "0/6", "action": "GO"},
+        {"label": "Browse surprise items", "badge": "0/2", "action": "GO"},
+        {"label": "Place an order on this page", "badge": "0/3", "action": "GO"},
+        {"label": "Water to win a US $0.10 prize", "badge": null, "action": "GO"},
+        {"label": "Visit the page via coins", "badge": null, "action": "GO"}
+      ],
+      "progress_moved": [],
+      "action_changed": [],
+      "candidates": []
+    }
+  },
+  "issue_reported_row": {
+    "label": null,
+    "badge": "0/3",
+    "decision": "deny",
+    "action": "GO"
+  },
+  "summary": {
+    "roster": "Roster: available; 1 row(s), 0 allowed, 1 refused, read across 0 revealing scroll(s)",
+    "night": "complete",
+    "dispatched": 0
+  },
+  "conclusions": {
+    "boost_sheet_opens_by_hand": true,
+    "first_tap_swallowed": true,
+    "retry_opened_the_sheet": true,
+    "initial_read_saw_the_claimable_rows": true,
+    "second_read_started_at_the_bottom": true,
+    "merge_does_not_discard_earlier_frames": true,
+    "root_cause": "the post-discover observation re-read the already-open sheet from the bottom left by the first collect; that frame named one row, made no revealing swipe, and was accepted as an exhaustive roster",
+    "titleless_row_is_not_the_issue_row": "the captured row is 'Share coins with friends' with a 0/3 badge; a null-title row must still be unreadable and cannot prove a complete read"
+  }
+}

@@ -25,6 +25,7 @@ from aliexpress_coins.perception.errors import SnapshotError, StateTimeout
 from aliexpress_coins.perception.geometry import DeviceGeometry
 from aliexpress_coins.perception.matching import find_text
 from aliexpress_coins.perception.ocr import RapidOcrEngine
+from aliexpress_coins.perception.scroll import STABLE_FRAME_MAX_DIFFERENCE
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.state import ScreenState, classify
 from aliexpress_coins.tasks.catalogue import (
@@ -50,8 +51,11 @@ from aliexpress_coins.tasks.discovery import (
     RosterObserver,
     RosterSplitFailure,
     RosterStatus,
+    _capture_after_gesture,
     _merge_frame_rosters,
     _observation_problem,
+    _roster_swipe,
+    _roster_to_top,
     _surface_family,
     _task_signature,
     collect_roster,
@@ -876,7 +880,10 @@ def test_a_row_with_no_title_is_not_guessed() -> None:
     assert roster.visible_action_count == 1
     assert roster.unassigned_action_count == 1
     assert roster.incomplete
-    assert roster.warning == '1 visible GO button(s) but 1 task action(s) were not enumerated'
+    assert roster.warning == (
+        '1 visible GO button(s) but 1 task action(s) were not enumerated; '
+        '1 task row(s) had no readable title and were not counted'
+    )
 
 
 def test_open_boost_list_taps_earn_more_once_and_waits_for_the_list(
@@ -1716,6 +1723,270 @@ def test_the_empty_boost_variant_is_named_as_a_load_fault() -> None:
         _observation_problem(ScreenState.PAGE, Surface.EMPTY_BOOST)
         == 'the empty boost page is a load fault, not an empty roster'
     )
+
+
+def test_a_titleless_action_row_is_unreadable_not_a_roster_row(catalogue: TaskCatalogue) -> None:
+    """Issue #137: a badge and a GO with no title is not an empty roster."""
+    frame = _snapshot(
+        _box('Coins boost', 100, 100, 500, 150),
+        _box('0/3', 960, 620, 1060, 660),
+        _box('GO', 980, 630, 1040, 670),
+    )
+
+    roster = enumerate_roster(frame, catalogue, route=DiscoveryRoute.BOOST)
+
+    assert roster.entries == ()
+    assert roster.unreadable_count == 1
+    assert roster.status is RosterStatus.NOTHING_AVAILABLE
+    assert roster.incomplete is True
+    assert roster.warning is not None
+    assert 'no readable title' in roster.warning
+    assert roster.as_dict()['unreadable_count'] == 1
+
+
+def test_collect_roster_does_not_scroll_a_boost_header_without_rows(catalogue: TaskCatalogue) -> None:
+    frame = _snapshot(_box('Coins boost', 100, 100, 500, 150))
+    device = _RecordingDevice()
+
+    roster = collect_roster(_controller(device, frame), _Capture((frame,)), catalogue, frame)
+
+    assert roster.scroll_surface_unconfirmed is True
+    assert roster.incomplete is True
+    assert roster.warning is not None
+    assert 'did not prove it was open' in roster.warning
+    assert device.swipes == []
+
+
+def test_an_already_open_boost_sheet_is_the_boost_route_not_inline(
+    corpus: PopupCorpus,
+    catalogue: TaskCatalogue,
+) -> None:
+    frame = _snapshot(
+        _box('Coins boost', 100, 100, 500, 150),
+        _box('Share coins with friends', 100, 600, 700, 640),
+        _box('Win rewards together', 100, 645, 500, 675),
+        _box('GO', 980, 630, 1040, 670),
+    )
+    device = _RecordingDevice()
+
+    opened = open_boost_list(_controller(device, frame), _Capture((frame,)), corpus)
+
+    assert opened.route is DiscoveryRoute.BOOST
+    assert opened.opened is True
+    assert opened.tap_attempts == 0
+    assert device.taps == []
+
+
+def test_collect_roster_starts_at_the_top_before_reading_an_open_sheet(
+    catalogue: TaskCatalogue,
+) -> None:
+    """Issue #137: re-reading from the previous bottom must not collapse the roster."""
+    top = replace(
+        _snapshot(
+            _box('Coins boost', 100, 100, 500, 150),
+            _box('Daily check-in', 100, 600, 700, 640),
+            _box("Finish today's check-in", 100, 645, 500, 675),
+            _box('GO', 980, 630, 1040, 670),
+            _box('Explore sponsored items', 100, 900, 700, 940),
+            _box('Browse, shop and save', 100, 945, 500, 975),
+            _box('GO', 980, 930, 1040, 970),
+        ),
+        image=Image.new('RGB', (1200, 2000), 'white'),
+    )
+    bottom = replace(
+        _snapshot(
+            _box('Coins boost', 100, 100, 500, 150),
+            _box('Share coins with friends', 100, 600, 700, 640),
+            _box('Win rewards together', 100, 645, 500, 675),
+            _box('GO', 980, 630, 1040, 670),
+        ),
+        image=Image.new('RGB', (1200, 2000), '#dddddd'),
+    )
+    device = _RecordingDevice()
+
+    roster = collect_roster(
+        _controller(device, bottom),
+        _Capture((top, top, bottom, bottom, top, top)),
+        catalogue,
+        bottom,
+        start_at_top=True,
+    )
+
+    assert roster.titles == ('Daily check-in', 'Explore sponsored items', 'Share coins with friends')
+    assert roster.scroll_count == 1
+    assert roster.incomplete is False
+    # The first gesture is upward: an already-open sheet is returned to the top.
+    assert device.swipes[0][1] < device.swipes[0][3]
+
+
+def test_collect_roster_does_not_scroll_after_the_restore_leaves_the_surface(
+    catalogue: TaskCatalogue,
+) -> None:
+    bottom = _snapshot(
+        _box('Coins boost', 100, 100, 500, 150),
+        _box('Share coins with friends', 100, 600, 700, 640),
+        _box('Win rewards together', 100, 645, 500, 675),
+        _box('GO', 980, 630, 1040, 670),
+    )
+    foreign = _snapshot(_box('For you', 100, 200, 400, 260))
+    device = _RecordingDevice()
+
+    roster = collect_roster(
+        _controller(device, bottom),
+        _Capture((foreign,)),
+        catalogue,
+        bottom,
+        start_at_top=True,
+    )
+
+    assert roster.scroll_surface_lost is True
+    assert roster.incomplete is True
+    assert roster.warning is not None
+    assert 'boost surface was left' in roster.warning
+    # One upward restore only; no downward swipe on the foreign surface.
+    assert len(device.swipes) == 1
+
+
+def test_restoring_the_top_moves_as_far_as_the_downward_read() -> None:
+    frame = _boost_frame(_task_row('Daily check-in', 100))
+    device = _RecordingDevice()
+    controller = _controller(device, frame)
+
+    _roster_swipe(controller, frame, down=True)
+    _roster_swipe(controller, frame, down=False)
+
+    down, up = device.swipes
+    assert down[1] - down[3] == up[3] - up[1]
+
+
+def test_returning_an_open_sheet_to_the_top_stops_on_a_foreign_surface() -> None:
+    frame = _boost_frame(_task_row('Daily check-in', 100))
+    foreign = _snapshot(_box('For you', 100, 200, 400, 260))
+    device = _RecordingDevice()
+    sleeps: list[float] = []
+
+    returned, swipes, confirmed = _roster_to_top(
+        _controller(device, frame),
+        _Capture((foreign,)),
+        frame,
+        max_swipes=2,
+        settle=0.5,
+        sleep=sleeps.append,
+    )
+
+    assert returned is foreign
+    assert confirmed is False
+    assert len(swipes) == 1
+    assert sleeps
+    assert set(sleeps) == {0.5}
+    assert len(device.swipes) == 1
+
+
+def test_returning_an_open_sheet_to_the_top_respects_its_swipe_bound() -> None:
+    frame = _boost_frame(_task_row('Daily check-in', 100))
+    changed_a = _with_image_change(frame, (100, 600, 700, 1200), (0, 0, 0))
+    changed_b = _with_image_change(frame, (100, 600, 700, 1200), (255, 255, 255))
+    device = _RecordingDevice()
+
+    _, swipes, confirmed = _roster_to_top(
+        _controller(device, frame),
+        _Capture((changed_a, changed_b)),
+        frame,
+        max_swipes=2,
+        settle=0.0,
+        sleep=lambda _seconds: None,
+    )
+
+    assert confirmed is False
+    assert len(swipes) == 2
+    assert len(device.swipes) == 2
+
+
+def test_an_exhausted_top_restore_marks_the_roster_unconfirmed(
+    catalogue: TaskCatalogue,
+) -> None:
+    bottom = _boost_frame(_task_row('Share coins with friends', 600))
+    changed_a = _with_image_change(bottom, (100, 600, 700, 1200), (0, 0, 0))
+    changed_b = _with_image_change(bottom, (100, 600, 700, 1200), (255, 255, 255))
+    device = _RecordingDevice()
+
+    roster = collect_roster(
+        _controller(device, bottom),
+        _Capture((changed_a, changed_b)),
+        catalogue,
+        bottom,
+        max_scrolls=1,
+        start_at_top=True,
+    )
+
+    assert roster.scroll_surface_unconfirmed is True
+    assert roster.incomplete is True
+    assert len(device.swipes) == 2
+
+
+def test_an_exhausted_post_scan_restore_marks_the_roster_unconfirmed(
+    catalogue: TaskCatalogue,
+) -> None:
+    top = _boost_frame(_task_row('Daily check-in', 600))
+    middle = replace(
+        _boost_frame(_task_row('Share coins with friends', 600)),
+        image=Image.new('RGB', (1200, 2000), '#dddddd'),
+    )
+    restore_a = _with_image_change(middle, (100, 600, 700, 1200), (0, 0, 0))
+    restore_b = _with_image_change(middle, (100, 600, 700, 1200), (255, 255, 255))
+    device = _RecordingDevice()
+
+    roster = collect_roster(
+        _controller(device, top),
+        _Capture((middle, middle, restore_a, restore_b)),
+        catalogue,
+        top,
+        start_at_top=False,
+    )
+
+    assert roster.scroll_count == 1
+    assert roster.scroll_surface_unconfirmed is True
+    assert roster.incomplete is True
+
+
+def test_a_stale_unchanged_gesture_frame_is_captured_again() -> None:
+    frame = _boost_frame(_task_row('Daily check-in', 100))
+    changed = _with_image_change(frame, (100, 600, 700, 1200), (0, 0, 0))
+    sleeps: list[float] = []
+
+    captured, difference = _capture_after_gesture(
+        _Capture((frame, changed)),
+        frame,
+        settle=0.5,
+        sleep=sleeps.append,
+    )
+
+    assert captured is changed
+    assert difference > STABLE_FRAME_MAX_DIFFERENCE
+    assert sleeps == [0.5, 0.5]
+
+
+def test_a_later_gesture_poll_that_finds_a_foreign_surface_stops_the_read() -> None:
+    frame = _boost_frame(_task_row('Daily check-in', 100))
+    foreign = _snapshot(_box('For you', 100, 200, 400, 260))
+    sleeps: list[float] = []
+
+    captured, difference = _capture_after_gesture(
+        _Capture((frame, foreign)),
+        frame,
+        settle=0.5,
+        sleep=sleeps.append,
+    )
+
+    assert captured is foreign
+    assert difference == 1.0
+    assert sleeps == [0.5, 0.5]
+
+
+def test_a_titleless_action_row_has_no_task_stability_signature() -> None:
+    frame = _snapshot(_box('0/3', 900, 100, 1000, 140), _box('GO', 980, 100, 1040, 140))
+
+    assert _task_signature(frame) == ()
 
 
 def test_collect_roster_rejects_a_non_positive_scroll_bound(catalogue: TaskCatalogue) -> None:

@@ -18,6 +18,7 @@ from PIL import Image
 from aliexpress_coins.control.controller import Controller
 from aliexpress_coins.control.popups import PopupCorpus, load_popup_corpus
 from aliexpress_coins.perception.geometry import DeviceGeometry
+from aliexpress_coins.perception.layout import Row
 from aliexpress_coins.perception.ocr import RapidOcrEngine
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.tasks.catalogue import TaskCatalogue, load_task_catalogue
@@ -33,6 +34,7 @@ from aliexpress_coins.tasks.surface import (
     SURFACE_REFRESH_LIMIT,
     Surface,
     SurfaceRoute,
+    _row_has_readable_title,
     classify_surface,
     has_task_rows,
     is_logged_out,
@@ -363,6 +365,36 @@ def test_classify_surface_recognises_a_known_title_even_before_its_control(
     )
 
     assert classify_surface(title_only) is Surface.BOOST_PAGE
+
+
+def test_a_titleless_row_does_not_become_a_task_from_its_badge_reward_or_header() -> None:
+    frames = _snapshot(
+        _box('Coins boost', 80, 520, 400, 560),
+        _box('GO', 120, 520, 180, 560),
+        _box('0/3', 900, 520, 1000, 560),
+        _box('+1', 200, 520, 260, 560),
+        _box('coins', 280, 520, 360, 560),
+        _box('GO', 980, 520, 1040, 560),
+    )
+
+    assert not has_task_rows(frames)
+    assert classify_surface(frames) is Surface.UNKNOWN
+
+
+def test_a_rows_header_badge_reward_and_duplicate_action_are_never_its_title() -> None:
+    action = _box('GO', 980, 520, 1040, 560)
+    row = Row(
+        (
+            _box('Coins boost', 80, 520, 400, 560),
+            _box('0/3', 900, 520, 960, 560),
+            _box('+1', 200, 520, 260, 560),
+            _box('coins', 280, 520, 360, 560),
+            _box('GO', 120, 520, 180, 560),
+            action,
+        )
+    )
+
+    assert not _row_has_readable_title(row, action)
 
 
 def test_classify_surface_recognises_the_redeem_interstitial_before_the_page_beneath(
