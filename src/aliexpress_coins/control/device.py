@@ -21,6 +21,7 @@ __all__ = [
     'KeyDevice',
     'SubprocessInputRunner',
     'SwipeDevice',
+    'TextDevice',
 ]
 
 InputResult = AdbResult
@@ -65,6 +66,19 @@ class SwipeDevice(Protocol):
         ...
 
 
+class TextDevice(Protocol):
+    """An input device that can type into the focused field."""
+
+    def text(self, value: str) -> None:
+        """Type ``value`` as text, not as key presses."""
+        ...
+
+
+def _encoded_text(value: str) -> str:
+    """Encode spaces the way ``adb shell input text`` expects them."""
+    return value.replace(' ', '%s')
+
+
 def _preview(data: bytes) -> str:
     if len(data) <= _PREVIEW_BYTES:
         return repr(data)
@@ -98,6 +112,15 @@ class AdbInputDevice:
         if not key.strip():
             raise ValueError('a key name is required')
         self._run_input('keyevent', key)
+
+    def text(self, value: str) -> None:
+        """Run ``adb -s <serial> shell input text <encoded>``."""
+        typed = value.strip()
+        if not typed:
+            raise ValueError('text to type is required')
+        if '\n' in typed or '\r' in typed:
+            raise ValueError('typed text must not contain a line break')
+        self._run_input('text', _encoded_text(typed))
 
     def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int) -> None:
         """Run ``adb -s <serial> shell input swipe <x1> <y1> <x2> <y2> <ms>``."""

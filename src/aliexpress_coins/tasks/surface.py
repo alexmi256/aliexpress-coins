@@ -57,6 +57,48 @@ heading alone is ordinary copy, so :func:`is_search_landing` also requires the
 category grid's item-count lines below it.
 """
 
+_SEARCH_RESULT_PRICE = re.compile(r'(?:C\$|US\s*\$|CS|\$)\s*\d', re.IGNORECASE)
+_SEARCH_RESULT_SOLD = re.compile(r'\b\d[\d,.]*\s*sold\b', re.IGNORECASE)
+_SEARCH_RESULT_FIELD_TEXT_TOP_FRACTION = 0.07
+_SEARCH_RESULT_FIELD_TOP_FRACTION = 0.15
+_SEARCH_RESULT_FIELD_LEFT_MIN_FRACTION = 0.18
+_SEARCH_RESULT_FIELD_LEFT_MAX_FRACTION = 0.50
+"""The query line starts inside this measured horizontal band of the field."""
+
+_QUERY_CONFUSABLES = str.maketrans({'0': 'o', '1': 'l', '2': 'z', '5': 's', '8': 'b'})
+"""Letter/digit shapes OCR confuses inside the submitted query field."""
+
+
+def _fold_query_confusables(text: str) -> str:
+    return text.translate(_QUERY_CONFUSABLES)
+
+
+def _field_band_boxes(
+    snapshot: Snapshot,
+    *,
+    top_fraction: float = _SEARCH_RESULT_FIELD_TEXT_TOP_FRACTION,
+    bottom_fraction: float = _SEARCH_RESULT_FIELD_TOP_FRACTION,
+) -> list[TextBox]:
+    """Readable boxes in the search field band, ordered for reading."""
+    top = snapshot.height * top_fraction
+    bottom = snapshot.height * bottom_fraction
+    boxes = [
+        box
+        for box in snapshot.boxes
+        if box.score >= DEFAULT_MIN_OCR_SCORE and box.bbox[1] >= top and box.bbox[3] <= bottom and box.text.strip()
+    ]
+    boxes.sort(key=lambda box: (box.bbox[1], box.bbox[0]))
+    return boxes
+
+
+def _read_field_band(snapshot: Snapshot) -> str:
+    """Join readable text in the search field band."""
+    return ' '.join(box.text for box in _field_band_boxes(snapshot))
+
+
+SEARCH_RESULTS_MARKERS = ('sold',)
+"""The product-card copy shared by the measured results surface (#142)."""
+
 PRODUCT_DETAIL_ITEM = re.compile(r'\bitem\s+\d+\s*/\s*\d+\b', re.IGNORECASE)
 """The product page's own item counter; the stable detail-page marker."""
 
@@ -171,6 +213,7 @@ class Surface(StrEnum):
     COIN_STORE = 'coin_store'
     SURPRISE_GRID = 'surprise_grid'
     SEARCH_LANDING = 'search_landing'
+    SEARCH_RESULTS = 'search_results'
     PRODUCT_DETAIL = 'product_detail'
     NON_APP = 'non_app'
     UNKNOWN = 'unknown'
@@ -233,6 +276,9 @@ def classify_surface(snapshot: Snapshot) -> Surface:
 
     if is_search_landing(snapshot):
         return Surface.SEARCH_LANDING
+
+    if is_search_results(snapshot):
+        return Surface.SEARCH_RESULTS
 
     if is_non_app_surface(snapshot):
         return Surface.NON_APP
@@ -349,6 +395,69 @@ def is_search_landing(snapshot: Snapshot) -> bool:
     return not is_boost_page(snapshot) and has_search_landing_markers(snapshot)
 
 
+def is_search_results(snapshot: Snapshot, *, query: str | None = None) -> bool:
+    """Whether the frame is the product results surface of a submitted search.
+
+    The measured results page keeps the query in its field near the top and
+    paints product cards with prices and ``N sold`` copy. When the executor
+    knows the query it submitted, the query is matched as normalised text across
+    the measured field band, with the matching layer's fuzzy threshold, so OCR
+    may split ``wireless phone`` into two boxes or misspell it slightly. Without
+    a query (the generic classifier used by the safety guard), a query-shaped
+    line with at least two letters must start in the measured field position
+    below the header/status bands, and the frame must show at least two product
+    prices and two ``N sold`` lines. Landing, coin/boost, coin-store and
+    product-detail frames are explicitly excluded.
+    """
+    if (
+        is_search_landing(snapshot)
+        or is_boost_page(snapshot)
+        or _is_coin_page(snapshot)
+        or is_coin_store(snapshot)
+        or is_product_detail(snapshot)
+    ):
+        return False
+
+    prices = [
+        box
+        for box in snapshot.boxes
+        if box.score >= DEFAULT_MIN_OCR_SCORE
+        and _SEARCH_RESULT_PRICE.search(box.text)
+        and box.bbox[1] > snapshot.height * SYSTEM_UI_TOP_FRACTION
+        and box.bbox[3] < snapshot.height * (1.0 - SYSTEM_UI_BOTTOM_FRACTION)
+    ]
+    if not prices:
+        return False
+
+    if query is not None:
+        field_text = normalize(_read_field_band(snapshot))
+        query_text = normalize(query)
+        if not query_text:
+            return False
+        folded_field = _fold_query_confusables(field_text)
+        folded_query = _fold_query_confusables(query_text)
+        if query_text in field_text or folded_query in folded_field:
+            return True
+        return max(similarity(query_text, field_text), similarity(folded_query, folded_field)) >= DEFAULT_MIN_SCORE
+
+    field_boxes = _field_band_boxes(snapshot)
+    field_left = snapshot.width * _SEARCH_RESULT_FIELD_LEFT_MIN_FRACTION
+    field_right = snapshot.width * _SEARCH_RESULT_FIELD_LEFT_MAX_FRACTION
+    field_text = normalize(' '.join(box.text for box in field_boxes))
+    if not any(character.isalpha() for character in field_text):
+        return False
+    query_line = any(
+        sum(character.isalpha() for character in box.text) >= 2 and field_left <= box.bbox[0] <= field_right
+        for box in field_boxes
+    )
+    if not query_line:
+        return False
+    sold = [
+        box for box in snapshot.boxes if box.score >= DEFAULT_MIN_OCR_SCORE and _SEARCH_RESULT_SOLD.search(box.text)
+    ]
+    return len(prices) >= 2 and len(sold) >= 2
+
+
 def is_empty_boost(snapshot: Snapshot) -> bool:
     """Whether the frame is the boost page's empty state.
 
@@ -458,5 +567,6 @@ __all__ = [
     'is_non_app_surface',
     'is_product_detail',
     'is_search_landing',
+    'is_search_results',
     'is_surprise_grid',
 ]

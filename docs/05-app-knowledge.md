@@ -54,8 +54,8 @@ between loads (e.g., `Browse surprise items` rotated to `Search for what you lov
 
 Explicit deny rows sit beside allowed rows with identical `GO` buttons — enforcing the deny
 list at dispatch is mandatory. `Search for what you love` is now an allowed browse row with its own
-category-tap executor (#108). `Browse recently viewed items` is also present with the same `GO`
-shape, but #116 refuses it because its destination and completion contract were never captured.
+search-submission executor (#108/#142). `Browse recently viewed items` is also present with the same
+`GO` shape, but #116 refuses it because its destination and completion contract were never captured.
 
 ### 4b. The stuck state (`empty_boost`) ✅
 
@@ -162,18 +162,40 @@ enough to call the list clean.
   unchanged. App settings' toggle deep-links to OS settings (no runtime dialog). The executor
   handles all four outcomes: immediate credit, app pre-prompt, runtime dialog (`Allow` / `Don't allow`),
   and OS settings redirect (`routed_to_settings`, stops without toggling).
-- **`Search for what you love` ✅ (2026-11-24 01:48–01:53 EST, recon):** two rounds, each paid +1
-  (balance `67 → 68 → 69`). `GO` opens a search landing with a search field, an account-specific
-  `Search history` section and a server-rendered `Discover more` grid of category cards. Landing on
-  the page alone did **not** advance the badge; tapping a history entry (`Smartphone`) only filled
-  the search field and also did not advance it. Tapping a category card under `Discover more`
-  (`Woman Clothing`, then `Sneakers`) advanced the row `0/2 → 1/2`; after the second category the
-  row was gone from the populated boost list (the app removes it at `2/2`). No timer chip and no
-  product visit are involved; the executor taps one untried category per round and verifies the
-  badge after returning. The landing is now classified as `PAGE` / `search_landing`; two BACKs
-  still exit to the home feed (docs/07 §1), so the measured shortcut route is used for every return.
-  The executor's own live verification is deferred to #114; the replay below is from the captured
-  landing frame, and the live sequence here is the measured round semantics.
+- **`Search for what you love` ✅ (2026-11-25, issue #142):** the row starts at `0/2`; its `GO`
+  opens a landing with a search field, an account-specific `Search history` section and a
+  server-rendered `Discover more` grid ✅. Landing alone does not advance the badge ✅.
+- **A category card is not a submitted search ✅.** The search field's grey placeholder already read
+  `OPPO` in the pre-tap frame (`frame-004` at 17:07:43.869; the tap followed at 17:07:44.417), and the
+  landing was still on screen with the same field text at 17:07:46.071; run `20261125T170508Z` waited
+  out its 3 s transition bound, recorded `transition_not_observed`, and the row stayed `0/2` ✅.
+  Whether the card is inert or the tap was lost while the page was still loading images is ❓; this
+  supersedes the 2026-11-24 recon note that a category tap advanced the row.
+- **A real search does advance the row ✅.** The measured sequence is: tap the field (keyboard
+  appears), type a benign query (`wireless phone`) through `input text`, then submit with the IME
+  enter action. The field shows the query and suggestions; enter dismisses the keyboard and starts
+  the search. The page was blank/skeleton for several seconds before product cards painted ✅.
+  The results surface keeps the query in the field and paints product cards with `200 sold 4.9`,
+  `C$32.99`, `Disc:` and `Applied` copy ✅. Returning to the coin page moved the row
+  `0/2 → 1/2` and the balance `104 → 105` ✅.
+- **The counter is the task, not one search ✅.** Live run `20261125T175208Z` resumed at `1/2`,
+  typed `phone case`, submitted it, and returned to a populated boost list where the row was gone
+  (the app removes it at `2/2`); the run recorded `progress_complete` from the row's disappearance ✅.
+  The run's balance moved `105 → 107 (+2)` across the final search round and a shopping-credits
+  check-in; the earlier manual search isolated the search task's `+1` (`104 → 105`) ✅, while the
+  final round's own `+1` is inferred from the `+2` total and the `+1` row contract ⬜.
+- **Verification is the results surface, never the landing ✅.** `search.py` counts a round only
+  after `is_search_results` sees the submitted query plus a product price; a landing that remains on
+  screen is `results_not_reached` and is not recorded. It tries the IME enter action first (observed
+  live ✅) and one bounded retry on the field's own search control (implemented and unit-tested, not
+  exercised live ⬜), then fails honestly ✅. No product, cart or buy control is tapped ✅.
+- **The easiest return is the shortcut route ✅.** Two BACKs from the landing still exit to the home
+  feed (docs/07 §1), so every round returns through the measured shortcut route.
+- **Open questions:** whether repeating the same query counts as a second round ❓ (the executor
+  uses two different benign queries), and whether a landing variant without `Search history` keeps
+  the field in the same band ⬜ (the field is derived from the first heading and capped by a frame
+  fraction). The reviewed results fixture is
+  [`tests/data/flows/search_results_issue_142.png`](../tests/data/flows/search_results_issue_142.png).
 - **`View Super discounts` ✅ (2026-11-24 00:35 EST, run `20261124T053441Z`):** a timed view task.
   The row reads `View Super discounts`, subtitle `Check out this page for 15 seconds`, `GO`, and
   `+1`; there is no purchase step. The `GO` opens a destination page; the live run read the

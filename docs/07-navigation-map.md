@@ -62,8 +62,9 @@ flowchart TD
     sgrid -- BACK --> boost
     boost -- 'Learn to save money' GO --> explain[[Explainer page<br/>What are Coins Credits?]]
     explain -- BACK --> boost
-    boost -- 'Search for what you love' GO --> landing[[Search landing<br/>category cards]]
-    landing -- card tap --> results[[Search results]]
+    boost -- 'Search for what you love' GO --> landing[[Search landing<br/>field + history + category cards]]
+    landing -- 'type query + submit' --> results[[Search results<br/>product cards + prices]]
+    landing -. 'category tap' .-> landing
     results -- BACK --> landing
     landing -- BACK --> exit[[home feed]]
     boost -- 'Place an order' / 'Add 5 items to cart' --> denied[[REFUSED<br/>never tapped]]
@@ -87,6 +88,7 @@ flowchart TD
 | surprise grid | `Browse surprise items` + `Tap 3 items on this page` + `N /3` | boost row shares title; grid adds `N /3` |
 | surprise grid (scrolled) | two columns of card titles with price lines for the guard; the executor matches labels already read this round | header and pill are above the viewport; generic discount copy is not enough, and the executor restores the top before reading the counter (#100) |
 | **search landing** | `Discover more` + category cards with item-count lines (a `Search history` section may sit above it) | the heading alone is generic feed copy; boost row shares `Search for what you love`, and history text is account data, not an identifier |
+| **search results** | the submitted query in the top field + product prices + `N sold` copy; no `Discover more` grid | a category tap does not leave the landing or submit; a coupon/coin page can share prices, so require the query or the top field copy and exclude known pages |
 | product detail | `Item 1/n` or `Add to cart` + `Buy now` | BACK only; never tap purchase controls |
 | mission overlay / coupon | `Mission Completed` over dimmed grid / `Sale coupons` + `Collect all: C$…` | — |
 | non-app clock surface | status-bar `H:MM` + weekday/day widget + no app content | a clock alone appears on every app frame; the date widget and empty content are required. Launchers with icons use the foreground-package probe |
@@ -102,7 +104,7 @@ coordinates, scroll distances, and unscaled crops do not (modal close fraction d
 | boost list | tap row's `GO` | app destination, or foreground-loss recovery | timer/known app page; a `non_app` frame or non-AliExpress focus saves evidence, warm-starts and re-enters before verification (#116) |
 | coin / boost | quiz `GO` → option → `Go back` | quiz → result → redeem / coin | `Coins quiz` → `Correct answer:` → BACK on redeem |
 | boost list | surprise `GO` → tile → BACK | grid → detail → grid | `N /3` advances on distinct product; tap `Mission Completed` at `3/3` |
-| boost list | search `GO` → category card | landing → results | returning row badge `0/2 → 1/2`; after the second category the row is gone from the populated list |
+| boost list | search `GO` → focus field → type query → enter | landing → keyboard → results | results must show the query + a product price; returning row badge `0/2 → 1/2`; after the second verified search the row is gone from the populated list. The measured category tap did not navigate or submit and is not a search (#142). |
 | boost list | notifications `GO` | claimed / pre-prompt / dialog / OS settings | check + balance, `Allow`, or stop at `All AliExpress notifications` |
 
 ## 5. Stuck states, change detection & recovery ✅

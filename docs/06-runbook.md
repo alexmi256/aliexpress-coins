@@ -308,8 +308,8 @@ run.json: runs/20261123T015402Z/run.json
 Read it like this:
 
 - **`surface`** is the screen the planner understood: `rows_present`, `rows_absent`, `boost_page`,
-  `redeem_interstitial`, `empty_boost`, `coin_store`, `surprise_grid`, `search_landing`, `product_detail`,
-  `non_app`, or `unknown`. `unknown`, `non_app`, `empty_boost`, a redeem interstitial, or a
+  `redeem_interstitial`, `empty_boost`, `coin_store`, `surprise_grid`, `search_landing`,
+  `search_results`, `product_detail`, `non_app`, or `unknown`. `unknown`, `non_app`, `empty_boost`, a redeem interstitial, or a
   `rows_absent` with no readable task row is an unreadable report, not a plan. `non_app` is the
   measured status-clock plus date-widget frame with no app content; a launcher
   with icons stays `unknown` and is identified by the foreground-package probe during browse recovery.

@@ -97,6 +97,24 @@ def test_adb_input_device_presses_a_key_without_inventing_a_coordinate() -> None
     assert runner.calls[0] == ('adb', '-s', 'serial', 'shell', 'input', 'keyevent', 'KEYCODE_BACK')
 
 
+def test_adb_input_device_types_text_with_spaces_encoded_for_input_text() -> None:
+    runner = ScriptedAdbRunner(ok())
+    device = AdbInputDevice('serial', runner=runner)
+
+    device.text('wireless phone')
+
+    assert runner.calls[0] == ('adb', '-s', 'serial', 'shell', 'input', 'text', 'wireless%sphone')
+
+
+def test_adb_input_device_rejects_empty_or_multiline_text() -> None:
+    device = AdbInputDevice('serial', runner=ScriptedAdbRunner(ok()))
+
+    with pytest.raises(ValueError, match='text to type'):
+        device.text('   ')
+    with pytest.raises(ValueError, match='line break'):
+        device.text('two\nlines')
+
+
 def test_adb_input_device_swipes_with_the_duration_last() -> None:
     runner = ScriptedAdbRunner(ok())
     device = AdbInputDevice('serial', runner=runner)
@@ -120,3 +138,10 @@ def test_adb_input_device_reports_a_non_zero_key_exit() -> None:
 
     with pytest.raises(InputError, match=r'input keyevent exited 2.*key rejected'):
         device.keyevent('KEYCODE_BACK')
+
+
+def test_adb_input_device_reports_a_non_zero_text_exit() -> None:
+    device = AdbInputDevice('serial', runner=ScriptedAdbRunner(fail('text rejected', returncode=3)))
+
+    with pytest.raises(InputError, match=r'input text exited 3.*text rejected'):
+        device.text('phone case')

@@ -664,6 +664,30 @@ def test_the_search_landing_is_expected_only_for_the_search_task() -> None:
         is True
     )
 
+    results = _snapshot(
+        _box('wireless phone', 235, 186, 413, 220),
+        _box('200 sold', 47, 940, 301, 980),
+        _box('C$32.99', 70, 1017, 257, 1076),
+    )
+    assert (
+        safety._is_unexpected_inside_task(
+            results,
+            unknown,
+            Surface.SEARCH_RESULTS,
+            task_key='search_for_what_you_love',
+        )
+        is False
+    )
+    assert (
+        safety._is_unexpected_inside_task(
+            results,
+            unknown,
+            Surface.SEARCH_RESULTS,
+            task_key='sponsored_items',
+        )
+        is True
+    )
+
 
 def test_the_product_detail_suffixed_purchase_captions_are_exempt() -> None:
     guard = _guard()
