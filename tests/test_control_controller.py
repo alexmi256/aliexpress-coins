@@ -495,6 +495,7 @@ class _GestureDevice:
     def __init__(self) -> None:
         self.taps: list[tuple[int, int]] = []
         self.keys: list[str] = []
+        self.texts: list[str] = []
         self.swipes: list[tuple[int, int, int, int, int]] = []
 
     def tap(self, x: int, y: int) -> None:
@@ -502,6 +503,9 @@ class _GestureDevice:
 
     def keyevent(self, key: str) -> None:
         self.keys.append(key)
+
+    def text(self, value: str) -> None:
+        self.texts.append(value)
 
     def swipe(self, x1: int, y1: int, x2: int, y2: int, duration_ms: int) -> None:
         self.swipes.append((x1, y1, x2, y2, duration_ms))
@@ -540,6 +544,39 @@ def test_press_key_requires_a_reason_and_a_capable_device() -> None:
         controller.press_key('   ', why='leave')
     with pytest.raises(InputError, match='cannot press'):
         controller.press_key('KEYCODE_BACK', why='leave')
+
+
+def test_type_text_logs_once_and_does_not_move_the_tap_or_key_counter() -> None:
+    device = _GestureDevice()
+    controller = _controller(device)
+
+    record = controller.type_text('wireless phone', why='search the round')
+
+    assert record.text == 'wireless phone'
+    assert record.as_dict()['event'] == 'text'
+    assert record.as_dict() == json.loads(record.to_json())
+    assert device.texts == ['wireless phone']
+    assert controller.text_count == 1
+    assert controller.tap_count == 0
+    assert controller.key_count == 0
+
+
+def test_type_text_dry_run_suppresses_the_device_and_validates_input() -> None:
+    device = _GestureDevice()
+    controller = _controller(device, dry_run=True)
+
+    record = controller.type_text('phone case', why='search the round')
+
+    assert record.suppressed is True
+    assert device.texts == []
+    assert controller.text_count == 1
+
+    with pytest.raises(ValueError, match='text to type is required'):
+        controller.type_text('   ', why='search')
+    with pytest.raises(ValueError, match='reason is required'):
+        controller.type_text('phone case', why='   ')
+    with pytest.raises(InputError, match='cannot type'):
+        _controller(_FakeDevice()).type_text('phone case', why='search')
 
 
 def test_swipe_clamps_both_endpoints_and_reports_the_gesture() -> None:

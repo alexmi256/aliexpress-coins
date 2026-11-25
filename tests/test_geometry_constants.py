@@ -65,7 +65,7 @@ ALLOWED: dict[tuple[str, int | float], _Allowed] = {
     ('tasks/discovery.py', 30.0): _Allowed(1, 'boost-page timeout in seconds'),
     ('tasks/notifications.py', 20.0): _Allowed(1, 'navigation timeout in seconds'),
     ('tasks/quiz.py', 20.0): _Allowed(1, 'navigation timeout in seconds'),
-    ('tasks/search.py', 20.0): _Allowed(1, 'navigation timeout in seconds'),
+    ('tasks/search.py', 20.0): _Allowed(2, 'navigation and results timeouts in seconds'),
     ('tasks/surprise.py', 20.0): _Allowed(1, 'navigation timeout in seconds'),
     ('tools/capture_frames.py', 35): _Allowed(1, 'manifest-only default SDK, not a pixel coordinate'),
     ('tools/capture_frames.py', 240): _Allowed(1, 'manifest-only default density, not a pixel coordinate'),

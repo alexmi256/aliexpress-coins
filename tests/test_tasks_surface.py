@@ -40,6 +40,7 @@ from aliexpress_coins.tasks.surface import (
     is_logged_out,
     is_non_app_surface,
     is_search_landing,
+    is_search_results,
     is_surprise_grid,
 )
 
@@ -290,6 +291,15 @@ def test_classify_surface_names_the_recorded_search_landing(engine: RapidOcrEngi
     assert classify_surface(_snapshot(_box('Search for what you love', 60, 400, 700, 450))) is Surface.UNKNOWN
 
 
+@pytest.mark.slow
+def test_classify_surface_names_the_recorded_search_results(engine: RapidOcrEngine) -> None:
+    results = _load(ROOT / 'tests' / 'data' / 'flows' / 'search_results_issue_142.png', engine)
+
+    assert is_search_results(results, query='wireless phone')
+    assert is_search_results(results)
+    assert classify_surface(results) is Surface.SEARCH_RESULTS
+
+
 def test_discover_more_without_a_category_grid_is_not_the_search_landing() -> None:
     heading_only = _snapshot(_box('Discover more', 60, 660, 400, 710))
 
@@ -303,6 +313,44 @@ def test_discover_more_without_a_category_grid_is_not_the_search_landing() -> No
     )
     assert is_search_landing(anchored)
     assert classify_surface(anchored) is Surface.SEARCH_LANDING
+
+
+def test_search_results_require_a_query_price_and_product_copy() -> None:
+    results = _snapshot(
+        _box('wireless phone', 235, 186, 413, 220),
+        _box('200 sold', 47, 940, 301, 980),
+        _box('C$32.99', 70, 1017, 257, 1076),
+    )
+
+    assert is_search_results(results, query='wireless phone')
+    assert is_search_results(results)
+    assert classify_surface(results) is Surface.SEARCH_RESULTS
+    assert not is_search_results(results, query='phone case')
+    assert not is_search_results(_snapshot(_box('wireless phone', 235, 186, 413, 220)))
+    assert not is_search_results(
+        _snapshot(
+            _box('wireless phone', 235, 186, 413, 220),
+            _box('200 sold', 47, 940, 301, 980),
+        )
+    )
+
+
+def test_a_landing_or_coin_store_is_never_search_results() -> None:
+    landing = _snapshot(
+        _box('Discover more', 60, 660, 400, 710),
+        _box('Sneakers', 200, 800, 460, 850),
+        _box('74k+ items', 200, 860, 380, 900),
+        _box('C$32.99', 70, 1017, 257, 1076),
+        _box('200 sold', 47, 940, 301, 980),
+    )
+    coin_store = _snapshot(
+        _box('Use coins for discounts', 60, 90, 600, 150),
+        _box('Disc:C$31.27', 60, 300, 330, 340),
+        _box('200 sold', 47, 940, 301, 980),
+    )
+
+    assert not is_search_results(landing, query='wireless phone')
+    assert not is_search_results(coin_store)
 
 
 @pytest.mark.slow

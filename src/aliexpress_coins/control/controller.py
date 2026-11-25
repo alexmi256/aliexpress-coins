@@ -145,6 +145,30 @@ class KeyRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class TextRecord:
+    """One typed string, whether it was issued or suppressed by dry run."""
+
+    index: int
+    text: str
+    reason: str
+    suppressed: bool
+
+    def as_dict(self) -> dict[str, object]:
+        """The machine-readable fields of the log line."""
+        return {
+            'event': 'text',
+            'text_input': self.index,
+            'text': self.text,
+            'reason': self.reason,
+            'suppressed': self.suppressed,
+        }
+
+    def to_json(self) -> str:
+        """Render the record as one JSON line."""
+        return json.dumps(self.as_dict(), separators=(',', ':'), sort_keys=True)
+
+
+@dataclass(frozen=True, slots=True)
 class SwipeRecord:
     """One swipe decision, including its clamped endpoints."""
 
@@ -248,6 +272,7 @@ class Controller:
         self._logger = logger if logger is not None else logging.getLogger(LOGGER_NAME)
         self._tap_count = 0
         self._key_count = 0
+        self._text_count = 0
         self._swipe_count = 0
         self._on_action: Callable[[], None] | None = None
 
@@ -308,6 +333,11 @@ class Controller:
         return self._key_count
 
     @property
+    def text_count(self) -> int:
+        """Intended typed strings so far, including dry-run suppressions."""
+        return self._text_count
+
+    @property
     def swipe_count(self) -> int:
         """Intended swipes so far, including dry-run suppressions."""
         return self._swipe_count
@@ -361,6 +391,33 @@ class Controller:
                 raise InputError(f'the input device cannot press {name!r}')
             self._notify_action()
             keyevent(name)
+        return record
+
+    def type_text(self, value: str, *, why: str) -> TextRecord:
+        """Type ``value`` into the focused field through the input device.
+
+        Text is not a coordinate: the field must already be focused by a tap,
+        and the caller is responsible for submitting it. A device that cannot
+        type raises :class:`InputError` instead of silently skipping the text.
+        """
+        reason = _required_reason(why)
+        typed = value.strip()
+        if not typed:
+            raise ValueError('text to type is required')
+        self._text_count += 1
+        record = TextRecord(
+            index=self._text_count,
+            text=typed,
+            reason=reason,
+            suppressed=self._dry_run,
+        )
+        self._logger.info('%s', record.to_json())
+        if not self._dry_run:
+            type_text = getattr(self._device, 'text', None)
+            if type_text is None:
+                raise InputError('the input device cannot type text')
+            self._notify_action()
+            type_text(typed)
         return record
 
     def swipe(

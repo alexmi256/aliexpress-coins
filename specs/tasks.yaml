@@ -33,9 +33,9 @@
 # that control. Learn to save money is the other allowed row from the measured
 # roster. Recently viewed was listed in the brief but never measured; #116 moves
 # it to an explicit unrecognised refusal rather than inferring a browse contract
-# from its title. Search for what you love (#108) has no timer chip and therefore
-# no browse-wait contract; it is allowed only through its own category-card
-# executor and badge verification.
+# from its title. Search for what you love (#108/#142) has no timer chip and
+# therefore no browse-wait contract; it is allowed only through its own
+# search-submission executor and badge verification.
 
 version: 1
 default_deny_reason: unrecognised
@@ -112,10 +112,13 @@ allowed:
     repeatable: true
     max_per_run: 2
     notes: >-
-      Two rounds per day. Each round is one tap on a category card under the
-      landing page's `Discover more` section; the operator's search history is
-      never read or tapped. The row badge is the only counter: it advances
-      `N/2` after each category tap and the row disappears at `2/2` (#108).
+      Two rounds per day. Each round focuses the search field, types a benign
+      product query, submits it, and waits for the product-results surface
+      before returning. A landing that remains on screen is not a search and is
+      never counted; the measured category tap neither navigated nor submitted
+      (#142). The row badge
+      is the only counter: it advances `N/2` after each verified search and the
+      row disappears at `2/2`.
 
   - key: super_discounts
     label_patterns:

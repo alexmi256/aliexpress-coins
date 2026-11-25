@@ -79,6 +79,7 @@ SETS: dict[str, tuple[str, ...]] = {
         'coins_quiz_entry_row',
         'coins_quiz_question',
         'coins_quiz_exit_coin_page',
+        'search_results_issue_142',
     ),
     'popups': (
         'launch_welcome_gifts',

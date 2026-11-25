@@ -41,6 +41,15 @@ arbitrary screenshots anywhere else in the tree.
 | `notifications_after_grant.png` | `notifications` / `after_grant` | same OS page after the permission is granted: switch on, `Categories` list, `Allow notification dot` | no account data |
 | `surprise_items_issue_115_loading_grid.png` | `surprise_items` / opening load (#115) | `Browse surprise items` header and `0/3` pill over empty skeleton cards; `find_surprise_tiles` returns none | status-bar clock retained; no account data |
 | `surprise_items_issue_115_loaded_grid.png` | `surprise_items` / settled grid (#115) | the same `0/3` grid a moment later, with product cards, titles and prices painted | status-bar clock retained; product titles and prices only; no account data |
+| `search_results_issue_142.png` | `search_for_what_you_love` / results (#142) | the product-results surface after submitting `wireless phone`: query in the field, product cards, `200 sold 4.9`, `C$32.99` and `Disc:` prices | status-bar clock retained; no account nickname, balance, order, cart or address; the query is the benign test query from `SEARCH_QUERIES` |
+
+`search_results_issue_142.png` is the live results surface captured on 2026-11-25 while fixing the
+search task. The measured `OPPO` category tap did not navigate or submit (its grey placeholder was
+already in the field before the tap), so the fixture is the positive surface the executor must
+recognise after a real query submission, not a category destination. The query is the benign test
+query typed by the collector; no purchase control is present or tapped. The PNG is palette-quantized
+from the full 1200×2000 RGB capture to stay under the 550 KB fixture budget; OCR still reads the
+query, `N sold` and the prices used by `is_search_results`.
 
 `surprise_items_issue_115.json` is sanitized report evidence from run `20261124T083006Z`, not a
 screenshot. That run retained only the two balance frames: no surprise-grid PNG or OCR sidecar was

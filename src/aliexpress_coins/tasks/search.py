@@ -1,21 +1,29 @@
-"""The search-landing executor: one category tap per round (#108).
+"""The real-search executor: submit a query per round (#142).
 
 ``Search for what you love`` is a two-round browse task. Its ``GO`` opens a
-search landing with a search field, an account-specific ``Search history``
-section and a server-rendered ``Discover more`` grid of category cards. A round
-completes by tapping one category card in that grid; the landing by itself does
-not advance, and a tap on a history entry only fills the search field.
+search landing with a search field, an optional ``Search history`` section and a
+server-rendered ``Discover more`` grid. The measured category-card tap did not
+navigate or submit a search and did not advance the task; whether it changes the
+field is unproven because the field's grey ``OPPO`` placeholder was already
+present before the tap.
 
 The measured contract is the boost row's own badge:
 
-* it starts at ``0/2`` and advances to ``1/2`` when the first category opens;
+* it starts at ``0/2`` and advances to ``1/2`` after a submitted query reaches
+  the product-results surface;
 * the row disappears when the second round reaches ``2/2``;
-* the category tap also pays ``+1``, so the two rounds pay ``+2`` in total.
+* each verified search also pays ``+1``, so the two rounds pay ``+2`` in total.
 
-The executor therefore never types anything, never taps a history entry and
-never visits a product. It re-enters the boost list after each round and reads
-the badge; a badge that does not advance is a failure with expected vs observed
-(#99), and only a verified round is written to the daily state (#100).
+The executor therefore focuses the field, types a benign product query, submits
+it with the IME's enter action, and waits for a results surface showing both the
+query and product prices. A landing or keyboard that remains on screen is not a
+search and is never counted. If enter does not submit, one bounded retry taps
+the field's own search control before the round fails honestly.
+
+The executor never taps a product, price, cart or buy control. It re-enters the
+boost list after each round and reads the badge; a badge that does not advance
+is a failure with expected vs observed (#99), and only a verified round is
+written to the daily state (#100).
 
 The return route is the shared shortcut route. A second BACK from the landing
 would leave the app (docs/07 §1/§5), so every round returns the same way a browse
@@ -26,8 +34,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
-import statistics
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -42,7 +48,7 @@ from aliexpress_coins.perception.matching import (
     find_text,
     normalize,
 )
-from aliexpress_coins.perception.snapshot import Snapshot, TextBox
+from aliexpress_coins.perception.snapshot import Snapshot
 from aliexpress_coins.perception.state import CaptureSource, ScreenState, classify
 from aliexpress_coins.perception.templates import TemplateStore
 from aliexpress_coins.runner.errors import RunInterrupted
@@ -70,6 +76,7 @@ from aliexpress_coins.tasks.surface import (
     has_task_rows,
     is_boost_page,
     is_search_landing,
+    is_search_results,
 )
 
 __all__ = [
@@ -77,23 +84,30 @@ __all__ = [
     'DEFAULT_BADGE_TIMEOUT',
     'DEFAULT_INTERVAL',
     'DEFAULT_LOAD_TIMEOUT',
+    'DEFAULT_RESULT_TIMEOUT',
     'DEFAULT_RETURN_ATTEMPTS',
     'DEFAULT_RETURN_INTERVAL',
     'DEFAULT_RETURN_TIMEOUT',
-    'DEFAULT_TRANSITION_TIMEOUT',
-    'DISCOVER_MORE',
     'MAX_ROUNDS',
+    'SEARCH_QUERIES',
     'SEARCH_TITLE',
     'RoundRecord',
-    'SearchCategory',
+    'SearchField',
     'SearchOutcome',
     'SearchResult',
-    'find_search_categories',
+    'find_search_field',
     'run_search_task',
 ]
 
 SEARCH_TITLE = 'Search for what you love'
-DISCOVER_MORE = 'Discover more'
+
+SEARCH_QUERIES: tuple[str, ...] = ('wireless phone', 'phone case')
+"""Benign product queries used for the two measured rounds.
+
+They contain no account data and never name a purchase action. A second query is
+used for the second round, so the app cannot treat a repeated request as the
+same search and so the result frame carries a different query to verify.
+"""
 
 MAX_ROUNDS = 2
 """The measured round count on the row's ``N/2`` badge."""
@@ -104,13 +118,26 @@ DEFAULT_LOAD_TIMEOUT = 15.0
 DEFAULT_ARRIVAL_TIMEOUT = 15.0
 """How long the search landing may take to appear after the row's ``GO``."""
 
-DEFAULT_TRANSITION_TIMEOUT = 3.0
-"""How long a category tap may take to leave the landing page.
+DEFAULT_RESULT_TIMEOUT = 20.0
+"""How long one submitted query may take to paint a recognisable results surface.
 
-The measured transition completed within one second. The poll is evidence that
-the tap took effect; the badge is still the completion signal, so a slow page
-does not become a longer blind sleep.
+The measured load showed a blank/skeleton frame for several seconds before the
+first product cards painted, so the bound is longer than the landing's own
+arrival wait. It is still a bound: an empty landing at the deadline is a failure,
+not an optimistic count.
 """
+
+SESSION_UI_TOP_FRACTION = 0.03
+SEARCH_FIELD_BOTTOM_FRACTION = 0.20
+"""The search field sits between the status bar and these frame fractions.
+
+The landing's first heading (``Search history`` when present) normally sets the
+lower bound; the fraction caps it when that section is absent so the executor
+never taps into the history/category content.
+"""
+
+SEARCH_BUTTON_RIGHT_FRACTION = 0.88
+"""The measured search control sits on the field's right edge (x ≈ 0.89 · width)."""
 
 DEFAULT_BADGE_TIMEOUT = 3.0
 """How long the returned row badge may take to show the round's credit.
@@ -132,43 +159,6 @@ DEFAULT_RETURN_INTERVAL = 0.5
 DEFAULT_RETURN_ATTEMPTS = 2
 """The bounded number of shortcut re-entries spent trying to reach the coin page."""
 
-_CONTENT_BOTTOM_FRACTION = 0.94
-"""The Android taskbar band is never category content."""
-
-_CATEGORY_TITLE_HEIGHT_RATIO = 0.6
-"""A card title is at least this multiple of the frame's median text height.
-
-Branding painted on a card image is smaller than the card's own title; keeping
-the frame-relative scale avoids a stored pixel size.
-"""
-
-_CATEGORY_ANCHOR_GAP_RATIO = 4.0
-"""A category's item-count line sits within this many median text heights below it."""
-
-_ITEMS_ANCHOR = re.compile(r'\b\d[\d,.]*\s*[kKmM]?\+?\s*items?\b', re.IGNORECASE)
-"""The ``41k+ items`` line under a category card, never a product price."""
-
-_PRICE = re.compile(r'(?:C\$|US\s*\$|CS|\$)\s*\d', re.IGNORECASE)
-
-_NON_CATEGORY_PARTS: tuple[str, ...] = (
-    'add to cart',
-    'black friday',
-    'buy now',
-    'checkout',
-    'choice',
-    'coupons eligible',
-    'disc',
-    'free shipping',
-    'items',
-    'low price',
-    'off',
-    'order now',
-    'shop now',
-    'sold',
-    'welcome deal',
-)
-"""Card decoration, prices, shipping and action copy that is not a category title."""
-
 
 class SearchOutcome(StrEnum):
     """What one search-task visit actually did."""
@@ -179,32 +169,30 @@ class SearchOutcome(StrEnum):
 
 
 @dataclass(frozen=True, slots=True)
-class SearchCategory:
-    """One tappable category card under the landing's ``Discover more`` grid."""
+class SearchField:
+    """The landing's search field, expressed as frame-relative tap points."""
 
-    label: str
-    box: TextBox
-
-    @property
-    def normalized_label(self) -> str:
-        """The label in the matching layer's comparable form."""
-        return normalize(self.label)
+    center: tuple[float, float]
+    submit: tuple[float, float]
+    top: float
+    bottom: float
 
     def as_dict(self) -> dict[str, object]:
-        """Render the card for the run report."""
+        """Render the field for the run report."""
         return {
-            'label': self.label,
-            'box': list(self.box.bbox),
-            'target': list(self.box.center),
+            'center': list(self.center),
+            'submit': list(self.submit),
+            'top': self.top,
+            'bottom': self.bottom,
         }
 
 
 @dataclass(frozen=True, slots=True)
 class RoundRecord:
-    """One round's badge evidence and the category that earned it."""
+    """One round's badge evidence and the query that earned it."""
 
     index: int
-    category: str
+    query: str
     badge_before: str | None
     badge_after: str | None
     total: int
@@ -222,7 +210,7 @@ class RoundRecord:
         """Render the round for ``run.json`` without losing the evidence."""
         return {
             'index': self.index,
-            'category': self.category,
+            'query': self.query,
             'badge_before': self.badge_before,
             'badge_after': self.badge_after,
             'badge_change': self.badge_change,
@@ -242,8 +230,8 @@ class SearchResult:
     or ``row_vanished`` when no work was possible. A non-advancing badge is
     ``progress_unchanged`` with the expected and observed values; the other
     failures are ``not_settled``, ``task_surface_unavailable``,
-    ``landing_not_arrived``, ``category_not_found``, ``transition_not_observed``,
-    ``return_failed``, ``redeem_interstitial`` or ``no_observation``.
+    ``landing_not_arrived``, ``search_field_not_found``, ``results_not_reached``,
+    ``progress_unchanged``, ``return_failed`` or ``redeem_interstitial``.
     """
 
     key: str
@@ -309,9 +297,9 @@ class SearchResult:
         return f'{before if before is not None else "?"} -> {after if after is not None else "?"}'
 
     @property
-    def categories(self) -> tuple[str, ...]:
-        """The category tapped in each round, in walk order."""
-        return tuple(record.category for record in self.round_records)
+    def queries(self) -> tuple[str, ...]:
+        """The query submitted in each round, in walk order."""
+        return tuple(record.query for record in self.round_records)
 
     def as_dict(self) -> dict[str, object]:
         """Render the result for ``run.json`` without losing the evidence."""
@@ -326,7 +314,7 @@ class SearchResult:
             'done_today_after': self.done_today_after,
             'rounds': self.rounds,
             'round_records': [item.as_dict() for item in self.round_records],
-            'categories': list(self.categories),
+            'queries': list(self.queries),
             'badge_before': self.badge_before_text,
             'badge_after': self.badge_after_text,
             'badge_change': self.badge_change,
@@ -338,58 +326,42 @@ class SearchResult:
         }
 
 
-def find_search_categories(snapshot: Snapshot) -> tuple[SearchCategory, ...]:
-    """Return the category cards below ``Discover more``, in reading order.
+def find_search_field(snapshot: Snapshot) -> SearchField | None:
+    """Return the landing's search field as frame-relative tap points.
 
-    Search-history entries sit above the section heading and are never considered;
-    the executor must not tap account data. A card's own item-count line
-    (``NNk+ items``) identifies the title above it, so branding painted on the
-    card image and a product promo with a price are not mistaken for a category.
+    The field is the band between the status bar and the landing's first heading,
+    capped at :data:`SEARCH_FIELD_BOTTOM_FRACTION` so a missing history section
+    cannot make the executor tap into the category grid. The submit point is the
+    measured search control on the field's right edge. All values derive from the
+    frame, not from stored tablet pixels.
     """
-    discover = find_text(
+    top = snapshot.height * SESSION_UI_TOP_FRACTION
+    limit = snapshot.height * SEARCH_FIELD_BOTTOM_FRACTION
+    heading = find_text(
         snapshot,
-        DISCOVER_MORE,
+        'Search history',
         min_score=DEFAULT_MIN_SCORE,
         min_ocr_score=DEFAULT_MIN_OCR_SCORE,
     )
-    if discover is None:
-        return ()
-
-    top = discover.box.bbox[3]
-    content_bottom = snapshot.height * _CONTENT_BOTTOM_FRACTION
-    heights = [box.height for box in snapshot.boxes if box.score >= DEFAULT_MIN_OCR_SCORE and box.height > 0]
-    median_height = float(statistics.median(heights))
-    min_title_height = median_height * _CATEGORY_TITLE_HEIGHT_RATIO
-    max_gap = median_height * _CATEGORY_ANCHOR_GAP_RATIO
-    split = snapshot.width / 2.0
-
-    titles: list[TextBox] = []
-    anchors: list[TextBox] = []
-    for box in snapshot.boxes:
-        if box.score < DEFAULT_MIN_OCR_SCORE or box.bbox[1] <= top or box.bbox[3] >= content_bottom:
-            continue
-        if _ITEMS_ANCHOR.search(box.text):
-            anchors.append(box)
-        elif _is_category_title(box, min_height=min_title_height):
-            titles.append(box)
-
-    selected: list[SearchCategory] = []
-    seen: set[str] = set()
-    for title in sorted(titles, key=lambda item: (item.bbox[1], item.bbox[0])):
-        column = 0 if title.center[0] < split else 1
-        has_anchor = any(
-            _column_of(anchor, split) == column
-            and anchor.bbox[1] >= title.bbox[3]
-            and anchor.bbox[1] - title.bbox[3] <= max_gap
-            for anchor in anchors
+    if heading is None:
+        heading = find_text(
+            snapshot,
+            'Discover more',
+            min_score=DEFAULT_MIN_SCORE,
+            min_ocr_score=DEFAULT_MIN_OCR_SCORE,
         )
-        label = normalize(title.text)
-        if not has_anchor or not label or label in seen:
-            continue
-        seen.add(label)
-        selected.append(SearchCategory(label=title.text, box=title))
-
-    return tuple(selected)
+    if heading is None:
+        return None
+    bottom = min(heading.box.bbox[1], limit)
+    if bottom <= top:
+        return None
+    center_y = top + (bottom - top) * 0.6
+    return SearchField(
+        center=(snapshot.width * 0.5, center_y),
+        submit=(snapshot.width * SEARCH_BUTTON_RIGHT_FRACTION, center_y),
+        top=top,
+        bottom=bottom,
+    )
 
 
 def run_search_task(
@@ -405,7 +377,7 @@ def run_search_task(
     route: SurfaceRoute = SurfaceRoute.SHORTCUT,
     load_timeout: float = DEFAULT_LOAD_TIMEOUT,
     arrival_timeout: float = DEFAULT_ARRIVAL_TIMEOUT,
-    transition_timeout: float = DEFAULT_TRANSITION_TIMEOUT,
+    result_timeout: float = DEFAULT_RESULT_TIMEOUT,
     badge_timeout: float = DEFAULT_BADGE_TIMEOUT,
     interval: float = DEFAULT_INTERVAL,
     return_timeout: float = DEFAULT_RETURN_TIMEOUT,
@@ -420,10 +392,11 @@ def run_search_task(
     """Run the two-round search task from an allowed roster row.
 
     The row's ``GO`` is re-resolved from the current frame. Each round opens the
-    landing, taps one untried ``Discover more`` category, returns through the
-    shortcut route, and reads the row badge. The badge moving is the only proof
-    that is recorded; an unchanged badge fails the visit with expected vs
-    observed and leaves the daily state untouched so the night can retry.
+    landing, types a benign query, submits it, waits for the product-results
+    surface, returns through the shortcut route, and reads the row badge. The
+    badge moving is the only proof that is recorded; an unchanged badge fails the
+    visit with expected vs observed and leaves the daily state untouched so the
+    night can retry.
     """
     log = logger if logger is not None else logging.getLogger(LOGGER_NAME)
     spec = _allowed_spec(entry)
@@ -445,8 +418,8 @@ def run_search_task(
         raise ValueError(f'load_timeout must be positive, got {load_timeout!r}')
     if arrival_timeout <= 0:
         raise ValueError(f'arrival_timeout must be positive, got {arrival_timeout!r}')
-    if transition_timeout <= 0:
-        raise ValueError(f'transition_timeout must be positive, got {transition_timeout!r}')
+    if result_timeout <= 0:
+        raise ValueError(f'result_timeout must be positive, got {result_timeout!r}')
     if badge_timeout <= 0:
         raise ValueError(f'badge_timeout must be positive, got {badge_timeout!r}')
     if interval <= 0:
@@ -559,7 +532,8 @@ def run_search_task(
 
     taps: list[TapRecord] = []
     round_records: list[RoundRecord] = []
-    tried: set[str] = set()
+    queries_used: set[str] = set()
+    last_query: str | None = None
     completed_rounds = 0
     current = frame
     current_badge = badge
@@ -691,10 +665,8 @@ def run_search_task(
                     logger=log,
                 )
 
-            category = next(
-                (item for item in find_search_categories(landing) if item.normalized_label not in tried), None
-            )
-            if category is None:
+            field = find_search_field(landing)
+            if field is None:
                 return _finish_failed(
                     controller,
                     capture,
@@ -704,9 +676,9 @@ def run_search_task(
                     entry,
                     done_before,
                     limit,
-                    verification='category_not_found',
+                    verification='search_field_not_found',
                     done_after=state.count(spec.key),
-                    detail='the landing showed no untried category card under Discover more',
+                    detail='the search landing showed no field above its first heading',
                     rounds=len(round_records),
                     round_records=round_records,
                     badge_before=badge_before,
@@ -724,20 +696,39 @@ def run_search_task(
                     sleep=sleep,
                     logger=log,
                 )
-            tried.add(category.normalized_label)
+
             taps.append(
-                controller.tap_box(
-                    category.box,
-                    why=f'search {spec.key}: tap a Discover more category for round {round_index}',
-                    label=category.label,
+                controller.tap(
+                    field.center,
+                    why=f'search {spec.key}: focus the search field for round {round_index}',
+                    label='search field',
                 ),
             )
-            transition, left, dismiss, stop = _wait_for_landing_gone(
+            if last_query is not None and _field_holds(landing, field, last_query):
+                cleared = _clear_field(
+                    controller,
+                    landing,
+                    field,
+                    last_query,
+                    why=f'search {spec.key}: clear the previous query before round {round_index}',
+                )
+                if cleared is not None:
+                    taps.append(cleared)
+
+            query = _query_for_round(rounds_done + round_index, queries_used)
+            queries_used.add(query)
+            controller.type_text(
+                query,
+                why=f'search {spec.key}: type the round {round_index} query',
+            )
+            results, reached, dismiss, stop = _submit_search(
                 controller,
                 capture,
                 corpus,
-                initial=landing,
-                timeout=transition_timeout,
+                field,
+                query,
+                why=f'search {spec.key}: submit the round {round_index} query',
+                timeout=result_timeout,
                 interval=interval,
                 settle=settle,
                 clock=clock,
@@ -759,7 +750,7 @@ def run_search_task(
                     limit,
                     verification='redeem_interstitial',
                     done_after=state.count(spec.key),
-                    detail='the unclosable reward interstitial appeared after the category tap; the round was not claimed',
+                    detail='the unclosable reward interstitial appeared after the search; the round was not claimed',
                     rounds=len(round_records),
                     round_records=round_records,
                     badge_before=badge_before,
@@ -778,7 +769,7 @@ def run_search_task(
                     sleep=sleep,
                     logger=log,
                 )
-            if not left:
+            if not reached:
                 return _finish_failed(
                     controller,
                     capture,
@@ -788,9 +779,9 @@ def run_search_task(
                     entry,
                     done_before,
                     limit,
-                    verification='transition_not_observed',
+                    verification='results_not_reached',
                     done_after=state.count(spec.key),
-                    detail=f'the {category.label!r} category tap did not leave the search landing',
+                    detail=f'the {query!r} search did not reach a results surface; the round was not claimed',
                     rounds=len(round_records),
                     round_records=round_records,
                     badge_before=badge_before,
@@ -808,13 +799,14 @@ def run_search_task(
                     sleep=sleep,
                     logger=log,
                 )
+            last_query = query
 
             returned = return_to_coins_page(
                 controller,
                 capture,
                 corpus,
                 navigate,
-                snapshot=transition,
+                snapshot=results,
                 templates=templates,
                 route=route,
                 timeout=return_timeout,
@@ -882,12 +874,12 @@ def run_search_task(
                 count = min(_advanced_count(previous_badge, after), limit - state.count(spec.key))
                 record = RoundRecord(
                     index=round_index,
-                    category=category.label,
+                    query=query,
                     badge_before=_badge_text(previous_badge),
                     badge_after=after.text,
                     total=after.total,
                     complete=True,
-                    detail=f"'{category.label}' advanced the row to {after.text}",
+                    detail=f'the {query!r} search advanced the row to {after.text}',
                 )
                 round_records.append(record)
                 for _ in range(count):
@@ -905,13 +897,13 @@ def run_search_task(
                 if expected >= previous_badge.total:
                     record = RoundRecord(
                         index=round_index,
-                        category=category.label,
+                        query=query,
                         badge_before=previous_badge.text,
                         badge_after=None,
                         total=previous_badge.total,
                         complete=True,
                         detail=(
-                            f'the final round advanced to {expected}/{previous_badge.total}; '
+                            f'the final {query!r} search advanced to {expected}/{previous_badge.total}; '
                             'the completed row is gone from the populated boost list'
                         ),
                     )
@@ -938,7 +930,7 @@ def run_search_task(
             round_records.append(
                 RoundRecord(
                     index=round_index,
-                    category=category.label,
+                    query=query,
                     badge_before=_badge_text(previous_badge),
                     badge_after=_badge_text(after),
                     total=previous_badge.total if previous_badge is not None else rounds_total,
@@ -1060,19 +1052,61 @@ def run_search_task(
         raise
 
 
-def _is_category_title(box: TextBox, *, min_height: float) -> bool:
-    """Whether an OCR line can be a category title rather than card decoration."""
-    text = box.text.strip()
-    if not text or box.height < min_height or not any(character.isalpha() for character in text):
+def _field_holds(snapshot: Snapshot, field: SearchField, query: str) -> bool:
+    """Whether the field band already contains ``query`` from an earlier round."""
+    match = find_text(
+        snapshot,
+        query,
+        min_score=DEFAULT_MIN_SCORE,
+        min_ocr_score=DEFAULT_MIN_OCR_SCORE,
+    )
+    if match is None:
         return False
-    if _PRICE.search(text):
-        return False
-    normalized = normalize(text)
-    return not any(part in normalized for part in _NON_CATEGORY_PARTS)
+    top, bottom = match.box.bbox[1], match.box.bbox[3]
+    return field.top <= top and bottom <= field.bottom
 
 
-def _column_of(box: TextBox, split: float) -> int:
-    return 0 if box.center[0] < split else 1
+def _clear_field(
+    controller: Controller,
+    snapshot: Snapshot,
+    field: SearchField,
+    query: str,
+    *,
+    why: str,
+) -> TapRecord | None:
+    """Clear a retained previous query, preferably with the field's own control."""
+    match = find_text(
+        snapshot,
+        query,
+        min_score=DEFAULT_MIN_SCORE,
+        min_ocr_score=DEFAULT_MIN_OCR_SCORE,
+    )
+    if match is None:
+        return None
+    close = [
+        box
+        for box in snapshot.boxes
+        if box.score >= DEFAULT_MIN_OCR_SCORE
+        and field.top <= box.bbox[1]
+        and box.bbox[3] <= field.bottom
+        and box.center[0] > match.box.bbox[2]
+        and normalize(box.text) == 'close'
+    ]
+    if close:
+        target = min(close, key=lambda box: box.center[0])
+        return controller.tap_box(target, why=why, label='clear search')
+    for _ in range(len(query) + 1):
+        controller.press_key('KEYCODE_DEL', why=why)
+    return None
+
+
+def _query_for_round(round_index: int, used: set[str]) -> str:
+    """Pick a benign query the current visit has not submitted yet."""
+    for offset in range(len(SEARCH_QUERIES)):
+        query = SEARCH_QUERIES[(round_index - 1 + offset) % len(SEARCH_QUERIES)]
+        if query not in used:
+            return query
+    return SEARCH_QUERIES[(round_index - 1) % len(SEARCH_QUERIES)]
 
 
 def _await_badge(
@@ -1229,19 +1263,12 @@ def _wait_for_landing(
     )
 
 
-def _left_landing(snapshot: Snapshot) -> bool:
-    """Whether the landing has been replaced by a settled non-landing page."""
-    if is_search_landing(snapshot):
-        return False
-    return classify(snapshot).state in (ScreenState.PAGE, ScreenState.UNKNOWN)
-
-
-def _wait_for_landing_gone(
+def _wait_for_results(
     controller: Controller,
     capture: CaptureSource,
     corpus: PopupCorpus,
     *,
-    initial: Snapshot,
+    query: str,
     timeout: float,
     interval: float,
     settle: float,
@@ -1250,13 +1277,12 @@ def _wait_for_landing_gone(
     logger: logging.Logger,
     templates: TemplateStore | None,
 ) -> tuple[Snapshot, bool, DismissReport | None, str | None]:
-    """Poll until the landing is left, sweeping popups on the way."""
+    """Poll until the submitted query's product results are visible."""
     return _wait_for_surface(
         controller,
         capture,
         corpus,
-        target=_left_landing,
-        initial=initial,
+        target=lambda snapshot: is_search_results(snapshot, query=query),
         timeout=timeout,
         interval=interval,
         settle=settle,
@@ -1265,6 +1291,67 @@ def _wait_for_landing_gone(
         logger=logger,
         templates=templates,
     )
+
+
+def _submit_search(
+    controller: Controller,
+    capture: CaptureSource,
+    corpus: PopupCorpus,
+    field: SearchField,
+    query: str,
+    *,
+    why: str,
+    timeout: float,
+    interval: float,
+    settle: float,
+    clock: Callable[[], float],
+    sleep: Callable[[float], None],
+    logger: logging.Logger,
+    templates: TemplateStore | None,
+) -> tuple[Snapshot, bool, DismissReport | None, str | None]:
+    """Submit with the IME, then retry once with the field's search control.
+
+    The measured enter action submits and paints results. A landing that is
+    still on screen at the bound is not a search, so one different submit
+    mechanism is tried before the round fails; neither attempt records progress
+    by itself.
+    """
+    controller.press_key('KEYCODE_ENTER', why=f'{why} with the enter action')
+    current, reached, dismiss, stop = _wait_for_results(
+        controller,
+        capture,
+        corpus,
+        query=query,
+        timeout=timeout,
+        interval=interval,
+        settle=settle,
+        clock=clock,
+        sleep=sleep,
+        logger=logger,
+        templates=templates,
+    )
+    if reached or stop is not None:
+        return current, reached, dismiss, stop
+
+    controller.tap(
+        field.submit,
+        why=f'{why} with the field search control',
+        label='search',
+    )
+    retry, retried, retry_dismiss, retry_stop = _wait_for_results(
+        controller,
+        capture,
+        corpus,
+        query=query,
+        timeout=timeout,
+        interval=interval,
+        settle=settle,
+        clock=clock,
+        sleep=sleep,
+        logger=logger,
+        templates=templates,
+    )
+    return retry, retried, retry_dismiss if retry_dismiss is not None else dismiss, retry_stop
 
 
 def _skipped(

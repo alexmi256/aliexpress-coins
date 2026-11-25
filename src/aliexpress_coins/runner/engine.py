@@ -300,7 +300,7 @@ ranking is deliberately coarse and independent of the frame:
 
 * ``sign_in`` is one tap and the most reliable coin;
 * ``quiz`` is one page transition;
-* ``browse`` is one category tap on the landing page;
+* ``browse`` is one submitted search on the landing page;
 * ``item_tap`` needs several item taps and BACKs;
 * ``browse_wait`` must sit out a timer before it can be collected;
 * ``notification`` crosses into an OS dialog and is the least predictable;

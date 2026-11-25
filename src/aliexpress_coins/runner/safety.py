@@ -537,7 +537,7 @@ def _is_unexpected_inside_task(
         return False
     if surface is Surface.EMPTY_BOOST:
         return False
-    if task_key == _SEARCH_TASK_KEY and surface is Surface.SEARCH_LANDING:
+    if task_key == _SEARCH_TASK_KEY and surface in (Surface.SEARCH_LANDING, Surface.SEARCH_RESULTS):
         return False
     if task_key == _SURPRISE_TASK_KEY:
         # Only the surprise executor navigates to a headerless scrolled grid.

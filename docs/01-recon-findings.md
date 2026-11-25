@@ -121,16 +121,19 @@ fallback up to 20:9).
   row at `0/2`; the legacy note “progress stayed `0/2` after one search” was this case.
 - **A history tap did not advance it either.** Tapping the `Search history` entry `Smartphone`
   filled the search field, opened no results and left the row at `0/2`.
-- **A `Discover more` category tap did.** `Woman Clothing` advanced `0/2 → 1/2` and paid +1
-  (balance `67 → 68`). A second category (`Sneakers`) completed the task; the row was gone from the
-  populated boost list on the next read and the balance moved `68 → 69`. The app removes the row at
-  `2/2`, so the final badge was not visible on a returned frame.
+- **Correction (#142, 2026-11-25): the category tap is not the search.** Frame evidence from run
+  `20261125T170508Z` shows the `OPPO` category tap leaving the landing on screen and the row at
+  `0/2`; the executor reported `transition_not_observed`. The field's grey `OPPO` placeholder was
+  already present in the pre-tap frame, so whether the card changes the field is ❓. The 2026-11-24
+  sequence that appeared to credit after `Woman Clothing` / `Sneakers` is therefore not evidence of
+  a category navigation contract ⬜. A real submitted query (`wireless phone`, then `phone case`)
+  advanced the row `0/2 → 1/2` and then removed it at `2/2`; see
+  [`05-app-knowledge.md`](05-app-knowledge.md) §5b and the results fixture
+  [`tests/data/flows/search_results_issue_142.png`](../tests/data/flows/search_results_issue_142.png).
 - **The landing has no timer chip and no item visit is required.** The page marker is
   `Discover more` together with the category grid's item-count lines; search-history text is
   account data and is not a marker. The reviewed frame is
   [`tests/data/states/search_landing.png`](../tests/data/states/search_landing.png).
-  The executor's live verification is deferred to #114 because this recon had already completed
-  the task for the app day; the replay uses the captured landing frame.
 
 Reviewed flow fixtures live under `tests/data/flows/` and `specs/flows.yaml`; open app questions
 are tracked in [`05-app-knowledge.md`](05-app-knowledge.md) §8.

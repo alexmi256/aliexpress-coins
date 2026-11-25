@@ -1,12 +1,13 @@
-"""The search-landing executor over measured and synthetic frames (issue #108).
+"""The real-search executor over measured and synthetic frames (issues #108, #142).
 
 The device is simulated at the capture and input seams only. A fake device drives
 a small screen graph, captures come from that graph, and time is injected; no
 test reaches adb and no test sleeps.
 
 The synthetic landing keeps the measured layout: the account's search history is
-above the `Discover more` heading, category cards carry an `NNk+ items` line, and
-a product promo with a price is decoration rather than a category.
+above the `Discover more` heading, the search field is the band above that
+heading, and the results surface carries the submitted query plus product prices
+and `N sold` copy. A category grid is not a search and is never tapped.
 """
 
 from __future__ import annotations
@@ -33,11 +34,12 @@ from aliexpress_coins.tasks.discovery import BoostList, DiscoveryRoute, RosterEn
 from aliexpress_coins.tasks.dispatch import DispatchGate
 from aliexpress_coins.tasks.errors import TaskError
 from aliexpress_coins.tasks.search import (
+    SEARCH_QUERIES,
     SearchOutcome,
-    find_search_categories,
+    find_search_field,
     run_search_task,
 )
-from aliexpress_coins.tasks.surface import SurfaceRoute
+from aliexpress_coins.tasks.surface import SurfaceRoute, is_search_results
 
 ROOT = Path(__file__).resolve().parents[1]
 STATES = ROOT / 'tests' / 'data' / 'states'
@@ -48,13 +50,19 @@ SEARCH_TITLE = 'Search for what you love'
 
 
 class _RecordingDevice:
-    """The input seam: record taps and let the world react."""
+    """The input seam: record taps, keys and text, and let the world react."""
 
     def __init__(self, world: _World) -> None:
         self._world = world
 
     def tap(self, x: int, y: int) -> None:
         self._world.tap(x, y)
+
+    def keyevent(self, key: str) -> None:
+        self._world.keyevent(key)
+
+    def text(self, value: str) -> None:
+        self._world.text(value)
 
 
 class _ForbiddenCapture:
@@ -105,6 +113,7 @@ class _World:
         *,
         start: str | None = None,
         on_tap: Callable[[str, str | None, int], str | None] | None = None,
+        on_key: Callable[[str, str, int], str | None] | None = None,
         on_navigate: Callable[[SurfaceRoute, int], str] | None = None,
         navigate_to: str = 'coins',
     ) -> None:
@@ -116,10 +125,13 @@ class _World:
         self._index = dict.fromkeys(series, 0)
         self._transitions = transitions
         self._on_tap = on_tap
+        self._on_key = on_key
         self._on_navigate = on_navigate
         self.navigate_to = navigate_to
         self.current = start
         self.taps: list[tuple[int, int]] = []
+        self.keys: list[str] = []
+        self.texts: list[str] = []
         self.navigations: list[SurfaceRoute] = []
         self.captures = 0
 
@@ -150,6 +162,17 @@ class _World:
             target = self._transitions.get((self.current, label))
         if target is not None:
             self.go(target)
+
+    def keyevent(self, key: str) -> None:
+        self.keys.append(key)
+        target = self._on_key(self.current, key, len(self.keys)) if self._on_key is not None else None
+        if target is None and key == 'KEYCODE_ENTER' and self.current == 'landing' and 'results' in self._series:
+            target = 'results'
+        if target is not None:
+            self.go(target)
+
+    def text(self, value: str) -> None:
+        self.texts.append(value)
 
     def navigate(self, route: SurfaceRoute) -> None:
         self.navigations.append(route)
@@ -226,6 +249,8 @@ def _landing_frame(*, categories: tuple[tuple[str, str], ...] | None = None) -> 
     if categories is None:
         categories = (('Sneakers', '74k+ items'), ('Woman Clothing', '77k+ items'))
     boxes = [
+        _box('Search', 200, 180, 900, 270),
+        _box('Submit', 950, 180, 1150, 270),
         _box('Search history', 60, 320, 400, 370),
         _box('Man Shoes', 60, 450, 280, 500),
         _box('Discover more', 60, 660, 400, 710),
@@ -247,9 +272,11 @@ def _landing_frame(*, categories: tuple[tuple[str, str], ...] | None = None) -> 
 
 def _results_frame() -> Snapshot:
     return _snapshot(
-        _box('Sneakers', 220, 180, 400, 220),
+        _box(SEARCH_QUERIES[0], 235, 186, 413, 220),
+        _box(SEARCH_QUERIES[1], 430, 186, 620, 220),
         _box('Choice', 50, 880, 180, 930),
         _box('Marathon Men Sports Running', 50, 945, 550, 995),
+        _box('200 sold', 47, 940, 301, 980),
         _box('C$26.89', 70, 1126, 260, 1184),
     )
 
@@ -328,7 +355,7 @@ def _run(
         'navigate': world.navigate,
         'load_timeout': 1.0,
         'arrival_timeout': 1.0,
-        'transition_timeout': 1.0,
+        'result_timeout': 1.0,
         'badge_timeout': 1.0,
         'interval': 0.5,
         'return_timeout': 2.0,
@@ -347,50 +374,187 @@ def _run(
     )
 
 
-def test_find_search_categories_ignores_history_promos_and_prices() -> None:
+def test_find_search_field_uses_the_band_above_the_first_heading() -> None:
     landing = _landing_frame()
 
-    categories = find_search_categories(landing)
+    field = find_search_field(landing)
 
-    assert [category.label for category in categories] == ['Sneakers', 'Woman Clothing']
-    assert all(category.box.bbox[1] > 700 for category in categories)
-    assert categories[0].as_dict()['label'] == 'Sneakers'
-
-
-def test_find_search_categories_returns_nothing_without_the_landing_heading() -> None:
-    assert find_search_categories(_snapshot(_box('Search history', 60, 320, 400, 370))) == ()
+    assert field is not None
+    assert field.top < field.center[1] < field.bottom
+    assert field.center[0] == landing.width / 2
+    assert field.submit[0] > field.center[0]
+    assert field.as_dict()['center'] == list(field.center)
 
 
-def test_find_search_categories_does_not_tap_unanchored_titles() -> None:
+def test_find_search_field_caps_the_band_without_a_history_heading() -> None:
     landing = _snapshot(
         _box('Discover more', 60, 660, 400, 710),
         _box('Sneakers', 200, 800, 460, 850),
-        _box('brand', 210, 870, 300, 890),
+        _box('74k+ items', 200, 860, 380, 900),
     )
 
-    assert find_search_categories(landing) == ()
+    field = find_search_field(landing)
+
+    assert field is not None
+    assert field.bottom == landing.height * 0.20
 
 
-def test_find_search_categories_excludes_an_anchored_action_label() -> None:
+def test_find_search_field_requires_a_landing_heading() -> None:
+    assert find_search_field(_snapshot(_box('Search', 200, 180, 900, 270))) is None
+
+
+def test_search_results_require_the_submitted_query_and_a_price() -> None:
+    results = _results_frame()
+
+    assert is_search_results(results, query=SEARCH_QUERIES[0]) is True
+    assert is_search_results(results) is True
+    assert is_search_results(results, query='unsubmitted query') is False
+    assert is_search_results(_landing_frame(), query=SEARCH_QUERIES[0]) is False
+    assert is_search_results(_snapshot(_box(SEARCH_QUERIES[0], 235, 186, 413, 220))) is False
+
+
+def test_find_search_field_rejects_a_heading_above_the_field_band() -> None:
     landing = _snapshot(
-        _box('Discover more', 60, 660, 400, 710),
-        _box('Buy now', 200, 800, 460, 850),
-        _box('10k+ items', 200, 860, 380, 900),
+        _box('Discover more', 60, 40, 400, 90),
+        _box('Sneakers', 200, 120, 460, 170),
+        _box('74k+ items', 200, 180, 380, 220),
     )
 
-    assert find_search_categories(landing) == ()
+    assert find_search_field(landing) is None
+
+
+def test_field_holds_only_a_query_inside_the_field_band() -> None:
+    from aliexpress_coins.tasks import search
+
+    landing = _snapshot(
+        _box('phone case', 200, 180, 900, 270),
+        _box('Search history', 60, 320, 400, 370),
+        _box('Discover more', 60, 660, 400, 710),
+    )
+    field = find_search_field(landing)
+
+    assert field is not None
+    assert search._field_holds(landing, field, 'phone case') is True
+    assert search._field_holds(landing, field, 'wireless phone') is False
+
+
+def test_clear_field_taps_a_visible_close_control() -> None:
+    from aliexpress_coins.tasks import search
+
+    landing = _snapshot(
+        _box('phone case', 200, 180, 700, 270),
+        _box('Close', 950, 180, 1100, 270),
+        _box('Search history', 60, 320, 400, 370),
+        _box('Discover more', 60, 660, 400, 710),
+    )
+    field = find_search_field(landing)
+    assert field is not None
+    world = _World({'landing': (landing,)}, {})
+    controller = _controller(world)
+
+    record = search._clear_field(controller, landing, field, 'phone case', why='clear the retained query')
+
+    assert record is not None
+    assert record.label == 'clear search'
+    assert world.taps == [record.point]
+
+
+def test_clear_field_deletes_the_query_when_no_close_control_is_visible() -> None:
+    from aliexpress_coins.tasks import search
+
+    landing = _snapshot(
+        _box('phone case', 200, 180, 900, 270),
+        _box('Search history', 60, 320, 400, 370),
+        _box('Discover more', 60, 660, 400, 710),
+    )
+    field = find_search_field(landing)
+    assert field is not None
+    world = _World({'landing': (landing,)}, {})
+    controller = _controller(world)
+
+    record = search._clear_field(controller, landing, field, 'phone case', why='clear the retained query')
+    assert search._clear_field(controller, landing, field, 'wireless phone', why='clear an absent query') is None
+
+    assert record is None
+    assert world.keys == ['KEYCODE_DEL'] * (len('phone case') + 1)
+    assert world.taps == []
+
+
+def test_query_for_round_reuses_a_query_only_after_all_are_used() -> None:
+    from aliexpress_coins.tasks import search
+
+    assert search._query_for_round(1, set()) == SEARCH_QUERIES[0]
+    assert search._query_for_round(1, {SEARCH_QUERIES[0]}) == SEARCH_QUERIES[1]
+    assert search._query_for_round(1, set(SEARCH_QUERIES)) == SEARCH_QUERIES[0]
+
+
+@pytest.mark.parametrize('with_close', [True, False], ids=['close-control', 'delete-keys'])
+def test_a_retained_previous_query_is_cleared_before_the_next_round(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+    with_close: bool,
+) -> None:
+    boxes = [
+        _box(SEARCH_QUERIES[0], 200, 180, 700, 270),
+        _box('Search history', 60, 320, 400, 370),
+        _box('Man Shoes', 60, 450, 280, 500),
+        _box('Discover more', 60, 660, 400, 710),
+        _box('Sneakers', 200, 800, 460, 850),
+        _box('74k+ items', 200, 860, 380, 900),
+    ]
+    if with_close:
+        boxes.insert(1, _box('Close', 950, 180, 1100, 270))
+    landing = _snapshot(*boxes)
+    earn_more = 0
+
+    def on_tap(screen: str, label: str | None, _count: int) -> str | None:
+        nonlocal earn_more
+        if screen == 'coins' and label == 'earn more':
+            earn_more += 1
+            return 'boost1' if earn_more == 1 else 'boost_gone'
+        return None
+
+    world = _World(
+        series={
+            'boost0': (_boost_frame(badge='0/2'),),
+            'landing': (_landing_frame(),),
+            'results': (_results_frame(),),
+            'coins': (_coin_frame(),),
+            'boost1': (_boost_frame(badge='1/2'),),
+            'landing2': (landing,),
+            'boost_gone': (_boost_frame(with_row=False),),
+        },
+        transitions={
+            ('boost0', 'go'): 'landing',
+            ('boost1', 'go'): 'landing2',
+        },
+        on_tap=on_tap,
+        on_key=lambda screen, key, _count: (
+            'results' if key == 'KEYCODE_ENTER' and screen in ('landing', 'landing2') else None
+        ),
+    )
+    state = _state(tmp_path)
+
+    result = _run(world, catalogue, corpus, state, _entry(catalogue, world.frame))
+
+    assert result.outcome is SearchOutcome.COMPLETED
+    assert result.queries == SEARCH_QUERIES
+    assert any(tap.label == 'clear search' for tap in result.taps) is with_close
+    assert world.keys.count('KEYCODE_ENTER') == 2
+    if not with_close:
+        assert world.keys.count('KEYCODE_DEL') == len(SEARCH_QUERIES[0]) + 1
+    assert state.count('search_for_what_you_love') == 2
 
 
 @pytest.mark.slow
-def test_the_captured_landing_replays_two_category_rounds(
+def test_the_captured_landing_replays_two_real_search_rounds(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
     tmp_path: Path,
 ) -> None:
     landing = _load_snapshot(STATES / 'search_landing.png')
-    categories = find_search_categories(landing)
-    assert len(categories) >= 2
-    first, second = categories[0], categories[1]
+    assert find_search_field(landing) is not None
 
     earn_more = 0
 
@@ -413,8 +577,6 @@ def test_the_captured_landing_replays_two_category_rounds(
         transitions={
             ('boost0', 'go'): 'landing',
             ('boost1', 'go'): 'landing',
-            ('landing', normalize(first.label)): 'results',
-            ('landing', normalize(second.label)): 'results',
         },
         on_tap=on_tap,
     )
@@ -423,8 +585,9 @@ def test_the_captured_landing_replays_two_category_rounds(
     result = _run(world, catalogue, corpus, state, _entry(catalogue, world.frame))
 
     assert result.outcome is SearchOutcome.COMPLETED
-    assert result.categories == (first.label, second.label)
+    assert result.queries == SEARCH_QUERIES
     assert result.verification == 'progress_complete'
+    assert world.texts == list(SEARCH_QUERIES)
     assert state.count('search_for_what_you_love') == 2
 
 
@@ -467,7 +630,7 @@ def test_a_two_round_visit_advances_the_badge_and_stops_when_the_row_is_gone(
     assert result.outcome is SearchOutcome.COMPLETED
     assert result.verification == 'progress_complete'
     assert result.rounds == 2
-    assert result.categories == ('Sneakers', 'Woman Clothing')
+    assert result.queries == SEARCH_QUERIES
     assert [record.badge_change for record in result.round_records] == ['0/2 -> 1/2', '1/2 -> ?']
     assert result.badge_before_text == '0/2'
     assert result.badge_after_text == '1/2'
@@ -728,44 +891,32 @@ def test_an_early_failure_that_cannot_return_is_reported_as_return_failed(
     assert result.returned is False
 
 
-def test_a_landing_without_an_untried_category_fails(
+def test_a_landing_without_a_search_field_fails(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    landing = _snapshot(
-        _box('Discover more', 60, 660, 400, 710),
-        _box('Sneakers', 200, 800, 460, 850),
-        _box('74k+ items', 200, 860, 380, 900),
-    )
-
-    def on_tap(screen: str, label: str | None, _count: int) -> str | None:
-        return 'boost1' if screen == 'coins' and label == 'earn more' else None
+    from aliexpress_coins.tasks import search
 
     world = _World(
         series={
             'boost0': (_boost_frame(badge='0/2'),),
-            'landing': (landing,),
-            'results': (_results_frame(),),
+            'landing': (_landing_frame(),),
             'coins': (_coin_frame(),),
-            'boost1': (_boost_frame(badge='1/2'),),
         },
-        transitions={
-            ('boost0', 'go'): 'landing',
-            ('boost1', 'go'): 'landing',
-            ('landing', 'sneakers'): 'results',
-        },
-        on_tap=on_tap,
+        transitions={('boost0', 'go'): 'landing'},
     )
+    monkeypatch.setattr(search, 'find_search_field', lambda _snapshot: None)
 
     result = _run(world, catalogue, corpus, _state(tmp_path), _entry(catalogue, world.frame))
 
     assert result.outcome is SearchOutcome.FAILED
-    assert result.verification == 'category_not_found'
+    assert result.verification == 'search_field_not_found'
     assert result.returned is True
 
 
-def test_a_category_tap_that_does_not_leave_the_landing_fails(
+def test_a_search_that_does_not_leave_the_landing_fails_without_recording(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
     tmp_path: Path,
@@ -778,15 +929,56 @@ def test_a_category_tap_that_does_not_leave_the_landing_fails(
         },
         transitions={('boost0', 'go'): 'landing'},
     )
+    state = _state(tmp_path)
 
-    result = _run(world, catalogue, corpus, _state(tmp_path), _entry(catalogue, world.frame))
+    result = _run(world, catalogue, corpus, state, _entry(catalogue, world.frame))
 
     assert result.outcome is SearchOutcome.FAILED
-    assert result.verification == 'transition_not_observed'
+    assert result.verification == 'results_not_reached'
+    assert 'did not reach a results surface' in result.detail
+    assert result.recorded is False
     assert result.returned is True
+    assert state.count('search_for_what_you_love') == 0
+    assert world.texts == [SEARCH_QUERIES[0]]
+    assert world.keys.count('KEYCODE_ENTER') == 1
 
 
-def test_a_popup_after_the_category_tap_is_swept_before_the_return(
+def test_the_search_control_is_the_bounded_fallback_when_enter_does_not_submit(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    def on_tap(screen: str, label: str | None, _count: int) -> str | None:
+        return 'boost2' if screen == 'coins' and label == 'earn more' else None
+
+    world = _World(
+        series={
+            'boost1': (_boost_frame(badge='1/2'),),
+            'landing': (_landing_frame(),),
+            'results': (_results_frame(),),
+            'coins': (_coin_frame(),),
+            'boost2': (_boost_frame(badge='2/2'),),
+        },
+        transitions={
+            ('boost1', 'go'): 'landing',
+            ('landing', 'submit'): 'results',
+        },
+        on_tap=on_tap,
+        on_key=lambda _screen, _key, _count: None,
+    )
+    state = _state(tmp_path)
+    state.record('search_for_what_you_love')
+
+    result = _run(world, catalogue, corpus, state, _entry(catalogue, world.frame))
+
+    assert result.outcome is SearchOutcome.COMPLETED
+    assert result.verification == 'progress_complete'
+    assert result.queries == (SEARCH_QUERIES[1],)
+    assert result.returned is True
+    assert state.count('search_for_what_you_love') == 2
+
+
+def test_a_popup_after_the_search_is_swept_before_the_return(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
     tmp_path: Path,
@@ -794,31 +986,23 @@ def test_a_popup_after_the_category_tap_is_swept_before_the_return(
 ) -> None:
     from aliexpress_coins.tasks import search
 
-    landing = _snapshot(
-        _box('Discover more', 60, 660, 400, 710),
-        _box('Sneakers', 200, 800, 460, 850),
-        _box('74k+ items', 200, 860, 380, 900),
-    )
     popup = _snapshot(_box('Welcome gifts', 200, 700, 1000, 780))
 
     def on_tap(screen: str, label: str | None, _count: int) -> str | None:
-        return 'boost1' if screen == 'coins' and label == 'earn more' else None
+        return 'boost2' if screen == 'coins' and label == 'earn more' else None
 
     world = _World(
         series={
-            'boost0': (_boost_frame(badge='0/2'),),
-            'landing': (landing,),
+            'boost1': (_boost_frame(badge='1/2'),),
+            'landing': (_landing_frame(),),
             'popup': (popup,),
             'results': (_results_frame(),),
             'coins': (_coin_frame(),),
-            'boost1': (_boost_frame(badge='1/2'),),
+            'boost2': (_boost_frame(badge='2/2'),),
         },
-        transitions={
-            ('boost0', 'go'): 'landing',
-            ('boost1', 'go'): 'landing',
-            ('landing', 'sneakers'): 'popup',
-        },
+        transitions={('boost1', 'go'): 'landing'},
         on_tap=on_tap,
+        on_key=lambda screen, key, _count: 'popup' if screen == 'landing' and key == 'KEYCODE_ENTER' else None,
     )
     report = _dismiss('launch_welcome_gifts')
 
@@ -827,14 +1011,16 @@ def test_a_popup_after_the_category_tap_is_swept_before_the_return(
         return report, None
 
     monkeypatch.setattr(search, '_sweep', sweep)
+    state = _state(tmp_path)
+    state.record('search_for_what_you_love')
 
-    result = _run(world, catalogue, corpus, _state(tmp_path), _entry(catalogue, world.frame))
+    result = _run(world, catalogue, corpus, state, _entry(catalogue, world.frame))
 
-    assert result.verification == 'category_not_found'
+    assert result.outcome is SearchOutcome.COMPLETED
     assert report in result.dismissals
 
 
-def test_a_redeem_interstitial_after_the_category_tap_stops_the_round(
+def test_a_redeem_interstitial_after_the_search_stops_the_round(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
     tmp_path: Path,
@@ -842,23 +1028,16 @@ def test_a_redeem_interstitial_after_the_category_tap_stops_the_round(
 ) -> None:
     from aliexpress_coins.tasks import search
 
-    landing = _snapshot(
-        _box('Discover more', 60, 660, 400, 710),
-        _box('Sneakers', 200, 800, 460, 850),
-        _box('74k+ items', 200, 860, 380, 900),
-    )
     popup = _snapshot(_box('Welcome gifts', 200, 700, 1000, 780))
     world = _World(
         series={
             'boost0': (_boost_frame(badge='0/2'),),
-            'landing': (landing,),
+            'landing': (_landing_frame(),),
             'popup': (popup,),
             'coins': (_coin_frame(),),
         },
-        transitions={
-            ('boost0', 'go'): 'landing',
-            ('landing', 'sneakers'): 'popup',
-        },
+        transitions={('boost0', 'go'): 'landing'},
+        on_key=lambda screen, key, _count: 'popup' if screen == 'landing' and key == 'KEYCODE_ENTER' else None,
     )
     monkeypatch.setattr(search, '_sweep', lambda *args, **kwargs: (None, 'redeem_interstitial'))
 
@@ -1001,7 +1180,7 @@ def test_an_entry_popup_is_kept_in_the_result_dismissals(
 
     result = _run(world, catalogue, corpus, _state(tmp_path), _entry(catalogue, world.frame))
 
-    assert result.verification == 'transition_not_observed'
+    assert result.verification == 'results_not_reached'
     assert [dismiss.closed for dismiss in result.dismissals] == [('launch_welcome_gifts',)]
 
 
@@ -1161,7 +1340,7 @@ def test_a_popup_on_the_way_to_the_landing_is_swept(
 
     result = _run(world, catalogue, corpus, _state(tmp_path), _entry(catalogue, _boost_frame()))
 
-    assert result.verification == 'transition_not_observed'
+    assert result.verification == 'results_not_reached'
     assert report in result.dismissals
 
 
@@ -1312,7 +1491,7 @@ def test_the_executor_rejects_a_non_browse_category(
     [
         ('load_timeout', 0.0),
         ('arrival_timeout', 0.0),
-        ('transition_timeout', 0.0),
+        ('result_timeout', 0.0),
         ('badge_timeout', 0.0),
         ('interval', 0.0),
         ('return_timeout', 0.0),

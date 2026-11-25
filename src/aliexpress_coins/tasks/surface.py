@@ -57,6 +57,17 @@ heading alone is ordinary copy, so :func:`is_search_landing` also requires the
 category grid's item-count lines below it.
 """
 
+_SEARCH_RESULT_PRICE = re.compile(r'(?:C\$|US\s*\$|CS|\$)\s*\d', re.IGNORECASE)
+_SEARCH_RESULT_SOLD = re.compile(r'\b\d[\d,.]*\s*sold\b', re.IGNORECASE)
+_SEARCH_RESULT_QUERY_TOP_FRACTION = 0.35
+"""The submitted query remains in the results page's field near the top."""
+
+_SEARCH_RESULT_FIELD_TOP_FRACTION = 0.15
+"""Without a known query, the field text must sit in this top band."""
+
+SEARCH_RESULTS_MARKERS = ('sold',)
+"""The product-card copy shared by the measured results surface (#142)."""
+
 PRODUCT_DETAIL_ITEM = re.compile(r'\bitem\s+\d+\s*/\s*\d+\b', re.IGNORECASE)
 """The product page's own item counter; the stable detail-page marker."""
 
@@ -171,6 +182,7 @@ class Surface(StrEnum):
     COIN_STORE = 'coin_store'
     SURPRISE_GRID = 'surprise_grid'
     SEARCH_LANDING = 'search_landing'
+    SEARCH_RESULTS = 'search_results'
     PRODUCT_DETAIL = 'product_detail'
     NON_APP = 'non_app'
     UNKNOWN = 'unknown'
@@ -233,6 +245,9 @@ def classify_surface(snapshot: Snapshot) -> Surface:
 
     if is_search_landing(snapshot):
         return Surface.SEARCH_LANDING
+
+    if is_search_results(snapshot):
+        return Surface.SEARCH_RESULTS
 
     if is_non_app_surface(snapshot):
         return Surface.NON_APP
@@ -349,6 +364,57 @@ def is_search_landing(snapshot: Snapshot) -> bool:
     return not is_boost_page(snapshot) and has_search_landing_markers(snapshot)
 
 
+def is_search_results(snapshot: Snapshot, *, query: str | None = None) -> bool:
+    """Whether the frame is the product results surface of a submitted search.
+
+    The measured results page keeps the query in its field near the top and
+    paints product cards with prices and ``N sold`` copy. When the executor
+    knows the query it submitted, that text plus a price is enough; without a
+    query (the generic classifier used by the safety guard) the ``sold`` copy
+    is also required. Landing, coin/boost, coin-store and product-detail frames
+    are explicitly excluded, so a category grid or a purchase page can never be
+    mistaken for search results.
+    """
+    if (
+        is_search_landing(snapshot)
+        or is_boost_page(snapshot)
+        or _is_coin_page(snapshot)
+        or is_coin_store(snapshot)
+        or is_product_detail(snapshot)
+    ):
+        return False
+
+    prices = [
+        box
+        for box in snapshot.boxes
+        if box.score >= DEFAULT_MIN_OCR_SCORE
+        and _SEARCH_RESULT_PRICE.search(box.text)
+        and box.bbox[1] > snapshot.height * SYSTEM_UI_TOP_FRACTION
+        and box.bbox[3] < snapshot.height * (1.0 - SYSTEM_UI_BOTTOM_FRACTION)
+    ]
+    if not prices:
+        return False
+
+    if query is not None:
+        match = find_text(
+            snapshot,
+            query,
+            min_score=DEFAULT_MIN_SCORE,
+            min_ocr_score=DEFAULT_MIN_OCR_SCORE,
+        )
+        return match is not None and match.box.bbox[1] <= snapshot.height * _SEARCH_RESULT_QUERY_TOP_FRACTION
+
+    top_copy = any(
+        box.score >= DEFAULT_MIN_OCR_SCORE
+        and box.bbox[1] < snapshot.height * _SEARCH_RESULT_FIELD_TOP_FRACTION
+        and any(character.isalpha() for character in box.text)
+        and not _SEARCH_RESULT_PRICE.search(box.text)
+        for box in snapshot.boxes
+    )
+    sold = any(_SEARCH_RESULT_SOLD.search(box.text) for box in snapshot.boxes if box.score >= DEFAULT_MIN_OCR_SCORE)
+    return top_copy and sold
+
+
 def is_empty_boost(snapshot: Snapshot) -> bool:
     """Whether the frame is the boost page's empty state.
 
@@ -458,5 +524,6 @@ __all__ = [
     'is_non_app_surface',
     'is_product_detail',
     'is_search_landing',
+    'is_search_results',
     'is_surprise_grid',
 ]
