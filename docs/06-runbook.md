@@ -446,11 +446,13 @@ arrival wait: the executor does not wait for a timer or tap `Collect`, saves
 frame is never overwritten), warm-starts AliExpress if needed and fires the shortcut route. It does
 **not** then interpret a missing task row as completion: `arrival.left_app` and the saved frame's
 labels are kept in `run.json`, and the attempt fails as `foreground_lost_after_action` (or
-`foreground_lost_pre_action` when no tap was issued), leaving the task retryable. A launcher frame is
-never completion proof. If the package probe is unreadable on an unknown destination, that page is
-still accepted as the destination, but the executor warm-starts before the return route so an icon
-launcher cannot cold-link into the empty-boost state. If initial route discovery also returns only
-`non_app`, the run fails as `navigation_failed` instead of declaring an empty night.
+`foreground_lost_pre_action` when no tap was issued). The failure is retryable, but the next dispatch
+first applies the acted-row recheck: if the populated boost list no longer contains the row, it is
+reported `already_done` without another tap. A launcher frame is never completion proof. If the
+package probe is unreadable on an unknown destination, that page is still accepted as the
+destination, but the executor warm-starts before the return route so an icon launcher cannot
+cold-link into the empty-boost state. If initial route discovery also returns only `non_app`, the run
+fails as `navigation_failed` instead of declaring an empty night.
 
 ---
 

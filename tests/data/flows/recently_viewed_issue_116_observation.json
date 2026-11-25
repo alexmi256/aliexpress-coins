@@ -24,6 +24,7 @@
       "source_capture": "frame-000-000.0.png",
       "captured_at": "2026-11-25T22:10:03.181806Z",
       "masked": ["coin balance", "coin-credit amounts"],
+      "mask_rects": [[140, 300, 340, 410], [30, 420, 380, 480], [190, 640, 420, 710], [930, 740, 1120, 815]],
       "shows": ["inline task row", "GO", "+1", "coin-page markers"]
     },
     {
@@ -31,6 +32,7 @@
       "source_capture": "frame-025-013.6.png",
       "captured_at": "2026-11-25T22:10:16.780114Z",
       "masked": ["top balance", "operator search text"],
+      "mask_rects": [[0, 150, 1200, 240]],
       "shows": ["Recently viewed", "Stack Coins, Save More!", "History", "Cart", "4s chip"]
     },
     {
@@ -38,6 +40,7 @@
       "source_capture": "frame-031-017.6.png",
       "captured_at": "2026-11-25T22:10:20.780290Z",
       "masked": ["top balance", "operator search text"],
+      "mask_rects": [[0, 150, 1200, 240]],
       "shows": ["Recently viewed", "Stack Coins, Save More!", "History", "Cart", "no chip digits"]
     },
     {
@@ -45,6 +48,7 @@
       "source_capture": "boost_after.png",
       "captured_at": "2026-11-25T22:10:50.493648Z",
       "masked": ["header balance", "coin-credit amount", "hero balance"],
+      "mask_rects": [[0, 20, 1200, 100], [100, 300, 360, 420]],
       "shows": ["Coins boost", "populated list", "no Browse recently viewed items row"]
     }
   ],

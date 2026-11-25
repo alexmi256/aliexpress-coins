@@ -59,6 +59,10 @@ def test_the_2026_11_25_observation_has_real_committed_frames_and_its_limits() -
         assert (FLOWS / frame['file']).is_file()
         assert frame['source_capture'].endswith('.png')
         assert frame['masked']
+        assert frame['mask_rects']
+        for left, top, right, bottom in frame['mask_rects']:
+            assert 0 <= left < right <= 1200
+            assert 0 <= top < bottom <= 2000
     assert payload['timeline']['chip_observed_sequence_seconds'] == [14, 13, 10, 4, 3, 2, 1]
     assert payload['timeline']['chip_cleared_after_tap_seconds'] == 15.6
     assert payload['timeline']['row_gone_from'] == ['inline coin page', 'populated Coins boost list']

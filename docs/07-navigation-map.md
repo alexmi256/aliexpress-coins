@@ -117,7 +117,7 @@ coordinates, scroll distances, and unscaled crops do not (modal close fraction d
 |---|---|---|
 | **empty boost list** | `Coins boost` + `"There's nothing here yet"` + zero rows | warm `FirstActivity` + shortcut intent (§1); never an empty day |
 | home feed / unknown screen | no coin/boost marker; 3 identical frames in a task | up to 3 warm shortcut entries; abort run only if recovery fails |
-| non-app foreground after browse `GO` | clock/date `non_app` frame, or current window package is not AliExpress | save `browse-<key>-foreground-lost.*`; warm-start if needed; shortcut re-entry; fail `foreground_lost_after_action` and leave the task retryable, never infer completion from a missing row (#116) |
+| non-app foreground after browse `GO` | clock/date `non_app` frame, or current window package is not AliExpress | save `browse-<key>-foreground-lost.*`; warm-start if needed; shortcut re-entry; fail `foreground_lost_after_action`; the next acted-row recheck is `already_done` if the row is now gone, otherwise it retries (#116) |
 | swallowed tap | 36×60 thumbnail MAD `≈ 0.00–0.01` (page swap `0.19–0.40`) | one bounded retry (2 attempts total) on re-verified unchanged frame |
 | vanished task row | label missing on fresh capture at tap time | report `no longer available`; never tap stale coordinates |
 

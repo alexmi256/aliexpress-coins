@@ -1935,6 +1935,55 @@ def test_run_browse_task_completes_the_measured_recently_viewed_row(
 
 
 @pytest.mark.slow
+def test_recently_viewed_does_not_claim_a_missing_row_without_a_cleared_chip(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+    recently_viewed_entry: Snapshot,
+    recently_viewed_cleared: Snapshot,
+    recently_viewed_row_gone: Snapshot,
+) -> None:
+    """Rotation without a cleared chip is not completion."""
+    entry = _recently_viewed_entry(catalogue, recently_viewed_entry)
+    state = _state(tmp_path)
+    world = _World(
+        series={
+            'entry': (recently_viewed_entry,),
+            'destination': (recently_viewed_cleared, recently_viewed_cleared),
+            'coins': (_coin_frame(),),
+            'boost_after': (recently_viewed_row_gone,),
+        },
+        transitions={
+            ('entry', 'go'): 'destination',
+            ('coins', 'earn more'): 'boost_after',
+        },
+    )
+
+    result = run_browse_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        state,
+        entry,
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        load_timeout=1.0,
+        chip_interval=0.5,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is BrowseOutcome.FAILED
+    assert result.verification == 'chip_not_cleared'
+    assert result.chip is not None
+    assert result.chip.status is ChipStatus.ABSENT
+    assert result.recorded is False
+    assert state.count('recently_viewed') == 0
+
+
+@pytest.mark.slow
 def test_recently_viewed_waits_for_a_chip_that_paints_after_the_header(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -2031,6 +2080,64 @@ def test_recently_viewed_does_not_claim_row_gone_after_the_app_left(
     assert result.chip is not None
     assert result.chip.status is ChipStatus.NOT_WAITED
     assert result.returned is True
+    assert state.count('recently_viewed') == 0
+
+
+@pytest.mark.slow
+def test_recently_viewed_fails_if_the_app_leaves_after_the_chip_clears(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+    recently_viewed_entry: Snapshot,
+    recently_viewed_destination: Snapshot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entry = _recently_viewed_entry(catalogue, recently_viewed_entry)
+    state = _state(tmp_path)
+    recorded: list[tuple[str, Snapshot]] = []
+    cleared = False
+
+    def fake_chip_wait(*_args: object, **_kwargs: object) -> ChipWait:
+        nonlocal cleared
+        cleared = True
+        return ChipWait(status=ChipStatus.CLEARED, verified=True)
+
+    monkeypatch.setattr('aliexpress_coins.tasks.browse.wait_for_timer_chip', fake_chip_wait)
+    world = _World(
+        series={
+            'entry': (recently_viewed_entry,),
+            'destination': (recently_viewed_destination,),
+            'coins': (_coin_frame(),),
+        },
+        transitions={('entry', 'go'): 'destination'},
+    )
+
+    result = run_browse_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        state,
+        entry,
+        navigate=world.navigate,
+        app_foreground=lambda: not cleared,
+        record_foreground_loss=lambda key, frame: recorded.append((key, frame)),
+        arrival_timeout=2.0,
+        load_timeout=1.0,
+        chip_interval=0.5,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is BrowseOutcome.FAILED
+    assert result.verification == 'foreground_lost_after_action'
+    assert result.arrival is not None
+    assert result.arrival.left_app is True
+    assert result.chip is not None
+    assert result.chip.ready is True
+    assert recorded
+    assert recorded[0][0] == 'recently_viewed'
     assert state.count('recently_viewed') == 0
 
 

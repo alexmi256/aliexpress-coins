@@ -1319,7 +1319,22 @@ def run_browse_task(
                     detail='the destination page showed no timer chip; verification decides',
                 )
 
-            if stop is None:
+            if app_foreground is not None and chip_wait.ready and app_foreground() is False:
+                # The chip can clear while the app is being covered or sent to
+                # the launcher. A cleared chip is not completion if the frame is
+                # no longer AliExpress.
+                frame = _capture(capture)
+                if record_foreground_loss is not None:
+                    record_foreground_loss(spec.key, frame)
+                arrival = replace(
+                    arrival,
+                    snapshot=frame,
+                    arrived=False,
+                    left_app=True,
+                    app_foreground=False,
+                )
+
+            if stop is None and not arrival.left_app:
                 sweep, stop = _sweep(
                     controller,
                     capture,
@@ -1334,7 +1349,7 @@ def run_browse_task(
                     dismissals.append(sweep)
                 current = sweep.frames[-1].snapshot if sweep is not None and sweep.frames else _capture(capture)
 
-            if stop is None:
+            if stop is None and not arrival.left_app:
                 control = find_collect_control(current)
                 if control is not None:
                     collect_tap = controller.tap_box(
@@ -1519,6 +1534,20 @@ def run_browse_task(
                     stop=stop,
                     logger=log,
                 )
+
+        if spec.key == 'recently_viewed' and verdict.status == 'row_gone' and not chip_wait.ready:
+            # This family has no badge and rotates: a missing row without a
+            # cleared chip cannot distinguish completion from a roster refresh.
+            verdict = _Verdict(
+                status='chip_not_cleared',
+                decisive=False,
+                detail=(
+                    f'{entry.title!r} disappeared without a cleared dwell chip '
+                    f'({chip_wait.status.value}); rotation is not completion'
+                ),
+                badge=verdict.badge,
+                evidence=verdict.evidence,
+            )
 
         if verdict.decisive:
             state.record(spec.key)
