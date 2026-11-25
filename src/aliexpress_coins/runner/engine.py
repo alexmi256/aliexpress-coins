@@ -9,13 +9,18 @@ and what is still available.
 The walk is an outer loop (#123): after every real attempt the roster is
 re-enumerated, and the next pass dispatches anything still allowed. Selection
 uses an explicit cost order (:data:`_CATEGORY_COST`), not the reading order in
-which the frame happened to enumerate its rows (#131). Four budgets bound it:
+which the frame happened to enumerate its rows (#131). The loop is bounded by
+progress, not a fixed pass count (#141): another sweep is allowed while the pass
+dispatched a row or revealed new dispatchable rows, and the walk stops after
+:data:`MAX_NO_PROGRESS_PASSES` consecutive sweeps that did neither. Four bounds
+keep it finite:
 
 * ``AECOINS_MAX_TASKS_PER_RUN`` is the task budget, counted in dispatches;
 * ``AECOINS_RUN_BUDGET_SECONDS`` is the wall-clock budget, checked before every
   dispatch, after every completion, and at the running task's clock/sleep/capture
   seams so a task cannot overrun it silently;
-* ``AECOINS_MAX_PASSES`` bounds the full re-enumerated sweeps;
+* ``AECOINS_MAX_PASSES`` is the absolute ceiling on full re-enumerated sweeps,
+  a backstop for a surface that keeps changing without progress;
 * ``AECOINS_MAX_TASK_ATTEMPTS`` blacklists one task for the rest of the day.
 
 Selection never inherits OCR reading order. Eligible rows are ordered by
@@ -120,6 +125,7 @@ from aliexpress_coins.tasks.surprise import run_surprise_task
 
 __all__ = [
     'DISPATCH_TABLE',
+    'MAX_NO_PROGRESS_PASSES',
     'TASK_RECOVERY_ATTEMPTS',
     'EngineResult',
     'RunContext',
@@ -273,6 +279,16 @@ TASK_RECOVERY_ATTEMPTS = UNEXPECTED_SCREEN_LIMIT
 
 The same number as the sighting limit keeps the rule easy to state: three
 sightings fail the task, three unsuccessful returns fail the night (#83).
+"""
+
+MAX_NO_PROGRESS_PASSES = 2
+"""How many consecutive sweeps may dispatch and reveal nothing before the walk stops.
+
+A repeatable family needs one re-enumerated sweep per round because completing a
+round reveals the next, so the useful pass bound is the roster's progress rather
+than a fixed count (#141). One idle sweep is tolerated so a surface restart gets
+a chance to recover; a second one ends the walk as ``budget`` while any still
+dispatchable row is named in the detail.
 """
 
 _RETRYABLE_SKIP_VERIFICATIONS = frozenset({'row_vanished'})
@@ -511,6 +527,7 @@ def run_once(
 
     try:
         report.write()
+        _warn_pass_ceiling(context.config, context.catalogue, log)
         hygiene = _retry_stage(context, 'hygiene', context.hygiene.prepare)
         report.hygiene = hygiene.as_dict()
         frame = _capture(context.capture)
@@ -579,6 +596,15 @@ def run_once(
             settled: set[str] = set()
             passes = 1
             report.passes = passes
+            dispatched_this_pass = False
+            no_progress_passes = 0
+            pass_start_dispatchable = _dispatchable_identities(
+                roster,
+                context.state,
+                blocked=blocked,
+                blacklisted=blacklist,
+                settled=settled,
+            )
 
             while True:
                 if context.stop.is_set():
@@ -600,16 +626,36 @@ def run_once(
                 current = observer.roster if observer.roster is not None else roster
                 if current is None:  # pragma: no cover - set immediately above
                     break
+                current_dispatchable = _dispatchable_identities(
+                    current,
+                    context.state,
+                    blocked=blocked,
+                    blacklisted=blacklist,
+                    settled=settled,
+                )
+                progressed = _pass_progressed(
+                    dispatched_this_pass,
+                    current_dispatchable,
+                    pass_start_dispatchable,
+                )
                 surface_reason = _pass_restart_reason(current, last_observation)
                 if surface_reason is not None:
-                    if passes >= max_passes:
+                    bound, no_progress_passes = _next_pass_bound(
+                        passes=passes,
+                        max_passes=max_passes,
+                        no_progress_passes=no_progress_passes,
+                        progressed=progressed,
+                    )
+                    if bound is not None:
                         status = RunStatus.BUDGET
-                        detail = f'pass budget of {max_passes} exhausted; {surface_reason}'
+                        detail = f'{bound}; {surface_reason}'
                         report.record_failure(failure(FailureCode.BUDGET_EXHAUSTED, detail=detail))
                         break
                     passes += 1
                     report.passes = passes
                     attempted_this_pass.clear()
+                    dispatched_this_pass = False
+                    pass_start_dispatchable = current_dispatchable
                     last_observation = _restart_surface(
                         context,
                         controller,
@@ -653,9 +699,15 @@ def run_once(
                     if pending is None and restart_reason is None:
                         detail = 'no dispatchable row remains'
                         break
-                    if passes >= max_passes:
+                    bound, no_progress_passes = _next_pass_bound(
+                        passes=passes,
+                        max_passes=max_passes,
+                        no_progress_passes=no_progress_passes,
+                        progressed=progressed,
+                    )
+                    if bound is not None:
                         status = RunStatus.BUDGET
-                        detail = f'pass budget of {max_passes} exhausted'
+                        detail = bound
                         if pending is not None:
                             detail = f'{detail}; {_identity(pending)!r} is still dispatchable'
                         elif restart_reason is not None:
@@ -665,6 +717,8 @@ def run_once(
                     passes += 1
                     report.passes = passes
                     attempted_this_pass.clear()
+                    dispatched_this_pass = False
+                    pass_start_dispatchable = current_dispatchable
                     if restart_reason is not None:
                         last_observation = _restart_surface(
                             context,
@@ -729,6 +783,10 @@ def run_once(
                     report.write()
                     break
                 made = attempts.get(identity, 0) - attempts_before
+                if made > 0:
+                    # A real attempt — completed, failed or a stale-row skip —
+                    # is the progress that earns another sweep (#141).
+                    dispatched_this_pass = True
                 duration = max(0.0, context.clock() - task_started)
                 attempted.add(identity)
                 attempted_this_pass.add(identity)
@@ -2376,6 +2434,102 @@ def _pass_restart_reason(
     return None
 
 
+def _pass_progressed(
+    dispatched: bool,
+    current_dispatchable: frozenset[str],
+    pass_start_dispatchable: frozenset[str],
+) -> bool:
+    """Whether this sweep earned another one by dispatching or revealing work."""
+    return dispatched or bool(current_dispatchable - pass_start_dispatchable)
+
+
+def _next_pass_bound(
+    *,
+    passes: int,
+    max_passes: int,
+    no_progress_passes: int,
+    progressed: bool,
+) -> tuple[str | None, int]:
+    """Decide whether another sweep is allowed and update the no-progress streak.
+
+    ``max_passes`` is the absolute ceiling. The progress rule ends a walk that
+    keeps sweeping without dispatching or revealing work, so the normal bound
+    follows the roster's own daily capacity rather than a fixed count (#141).
+    One idle sweep is tolerated so a surface restart can recover.
+    """
+    if passes >= max_passes:
+        return f'pass budget of {max_passes} exhausted', no_progress_passes
+    idle = 0 if progressed else no_progress_passes + 1
+    if idle >= MAX_NO_PROGRESS_PASSES:
+        return f'pass budget stopped after {idle} consecutive no-progress pass(es)', idle
+    return None, idle
+
+
+def _dispatchable_identities(
+    roster: Roster | None,
+    state: DailyStateStore,
+    *,
+    blocked: set[str],
+    blacklisted: Mapping[str, int],
+    settled: set[str],
+) -> frozenset[str]:
+    """Identity set of the rows a pass could dispatch right now.
+
+    Two sweeps' sets are compared to tell a sweep that revealed new work from
+    one that merely re-read the same exhausted surface. A "revealed" row that
+    could not be dispatched must not buy another sweep, so this uses the same
+    eligibility predicate as :func:`_next_entry`.
+    """
+    if roster is None:
+        return frozenset()
+    return frozenset(
+        _identity(entry)
+        for entry in roster.entries
+        if _entry_dispatchable(
+            entry,
+            state,
+            blocked=blocked,
+            blacklisted=blacklisted,
+            attempted=None,
+            settled=settled,
+        )
+    )
+
+
+def _warn_pass_ceiling(config: RunConfig, catalogue: TaskCatalogue, log: logging.Logger) -> None:
+    """Name a pass ceiling that cannot finish the largest daily family (#141).
+
+    The safe worst case is ``max_per_run * max_task_attempts``: every round can
+    spend a failed attempt before a later pass succeeds, and a success resets
+    the failure streak, so the retry can repeat for every round. The shipped
+    maximum is twelve (six ``sponsored_items`` rounds times two attempts), which
+    is also the default. The run still starts: the ceiling is a hard bound, and
+    the report will say which row is still dispatchable when it stops.
+    """
+    largest = max(catalogue.allowed, key=lambda spec: spec.max_per_run)
+    recommended = largest.max_per_run * config.max_task_attempts
+    if config.max_passes >= recommended:
+        return
+    log.warning(
+        '%s',
+        _event(
+            'pass_budget_below_daily_capacity',
+            max_passes=config.max_passes,
+            recommended_passes=recommended,
+            largest_max_per_run=largest.max_per_run,
+            max_task_attempts=config.max_task_attempts,
+            key=largest.key,
+            detail=(
+                f'AECOINS_MAX_PASSES={config.max_passes} is below the {recommended} sweeps needed '
+                f'for the largest family ({largest.max_per_run} rounds for {largest.key!r} times '
+                f'up to {config.max_task_attempts} attempt(s) per round); a success resets the '
+                'failure streak, so a retry can spend a sweep before every round and the ceiling '
+                'can end a night before that family finishes'
+            ),
+        ),
+    )
+
+
 def _stuck_row_reason(
     roster: Roster | None,
     state: DailyStateStore,
@@ -2733,6 +2887,32 @@ def _ordered_entries(entries: Iterable[RosterEntry]) -> list[RosterEntry]:
     return sorted(entries, key=_selection_key)
 
 
+def _entry_dispatchable(
+    entry: RosterEntry,
+    state: DailyStateStore,
+    *,
+    blocked: set[str],
+    blacklisted: Mapping[str, int] | None,
+    attempted: set[str] | None,
+    settled: set[str] | None,
+) -> bool:
+    """Whether one row may be dispatched under the current pass's bounds."""
+    if not entry.allowed or entry.spec is None or entry.dispatch_target is None:
+        return False
+    if entry.spec.category not in _EXECUTORS:
+        return False
+    identity = _identity(entry)
+    if identity in blocked:
+        return False
+    if blacklisted is not None and identity in blacklisted:
+        return False
+    if attempted is not None and identity in attempted:
+        return False
+    if settled is not None and identity in settled:
+        return False
+    return state.count(entry.spec.key) < entry.spec.max_per_run
+
+
 def _next_entry(
     roster: Roster,
     state: DailyStateStore,
@@ -2752,22 +2932,15 @@ def _next_entry(
     same choice even when OCR enumerated them in a different order.
     """
     for entry in _ordered_entries(roster.entries):
-        if not entry.allowed or entry.spec is None or entry.dispatch_target is None:
-            continue
-        if entry.spec.category not in _EXECUTORS:
-            continue
-        identity = _identity(entry)
-        if identity in blocked:
-            continue
-        if blacklisted is not None and identity in blacklisted:
-            continue
-        if attempted is not None and identity in attempted:
-            continue
-        if settled is not None and identity in settled:
-            continue
-        if state.count(entry.spec.key) >= entry.spec.max_per_run:
-            continue
-        return entry
+        if _entry_dispatchable(
+            entry,
+            state,
+            blocked=blocked,
+            blacklisted=blacklisted,
+            attempted=attempted,
+            settled=settled,
+        ):
+            return entry
     return None
 
 

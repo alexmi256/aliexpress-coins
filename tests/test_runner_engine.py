@@ -6831,7 +6831,7 @@ def test_a_row_that_vanished_is_dispatched_again_in_a_second_pass(
     assert report.status is RunStatus.COMPLETED
     assert context.state.snapshot().completed_night is True
     summary = report.summary_path.read_text(encoding='utf-8')
-    assert '**Passes:** 2 of 4' in summary
+    assert '**Passes:** 2 of 12' in summary
     assert '**Attempts per task:** coins_quiz: 2 (blacklist after 2 failed attempt(s) per task)' in summary
     assert '**Blacklist:** none' in summary
 
@@ -7179,6 +7179,262 @@ def test_needs_another_pass_only_for_retryable_failures_and_stale_skips() -> Non
     assert engine._needs_another_pass(EngineResult('unavailable', 'unavailable', 'gone', False, {})) is False
     assert engine._needs_another_pass(EngineResult('skipped', 'row_vanished', 'stale', False, {})) is True
     assert engine._needs_another_pass(EngineResult('skipped', 'already_done', 'done', False, {})) is False
+
+
+def test_pass_progress_and_bound_helpers() -> None:
+    assert engine._pass_progressed(True, frozenset(), frozenset()) is True
+    assert engine._pass_progressed(False, frozenset({'a'}), frozenset({'b'})) is True
+    assert engine._pass_progressed(False, frozenset({'a'}), frozenset({'a'})) is False
+
+    assert engine._next_pass_bound(
+        passes=1,
+        max_passes=12,
+        no_progress_passes=1,
+        progressed=True,
+    ) == (None, 0)
+    assert engine._next_pass_bound(
+        passes=1,
+        max_passes=12,
+        no_progress_passes=0,
+        progressed=False,
+    ) == (None, 1)
+    detail, idle = engine._next_pass_bound(
+        passes=2,
+        max_passes=12,
+        no_progress_passes=1,
+        progressed=False,
+    )
+    assert detail is not None
+    assert 'no-progress pass(es)' in detail
+    assert idle == engine.MAX_NO_PROGRESS_PASSES
+    detail, idle = engine._next_pass_bound(
+        passes=12,
+        max_passes=12,
+        no_progress_passes=0,
+        progressed=True,
+    )
+    assert detail == 'pass budget of 12 exhausted'
+    assert idle == 0
+
+
+def test_dispatchable_identities_mirror_the_eligibility_rules(
+    tmp_path: Path,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    context = _context(tmp_path, capture=_Capture(_boost_frame()), catalogue=catalogue, corpus=corpus)
+    everything = engine._dispatchable_identities(
+        full_roster,
+        context.state,
+        blocked=set(),
+        blacklisted={},
+        settled=set(),
+    )
+    assert everything == frozenset(
+        {'boost_checkin', 'coins_quiz', 'sponsored_items', 'surprise_items', 'notifications'},
+    )
+    assert (
+        engine._dispatchable_identities(
+            None,
+            context.state,
+            blocked=set(),
+            blacklisted={},
+            settled=set(),
+        )
+        == frozenset()
+    )
+
+    quiz = _entry(full_roster, 'coins_quiz')
+    assert (
+        engine._dispatchable_identities(
+            replace(full_roster, entries=(quiz,)),
+            context.state,
+            blocked={'coins_quiz'},
+            blacklisted={},
+            settled=set(),
+        )
+        == frozenset()
+    )
+    assert (
+        engine._dispatchable_identities(
+            replace(full_roster, entries=(quiz,)),
+            context.state,
+            blocked=set(),
+            blacklisted={'coins_quiz': 2},
+            settled=set(),
+        )
+        == frozenset()
+    )
+    assert (
+        engine._dispatchable_identities(
+            replace(full_roster, entries=(quiz,)),
+            context.state,
+            blocked=set(),
+            blacklisted={},
+            settled={'coins_quiz'},
+        )
+        == frozenset()
+    )
+    assert (
+        engine._dispatchable_identities(
+            replace(full_roster, entries=(replace(quiz, action=None),)),
+            context.state,
+            blocked=set(),
+            blacklisted={},
+            settled=set(),
+        )
+        == frozenset()
+    )
+    assert (
+        engine._dispatchable_identities(
+            replace(full_roster, entries=(_entry(full_roster, 'coins_shortcut'),)),
+            context.state,
+            blocked=set(),
+            blacklisted={},
+            settled=set(),
+        )
+        == frozenset()
+    )
+
+    context.state.record('coins_quiz')
+    assert (
+        engine._dispatchable_identities(
+            replace(full_roster, entries=(quiz,)),
+            context.state,
+            blocked=set(),
+            blacklisted={},
+            settled=set(),
+        )
+        == frozenset()
+    )
+
+
+@pytest.mark.slow
+def test_six_sponsored_rounds_finish_in_one_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    roster = replace(full_roster, entries=(_entry(full_roster, 'sponsored_items'),))
+    frame = _boost_frame('sponsored_items')
+    _surface(monkeypatch, roster, frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    rounds: list[int] = []
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        rounds.append(1)
+        _context.state.record(entry.key or '')
+        return EngineResult('completed', 'progress_badge', 'a round completed', True, {'key': entry.key})
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert len(rounds) == 6
+    assert report.passes == 6
+    assert report.status is RunStatus.COMPLETED
+    assert report.detail == 'no dispatchable row remains'
+    assert context.state.count('sponsored_items') == 6
+    assert context.state.snapshot().completed_night is True
+    assert not [skip for skip in report.skipped if skip.key == 'sponsored_items']
+
+
+@pytest.mark.slow
+def test_a_no_progress_loop_stops_after_two_idle_passes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    no_action = replace(full_roster, entries=(replace(_entry(full_roster, 'coins_quiz'), action=None),))
+    frame = _boost_frame('coins_quiz')
+    monkeypatch.setattr(engine, 'discover_roster', lambda *args, **kwargs: no_action)
+    observation = RosterObservation(
+        sequence=1,
+        timestamp=CAPTURED_AT,
+        rows=(),
+        surface_variant=Surface.BOOST_PAGE,
+        roster=no_action,
+    )
+    monkeypatch.setattr(engine, '_observe', lambda *args, **kwargs: observation)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.BUDGET
+    assert report.passes == engine.MAX_NO_PROGRESS_PASSES
+    assert report.detail is not None
+    assert 'no-progress pass(es)' in report.detail
+    assert "'Take the coins quiz' was allowed but had no dispatchable action" in report.detail
+    assert any(event.get('event') == 'surface_restart' for event in _events(report))
+
+
+def test_a_roster_with_nothing_left_completes_in_one_pass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    frame = _boost_frame('coins_quiz')
+    _surface(monkeypatch, roster, frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.state.record('coins_quiz')
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.COMPLETED
+    assert report.passes == 1
+    assert report.detail == 'no dispatchable row remains'
+    assert report.tasks == []
+    assert context.state.snapshot().completed_night is True
+
+
+def test_a_pass_ceiling_below_the_largest_daily_limit_is_warned(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _boost_header_frame()
+    _surface(monkeypatch, replace(full_roster, entries=()), frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, max_passes=5)
+
+    report = engine.run_once(context)
+
+    warning = next(event for event in _events(report) if event.get('event') == 'pass_budget_below_daily_capacity')
+    assert warning['level'] == 'warning'
+    assert warning['max_passes'] == 5
+    assert warning['largest_max_per_run'] == 6
+    assert warning['key'] == 'sponsored_items'
+    assert 'AECOINS_MAX_PASSES=5' in str(warning['detail'])
 
 
 def test_a_blacklist_state_write_failure_is_logged_without_hiding_the_skip(

@@ -68,19 +68,30 @@ DEFAULT_RUN_BUDGET_SECONDS = 1200.0
 The measured worst night (`20261124T083006Z`) took 386.7 s — 6.4 minutes — with
 ten dispatches, and a night with nothing dispatchable exits in under a minute.
 The in-night retry loop (#123) and the daily ``max_per_run`` limits allow about
-twelve dispatches at roughly 25-40 s each over at most four passes, so a
-legitimate worst case is about 8-12 minutes. Twenty minutes covers that with
-headroom while bounding a stuck run at the executor's clock, sleep and capture
-seams; an in-flight adb command is bounded by its subprocess timeout, and a
-native OCR/PIL call has no in-process timeout.
+twelve dispatches at roughly 25-40 s each, with one sweep per round for a
+repeatable family, so a legitimate worst case is about 8-12 minutes. Twenty
+minutes covers that with headroom while bounding a stuck run at the executor's
+clock, sleep and capture seams; an in-flight adb command is bounded by its
+subprocess timeout, and a native OCR/PIL call has no in-process timeout.
 An operator may raise it for a slower device or more passes.
 """
 
 DEFAULT_MAX_TASKS = 12
 """The default number of task dispatches one run may make."""
 
-DEFAULT_MAX_PASSES = 4
-"""How many full re-enumerated roster sweeps one night may make (issue #123)."""
+DEFAULT_MAX_PASSES = 12
+"""The absolute ceiling on full re-enumerated roster sweeps one night may make (#123, #141).
+
+The loop normally ends by progress, not by this number: it stops after two
+consecutive sweeps that dispatch nothing and reveal nothing (#141). This
+ceiling is a backstop for a surface that keeps changing without progress. A
+sweep can dispatch at most one row per family, so a family with ``max_per_run``
+rounds needs that many productive sweeps. A success resets the failure streak,
+so the retry can repeat for every round: the safe worst case is
+``max_per_run * max_task_attempts``. The largest shipped limit is six
+(``sponsored_items``) with two attempts, so twelve covers the worst case while
+``AECOINS_MAX_TASKS_PER_RUN`` caps the dispatches themselves.
+"""
 
 DEFAULT_MAX_TASK_ATTEMPTS = 2
 """How many failed attempts of one task a night may spend before blacklisting it.
