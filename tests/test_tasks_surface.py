@@ -380,17 +380,19 @@ def test_a_query_outside_the_field_band_is_not_enough() -> None:
 
 
 @pytest.mark.parametrize(
-    ('header', 'top'),
+    ('header', 'left', 'top'),
     [
-        ('Coupon Center', 150),
-        ('Coupon Center Search', 180),
-        ('Coupons All', 180),
-        ('Deals for you', 250),
+        ('Coupon Center', 60, 150),
+        ('Coupon Center Search', 60, 180),
+        ('Coupons All', 60, 180),
+        ('Deals for you', 60, 250),
+        ('Coupon Center', 200, 180),
+        ('Q', 1026, 182),
     ],
 )
-def test_a_coupon_header_inside_the_field_band_is_not_search_results(header: str, top: int) -> None:
+def test_a_non_query_header_or_control_is_not_search_results(header: str, left: int, top: int) -> None:
     coupon_page = _snapshot(
-        _box(header, 60, top, 500, top + 40),
+        _box(header, left, top, left + 200, top + 40),
         _box('C$31.27', 70, 1017, 257, 1076),
         _box('C$30.00', 631, 1017, 821, 1076),
         _box('7 sold', 60, 940, 240, 980),
