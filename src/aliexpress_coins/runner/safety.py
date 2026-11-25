@@ -32,7 +32,7 @@ from __future__ import annotations
 import re
 import statistics
 import unicodedata
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Collection, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import StrEnum
@@ -61,6 +61,7 @@ __all__ = [
     'RunAborted',
     'SafetyGuard',
     'ScreenReport',
+    'find_control_captions',
     'find_dangerous_controls',
     'unwrap_capture',
 ]
@@ -304,7 +305,7 @@ class SafetyGuard:
         self.last_screen = report
 
         if self.task_running:
-            controls = find_dangerous_controls(snapshot, self.catalogue)
+            controls = find_dangerous_controls(snapshot, self.catalogue, task_key=self._task_key)
             if controls:
                 label = controls[0].text.strip()
                 reason = f'a {label!r} control appeared while {self._task_label or "a task"} was running'
@@ -377,11 +378,26 @@ def unwrap_capture(
         source = inner
 
 
+def find_control_captions(snapshot: Snapshot) -> tuple[TextBox, ...]:
+    """Return every caption-sized dangerous line, before any policy exemption.
+
+    This is the label-and-geometry half of the guard: no page, row or task
+    exemption is applied. The guard consumes the paired captions internally so
+    it can drop exempt controls, and the surprise executor consumes these boxes
+    to tell a caption painted inside a product photograph from page chrome
+    (#139). A box returned here is not by itself evidence that the run must
+    abort.
+    """
+    return tuple(box for box, _caption in _control_captions(snapshot, skip_ids=frozenset()))
+
+
 def find_dangerous_controls(
     snapshot: Snapshot,
     catalogue: TaskCatalogue | None = None,
+    *,
+    task_key: str | None = None,
 ) -> tuple[TextBox, ...]:
-    """Return the OCR boxes that name a short buy/checkout/cart/redeem caption.
+    """Return the OCR boxes that name a live buy/checkout/cart/redeem caption.
 
     A control is one OCR line whose box is caption-sized relative to the
     frame's median text height and whose whole normalised text is an action
@@ -392,16 +408,44 @@ def find_dangerous_controls(
     that page still aborts. With a catalogue, the labels of *denied* task rows
     are exempt (policy refuses those rows); a purchase label beside an allowed
     row is still a live control.
+
+    On the surprise grid the caption can be text painted inside a merchant's
+    product photograph, which is not a control the run can press (#139). Those
+    captions are exempt only for the surprise task and only when the tile
+    resolver places them inside a card's image band; a caption in page chrome,
+    a card action area, or any other task remains live.
     """
     product_detail = _is_product_detail(snapshot)
-    refused_row_labels = _refused_row_labels(snapshot, catalogue)
-    median_height = _median_text_height(snapshot)
+    skip_ids = _refused_row_labels(snapshot, catalogue)
+    skip_ids.update(_product_imagery_caption_ids(snapshot, task_key))
     found: list[TextBox] = []
+    for box, _caption in _control_captions(
+        snapshot,
+        skip_ids=skip_ids,
+        exempt=lambda caption: _is_exempt_caption(snapshot, caption, product_detail=product_detail),
+    ):
+        found.append(box)
+    return tuple(found)
+
+
+def _control_captions(
+    snapshot: Snapshot,
+    *,
+    skip_ids: Collection[int],
+    exempt: Callable[[str], bool] | None = None,
+) -> tuple[tuple[TextBox, str], ...]:
+    """Detect caption-sized action labels, honouring the caller's skips.
+
+    ``exempt`` is applied before a detection enters the result, so an exempt
+    control is not allowed to shadow another caption in the same row. The
+    surprise executor passes no predicate: it wants every painted caption so it
+    can map it to a product card (#139).
+    """
+    median_height = _median_text_height(snapshot)
+    found: list[tuple[TextBox, str]] = []
     found_ids: set[int] = set()
     for box in snapshot.boxes:
-        if box.score < DEFAULT_MIN_OCR_SCORE:
-            continue
-        if id(box) in refused_row_labels:
+        if id(box) in skip_ids or box.score < DEFAULT_MIN_OCR_SCORE:
             continue
         text = normalize(box.text)
         if not text:
@@ -409,9 +453,9 @@ def find_dangerous_controls(
         caption = _control_caption(text)
         if caption is None or not _is_control_box(box, median_height):
             continue
-        if _is_exempt_caption(snapshot, caption, product_detail=product_detail):
+        if exempt is not None and exempt(caption):
             continue
-        found.append(box)
+        found.append((box, caption))
         found_ids.add(id(box))
 
     # A button whose caption wraps over two OCR lines is still one control;
@@ -424,18 +468,35 @@ def find_dangerous_controls(
             (
                 box
                 for box in row.boxes
-                if box.score >= DEFAULT_MIN_OCR_SCORE and id(box) not in refused_row_labels and normalize(box.text)
+                if box.score >= DEFAULT_MIN_OCR_SCORE and id(box) not in skip_ids and normalize(box.text)
             ),
             None,
         )
         if candidate is None or not _is_control_box(candidate, median_height):
             continue
         caption = _control_caption(normalize(row.text))
-        if caption is None or _is_exempt_caption(snapshot, caption, product_detail=product_detail):
+        if caption is None or (exempt is not None and exempt(caption)):
             continue
-        found.append(candidate)
+        found.append((candidate, caption))
 
     return tuple(found)
+
+
+def _product_imagery_caption_ids(snapshot: Snapshot, task_key: str | None) -> set[int]:
+    """The captions painted inside product photographs on the surprise grid.
+
+    Only the surprise executor visits this page, and only its tile resolver can
+    say which part of the frame is a card's image. The import is lazy so the
+    safety module stays below the task layer at import time, the same pattern
+    the unexpected-screen branch uses for the scrolled grid (#100, #139).
+    """
+    if task_key != _SURPRISE_TASK_KEY:
+        return set()
+    from aliexpress_coins.tasks.surprise import _is_scrolled_grid, find_imagery_captions, is_surprise_grid
+
+    if not is_surprise_grid(snapshot) and not _is_scrolled_grid(snapshot):
+        return set()
+    return {id(box) for box, _tile in find_imagery_captions(snapshot)}
 
 
 def _control_caption(text: str) -> str | None:

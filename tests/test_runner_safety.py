@@ -694,6 +694,59 @@ def test_a_real_spending_control_on_a_product_detail_still_aborts() -> None:
     assert 'Place order' in raised.value.reason
 
 
+def test_a_product_photo_caption_is_exempt_only_on_the_surprise_grid() -> None:
+    page = _snapshot(
+        _box('Coins quiz', 55, 329, 433, 424),
+        _box('Add to cart', 400, 1800, 700, 1860),
+    )
+    guard = _guard()
+
+    with pytest.raises(RunAborted) as raised, guard.task('Browse surprise items', key='surprise_items'):
+        guard.inspect(page)
+
+    assert raised.value.code is AbortCode.DANGEROUS_CONTROL
+    assert 'Add to cart' in raised.value.reason
+
+
+def test_a_scrolled_surprise_grid_exempts_its_product_photo_caption() -> None:
+    grid = _snapshot(
+        _box('Product A', 90, 600, 490, 655),
+        _box('Product B', 690, 600, 1090, 655),
+        _box('C$12.99', 90, 700, 300, 750),
+        _box('C$13.99', 690, 700, 900, 750),
+        _box('Add to cart', 120, 520, 300, 545),
+    )
+    guard = _guard()
+
+    assert [box.text for box in find_dangerous_controls(grid)] == ['Add to cart']
+    assert find_dangerous_controls(grid, task_key='surprise_items') == ()
+    with guard.task('Browse surprise items', key='surprise_items'):
+        guard.inspect(grid)
+
+    assert guard.streak == 0
+
+
+def test_imagery_caption_mapping_needs_a_product_tile() -> None:
+    from aliexpress_coins.tasks.surprise import find_imagery_captions
+
+    assert find_imagery_captions(_snapshot(_box('Add to cart', 400, 400, 700, 460))) == ()
+
+
+def test_imagery_caption_mapping_ignores_anchors_outside_the_grid_band() -> None:
+    from aliexpress_coins.tasks.surprise import find_imagery_captions
+
+    frame = _snapshot(
+        _box('C$99.99', 90, 100, 300, 150),
+        _box('Product A', 90, 600, 490, 655),
+        _box('Product B', 690, 600, 1090, 655),
+        _box('C$12.99', 90, 700, 300, 750),
+        _box('C$13.99', 690, 700, 900, 750),
+        _box('C$1.99', 90, 1900, 300, 1950),
+    )
+
+    assert find_imagery_captions(frame) == ()
+
+
 def test_a_lower_readable_balance_aborts_the_run() -> None:
     guard = _guard()
     guard.expect_balance(40.0)

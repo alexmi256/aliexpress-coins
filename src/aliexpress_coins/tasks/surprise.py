@@ -56,7 +56,7 @@ from aliexpress_coins.perception.state import CaptureSource, ScreenState, classi
 from aliexpress_coins.perception.templates import TemplateStore
 from aliexpress_coins.perception.waits import wait_for_text_gone
 from aliexpress_coins.runner.errors import RunInterrupted
-from aliexpress_coins.runner.safety import RunAborted
+from aliexpress_coins.runner.safety import RunAborted, find_control_captions
 from aliexpress_coins.runner.state import DailyStateStore
 from aliexpress_coins.tasks.browse import (
     ReturnResult,
@@ -100,12 +100,14 @@ __all__ = [
     'RULE_PATH_REUSE',
     'SURPRISE_SUBTITLE',
     'SURPRISE_TITLE',
+    'TILE_SKIPPED_DANGEROUS',
     'CounterState',
     'RoundRecord',
     'SurpriseOutcome',
     'SurpriseResult',
     'SurpriseTile',
     'find_back_control',
+    'find_imagery_captions',
     'find_mission_overlay',
     'find_next_round',
     'find_surprise_tiles',
@@ -123,6 +125,9 @@ MISSION_COMPLETED = 'Mission Completed'
 
 RULE_PATH_REUSE = 'reuse'
 RULE_PATH_RESET = 'reset'
+
+TILE_SKIPPED_DANGEROUS = 'tile_skipped_dangerous'
+"""The log event recorded when a product photo carries a purchase caption."""
 
 REDEEM_INTERSTITIAL = 'redeem_interstitial'
 """The corpus family name of the unclosable reward interstitial."""
@@ -387,9 +392,11 @@ class RoundRecord:
     detail: str
     scrolls: int = 0
     items: tuple[str, ...] = ()
+    skipped_dangerous: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, 'items', tuple(self.items))
+        object.__setattr__(self, 'skipped_dangerous', tuple(self.skipped_dangerous))
 
     @property
     def delta(self) -> int | None:
@@ -425,6 +432,7 @@ class RoundRecord:
             'complete': self.complete,
             'detail': self.detail,
             'items': list(self.items),
+            'skipped_dangerous': list(self.skipped_dangerous),
         }
 
 
@@ -496,6 +504,11 @@ class SurpriseResult:
         return tuple(record.counter_change for record in self.round_records)
 
     @property
+    def skipped_dangerous(self) -> tuple[str, ...]:
+        """Every product card skipped because its photograph carried a caption."""
+        return tuple(label for record in self.round_records for label in record.skipped_dangerous)
+
+    @property
     def interstitial(self) -> str | None:
         """The unclosable reward overlay that ended the flow, if any."""
         return self.stop
@@ -533,6 +546,7 @@ class SurpriseResult:
             'rounds': self.rounds,
             'round_records': [item.as_dict() for item in self.round_records],
             'counter_deltas': list(self.counter_deltas),
+            'skipped_dangerous': list(self.skipped_dangerous),
             'rule_path': self.rule_path,
             'items': list(self.items),
             'badge_before': self.badge_before_text,
@@ -560,6 +574,14 @@ class _TriedTiles:
 
     def contains(self, tile: SurpriseTile) -> bool:
         return any(key in self.keys for key in tile.keys)
+
+
+@dataclass(frozen=True, slots=True)
+class _TileChoice:
+    """The next safe card and the cards skipped because a photo looked dangerous."""
+
+    tile: SurpriseTile | None
+    skipped: tuple[tuple[SurpriseTile, TextBox], ...] = ()
 
 
 def find_surprise_tiles(snapshot: Snapshot) -> tuple[SurpriseTile, ...]:
@@ -621,6 +643,81 @@ def find_surprise_tiles(snapshot: Snapshot) -> tuple[SurpriseTile, ...]:
             tiles.append(tile)
 
     return tuple(sorted(tiles, key=lambda tile: (tile.box.bbox[1], tile.box.bbox[0])))
+
+
+def find_imagery_captions(
+    snapshot: Snapshot,
+) -> tuple[tuple[TextBox, SurpriseTile], ...]:
+    """Pair dangerous captions painted inside a product photo with their card.
+
+    A product card is an image above its title. A purchase caption inside that
+    image is merchant artwork, not page chrome or a card action (#139), so the
+    guard can exempt it and the executor can skip the card. A caption below the
+    title, in the price/shipping block, between cards at page level, or outside
+    every card band is deliberately not paired and stays a live control.
+    """
+    tiles = find_surprise_tiles(snapshot)
+    if not tiles:
+        return ()
+    bands = _card_image_bands(snapshot, tiles)
+    boxes = find_control_captions(snapshot)
+    split = snapshot.width / 2.0
+    matches: list[tuple[TextBox, SurpriseTile]] = []
+    for caption in boxes:
+        centre_x, centre_y = caption.center
+        column = 0 if centre_x < split else 1
+        for tile, top, bottom in bands:
+            if tile.column == column and top <= centre_y <= bottom:
+                matches.append((caption, tile))
+                break
+    return tuple(matches)
+
+
+def _card_image_bands(
+    snapshot: Snapshot,
+    tiles: Sequence[SurpriseTile],
+) -> tuple[tuple[SurpriseTile, float, float], ...]:
+    """The vertical image band above each card's title, from the card above it.
+
+    The top of a card is the previous card's price/shipping block; the first
+    card starts below the header (or the measured header fraction on a scrolled
+    grid). The bottom is the card's own title, because the photograph sits
+    above that title on the measured page. No pixel constant is stored: every
+    bound comes from this frame's boxes.
+    """
+    header_bottom = _header_bottom(snapshot)
+    content_bottom = snapshot.height * _CONTENT_BOTTOM_FRACTION
+    anchors_by_column: dict[int, list[TextBox]] = {0: [], 1: []}
+    for box in snapshot.boxes:
+        if box.score < DEFAULT_MIN_OCR_SCORE or not _is_card_anchor(box):
+            continue
+        if box.bbox[3] <= header_bottom or box.bbox[1] >= content_bottom:
+            continue
+        column = _box_column(snapshot, box)
+        anchors_by_column[column].append(box)
+
+    ordered_by_column: dict[int, list[SurpriseTile]] = {0: [], 1: []}
+    for tile in tiles:
+        ordered_by_column[tile.column].append(tile)
+
+    bands: list[tuple[SurpriseTile, float, float]] = []
+    for column, column_tiles in ordered_by_column.items():
+        column_tiles.sort(key=lambda tile: (tile.box.bbox[1], tile.box.bbox[0]))
+        previous_bottom = header_bottom
+        for index, tile in enumerate(column_tiles):
+            title_top = tile.box.bbox[1]
+            bands.append((tile, previous_bottom, title_top))
+            next_top = column_tiles[index + 1].box.bbox[1] if index + 1 < len(column_tiles) else content_bottom
+            anchors_below = [
+                anchor.bbox[3] for anchor in anchors_by_column[column] if title_top < anchor.center[1] < next_top
+            ]
+            previous_bottom = max([tile.box.bbox[3], *anchors_below])
+    return tuple(bands)
+
+
+def _box_column(snapshot: Snapshot, box: TextBox) -> int:
+    """The card column a box belongs to, using the grid's own centre split."""
+    return 0 if box.center[0] < snapshot.width / 2.0 else 1
 
 
 def read_surprise_counter(
@@ -1354,6 +1451,7 @@ def _run_round(
     scroll_stable = False
     mission_seen = False
     items: list[str] = []
+    skipped_dangerous: list[str] = []
     pending_item: str | None = None
     grid_labels = _grid_labels(snapshot)
     baseline_unknown = False
@@ -1427,7 +1525,28 @@ def _run_round(
             break
 
         tracker = task_tried if mode == RULE_PATH_RESET else round_tried
-        tile = _next_tile(current, tracker)
+        choice = _next_tile(current, tracker)
+        for skipped_tile, caption in choice.skipped:
+            round_tried.add(skipped_tile)
+            task_tried.add(skipped_tile)
+            label = f'{skipped_tile.report_label}: {caption.text.strip()}'
+            skipped_dangerous.append(label)
+            logger.warning(
+                '%s',
+                json.dumps(
+                    {
+                        'event': TILE_SKIPPED_DANGEROUS,
+                        'key': spec.key,
+                        'round': index,
+                        'tile': skipped_tile.report_label,
+                        'caption': caption.text.strip(),
+                        'reason': 'a dangerous caption is painted inside the product photo; the tile was not tapped',
+                    },
+                    separators=(',', ':'),
+                    sort_keys=True,
+                ),
+            )
+        tile = choice.tile
         if tile is None:
             if mode == RULE_PATH_REUSE and not reset_used:
                 mode = RULE_PATH_RESET
@@ -1638,18 +1757,31 @@ def _run_round(
             detail=detail,
             scrolls=scrolls,
             items=tuple(items),
+            skipped_dangerous=tuple(skipped_dangerous),
         ),
         current,
         stop,
     )
 
 
-def _next_tile(snapshot: Snapshot, tried: _TriedTiles) -> SurpriseTile | None:
-    """Pick the first untried tile in reading order."""
+def _next_tile(snapshot: Snapshot, tried: _TriedTiles) -> _TileChoice:
+    """Pick the first untried card whose photograph carries no purchase caption.
+
+    A dangerous caption on a card is merchant artwork, not a control (#139),
+    but the card is still avoided: the executor taps another tile instead of
+    aborting the night over a photograph.
+    """
+    dangerous = {tile: caption for caption, tile in find_imagery_captions(snapshot)}
+    skipped: list[tuple[SurpriseTile, TextBox]] = []
     for tile in find_surprise_tiles(snapshot):
-        if not tried.contains(tile):
-            return tile
-    return None
+        if tried.contains(tile):
+            continue
+        caption = dangerous.get(tile)
+        if caption is not None:
+            skipped.append((tile, caption))
+            continue
+        return _TileChoice(tile, tuple(skipped))
+    return _TileChoice(None, tuple(skipped))
 
 
 def _wait_for_tiles(
@@ -1669,14 +1801,14 @@ def _wait_for_tiles(
     wait is bounded and returns immediately as soon as an untried card appears.
     """
     current = snapshot
-    if _next_tile(current, tried) is not None:
+    if _next_tile(current, tried).tile is not None:
         return current
     deadline = clock() + timeout
     while clock() < deadline:
         remaining = deadline - clock()
         sleep(min(interval, max(0.0, remaining)))
         current = _capture(capture)
-        if _next_tile(current, tried) is not None:
+        if _next_tile(current, tried).tile is not None:
             break
     return current
 

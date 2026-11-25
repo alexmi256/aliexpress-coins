@@ -44,6 +44,7 @@ from aliexpress_coins.tasks.surprise import (
     RULE_PATH_RESET,
     RULE_PATH_REUSE,
     SURPRISE_TITLE,
+    TILE_SKIPPED_DANGEROUS,
     CounterState,
     RoundRecord,
     SurpriseOutcome,
@@ -282,6 +283,24 @@ def _grid_frame(counter: int | None = 0, *, next_round: bool = False, mission: b
         boxes.append(_box('Mission Completed', 200, 1450, 1000, 1550))
     if next_round:
         boxes.append(_box('Next round', 500, 1700, 700, 1760))
+    return _snapshot(*boxes)
+
+
+def _grid_frame_with_dangerous_image(counter: int = 0) -> Snapshot:
+    """The measured two-column grid with a purchase caption in Product A's photo."""
+    boxes = [
+        _box(SURPRISE_TITLE, 270, 200, 930, 270),
+        _box('Tap 3 items on this page to earn coins', 253, 332, 946, 384),
+        _box('+1', 345, 447, 395, 482),
+        _box(f'{counter}/3', 480, 440, 573, 490),
+        _box('Add To Cart', 120, 500, 260, 520),
+    ]
+    for index, product in enumerate(PRODUCTS):
+        column = index % 2
+        row = index // 2
+        left = 90.0 if column == 0 else 690.0
+        top = 600.0 + 300.0 * row
+        boxes.append(_box(product, left, top, left + 400, top + 55))
     return _snapshot(*boxes)
 
 
@@ -1163,6 +1182,66 @@ def test_a_tile_tap_that_lands_on_a_coupon_page_is_not_tapped_as_a_grid(
     assert result.verification == 'grid_disappeared'
     product_taps = [tap.label for tap in result.taps if tap.label and tap.label.startswith('Product')]
     assert product_taps == ['Product A']
+
+
+def test_a_product_photo_caption_skips_that_tile_and_does_not_abort(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Issue #139: skip the photographed tile, tap the rest, finish the round."""
+    from aliexpress_coins.runner.safety import SafetyGuard
+
+    pending: dict[str, str] = {}
+
+    def on_tap(screen: str, label: str | None, _count: int) -> str | None:
+        if screen in ('grid0', 'grid1', 'grid2') and label in PRODUCTS:
+            pending['return'] = f'grid{int(screen[-1]) + 1}'
+            return 'detail'
+        return None
+
+    def on_key(screen: str, key: str, _count: int) -> str | None:
+        if screen == 'detail' and key == 'KEYCODE_BACK':
+            return pending.pop('return')
+        return None
+
+    world = _World(
+        series={
+            'boost': (_boost_frame(progress='1/2'),),
+            'grid0': (_grid_frame_with_dangerous_image(0),),
+            'grid1': (_grid_frame_with_dangerous_image(1),),
+            'grid2': (_grid_frame_with_dangerous_image(2),),
+            'grid3': (_grid_frame_with_dangerous_image(3),),
+            'detail': (_detail_frame(),),
+            'coins': (_coins_frame(),),
+        },
+        transitions={('boost', 'GO'): 'grid0'},
+        on_tap=on_tap,
+        on_key=on_key,
+    )
+    guard = SafetyGuard(catalogue=catalogue)
+    caplog.set_level(logging.INFO)
+
+    with guard.task(SURPRISE_TITLE, key='surprise_items'):
+        result = _run(
+            world,
+            catalogue,
+            corpus,
+            _state(tmp_path),
+            max_rounds=1,
+            arrival_timeout=0.2,
+            capture=guard.wrap(world.capture),
+        )
+
+    assert result.outcome is SurpriseOutcome.COMPLETED
+    assert result.round_records[0].counter_change == '0/3 -> 3/3'
+    assert result.round_records[0].skipped_dangerous == ('Product A: Add To Cart',)
+    assert result.skipped_dangerous == ('Product A: Add To Cart',)
+    product_taps = [tap.label for tap in result.taps if tap.label and tap.label.startswith('Product')]
+    assert product_taps == ['Product B', 'Product C', 'Product D']
+    assert ('Product A' in product_taps) is False
+    assert any(TILE_SKIPPED_DANGEROUS in record.getMessage() for record in caplog.records)
 
 
 def test_a_scrolled_grid_accepts_one_known_card_at_the_bottom() -> None:
