@@ -66,6 +66,12 @@ followed launching the created `Coins` shortcut from the home screen. It deliber
 whether the launch or the later coin-page reload delivered the credit, and carries no screenshot or
 account data.
 
+`surprise_items_issue_139.json` is sanitized OCR evidence from run `20261125T151001Z`'s failure
+record `frame-004.jpg`. It keeps the grid header, counter, product-card titles and prices, and the
+`Add To Cart` line painted inside the lower-left Hyundai card's photograph. The image itself is not
+committed; the JSON carries only the text boxes and their measured coordinates, with no account
+data. It is the regression fixture for telling a caption inside product imagery from page chrome.
+
 `surprise_items_issue_115_loading_grid.png` and `surprise_items_issue_115_loaded_grid.png` are the
 same `0/2` row reproduced live on 2026-11-24 after that run, while the tablet still offered the
 task. They are not frames from `20261124T083006Z`; they are the supervised capture of its load-timing

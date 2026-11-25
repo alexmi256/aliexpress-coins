@@ -440,6 +440,7 @@ def test_a_two_line_spending_caption_still_aborts() -> None:
         guard.inspect(page)
 
     assert raised.value.code is AbortCode.DANGEROUS_CONTROL
+    assert 'Place Order' in raised.value.reason
 
 
 def test_the_coin_pages_own_redeem_entry_is_not_a_live_control_during_a_task() -> None:
@@ -692,6 +693,112 @@ def test_a_real_spending_control_on_a_product_detail_still_aborts() -> None:
 
     assert raised.value.code is AbortCode.DANGEROUS_CONTROL
     assert 'Place order' in raised.value.reason
+
+
+def test_a_product_photo_caption_is_exempt_only_on_the_surprise_grid() -> None:
+    page = _snapshot(
+        _box('Coins quiz', 55, 329, 433, 424),
+        _box('Add to cart', 400, 1800, 700, 1860),
+    )
+    guard = _guard()
+
+    with pytest.raises(RunAborted) as raised, guard.task('Browse surprise items', key='surprise_items'):
+        guard.inspect(page)
+
+    assert raised.value.code is AbortCode.DANGEROUS_CONTROL
+    assert 'Add to cart' in raised.value.reason
+
+
+def test_a_scrolled_surprise_grid_exempts_its_product_photo_caption() -> None:
+    grid = _snapshot(
+        _box('Product A', 90, 600, 490, 655),
+        _box('Product B', 690, 600, 1090, 655),
+        _box('C$12.99', 90, 700, 300, 750),
+        _box('C$13.99', 690, 700, 900, 750),
+        _box('Add to cart', 120, 520, 300, 545),
+    )
+    guard = _guard()
+
+    assert [box.text for box in find_dangerous_controls(grid)] == ['Add to cart']
+    assert find_dangerous_controls(grid, task_key='surprise_items') == ()
+    with guard.task('Browse surprise items', key='surprise_items'):
+        guard.inspect(grid)
+
+    assert guard.streak == 0
+
+
+def test_a_photo_caption_sidecar_price_does_not_become_the_control() -> None:
+    frame = _snapshot(
+        _box('Browse surprise items', 270, 200, 930, 270),
+        _box('Tap 3 items on this page to earn coins', 253, 332, 946, 384),
+        _box('Add To Cart', 100, 500, 240, 520),
+        _box('C$12.99', 260, 500, 400, 520),
+        _box('Product Alpha Long Name', 90, 600, 490, 655),
+        _box('C$19.99', 90, 700, 300, 750),
+    )
+
+    assert [box.text for box in find_dangerous_controls(frame)] == ['Add To Cart']
+    assert find_dangerous_controls(frame, task_key='surprise_items') == ()
+
+
+def test_a_photo_caption_wrapped_over_two_boxes_does_not_become_the_control() -> None:
+    frame = _snapshot(
+        _box('Browse surprise items', 270, 200, 930, 270),
+        _box('Tap 3 items on this page to earn coins', 253, 332, 946, 384),
+        _box('Add to', 100, 500, 180, 520),
+        _box('Cart', 190, 500, 250, 520),
+        _box('Product Alpha Long Name', 90, 600, 490, 655),
+        _box('C$19.99', 90, 700, 300, 750),
+    )
+
+    # The row fallback carries the wrapped caption while the task is not
+    # surprise-scoped; the surprise exemption must remove the whole row.
+    assert [box.text for box in find_dangerous_controls(frame)] == ['Add to']
+    assert find_dangerous_controls(frame, task_key='surprise_items') == ()
+
+
+def test_a_card_action_caption_without_a_previous_anchor_stays_dangerous() -> None:
+    from aliexpress_coins.tasks.surprise import find_imagery_captions
+
+    frame = _snapshot(
+        _box('Browse surprise items', 270, 200, 930, 270),
+        _box('Tap 3 items on this page to earn coins', 253, 332, 946, 384),
+        _box('Product Alpha Long', 90, 600, 490, 655),
+        _box('Product Beta Long', 690, 600, 1090, 655),
+        _box('Add to cart', 100, 700, 300, 730),
+        _box('Product Gamma Long', 90, 900, 490, 955),
+        _box('Product Delta Long', 690, 900, 1090, 955),
+    )
+    guard = _guard()
+
+    assert find_imagery_captions(frame) == ()
+    assert [box.text for box in find_dangerous_controls(frame, task_key='surprise_items')] == ['Add to cart']
+    with pytest.raises(RunAborted) as raised, guard.task('Browse surprise items', key='surprise_items'):
+        guard.inspect(frame)
+
+    assert raised.value.code is AbortCode.DANGEROUS_CONTROL
+    assert 'Add to cart' in raised.value.reason
+
+
+def test_imagery_caption_mapping_needs_a_product_tile() -> None:
+    from aliexpress_coins.tasks.surprise import find_imagery_captions
+
+    assert find_imagery_captions(_snapshot(_box('Add to cart', 400, 400, 700, 460))) == ()
+
+
+def test_imagery_caption_mapping_ignores_anchors_outside_the_grid_band() -> None:
+    from aliexpress_coins.tasks.surprise import find_imagery_captions
+
+    frame = _snapshot(
+        _box('C$99.99', 90, 100, 300, 150),
+        _box('Product A', 90, 600, 490, 655),
+        _box('Product B', 690, 600, 1090, 655),
+        _box('C$12.99', 90, 700, 300, 750),
+        _box('C$13.99', 690, 700, 900, 750),
+        _box('C$1.99', 90, 1900, 300, 1950),
+    )
+
+    assert find_imagery_captions(frame) == ()
 
 
 def test_a_lower_readable_balance_aborts_the_run() -> None:

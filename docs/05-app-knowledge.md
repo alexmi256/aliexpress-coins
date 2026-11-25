@@ -142,8 +142,13 @@ enough to call the list clean.
   tile that leaves it unchanged is inert and the round fails `progress_unchanged` rather than being
   recorded. Scrolling for unseen products moves the header and pill off-screen; the
   executor recognises the same two-column card set it already read, not generic discount copy, and
-  restores the top before reading the counter (#100). At `3/3`, `Mission Completed` stays >10 s
-  until tapped; `Next round` appears on non-final rounds at ~(597, 1240) ⬜. Final round paid +1
+  restores the top before reading the counter (#100). Product photographs are store-listing
+  screenshots, so OCR can read a small `Add To Cart` inside a merchant's image (measured frame on
+  2026-11-25). That caption is not page chrome or a card action: the guard pairs it with the card's
+  image band, the executor skips that card and records `tile_skipped_dangerous`, and a caption
+  outside every card's photo still aborts as `dangerous_control` (#139). At `3/3`, `Mission
+  Completed` stays >10 s until tapped; `Next round` appears on non-final rounds at ~(597, 1240) ⬜.
+  Final round paid +1
   (43 → 44) and removed the row (intermediate-round payout ⬜). The header and `N/3` pill can paint
   while every product card is still a skeleton (measured 2026-11-24 in the `0/2` case), so a
   tile-less first read is settled before the grid is called empty; each round's first frame is

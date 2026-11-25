@@ -1,0 +1,424 @@
+{
+  "schema": 1,
+  "issue": 139,
+  "run_id": "20261125T151001Z",
+  "source": "sanitized OCR boxes from frame-004.jpg (failure recorder #124); the image itself is not committed",
+  "failure": {
+    "code": "dangerous_control",
+    "detail": "a 'Add To Cart' control appeared while Browse surprise items was running",
+    "screen": "page/surprise_grid: 10:12, 老, Browse surprise items, Tap 3 items on this page to earn coins"
+  },
+  "frame": {
+    "width": 1200,
+    "height": 2000,
+    "boxes": [
+      {
+        "text": "10:12",
+        "box": [
+          20.0,
+          4.0,
+          146.0,
+          34.0
+        ],
+        "score": 0.99955
+      },
+      {
+        "text": "Browse surprise items",
+        "box": [
+          268.0,
+          194.0,
+          933.0,
+          277.0
+        ],
+        "score": 0.99994
+      },
+      {
+        "text": "Tap 3 items on this page to earn coins",
+        "box": [
+          249.0,
+          328.0,
+          948.0,
+          390.0
+        ],
+        "score": 0.99122
+      },
+      {
+        "text": "+1",
+        "box": [
+          344.0,
+          444.0,
+          398.0,
+          485.0
+        ],
+        "score": 0.96934
+      },
+      {
+        "text": "0",
+        "box": [
+          483.0,
+          438.0,
+          523.0,
+          491.0
+        ],
+        "score": 0.99984
+      },
+      {
+        "text": "3",
+        "box": [
+          544.0,
+          447.0,
+          572.0,
+          482.0
+        ],
+        "score": 0.99995
+      },
+      {
+        "text": "10.25\"/12.8\" Screen",
+        "box": [
+          277.0,
+          768.0,
+          488.0,
+          797.0
+        ],
+        "score": 0.96177
+      },
+      {
+        "text": "For Toyota Scion tc 2011-2016",
+        "box": [
+          657.0,
+          760.0,
+          1103.0,
+          816.0
+        ],
+        "score": 0.99956
+      },
+      {
+        "text": "For Mercedes Benz",
+        "box": [
+          184.0,
+          819.0,
+          455.0,
+          849.0
+        ],
+        "score": 0.99993
+      },
+      {
+        "text": "GT GTC GTS GTR",
+        "box": [
+          112.0,
+          851.0,
+          526.0,
+          897.0
+        ],
+        "score": 0.96188
+      },
+      {
+        "text": "Music",
+        "box": [
+          224.0,
+          982.0,
+          258.0,
+          1000.0
+        ],
+        "score": 0.99363
+      },
+      {
+        "text": "Maps",
+        "box": [
+          293.0,
+          983.0,
+          323.0,
+          998.0
+        ],
+        "score": 0.99927
+      },
+      {
+        "text": "Messages",
+        "box": [
+          351.0,
+          982.0,
+          398.0,
+          999.0
+        ],
+        "score": 0.9285
+      },
+      {
+        "text": "Now Playing",
+        "box": [
+          415.0,
+          982.0,
+          467.0,
+          999.0
+        ],
+        "score": 0.9438
+      },
+      {
+        "text": "T113-i",
+        "box": [
+          52.0,
+          1208.0,
+          182.0,
+          1253.0
+        ],
+        "score": 0.99892
+      },
+      {
+        "text": "Zinc Alloy Frame | Ultra-Thin | Firmware KSW",
+        "box": [
+          206.0,
+          1217.0,
+          573.0,
+          1240.0
+        ],
+        "score": 0.97686
+      },
+      {
+        "text": "4GB+64GB",
+        "box": [
+          981.0,
+          1209.0,
+          1151.0,
+          1257.0
+        ],
+        "score": 0.99973
+      },
+      {
+        "text": "Linux System",
+        "box": [
+          50.0,
+          1251.0,
+          187.0,
+          1281.0
+        ],
+        "score": 0.97196
+      },
+      {
+        "text": "2400*900 Resolution",
+        "box": [
+          207.0,
+          1247.0,
+          575.0,
+          1286.0
+        ],
+        "score": 0.99967
+      },
+      {
+        "text": "Carplay",
+        "box": [
+          629.0,
+          1262.0,
+          683.0,
+          1290.0
+        ],
+        "score": 0.99983
+      },
+      {
+        "text": "Android Auto",
+        "box": [
+          697.0,
+          1265.0,
+          775.0,
+          1286.0
+        ],
+        "score": 0.99792
+      },
+      {
+        "text": "COOLING FAN",
+        "box": [
+          816.0,
+          1262.0,
+          900.0,
+          1286.0
+        ],
+        "score": 0.96992
+      },
+      {
+        "text": "AHD Camera",
+        "box": [
+          908.0,
+          1261.0,
+          991.0,
+          1288.0
+        ],
+        "score": 0.99506
+      },
+      {
+        "text": "Android 15",
+        "box": [
+          1004.0,
+          1252.0,
+          1126.0,
+          1287.0
+        ],
+        "score": 0.99503
+      },
+      {
+        "text": "HFmidia 2026 New Linux Syst",
+        "box": [
+          44.0,
+          1303.0,
+          588.0,
+          1353.0
+        ],
+        "score": 0.99644
+      },
+      {
+        "text": "Black Friday",
+        "box": [
+          617.0,
+          1306.0,
+          794.0,
+          1349.0
+        ],
+        "score": 0.99994
+      },
+      {
+        "text": "Free shipping",
+        "box": [
+          45.0,
+          1351.0,
+          290.0,
+          1398.0
+        ],
+        "score": 0.99998
+      },
+      {
+        "text": "7\" For Toyota Scion TC 2011-",
+        "box": [
+          610.0,
+          1363.0,
+          1141.0,
+          1409.0
+        ],
+        "score": 0.99308
+      },
+      {
+        "text": "C$288.99",
+        "box": [
+          71.0,
+          1438.0,
+          283.0,
+          1493.0
+        ],
+        "score": 0.99895
+      },
+      {
+        "text": "-2%",
+        "box": [
+          419.0,
+          1442.0,
+          517.0,
+          1494.0
+        ],
+        "score": 0.9993
+      },
+      {
+        "text": "C$214.99",
+        "box": [
+          636.0,
+          1445.0,
+          846.0,
+          1500.0
+        ],
+        "score": 0.99956
+      },
+      {
+        "text": "LowPrice",
+        "box": [
+          977.0,
+          1473.0,
+          1128.0,
+          1513.0
+        ],
+        "score": 0.99998
+      },
+      {
+        "text": "Disc:C$281.01",
+        "box": [
+          73.0,
+          1493.0,
+          327.0,
+          1536.0
+        ],
+        "score": 0.99965
+      },
+      {
+        "text": "Applied",
+        "box": [
+          419.0,
+          1489.0,
+          560.0,
+          1537.0
+        ],
+        "score": 0.99997
+      },
+      {
+        "text": "Disc:C$213.53",
+        "box": [
+          636.0,
+          1500.0,
+          890.0,
+          1544.0
+        ],
+        "score": 0.99958
+      },
+      {
+        "text": "iGO",
+        "box": [
+          445.0,
+          1609.0,
+          475.0,
+          1629.0
+        ],
+        "score": 0.89248
+      },
+      {
+        "text": "Add To Cart",
+        "box": [
+          502.0,
+          1604.0,
+          568.0,
+          1621.0
+        ],
+        "score": 0.94992
+      },
+      {
+        "text": "ERLLISH",
+        "box": [
+          93.0,
+          1623.0,
+          177.0,
+          1644.0
+        ],
+        "score": 0.99975
+      },
+      {
+        "text": "For Hyundai Tucson 2 LM IX35 2009 -2015",
+        "box": [
+          69.0,
+          1655.0,
+          575.0,
+          1689.0
+        ],
+        "score": 0.97641
+      }
+    ]
+  },
+  "observed": {
+    "caption": "Add To Cart",
+    "caption_box": [
+      502.0,
+      1604.0,
+      568.0,
+      1621.0
+    ],
+    "inside_tile": "For Hyundai Tucson 2 LM IX35 2009 -2015",
+    "tile_box": [
+      69.0,
+      1655.0,
+      575.0,
+      1689.0
+    ],
+    "reason": "the caption is painted inside the lower-left product photograph; no cart control exists in page chrome or a card action area"
+  }
+}
