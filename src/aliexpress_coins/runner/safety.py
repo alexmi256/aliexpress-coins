@@ -305,9 +305,10 @@ class SafetyGuard:
         self.last_screen = report
 
         if self.task_running:
-            controls = find_dangerous_controls(snapshot, self.catalogue, task_key=self._task_key)
-            if controls:
-                label = controls[0].text.strip()
+            matches = _dangerous_control_matches(snapshot, self.catalogue, task_key=self._task_key)
+            if matches:
+                _box, span = matches[0]
+                label = ' '.join(span.split())
                 reason = f'a {label!r} control appeared while {self._task_label or "a task"} was running'
                 self._abort(AbortCode.DANGEROUS_CONTROL, reason, report)
             if not self._recovering:
@@ -388,7 +389,7 @@ def find_control_captions(snapshot: Snapshot) -> tuple[TextBox, ...]:
     (#139). A box returned here is not by itself evidence that the run must
     abort.
     """
-    return tuple(box for box, _caption in _control_captions(snapshot, skip_ids=frozenset()))
+    return tuple(box for box, _caption, _span in _control_captions(snapshot, skip_ids=frozenset()))
 
 
 def find_dangerous_controls(
@@ -415,16 +416,26 @@ def find_dangerous_controls(
     resolver places them inside a card's image band; a caption in page chrome,
     a card action area, or any other task remains live.
     """
+    return tuple(box for box, _span in _dangerous_control_matches(snapshot, catalogue, task_key=task_key))
+
+
+def _dangerous_control_matches(
+    snapshot: Snapshot,
+    catalogue: TaskCatalogue | None = None,
+    *,
+    task_key: str | None = None,
+) -> tuple[tuple[TextBox, str], ...]:
+    """Live controls with the exact text span that produced each match."""
     product_detail = _is_product_detail(snapshot)
     skip_ids = _refused_row_labels(snapshot, catalogue)
     skip_ids.update(_product_imagery_caption_ids(snapshot, task_key))
-    found: list[TextBox] = []
-    for box, _caption in _control_captions(
+    found: list[tuple[TextBox, str]] = []
+    for box, _caption, span in _control_captions(
         snapshot,
         skip_ids=skip_ids,
         exempt=lambda caption: _is_exempt_caption(snapshot, caption, product_detail=product_detail),
     ):
-        found.append(box)
+        found.append((box, span))
     return tuple(found)
 
 
@@ -433,16 +444,18 @@ def _control_captions(
     *,
     skip_ids: Collection[int],
     exempt: Callable[[str], bool] | None = None,
-) -> tuple[tuple[TextBox, str], ...]:
+) -> tuple[tuple[TextBox, str, str], ...]:
     """Detect caption-sized action labels, honouring the caller's skips.
 
-    ``exempt`` is applied before a detection enters the result, so an exempt
-    control is not allowed to shadow another caption in the same row. The
-    surprise executor passes no predicate: it wants every painted caption so it
-    can map it to a product card (#139).
+    Each result carries the OCR box, the normalised caption and the span that
+    spelled it, so an abort can quote what actually matched. ``exempt`` is
+    applied before a detection enters the result, so an exempt control is not
+    allowed to shadow another caption in the same row. The surprise executor
+    passes no predicate: it wants every painted caption so it can map it to a
+    product card (#139).
     """
     median_height = _median_text_height(snapshot)
-    found: list[tuple[TextBox, str]] = []
+    found: list[tuple[TextBox, str, str]] = []
     found_ids: set[int] = set()
     for box in snapshot.boxes:
         if id(box) in skip_ids or box.score < DEFAULT_MIN_OCR_SCORE:
@@ -455,7 +468,7 @@ def _control_captions(
             continue
         if exempt is not None and exempt(caption):
             continue
-        found.append((box, caption))
+        found.append((box, caption, box.text.strip()))
         found_ids.add(id(box))
 
     # A button whose caption wraps over two OCR lines is still one control;
@@ -464,20 +477,22 @@ def _control_captions(
     for row in group_rows(snapshot.boxes, snapshot.geometry):
         if any(id(box) in found_ids for box in row.boxes):
             continue
+        visible = [box for box in row.boxes if id(box) not in skip_ids]
         candidate = next(
-            (
-                box
-                for box in row.boxes
-                if box.score >= DEFAULT_MIN_OCR_SCORE and id(box) not in skip_ids and normalize(box.text)
-            ),
+            (box for box in visible if box.score >= DEFAULT_MIN_OCR_SCORE and normalize(box.text)),
             None,
         )
         if candidate is None or not _is_control_box(candidate, median_height):
             continue
-        caption = _control_caption(normalize(row.text))
+        # Only the boxes the caller did not skip may spell the row caption.
+        # Otherwise a photo caption's sidecar price, or the unskipped half of a
+        # wrapped caption, would be attributed to a different box and abort on
+        # the very text this exemption is meant to ignore (#139).
+        span = ' '.join(box.text.strip() for box in visible).strip()
+        caption = _control_caption(normalize(span))
         if caption is None or (exempt is not None and exempt(caption)):
             continue
-        found.append((candidate, caption))
+        found.append((candidate, caption, span))
 
     return tuple(found)
 

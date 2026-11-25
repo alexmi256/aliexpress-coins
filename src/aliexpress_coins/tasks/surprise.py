@@ -704,14 +704,23 @@ def _card_image_bands(
     for column, column_tiles in ordered_by_column.items():
         column_tiles.sort(key=lambda tile: (tile.box.bbox[1], tile.box.bbox[0]))
         previous_bottom = header_bottom
+        previous_has_bottom = True
         for index, tile in enumerate(column_tiles):
             title_top = tile.box.bbox[1]
-            bands.append((tile, previous_bottom, title_top))
+            if previous_has_bottom:
+                bands.append((tile, previous_bottom, title_top))
             next_top = column_tiles[index + 1].box.bbox[1] if index + 1 < len(column_tiles) else content_bottom
             anchors_below = [
                 anchor.bbox[3] for anchor in anchors_by_column[column] if title_top < anchor.center[1] < next_top
             ]
-            previous_bottom = max([tile.box.bbox[3], *anchors_below])
+            if anchors_below:
+                previous_bottom = max(anchors_below)
+                previous_has_bottom = True
+            else:
+                # The previous card's action area has no OCR'd bottom. Without
+                # that evidence its text must not become the next card's photo
+                # band, so the next tile gets no image band at all (#139).
+                previous_has_bottom = False
     return tuple(bands)
 
 
