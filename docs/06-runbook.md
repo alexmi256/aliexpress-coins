@@ -506,8 +506,11 @@ may still be hidden by the splitter. This is a cross-run retry, not the in-run r
 `acted_unverified`; its next dispatch first re-reads the fresh task surface. A row that still shows
 its unclaimed `GO` may proceed, a row that is gone/checked on a complete surface is reported
 `already_done` with no tap, and an unreadable or partial surface stays retryable rather than
-guessing. The marker remains until the row is proven done — a recorded completion or a terminal
-executor outcome — and every dispatch while it remains re-checks instead of tapping from a stale
+guessing. The `chip_not_cleared` failure is deliberately not acted-marked: a missing row without a
+cleared dwell chip is the rotation evidence the gate rejected, so carrying the marker into the next
+run would turn it back into a terminal `already_done`. The marker remains until the row is proven
+done — a recorded completion or a terminal executor outcome — and every dispatch while it remains
+re-checks instead of tapping from a stale
 roster. The decision is recorded as `last_night` in the daily state and printed by the report as
 one `Night:` line.
 

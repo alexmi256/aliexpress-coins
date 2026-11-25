@@ -2142,6 +2142,69 @@ def test_recently_viewed_fails_if_the_app_leaves_after_the_chip_clears(
 
 
 @pytest.mark.slow
+def test_recently_viewed_uses_the_clock_frame_when_the_focus_probe_is_unreadable(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+    recently_viewed_entry: Snapshot,
+    recently_viewed_destination: Snapshot,
+    recently_viewed_cleared: Snapshot,
+) -> None:
+    clock_surface = _snapshot(
+        _box('3:36', 20, 5, 100, 35),
+        _box('0', 1120, 5, 1160, 35),
+        _box('日', 500, 700, 560, 760),
+        _box('24', 580, 700, 640, 760),
+    )
+    entry = _recently_viewed_entry(catalogue, recently_viewed_entry)
+    state = _state(tmp_path)
+    recorded: list[tuple[str, Snapshot]] = []
+    world = _World(
+        series={
+            'entry': (recently_viewed_entry,),
+            'destination': (
+                recently_viewed_destination,
+                recently_viewed_cleared,
+                clock_surface,
+            ),
+            'coins': (_coin_frame(),),
+        },
+        transitions={('entry', 'go'): 'destination'},
+    )
+
+    result = run_browse_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        state,
+        entry,
+        navigate=world.navigate,
+        app_foreground=lambda: None,
+        record_foreground_loss=lambda key, frame: recorded.append((key, frame)),
+        arrival_timeout=2.0,
+        load_timeout=1.0,
+        chip_interval=0.5,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is BrowseOutcome.FAILED
+    assert result.verification == 'foreground_lost_after_action'
+    assert result.arrival is not None
+    assert result.arrival.left_app is True
+    assert result.arrival.app_foreground is None
+    assert result.arrival.evidence is not None
+    assert result.arrival.evidence.surface == 'non_app'
+    assert result.chip is not None
+    assert result.chip.ready is True
+    assert recorded
+    assert recorded[0][0] == 'recently_viewed'
+    assert state.count('recently_viewed') == 0
+
+
+@pytest.mark.slow
 def test_run_browse_task_completes_on_a_done_label(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,

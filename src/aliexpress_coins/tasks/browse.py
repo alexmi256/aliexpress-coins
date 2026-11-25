@@ -1319,20 +1319,25 @@ def run_browse_task(
                     detail='the destination page showed no timer chip; verification decides',
                 )
 
-            if app_foreground is not None and chip_wait.ready and app_foreground() is False:
+            if chip_wait.ready:
                 # The chip can clear while the app is being covered or sent to
                 # the launcher. A cleared chip is not completion if the frame is
-                # no longer AliExpress.
-                frame = _capture(capture)
-                if record_foreground_loss is not None:
-                    record_foreground_loss(spec.key, frame)
-                arrival = replace(
-                    arrival,
-                    snapshot=frame,
-                    arrived=False,
-                    left_app=True,
-                    app_foreground=False,
-                )
+                # no longer AliExpress. When the package probe is unreadable,
+                # fall back to the measured clock/date frame.
+                probe = app_foreground() if app_foreground is not None else True
+                loss_frame = _capture(capture) if probe is not True else None
+                left_app = probe is False or (loss_frame is not None and is_non_app_surface(loss_frame))
+                if left_app and loss_frame is not None:
+                    if record_foreground_loss is not None:
+                        record_foreground_loss(spec.key, loss_frame)
+                    arrival = replace(
+                        arrival,
+                        snapshot=loss_frame,
+                        arrived=False,
+                        left_app=True,
+                        app_foreground=probe,
+                        evidence=_evidence(loss_frame, entry.title),
+                    )
 
             if stop is None and not arrival.left_app:
                 sweep, stop = _sweep(
