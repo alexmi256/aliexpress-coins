@@ -1482,7 +1482,7 @@ def test_a_stop_request_ends_between_tasks_and_the_rest_is_reported(
 
 
 @pytest.mark.slow
-def test_an_executor_exception_is_a_failed_task_not_a_lost_night(
+def test_an_executor_exception_is_a_failed_task_and_an_incomplete_night(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     boost_frame: Snapshot,
@@ -1493,11 +1493,13 @@ def test_an_executor_exception_is_a_failed_task_not_a_lost_night(
     roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
     frame = _boost_frame('coins_quiz')
     _surface(monkeypatch, roster, frame)
+    notifier = _Notifier()
     context = _context(
         tmp_path,
         capture=_Capture(frame, _coin_frame()),
         catalogue=catalogue,
         corpus=corpus,
+        notifier=notifier,
     )
 
     def dispatch(*args: Any, **kwargs: Any) -> EngineResult:
@@ -1507,16 +1509,24 @@ def test_an_executor_exception_is_a_failed_task_not_a_lost_night(
 
     report = engine.run_once(context)
 
-    assert report.status is RunStatus.COMPLETED
+    assert report.status is RunStatus.FAILED
     assert len(report.tasks) == 1
     assert report.tasks[0].outcome == 'failed'
     assert 'RuntimeError: executor broke' in report.tasks[0].detail
-    assert report.ok is True
+    assert report.ok is False
+    assert report.failure_code == FailureCode.TASK_UNVERIFIED.value
+    assert report.detail is not None
+    assert "'Take the coins quiz'" in report.detail
+    assert 'RuntimeError: executor broke' in report.detail
     assert context.state.snapshot().completed_night is False
     night = context.state.snapshot().last_night
     assert night is not None
     assert night.outcome is NightOutcome.RETRYABLE_FAILURES
     assert night.retryable_failures == 1
+    assert len(notifier.messages) == 1
+    assert "'Take the coins quiz'" in notifier.messages[0].body
+    assert 'task_unverified' in notifier.messages[0].body
+    assert 'RuntimeError: executor broke' in notifier.messages[0].body
 
 
 def test_a_run_level_failure_still_writes_a_parseable_report(
@@ -5728,6 +5738,12 @@ def test_an_unverified_task_is_retried_once_and_the_second_result_stands(
     assert [task.completed for task in report.tasks] == [False, True]
     assert report.tasks[1].code is None
     assert report.status is RunStatus.COMPLETED
+    # The row's last dispatch completed, so the earlier failed attempt is not
+    # unclaimed work and the night is genuinely complete (#143).
+    snapshot = context.state.snapshot()
+    assert snapshot.completed_night is True
+    assert snapshot.last_night is not None
+    assert snapshot.last_night.outcome is NightOutcome.EXHAUSTED
 
 
 @pytest.mark.slow
@@ -5766,9 +5782,13 @@ def test_an_unverified_task_that_stays_unverified_is_reported_and_the_walk_conti
 
     assert len(attempts) == 2
     assert report.passes == 2
-    assert report.status is RunStatus.COMPLETED
-    assert report.ok is True
-    assert report.tasks[0].code == FailureCode.TASK_UNVERIFIED.value
+    assert report.status is RunStatus.FAILED
+    assert report.ok is False
+    assert report.tasks[-1].code == FailureCode.TASK_UNVERIFIED.value
+    assert report.detail is not None
+    assert "'Take the coins quiz'" in report.detail
+    assert 'the row did not move' in report.detail
+    assert 'no dispatchable row remains' not in report.detail
     summary = report.summary_path.read_text(encoding='utf-8')
     assert 'task_unverified' in summary
     assert '**Night:** open' in summary
@@ -5816,10 +5836,17 @@ def test_all_retryable_failures_leave_the_night_open_for_a_later_run(
     first_report = engine.run_once(first)
 
     snapshot = first.state.snapshot()
-    assert first_report.status is RunStatus.COMPLETED
+    assert first_report.status is RunStatus.FAILED
+    assert first_report.ok is False
+    assert first_report.failure_code == FailureCode.TASK_UNVERIFIED.value
+    assert first_report.detail is not None
+    assert "'Take the coins quiz'" in first_report.detail
+    assert 'the quiz question never arrived' in first_report.detail
     assert first_report.tasks[0].completed is False
+    assert first_report.blacklist == {}
     assert snapshot.completed_night is False
     assert snapshot.acted_unverified == ('coins_quiz',)
+    assert snapshot.blacklist == {}
     assert snapshot.last_night is not None
     assert snapshot.last_night.outcome is NightOutcome.RETRYABLE_FAILURES
     assert snapshot.last_night.dispatched == 1
@@ -6269,7 +6296,12 @@ def test_a_mixed_night_with_one_retryable_failure_stays_open(
     report = engine.run_once(context)
 
     snapshot = context.state.snapshot()
-    assert report.status is RunStatus.COMPLETED
+    assert report.status is RunStatus.FAILED
+    assert report.ok is False
+    assert report.failure_code == FailureCode.TASK_UNVERIFIED.value
+    assert report.detail is not None
+    assert "'Turn on notifications'" in report.detail
+    assert 'the notifications row was not observable' in report.detail
     assert [task.completed for task in report.tasks] == [True, False]
     assert snapshot.completed_night is False
     assert snapshot.last_night is not None
@@ -6322,6 +6354,62 @@ def test_a_night_with_only_terminal_outcomes_still_completes_the_day(
     assert snapshot.last_night.completed == 0
     assert snapshot.last_night.retryable_failures == 0
     assert '**Night:** complete' in report.summary_path.read_text(encoding='utf-8')
+
+
+@pytest.mark.slow
+def test_a_roster_with_only_policy_excluded_rows_still_completes_the_day(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    """Exclusion is success: a day whose only unclaimed rows are refused is finished."""
+    excluded = (
+        ('Place an order on this page', 'Shop and earn'),
+        ('Add 5 items to your cart', 'Fill your cart'),
+        ('Water to win a US $0.10 prize', 'Play now'),
+        ('Share coins with friends', 'Invite friends'),
+        ('Browse recently viewed items', 'Pick up where you left off'),
+    )
+    boxes: list[TextBox] = [_box('Coins boost', 100, 100, 500, 150)]
+    for index, (title, subtitle) in enumerate(excluded):
+        top = 260 + index * 150
+        boxes.append(_box(title, 100, top, 900, top + 40))
+        boxes.append(_box(subtitle, 100, top + 45, 900, top + 75))
+        boxes.append(_box('GO', 980, top + 20, 1040, top + 60))
+    frame = _snapshot(*boxes)
+    roster = replace(
+        enumerate_roster(frame, catalogue, route=DiscoveryRoute.BOOST),
+        surface_variant=Surface.BOOST_PAGE,
+        routes_taken=(SurfaceRoute.SHORTCUT,),
+    )
+    _surface(monkeypatch, roster, frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    dispatched: list[str] = []
+
+    def dispatch(*args: Any, **kwargs: Any) -> EngineResult:
+        dispatched.append('called')
+        return EngineResult('completed', 'fake', 'unexpected', True, {})
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert dispatched == []
+    assert report.tasks == []
+    assert report.status is RunStatus.COMPLETED
+    assert report.ok is True
+    assert report.failure is None
+    assert all(skip.reason == 'policy' for skip in report.skipped)
+    snapshot = context.state.snapshot()
+    assert snapshot.completed_night is True
+    assert snapshot.last_night is not None
+    assert snapshot.last_night.outcome is NightOutcome.EXHAUSTED
 
 
 @pytest.mark.parametrize(
@@ -6581,7 +6669,11 @@ def test_an_unverified_sign_in_is_dispatched_once_and_taps_once(
     assert len(calls) == 1
     assert report.tasks[0].code == FailureCode.TASK_UNVERIFIED.value
     assert report.tasks[0].result['acted'] is True
-    assert report.status is RunStatus.COMPLETED
+    assert report.status is RunStatus.FAILED
+    assert report.ok is False
+    assert report.detail is not None
+    assert "'Daily check-in'" in report.detail
+    assert context.state.snapshot().completed_night is False
 
 
 class _UnverifiedClaim:
@@ -7632,7 +7724,7 @@ def test_a_failed_task_records_the_tap_sequence_and_both_reports_reference_it(
 
     report = engine.run_once(context)
 
-    assert report.status is RunStatus.COMPLETED
+    assert report.status is RunStatus.FAILED
     assert report.tasks[0].code == FailureCode.TASK_UNVERIFIED.value
     assert len(report.failure_recordings) == 1
     recording = report.failure_recordings[0]
@@ -7753,8 +7845,8 @@ def test_a_failed_failure_capture_degrades_to_a_warning_and_the_task_still_fails
 
     report = engine.run_once(context)
 
-    assert report.status is RunStatus.COMPLETED
-    assert report.ok is True
+    assert report.status is RunStatus.FAILED
+    assert report.ok is False
     assert report.tasks[0].code == FailureCode.TASK_UNVERIFIED.value
     assert len(report.failure_recordings) == 1
     assert report.failure_recordings[0]['frames']
@@ -7809,7 +7901,7 @@ def test_a_failed_task_whose_aftermath_is_empty_boost_does_not_abort_the_run(
 
     report = engine.run_once(context)
 
-    assert report.status is RunStatus.COMPLETED
+    assert report.status is RunStatus.FAILED
     assert report.abort is None
     assert report.tasks[0].outcome == 'failed'
     assert len(report.failure_recordings) == 1

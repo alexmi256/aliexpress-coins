@@ -250,7 +250,12 @@ class RunReport:
 
     @property
     def ok(self) -> bool:
-        """Whether the run itself succeeded, even if a task did not."""
+        """Whether the run's own outcome is a success rather than a failure.
+
+        A finished walk that left an allowed task failed is reported ``failed``
+        (see the engine's ``_incomplete_run_detail``), so the process exit and
+        the operator's status line agree with the task table.
+        """
         return self.status in (RunStatus.COMPLETED, RunStatus.BUDGET, RunStatus.PLANNED)
 
     def record_shot(self, name: str, image: Path) -> None:
