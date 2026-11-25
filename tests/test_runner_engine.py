@@ -1621,6 +1621,65 @@ def test_an_incomplete_roster_does_not_complete_the_night(
     assert any(event['event'] == 'roster_incomplete' for event in _events(report))
 
 
+def test_a_titleless_or_unconfirmed_roster_restarts_the_surface(
+    full_roster: Roster,
+) -> None:
+    """Issue #137: zero allowed rows from an unconfirmed read is not a completed night."""
+    roster = replace(full_roster, entries=(), unreadable_count=1)
+    observation = RosterObservation(sequence=1, timestamp=CAPTURED_AT, rows=(), roster=roster)
+
+    reason = engine._pass_restart_reason(roster, observation)
+
+    assert reason is not None
+    assert 'incomplete' in reason
+    assert 'no readable title' in reason
+
+
+def test_an_unconfirmed_or_lost_boost_surface_restarts_by_route(full_roster: Roster) -> None:
+    observation = RosterObservation(sequence=1, timestamp=CAPTURED_AT, rows=(), roster=full_roster)
+
+    unconfirmed = replace(full_roster, entries=(), scroll_surface_unconfirmed=True)
+    lost = replace(full_roster, entries=(), scroll_surface_lost=True)
+
+    for roster in (unconfirmed, lost):
+        reason = engine._pass_restart_reason(roster, observation)
+        assert reason is not None
+        assert reason.startswith('surface_lost:')
+
+
+def test_a_titleless_only_roster_does_not_complete_the_night(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _snapshot(
+        _box('Coins boost', 100, 100, 500, 150),
+        _box('0/3', 960, 620, 1060, 660),
+        _box('GO', 980, 630, 1040, 670),
+    )
+    titleless = replace(
+        enumerate_roster(frame, catalogue, route=DiscoveryRoute.BOOST),
+        surface_variant=Surface.BOOST_PAGE,
+    )
+    monkeypatch.setattr(engine, 'discover_roster', lambda *args, **kwargs: titleless)
+    monkeypatch.setattr(
+        engine,
+        'open_boost_list',
+        lambda *args, **kwargs: BoostList(snapshot=frame, route=DiscoveryRoute.BOOST, detail='test'),
+    )
+    context = _context(tmp_path, capture=_Capture(frame), catalogue=catalogue, corpus=corpus)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.BUDGET
+    assert report.night is None
+    assert context.state.snapshot().completed_night is False
+    assert report.roster is not None
+    assert report.roster['unreadable_count'] == 1
+    assert report.roster['incomplete'] is True
+
+
 def test_a_dry_run_does_not_mark_the_night_complete(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -18,12 +18,19 @@ from collections.abc import Sequence
 from enum import StrEnum
 from typing import Protocol
 
-from aliexpress_coins.perception.layout import find_action_in_row, group_rows
+from aliexpress_coins.perception.layout import (
+    DEFAULT_ACTION_LABELS,
+    Row,
+    find_action_in_row,
+    group_rows,
+    parse_progress_badge,
+)
 from aliexpress_coins.perception.matching import (
     DEFAULT_MIN_OCR_SCORE,
     DEFAULT_MIN_SCORE,
     find_text,
     normalize,
+    similarity,
 )
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.state import TASK_TITLES, has_search_landing_markers
@@ -66,6 +73,10 @@ SYSTEM_UI_BOTTOM_FRACTION = 0.10
 
 _CLOCK = re.compile(r'^\d{1,2}:\d{2}$')
 _DAY = re.compile(r'^\d{1,2}$')
+_REWARD_LABEL = re.compile(r'^\s*[+\uff0b]\s*\d')
+_REWARD_WORDS = frozenset({'coin', 'coins'})
+_NON_TITLE_LABELS = frozenset({normalize(BOOST_MARKER)})
+"""Labels that identify the surface but can never name a task row."""
 _WEEKDAYS = frozenset(
     {
         'mon',
@@ -348,18 +359,46 @@ def is_empty_boost(snapshot: Snapshot) -> bool:
 
 
 def has_task_rows(snapshot: Snapshot) -> bool:
-    """Whether the frame shows at least one task row.
+    """Whether the frame shows at least one readable task row.
 
-    A row is normally proven by an action control (``GO`` or similar). A known
-    task title also counts: the docs define the loaded boost page by the header
-    plus a task title, and a row can be captured before its control is legible.
-    The title list is the catalogue of *observed* tasks, not a closed schema;
-    an unrecognised server-driven title still has its action control, so it is
-    still seen as a row.
+    A row is proven by a title, not merely by an action control. A bare ``GO``
+    with a progress badge and no readable title is an unreadable row, not a task:
+    accepting it is what let #137 report a completed night from a single
+    title-less row. A known task title still counts on its own because the loaded
+    boost page is measured by its header plus a task title, and a row can be
+    captured before its control is legible.
     """
-    if any(find_action_in_row(row) is not None for row in group_rows(snapshot.boxes, snapshot.geometry)):
-        return True
+    for row in group_rows(snapshot.boxes, snapshot.geometry):
+        action = find_action_in_row(row)
+        if action is not None and _row_has_readable_title(row, action):
+            return True
     return any(contains_text(snapshot, title) for title in TASK_TITLES)
+
+
+def _row_has_readable_title(row: Row, action: TextBox) -> bool:
+    """Whether ``row`` carries a label that can name the task it belongs to.
+
+    The action itself, a progress badge, a reward and the surface header are
+    never titles. This keeps a title-less ``GO`` row from confirming a list or a
+    roster.
+    """
+    for box in row.boxes:
+        if box is action or box.score < DEFAULT_MIN_OCR_SCORE:
+            continue
+        text = box.text.strip()
+        if not text or not any(character.isalpha() for character in text):
+            continue
+        if parse_progress_badge(text) is not None:
+            continue
+        label = normalize(text)
+        if label in _NON_TITLE_LABELS or label in _REWARD_WORDS:
+            continue
+        if _REWARD_LABEL.match(text):
+            continue
+        if any(similarity(action_label, text) >= DEFAULT_MIN_SCORE for action_label in DEFAULT_ACTION_LABELS):
+            continue
+        return True
+    return False
 
 
 def contains_text(snapshot: Snapshot, label: str) -> bool:

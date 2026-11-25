@@ -179,6 +179,17 @@ frame or on a frame that names no new row. The bound is explicit so a server
 that keeps appending rows cannot hold discovery forever.
 """
 
+ROSTER_RESTORE_START_FRACTION = 0.50
+ROSTER_RESTORE_END_FRACTION = 0.95
+"""Where an upward restore gesture begins and ends.
+
+The sheet's red header occupies the top of the frame, so a restore that starts
+at the downward swipe's end point (``0.20`` of the height) begins on the header
+and never moves the list. Issue #137 left the sheet at the bottom for exactly
+that reason. The restore starts inside the list instead and drags down towards
+the bottom inset; both points are frame fractions, not pixels.
+"""
+
 _MAX_TASKS_ENV = 'AECOINS_MAX_TASKS_PER_RUN'
 _MAX_OBSERVATIONS_ENV = 'AECOINS_MAX_ROSTER_OBSERVATIONS'
 
@@ -395,6 +406,8 @@ class Roster:
     scroll_attempts: int = 0
     scroll_limit_reached: bool = False
     scroll_surface_lost: bool = False
+    scroll_surface_unconfirmed: bool = False
+    unreadable_count: int = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, 'entries', tuple(self.entries))
@@ -457,9 +470,11 @@ class Roster:
         """Whether the frame proves at least one task row was not enumerated."""
         return (
             self.surface_variant is Surface.NON_APP
+            or self.unreadable_count > 0
             or self.unassigned_action_count > 0
             or self.scroll_limit_reached
             or self.scroll_surface_lost
+            or self.scroll_surface_unconfirmed
             or any(not failure.recovered for failure in self.split_failures)
         )
 
@@ -477,6 +492,8 @@ class Roster:
             if self.scroll_attempts:
                 button_count = f'{self.visible_action_count} GO button(s) across {self.scroll_attempts + 1} frame(s)'
             problems.append(f'{button_count} but {self.unassigned_action_count} task action(s) were not enumerated')
+        if self.unreadable_count:
+            problems.append(f'{self.unreadable_count} task row(s) had no readable title and were not counted')
         unrecovered = sum(not failure.recovered for failure in self.split_failures)
         if unrecovered:
             problems.append(f'{unrecovered} known task title(s) could not be split from another row')
@@ -487,6 +504,8 @@ class Roster:
             )
         if self.scroll_surface_lost:
             problems.append('the boost surface was left during scrolling; the row set is incomplete')
+        if self.scroll_surface_unconfirmed:
+            problems.append('the Coins boost list did not prove it was open before its rows were read')
         if problems:
             return '; '.join(problems)
         if self.split_failures:
@@ -517,6 +536,8 @@ class Roster:
             'scroll_attempts': self.scroll_attempts,
             'scroll_limit_reached': self.scroll_limit_reached,
             'scroll_surface_lost': self.scroll_surface_lost,
+            'scroll_surface_unconfirmed': self.scroll_surface_unconfirmed,
+            'unreadable_count': self.unreadable_count,
             'incomplete': self.incomplete,
             'warning': self.warning,
             'split_failures': [failure.as_dict() for failure in self.split_failures],
@@ -701,6 +722,8 @@ class RosterObservation:
                 'scroll_attempts': self.roster.scroll_attempts,
                 'scroll_limit_reached': self.roster.scroll_limit_reached,
                 'scroll_surface_lost': self.roster.scroll_surface_lost,
+                'scroll_surface_unconfirmed': self.roster.scroll_surface_unconfirmed,
+                'unreadable_count': self.roster.unreadable_count,
                 'incomplete': self.roster.incomplete,
                 'warning': self.roster.warning,
                 'split_failures': [failure.as_dict() for failure in self.roster.split_failures],
@@ -1161,6 +1184,8 @@ def _log_observation(
             'scroll_attempts': roster.scroll_attempts,
             'scroll_limit_reached': roster.scroll_limit_reached,
             'scroll_surface_lost': roster.scroll_surface_lost,
+            'scroll_surface_unconfirmed': roster.scroll_surface_unconfirmed,
+            'unreadable_count': roster.unreadable_count,
             'incomplete': roster.incomplete,
             'warning': roster.warning,
             'split_failures': [failure.as_dict() for failure in roster.split_failures],
@@ -1490,6 +1515,19 @@ def open_boost_list(
             f'no tap was issued for {EARN_MORE_LABEL!r}',
         )
 
+    if _boost_arrived(initial):
+        # The sheet is already open (a previous read, or the app restored it).
+        # It is the boost route even though ``Earn more`` is behind it; looking
+        # for the coin-page label first made this an "inline" read and let the
+        # next scroll run from wherever the previous read stopped (#137).
+        return BoostList(
+            snapshot=initial,
+            route=DiscoveryRoute.BOOST,
+            detail=_arrival_detail(initial),
+            classification=initial_classification,
+            dismiss=dismiss,
+        )
+
     earn_more = find_text(initial, EARN_MORE_LABEL)
     if earn_more is None:
         return BoostList(
@@ -1703,6 +1741,7 @@ def enumerate_roster(
     entries: list[RosterEntry] = []
     seen: set[str] = set()
     assigned_actions: set[TextBox] = set()
+    unreadable = 0
     if streak_entry is not None and (streak_entry.action is not None or visible_action_count > 0):
         entries.append(streak_entry)
         seen.add(normalize(streak_entry.title))
@@ -1722,6 +1761,10 @@ def enumerate_roster(
         candidates = _title_candidates(row, action, action_labels)
         title, subtitle = _copy_text(candidates)
         if title is None:
+            # An action-bearing row with no readable title is not a roster
+            # row. Counting it keeps the read honest: it can never become an
+            # "empty" roster that lets the night be called complete.
+            unreadable += 1
             continue
         identity = normalize(title)
         if not identity or identity in seen:
@@ -1752,6 +1795,7 @@ def enumerate_roster(
         visible_action_count=visible_action_count,
         unassigned_action_count=max(0, visible_action_count - len(assigned_actions)),
         split_failures=tuple(split_failures),
+        unreadable_count=unreadable,
     )
 
 
@@ -1766,6 +1810,7 @@ def collect_roster(
     max_scrolls: int = MAX_ROSTER_SCROLLS,
     settle: float = 0.0,
     sleep: Callable[[float], None] = time.sleep,
+    start_at_top: bool = False,
 ) -> Roster:
     """Read the whole boost list, scrolling past the first screenful.
 
@@ -1776,6 +1821,11 @@ def collect_roster(
     first readable copy, and the list is returned to the top so the caller's
     next action sees the same first screenful it would without scrolling.
 
+    ``start_at_top`` makes the read prove its starting point. An already-open
+    sheet can be wherever an earlier read left it; reading from the bottom
+    returned one row and let the night be called complete (#137). Upward swipes
+    return it to the top before the downward scan, and the same bound applies.
+
     The action counters are aggregated across every read frame. A ``GO`` that
     never became a row in any frame therefore stays an unassigned action, which
     is what turns #107's per-frame count check into a whole-list check instead
@@ -1783,11 +1833,13 @@ def collect_roster(
 
     Only the boost page scrolls. The coin page's inline rows are a different
     surface with its own layout; sweeping them would be an unmeasured gesture.
+    A boost header with no readable row is not proof that the list is open: it
+    is marked unconfirmed and returned without a swipe.
 
     Absence is evidence only from a read that can be proved complete. Hitting
-    the scroll bound, leaving the boost surface, or leaving a ``GO`` unassigned
-    all make the roster incomplete; callers must treat those as unknown, never
-    as done.
+    the scroll bound, leaving the boost surface, leaving a row without a title,
+    or leaving a ``GO`` unassigned all make the roster incomplete; callers must
+    treat those as unknown, never as done.
     """
     if max_scrolls < 1:
         raise ValueError(f'max_scrolls must be positive, got {max_scrolls!r}')
@@ -1796,8 +1848,27 @@ def collect_roster(
     first = enumerate_roster(initial, catalogue, route=route, action_labels=action_labels)
     if not is_boost_page(initial) or is_empty_boost(initial):
         return first
+    if not has_task_rows(initial):
+        # The header alone is not the opened list. Do not spend a swipe on a
+        # sheet whose rows have not rendered; the caller can route-retry.
+        return replace(first, scroll_surface_unconfirmed=True)
 
     frame = initial
+    if start_at_top:
+        frame, _ = _roster_to_top(
+            controller,
+            capture,
+            frame,
+            max_swipes=max_scrolls + 1,
+            settle=settle,
+            sleep=sleep,
+        )
+        if _left_boost_surface(frame):
+            # The restore itself left the list. Do not spend a downward swipe
+            # on a page whose rows are no longer the boost roster.
+            return replace(first, scroll_surface_lost=True)
+        first = enumerate_roster(frame, catalogue, route=route, action_labels=action_labels)
+
     rosters = [first]
     scrolls: list[SwipeRecord] = []
     revealing_scrolls = 0
@@ -1808,15 +1879,12 @@ def collect_roster(
     for _ in range(max_scrolls):
         attempts += 1
         scrolls.append(_roster_swipe(controller, frame, down=True))
-        if settle:
-            sleep(settle)
-        current = _capture(capture)
+        current, difference = _capture_after_gesture(capture, frame, settle=settle, sleep=sleep)
         # A scroll that leaves the boost surface is an unknown read: stop
         # issuing gestures instead of swiping through the launcher or a popup.
         if classify(current).state is ScreenState.POPUP or classify_surface(current) is not Surface.BOOST_PAGE:
             surface_lost = True
             break
-        difference = frame_difference(frame, current)
         if difference <= STABLE_FRAME_MAX_DIFFERENCE:
             break
         revealing_scrolls += 1
@@ -1837,15 +1905,12 @@ def collect_roster(
         frame = current
         for _ in range(revealing_scrolls + 1):
             scrolls.append(_roster_swipe(controller, frame, down=False))
-            if settle:
-                sleep(settle)
-            after = _capture(capture)
+            after, difference = _capture_after_gesture(capture, frame, settle=settle, sleep=sleep)
             # The restore gesture is still a gesture: a popup or a foreign
             # surface means the read stopped being about the boost list.
             if classify(after).state is ScreenState.POPUP or classify_surface(after) is not Surface.BOOST_PAGE:
                 surface_lost = True
                 break
-            difference = frame_difference(frame, after)
             if difference <= STABLE_FRAME_MAX_DIFFERENCE:
                 break
             frame = after
@@ -1865,15 +1930,88 @@ def collect_roster(
         scroll_attempts=attempts,
         scroll_limit_reached=limit_reached,
         scroll_surface_lost=surface_lost,
+        unreadable_count=max((roster.unreadable_count for roster in rosters), default=0),
     )
+
+
+def _roster_to_top(
+    controller: Controller,
+    capture: CaptureSource,
+    frame: Snapshot,
+    *,
+    max_swipes: int,
+    settle: float,
+    sleep: Callable[[float], None],
+) -> tuple[Snapshot, list[SwipeRecord]]:
+    """Swipe a boost list back to its top before the downward read.
+
+    The first upward swipe is always issued: it is the only way to prove the
+    list is already at the top (the frame comes back unchanged). A popup or a
+    foreign surface ends the attempt and leaves the caller to report the lost
+    surface rather than scrolling an unknown page.
+    """
+    swipes: list[SwipeRecord] = []
+    for _ in range(max_swipes):
+        swipes.append(_roster_swipe(controller, frame, down=False))
+        after, difference = _capture_after_gesture(capture, frame, settle=settle, sleep=sleep)
+        frame = after
+        if _left_boost_surface(after):
+            break
+        if difference <= STABLE_FRAME_MAX_DIFFERENCE:
+            break
+    return frame, swipes
+
+
+def _capture_after_gesture(
+    capture: CaptureSource,
+    previous: Snapshot,
+    *,
+    settle: float,
+    sleep: Callable[[float], None],
+) -> tuple[Snapshot, float]:
+    """Capture after a swipe without trusting a frame that raced the gesture.
+
+    ``screencap`` can return the pre-swipe frame when it is taken while the
+    list is still moving. Treating that stale frame as "the list did not move"
+    left an already-open sheet at the bottom, which is how #137 collapsed a
+    fresh-day roster to one row. When the first frame looks unchanged and a
+    settle window is configured, poll it again before believing the end of the
+    list; a genuinely unchanged frame is returned unchanged.
+    """
+    if settle > 0:
+        sleep(settle)
+    frame = _capture(capture)
+    if _left_boost_surface(frame):
+        return frame, 1.0
+    difference = frame_difference(previous, frame)
+    if settle <= 0 or difference > STABLE_FRAME_MAX_DIFFERENCE:
+        return frame, difference
+    for _ in range(2):
+        sleep(settle)
+        frame = _capture(capture)
+        if _left_boost_surface(frame):
+            return frame, 1.0
+        difference = frame_difference(previous, frame)
+        if difference > STABLE_FRAME_MAX_DIFFERENCE:
+            break
+    return frame, difference
+
+
+def _left_boost_surface(frame: Snapshot) -> bool:
+    """Whether a gesture frame is no longer the un-obscured boost list."""
+    return classify(frame).state is ScreenState.POPUP or classify_surface(frame) is not Surface.BOOST_PAGE
 
 
 def _roster_swipe(controller: Controller, frame: Snapshot, *, down: bool) -> SwipeRecord:
     """One viewport-relative swipe; no device pixel is stored."""
-    start_y = frame.height * SCROLL_START_FRACTION
-    end_y = frame.height * (SCROLL_START_FRACTION - SCROLL_VIEWPORT_FRACTION)
-    if not down:
-        start_y, end_y = end_y, start_y
+    if down:
+        start_y = frame.height * SCROLL_START_FRACTION
+        end_y = frame.height * (SCROLL_START_FRACTION - SCROLL_VIEWPORT_FRACTION)
+    else:
+        # Begin inside the list, below the sheet's fixed header. Starting at
+        # the downward swipe's end point lands on the header and moves nothing.
+        start_y = frame.height * ROSTER_RESTORE_START_FRACTION
+        end_y = frame.height * ROSTER_RESTORE_END_FRACTION
     return controller.swipe_for_observation(
         (frame.width / 2.0, start_y),
         (frame.width / 2.0, end_y),

@@ -1546,6 +1546,7 @@ def _discover_or_fallback(
                     route=DiscoveryRoute.INLINE,
                     settle=context.config.settle_seconds,
                     sleep=context.sleep,
+                    start_at_top=True,
                 )
                 if surface is Surface.BOOST_PAGE and context.scroll_rosters
                 else enumerate_roster(frame, context.catalogue, route=DiscoveryRoute.INLINE)
@@ -2306,6 +2307,11 @@ def _observe(
                 route=opened.route if route is None else route,
                 settle=context.config.settle_seconds,
                 sleep=context.sleep,
+                # No tap means the sheet was already open, so it can be at any
+                # scroll position from the previous read. Prove the top first;
+                # reading from the bottom collapsed a fresh-day roster to one
+                # row and let the night be called complete (#137).
+                start_at_top=opened.tap is None,
             )
             if context.scroll_rosters and previous is not None and previous.scroll_attempts > 0
             else None
@@ -2358,6 +2364,15 @@ def _pass_restart_reason(
         return 'the task surface is unknown'
     if roster.surface_variant is Surface.EMPTY_BOOST:
         return 'the Coins boost page is the documented load fault'
+    if roster.scroll_surface_unconfirmed or roster.scroll_surface_lost:
+        return f'surface_lost: the Coins boost list was not read from a confirmed surface ({roster.warning})'
+    if not roster.entries and roster.unreadable_count:
+        # A frame with only unreadable action rows is not an empty day. Restart
+        # by route rather than walking a roster that proves nothing (#137).
+        return (
+            'surface_incomplete: the roster read was incomplete because '
+            f'{roster.unreadable_count} task row(s) had no readable title'
+        )
     return None
 
 
@@ -2507,6 +2522,8 @@ def _record_roster_diagnostics(roster: Roster, logger: logging.Logger) -> None:
             roster_count=roster.count,
             visible_action_count=roster.visible_action_count,
             unassigned_action_count=roster.unassigned_action_count,
+            unreadable_count=roster.unreadable_count,
+            surface_unconfirmed=roster.scroll_surface_unconfirmed,
             split_failures=[failure.as_dict() for failure in roster.split_failures],
         ),
     )
