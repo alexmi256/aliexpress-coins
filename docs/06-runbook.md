@@ -57,7 +57,8 @@ The run also needs:
 - the AliExpress app installed and **signed in**;
 - the tablet **unlocked**, with no PIN or biometric lock (Q2 in
   [`00-brief.md`](00-brief.md) §6 — the collector cannot enter one);
-- the charger attached, because a night may take tens of minutes;
+- the charger attached, because a stuck run can hold the tablet for the 20-minute safety-net budget
+  (the measured worst night took 6.4 minutes);
 - the app allowed to stay foregrounded long enough to finish; a human using the tablet can interrupt
   any run.
 
