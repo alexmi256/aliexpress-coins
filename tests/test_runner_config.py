@@ -181,7 +181,7 @@ def test_invalid_values_raise_a_configuration_error(environment: dict[str, str],
 def test_retry_loop_bounds_default_and_read_from_the_environment() -> None:
     plain = RunConfig.from_environment({})
 
-    assert plain.max_passes == 4
+    assert plain.max_passes == 12
     assert plain.max_task_attempts == 2
 
     configured = RunConfig.from_environment(

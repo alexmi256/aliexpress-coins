@@ -100,9 +100,12 @@ comparison, so a pure reorder is not mistaken for unfinished rendering. This doe
 roster written to `roster.jsonl` or `run.json`.
 
 Repeated failures are handled by the pass and attempt bounds (`_needs_another_pass`,
-`_blacklist_task`), not by moving a row around in the sort. When a budget, pass or attempt bound
-ends the walk while allowed rows remain, those rows are written to `summary.md`/`run.json` under
-`Skipped` with the bound as the reason (`run budget`, `pass budget`, or `blacklisted after N
+`_blacklist_task`), not by moving a row around in the sort. The pass bound follows progress, not a
+fixed count (#141): a sweep that dispatches a row or reveals new dispatchable rows earns another
+sweep, and two consecutive idle sweeps end the walk. `AECOINS_MAX_PASSES` is the absolute ceiling
+and a backstop for a surface that keeps changing without progress. When a budget, pass or attempt
+bound ends the walk while allowed rows remain, those rows are written to `summary.md`/`run.json`
+under `Skipped` with the bound as the reason (`run budget`, `pass budget`, or `blacklisted after N
 attempts`) instead of claiming that no dispatchable row remains.
 
 ## Geometry independence

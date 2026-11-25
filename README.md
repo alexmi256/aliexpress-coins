@@ -174,12 +174,12 @@ quiz, surprise items, search and notifications — lives in the executors under
 ### Bounds and unfinished nights
 
 - **Shipped bounds:** [`RunConfig`](src/aliexpress_coins/runner/config.py) defaults to a 1200-second
-  (20-minute) wall-clock safety net, 12 dispatched rows per run, 4 full passes and 2 attempts per task
-  (`AECOINS_RUN_BUDGET_SECONDS`, `AECOINS_MAX_TASKS_PER_RUN`, `AECOINS_MAX_PASSES` and
-  `AECOINS_MAX_TASK_ATTEMPTS`). The engine checks both bounds before each dispatch and reapplies the
-  wall-clock deadline at the running task's clock, sleep and capture seams, so a stuck executor
-  cannot poll past it silently; each task also has its own `max_per_run` daily limit in
-  `specs/tasks.yaml`.
+  (20-minute) wall-clock safety net, 12 dispatched rows per run, a 12-sweep absolute ceiling and 2
+  attempts per task (`AECOINS_RUN_BUDGET_SECONDS`, `AECOINS_MAX_TASKS_PER_RUN`,
+  `AECOINS_MAX_PASSES` and `AECOINS_MAX_TASK_ATTEMPTS`). The engine checks both budgets before each
+  dispatch and reapplies the wall-clock deadline at the running task's clock, sleep and capture
+  seams, so a stuck executor cannot poll past it silently; each task also has its own `max_per_run`
+  daily limit in `specs/tasks.yaml`.
 - **Shipped retry bounds:** the outer pass loop retries `task_unverified` after a fresh enumeration,
   and only when the attempt took no action. A row that acted without proof is not repeated within
   the run. A task that fails `AECOINS_MAX_TASK_ATTEMPTS` times is blacklisted for the rest of that
@@ -192,11 +192,14 @@ quiz, surprise items, search and notifications — lives in the executors under
   failure is still retryable or the roster was incomplete. Only an `exhausted` decision records
   `completed_night: true` through [`DailyStateStore.record_night()`](src/aliexpress_coins/runner/state.py),
   so the scheduler does not mistake an unfinished night for success.
-- **Pass and attempt bounds (#123):** a pass is a full re-enumerated sweep; reaching
-  `AECOINS_MAX_PASSES` ends the run as `budget`, never as complete. A blacklisted row is skipped for
-  the rest of the local day, while the rest of the roster continues; the run stays open for a later
-  day. An unreadable, unknown or capped observation never dispatches from or completes on the stale
-  roster.
+- **Pass and attempt bounds (#123, #141):** a pass is a full re-enumerated sweep. The loop normally
+  ends by progress: it keeps sweeping while a pass dispatched a row or revealed new dispatchable
+  rows, and stops after two consecutive sweeps that did neither. `AECOINS_MAX_PASSES` is the
+  absolute ceiling and ends the run as `budget`, never as complete; so does the progress rule, and
+  its detail names any still-dispatchable row. A ceiling below the largest `max_per_run` logs
+  `pass_budget_below_daily_capacity` at startup. A blacklisted row is skipped for the rest of the
+  local day, while the rest of the roster continues; the run stays open for a later day. An
+  unreadable, unknown or capped observation never dispatches from or completes on the stale roster.
 
 ### Permanent refusals
 

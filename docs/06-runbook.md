@@ -509,20 +509,26 @@ executor outcome — and every dispatch while it remains re-checks instead of ta
 roster. The decision is recorded as `last_night` in the daily state and printed by the report as
 one `Night:` line.
 
-**The in-night loop (#123).** A night is no longer one roster sweep. After every real attempt —
+**The in-night loop (#123, #141).** A night is no longer one roster sweep. After every real attempt —
 completed, failed, or a row that vanished between enumeration and dispatch — the engine
 re-enumerates the surface and continues while something is still dispatchable. An unreadable or
 unknown surface restarts from the shortcut route instead of ending the night. A full pass that
-finds no allowed, unblacklisted work may complete the day. Three bounds keep this finite:
-`AECOINS_MAX_PASSES` (default 4 full sweeps), `AECOINS_MAX_TASK_ATTEMPTS` (default 2 failed
-attempts of one task) and the existing wall-clock/task budgets. A verified success resets that
+finds no allowed, unblacklisted work may complete the day. The pass loop is bounded by **progress,
+not a fixed count**: it keeps sweeping while a pass dispatched a row or revealed new dispatchable
+rows, and stops after two consecutive sweeps that did neither (`engine.MAX_NO_PROGRESS_PASSES`).
+That is what lets a family with six daily rounds finish all six in one night instead of being cut
+off by a four-sweep budget. `AECOINS_MAX_PASSES` (default 12 sweeps) remains the absolute ceiling
+and a backstop for a surface that keeps changing without progress. A verified success resets that
 task's failure streak, so repeatable rows continue until their daily `max_per_run`. A task that
 keeps failing is blacklisted for the remainder of that local day with
 `reason: blacklisted after N attempts`; the rest of the roster continues and the report records the
 attempts and the blacklist. The blacklist
 lives in the day-keyed state file, so a new local day starts empty, and a real completion clears the
 entry. A policy refusal is permanent by design and is never counted as a blacklist attempt. Hitting
-the pass bound ends the run as `budget`, never as complete.
+either pass bound ends the run as `budget`, never as complete. A configured ceiling below the
+largest `max_per_run` logs `pass_budget_below_daily_capacity` at startup, because the ceiling
+would stop that family before its daily rounds are done; raise `AECOINS_MAX_PASSES` to at least
+that value.
 
 A real schedule wait looks like this ✅:
 
@@ -558,7 +564,7 @@ gate in #41.
 |---|---|
 | **Status** | `completed`, `budget`, `stopped`, `planned`, `aborted` or `failed` |
 | **Budget** | seconds used of the wall-clock budget |
-| **Passes** | full re-enumerated sweeps used, of the configured `AECOINS_MAX_PASSES` |
+| **Passes** | full re-enumerated sweeps used, of the configured `AECOINS_MAX_PASSES` ceiling |
 | **Attempts per task** | real dispatches per catalogue key, with the configured per-task limit |
 | **Blacklist** | tasks skipped after their attempt budget, with the attempt count |
 | **Device** | serial, adb state, whether the device was asleep and whether stay-awake was set |
@@ -615,9 +621,11 @@ A budget stop is a **clean end**, not an error:
 - `Status: budget`;
 - `Failure: budget_exhausted — The run used its whole time or task budget; the remaining rows wait
   for tomorrow.`;
-- `Detail` names either `wall-clock budget of ...s exhausted`, `task budget of N dispatch(es)
-  exhausted`, or `pass budget of N exhausted` when the in-night loop reached its sweep bound;
-- remaining rows appear under `Skipped` with reason `run budget`;
+- `Detail` names one of `wall-clock budget of ...s exhausted`, `task budget of N dispatch(es)
+  exhausted`, `pass budget of N exhausted` when the sweep ceiling was reached, or `pass budget
+  stopped after N consecutive no-progress pass(es)` when the progress rule ended the walk;
+- remaining rows appear under `Skipped` with reason `run budget` (a wall-clock or task stop) or
+  `pass budget` (either pass bound);
 - the process exits `0`, and the nightly daemon treats the night as finished for scheduling
   purposes only if the walk reached `completed` **and** left nothing worth retrying. A manual budget
   stop does **not** mark the day complete, so it does not swallow the nightly window.
@@ -625,9 +633,10 @@ A budget stop is a **clean end**, not an error:
 The `AECOINS_RUN_BUDGET_SECONDS` default of **1200 s (20 minutes)** is a safety net, not an expected
 duration. The worst night observed (run `20261124T083006Z`) took **386.7 s — 6.4 minutes — with ten
 dispatches**, and a night with nothing dispatchable exits in under a minute. The retry loop and the
-daily `max_per_run` limits allow about twelve dispatches at roughly 25-40 s each over at most four
-passes, so a legitimate worst case is about 8-12 minutes. Twenty minutes covers that with headroom
-while still ending a stuck executor loop within 20 minutes. The setting stays operator-overridable:
+daily `max_per_run` limits allow about twelve dispatches at roughly 25-40 s each, with one sweep
+per repeatable round, so a legitimate worst case is about 8-12 minutes. Twenty minutes covers that
+with headroom while still ending a stuck executor loop within 20 minutes. The setting stays
+operator-overridable:
 raise it for a slower device or a deliberately larger `AECOINS_MAX_PASSES`, not to paper over a slow
 network or a stuck screen.
 
@@ -643,7 +652,7 @@ deployment only the stop grace and SIGKILL remain.
 
 If the budget is routinely exhausted, look at the wall-clock budget
 (`AECOINS_RUN_BUDGET_SECONDS`, default 1200 s), the task cap
-(`AECOINS_MAX_TASKS_PER_RUN`, default 12), the pass bound (`AECOINS_MAX_PASSES`, default 4), the
+(`AECOINS_MAX_TASKS_PER_RUN`, default 12), the pass ceiling (`AECOINS_MAX_PASSES`, default 12), the
 per-task attempt bound (`AECOINS_MAX_TASK_ATTEMPTS`, default 2) and the per-task time in the table.
 Raise a limit only deliberately; a larger budget is not a fix for a slow network or a stuck screen.
 
@@ -665,7 +674,7 @@ Raise a limit only deliberately; a larger budget is not a fix for a slow network
 | `plan`, `plan_note` | the dry-run plan, when there was one; `plan.probe_failed` distinguishes an unreadable probe from evidence about the day, and `stable_waits` / `content_waits` / `roster_waits` record settling, row re-reads and row-set confirmation |
 | `abort` | safety code, reason and the screen that triggered it |
 | `night` | the completion decision: `outcome`, dispatched/completed counts and retryable failures |
-| `passes`, `max_passes`, `max_task_attempts`, `attempts`, `blacklist` | the in-night loop's sweeps, per-task dispatch attempts and tasks skipped at their attempt bound (#123) |
+| `passes`, `max_passes`, `max_task_attempts`, `attempts`, `blacklist` | the in-night loop's sweeps and absolute ceiling, per-task dispatch attempts and tasks skipped at their attempt bound (#123, #141) |
 | `failure` | code, stage, retry scope, retries, `abort_run`, sentence and detail |
 | `error` | the raw exception for a failed run, in addition to the named failure |
 | `tasks[]`, `skipped[]` | the task and skip tables in structured form; each task carries `state` (`in_flight`, `aborted`, or the executor outcome) |
