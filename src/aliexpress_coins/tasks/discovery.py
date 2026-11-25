@@ -179,7 +179,7 @@ frame or on a frame that names no new row. The bound is explicit so a server
 that keeps appending rows cannot hold discovery forever.
 """
 
-ROSTER_RESTORE_START_FRACTION = 0.50
+ROSTER_RESTORE_START_FRACTION = 0.40
 ROSTER_RESTORE_END_FRACTION = 0.95
 """Where an upward restore gesture begins and ends.
 
@@ -188,6 +188,10 @@ at the downward swipe's end point (``0.20`` of the height) begins on the header
 and never moves the list. Issue #137 left the sheet at the bottom for exactly
 that reason. The restore starts inside the list instead and drags down towards
 the bottom inset; both points are frame fractions, not pixels.
+
+The span is deliberately the same ``0.55`` of the height as a downward read.
+A shorter restore could leave a long list mid-way after ``revealing_scrolls +
+1`` swipes and then be read as if it were the top.
 """
 
 _MAX_TASKS_ENV = 'AECOINS_MAX_TASKS_PER_RUN'
@@ -470,6 +474,10 @@ class Roster:
         """Whether the frame proves at least one task row was not enumerated."""
         return (
             self.surface_variant is Surface.NON_APP
+            # The coin page rendered but named no task row: that is the same
+            # load fault the dry run reports as surface_rows_incomplete, not
+            # positive evidence that the day has no work.
+            or self.surface_variant is Surface.ROWS_ABSENT
             or self.unreadable_count > 0
             or self.unassigned_action_count > 0
             or self.scroll_limit_reached
@@ -487,6 +495,8 @@ class Roster:
         still named, because the next frame may not be recoverable.
         """
         problems: list[str] = []
+        if self.surface_variant is Surface.ROWS_ABSENT and not self.entries:
+            problems.append('the coin page rendered but named no task row')
         if self.unassigned_action_count:
             button_count = f'{self.visible_action_count} visible GO button(s)'
             if self.scroll_attempts:
@@ -1855,7 +1865,7 @@ def collect_roster(
 
     frame = initial
     if start_at_top:
-        frame, _ = _roster_to_top(
+        frame, _, top_confirmed = _roster_to_top(
             controller,
             capture,
             frame,
@@ -1867,6 +1877,10 @@ def collect_roster(
             # The restore itself left the list. Do not spend a downward swipe
             # on a page whose rows are no longer the boost roster.
             return replace(first, scroll_surface_lost=True)
+        if not top_confirmed:
+            # The restore spent its whole budget without proving the top. A
+            # mid-list frame is not the start of the roster.
+            return replace(first, scroll_surface_unconfirmed=True)
         first = enumerate_roster(frame, catalogue, route=route, action_labels=action_labels)
 
     rosters = [first]
@@ -1875,6 +1889,7 @@ def collect_roster(
     attempts = 0
     limit_reached = False
     surface_lost = False
+    surface_unconfirmed = False
 
     for _ in range(max_scrolls):
         attempts += 1
@@ -1914,6 +1929,9 @@ def collect_roster(
             if difference <= STABLE_FRAME_MAX_DIFFERENCE:
                 break
             frame = after
+        else:
+            # The restore bound ran out without a stable top frame.
+            surface_unconfirmed = True
 
     merged = _merge_frame_rosters(rosters)
     action_titles = {
@@ -1930,6 +1948,7 @@ def collect_roster(
         scroll_attempts=attempts,
         scroll_limit_reached=limit_reached,
         scroll_surface_lost=surface_lost,
+        scroll_surface_unconfirmed=surface_unconfirmed,
         unreadable_count=max((roster.unreadable_count for roster in rosters), default=0),
     )
 
@@ -1942,13 +1961,17 @@ def _roster_to_top(
     max_swipes: int,
     settle: float,
     sleep: Callable[[float], None],
-) -> tuple[Snapshot, list[SwipeRecord]]:
+) -> tuple[Snapshot, list[SwipeRecord], bool]:
     """Swipe a boost list back to its top before the downward read.
 
     The first upward swipe is always issued: it is the only way to prove the
     list is already at the top (the frame comes back unchanged). A popup or a
     foreign surface ends the attempt and leaves the caller to report the lost
     surface rather than scrolling an unknown page.
+
+    The boolean is true only when a stable frame proved the top was reached.
+    Exhausting the swipe bound returns false so the caller can mark the roster
+    unconfirmed instead of reading a possible mid-list frame as the top.
     """
     swipes: list[SwipeRecord] = []
     for _ in range(max_swipes):
@@ -1956,10 +1979,10 @@ def _roster_to_top(
         after, difference = _capture_after_gesture(capture, frame, settle=settle, sleep=sleep)
         frame = after
         if _left_boost_surface(after):
-            break
+            return frame, swipes, False
         if difference <= STABLE_FRAME_MAX_DIFFERENCE:
-            break
-    return frame, swipes
+            return frame, swipes, True
+    return frame, swipes, False
 
 
 def _capture_after_gesture(

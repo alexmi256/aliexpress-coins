@@ -732,6 +732,48 @@ def test_an_observer_keeps_scrolling_after_a_no_op_first_read(
     assert observation.sequence == 1
 
 
+def test_an_observer_restores_an_already_open_sheet_before_reading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    """Issue #137: the post-discovery read must ask for the top of the sheet."""
+    frame = _boost_frame('coins_quiz')
+    previous = replace(
+        enumerate_roster(frame, catalogue),
+        surface_variant=Surface.BOOST_PAGE,
+        scroll_count=1,
+        scroll_attempts=1,
+    )
+    collected = replace(previous, scroll_count=0, scroll_attempts=1)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame),
+        catalogue=catalogue,
+        corpus=corpus,
+        scroll_rosters=True,
+    )
+    observer = RosterObserver(catalogue, previous=previous, log=None)
+    seen: dict[str, Any] = {}
+    monkeypatch.setattr(
+        engine,
+        'open_boost_list',
+        lambda *args, **kwargs: BoostList(snapshot=frame, route=DiscoveryRoute.BOOST, detail='already open'),
+    )
+
+    def collect(*_args: Any, **kwargs: Any) -> Roster:
+        seen.update(kwargs)
+        return collected
+
+    monkeypatch.setattr(engine, 'collect_roster', collect)
+
+    observation = engine._observe(context, cast(Controller, context.controller), observer, route=None)
+
+    assert observation is not None
+    assert seen['start_at_top'] is True
+
+
 def test_dispatch_entry_routes_the_shortcut_visit_row(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1579,9 +1621,10 @@ def test_a_controller_factory_is_used_after_the_first_frame(
     assert report.status is RunStatus.COMPLETED
     assert created == [frame]
     snapshot = context.state.snapshot()
-    assert snapshot.completed_night is True
+    # An empty coin page is a load fault, not proof that the day has no work.
+    assert snapshot.completed_night is False
     assert snapshot.last_night is not None
-    assert snapshot.last_night.outcome is NightOutcome.EXHAUSTED
+    assert snapshot.last_night.outcome is NightOutcome.INCOMPLETE_ROSTER
     assert report.night == snapshot.last_night.as_dict()
     assert isinstance(context.hygiene, _Hygiene)
     assert context.hygiene.restored == 1
@@ -1678,6 +1721,31 @@ def test_a_titleless_only_roster_does_not_complete_the_night(
     assert report.roster is not None
     assert report.roster['unreadable_count'] == 1
     assert report.roster['incomplete'] is True
+
+
+def test_a_rows_absent_coin_page_does_not_complete_the_night(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    """An empty coin page is a load fault, not positive evidence of no tasks."""
+    frame = _coin_frame()
+    roster = replace(
+        enumerate_roster(frame, catalogue),
+        surface_variant=Surface.ROWS_ABSENT,
+    )
+    _surface(monkeypatch, roster, frame)
+    context = _context(tmp_path, capture=_Capture(frame), catalogue=catalogue, corpus=corpus)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.COMPLETED
+    assert report.roster is not None
+    assert report.roster['incomplete'] is True
+    assert report.night is not None
+    assert report.night['outcome'] == NightOutcome.INCOMPLETE_ROSTER.value
+    assert context.state.snapshot().completed_night is False
 
 
 def test_a_dry_run_does_not_mark_the_night_complete(

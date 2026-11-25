@@ -54,6 +54,7 @@ from aliexpress_coins.tasks.discovery import (
     _capture_after_gesture,
     _merge_frame_rosters,
     _observation_problem,
+    _roster_swipe,
     _roster_to_top,
     _surface_family,
     _task_signature,
@@ -1846,13 +1847,25 @@ def test_collect_roster_does_not_scroll_after_the_restore_leaves_the_surface(
     assert len(device.swipes) == 1
 
 
+def test_restoring_the_top_moves_as_far_as_the_downward_read() -> None:
+    frame = _boost_frame(_task_row('Daily check-in', 100))
+    device = _RecordingDevice()
+    controller = _controller(device, frame)
+
+    _roster_swipe(controller, frame, down=True)
+    _roster_swipe(controller, frame, down=False)
+
+    down, up = device.swipes
+    assert down[1] - down[3] == up[3] - up[1]
+
+
 def test_returning_an_open_sheet_to_the_top_stops_on_a_foreign_surface() -> None:
     frame = _boost_frame(_task_row('Daily check-in', 100))
     foreign = _snapshot(_box('For you', 100, 200, 400, 260))
     device = _RecordingDevice()
     sleeps: list[float] = []
 
-    returned, swipes = _roster_to_top(
+    returned, swipes, confirmed = _roster_to_top(
         _controller(device, frame),
         _Capture((foreign,)),
         frame,
@@ -1862,6 +1875,7 @@ def test_returning_an_open_sheet_to_the_top_stops_on_a_foreign_surface() -> None
     )
 
     assert returned is foreign
+    assert confirmed is False
     assert len(swipes) == 1
     assert sleeps
     assert set(sleeps) == {0.5}
@@ -1874,7 +1888,7 @@ def test_returning_an_open_sheet_to_the_top_respects_its_swipe_bound() -> None:
     changed_b = _with_image_change(frame, (100, 600, 700, 1200), (255, 255, 255))
     device = _RecordingDevice()
 
-    _, swipes = _roster_to_top(
+    _, swipes, confirmed = _roster_to_top(
         _controller(device, frame),
         _Capture((changed_a, changed_b)),
         frame,
@@ -1883,8 +1897,56 @@ def test_returning_an_open_sheet_to_the_top_respects_its_swipe_bound() -> None:
         sleep=lambda _seconds: None,
     )
 
+    assert confirmed is False
     assert len(swipes) == 2
     assert len(device.swipes) == 2
+
+
+def test_an_exhausted_top_restore_marks_the_roster_unconfirmed(
+    catalogue: TaskCatalogue,
+) -> None:
+    bottom = _boost_frame(_task_row('Share coins with friends', 600))
+    changed_a = _with_image_change(bottom, (100, 600, 700, 1200), (0, 0, 0))
+    changed_b = _with_image_change(bottom, (100, 600, 700, 1200), (255, 255, 255))
+    device = _RecordingDevice()
+
+    roster = collect_roster(
+        _controller(device, bottom),
+        _Capture((changed_a, changed_b)),
+        catalogue,
+        bottom,
+        max_scrolls=1,
+        start_at_top=True,
+    )
+
+    assert roster.scroll_surface_unconfirmed is True
+    assert roster.incomplete is True
+    assert len(device.swipes) == 2
+
+
+def test_an_exhausted_post_scan_restore_marks_the_roster_unconfirmed(
+    catalogue: TaskCatalogue,
+) -> None:
+    top = _boost_frame(_task_row('Daily check-in', 600))
+    middle = replace(
+        _boost_frame(_task_row('Share coins with friends', 600)),
+        image=Image.new('RGB', (1200, 2000), '#dddddd'),
+    )
+    restore_a = _with_image_change(middle, (100, 600, 700, 1200), (0, 0, 0))
+    restore_b = _with_image_change(middle, (100, 600, 700, 1200), (255, 255, 255))
+    device = _RecordingDevice()
+
+    roster = collect_roster(
+        _controller(device, top),
+        _Capture((middle, middle, restore_a, restore_b)),
+        catalogue,
+        top,
+        start_at_top=False,
+    )
+
+    assert roster.scroll_count == 1
+    assert roster.scroll_surface_unconfirmed is True
+    assert roster.incomplete is True
 
 
 def test_a_stale_unchanged_gesture_frame_is_captured_again() -> None:
