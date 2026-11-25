@@ -125,3 +125,13 @@ class RunInterrupted(RunnerError):
     received SIGTERM, so an executor's own broad ``except Exception`` cannot
     swallow the stop and keep tapping.
     """
+
+
+class RunBudgetExceeded(RunInterrupted):
+    """The wall-clock budget elapsed while a task was still running.
+
+    The engine checks the budget between dispatches; this exception makes the
+    same deadline active at a task's injected clock, sleep and capture seams.
+    It is a :class:`RunInterrupted` so the executors' existing "never swallow a
+    stop" handling also lets a budget stop unwind cleanly.
+    """

@@ -18,7 +18,7 @@ FINISHED = datetime(2026, 11, 22, 3, 42, tzinfo=UTC)
 
 
 def _report(tmp_path: Path) -> RunReport:
-    return RunReport(tmp_path, '20261122T033000Z', budget_seconds=2700.0, started_at=STARTED)
+    return RunReport(tmp_path, '20261122T033000Z', budget_seconds=1200.0, started_at=STARTED)
 
 
 def test_for_run_uses_the_utc_clock_for_the_directory_name(tmp_path: Path) -> None:
@@ -92,7 +92,7 @@ def test_a_full_report_round_trips_through_json_and_markdown(tmp_path: Path) -> 
     assert payload['schema'] == 6
     assert payload['run_id'] == '20261122T033000Z'
     assert payload['status'] == 'budget'
-    assert payload['budget'] == {'seconds': 2700.0, 'used_seconds': 60.0}
+    assert payload['budget'] == {'seconds': 1200.0, 'used_seconds': 60.0}
     assert payload['tasks'][0]['state'] == 'completed'
     assert payload['tasks'][0]['result'] == {'payout': '+6'}
     assert len(payload['skipped']) == 2

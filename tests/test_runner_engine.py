@@ -44,6 +44,7 @@ from aliexpress_coins.runner.errors import (
     DeviceSleeping,
     DeviceUnavailable,
     ReportError,
+    RunBudgetExceeded,
     RunInterrupted,
 )
 from aliexpress_coins.runner.failures import FailureCode, failure
@@ -1206,6 +1207,197 @@ def test_a_wall_clock_budget_stops_before_the_first_task_and_lists_why(
     summary = report.summary_path.read_text(encoding='utf-8')
     assert '| Take the coins quiz | run budget | wall-clock budget of 5s exhausted |' in summary
     assert 'no dispatchable row remains' not in summary
+
+
+@pytest.mark.slow
+def test_a_wall_clock_budget_after_a_repeatable_completion_keeps_the_night_open_and_lists_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    boost_frame: Snapshot,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    wanted = ('sponsored_items', 'notifications')
+    roster = replace(full_roster, entries=tuple(entry for entry in full_roster.entries if entry.key in wanted))
+    frame = _boost_frame(*wanted)
+    clock = _Clock()
+    _surface(monkeypatch, roster, frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+        clock=clock,
+        budget=50.0,
+    )
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        assert entry.key is not None
+        _context.state.record(entry.key)
+        clock.value = 60.0
+        return EngineResult('completed', 'fake', 'done', True, {'key': entry.key})
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.BUDGET
+    assert report.detail is not None
+    assert 'wall-clock budget of 50s exhausted' in report.detail
+    assert [task.key for task in report.tasks] == ['sponsored_items']
+    assert report.tasks[0].completed
+    assert report.night is None
+    assert context.state.snapshot().completed_night is False
+    assert report.json_path.is_file()
+    assert report.summary_path.is_file()
+    payload = _report_payload(tmp_path)
+    assert payload['status'] == 'budget'
+    assert payload['budget']['seconds'] == 50.0
+    assert payload['budget']['used_seconds'] >= 50.0
+    # The repeatable row completed once but is still below its daily max_per_run,
+    # so #131 names it alongside the untouched row at the wall-clock stop.
+    skipped = {(skip.key, skip.reason, skip.detail) for skip in report.skipped}
+    assert (
+        'sponsored_items',
+        'run budget',
+        'wall-clock budget of 50s exhausted',
+    ) in skipped
+    assert (
+        'notifications',
+        'run budget',
+        'wall-clock budget of 50s exhausted',
+    ) in skipped
+    summary = report.summary_path.read_text(encoding='utf-8')
+    assert '| Explore sponsored items | run budget | wall-clock budget of 50s exhausted |' in summary
+    assert '| Turn on notifications | run budget | wall-clock budget of 50s exhausted |' in summary
+
+
+@pytest.mark.slow
+def test_a_task_that_crosses_the_wall_clock_budget_ends_as_budget_with_its_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    wanted = ('coins_quiz', 'notifications')
+    roster = replace(full_roster, entries=tuple(_entry(full_roster, key) for key in wanted))
+    frame = _boost_frame(*wanted)
+    _surface(monkeypatch, roster, frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+        budget=30.0,
+    )
+
+    def slow_dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        # The task sleeps past the run deadline instead of returning normally.
+        # The engine's task-budget seams must stop it before this returns.
+        _context.sleep(31.0)
+        raise AssertionError(f'{entry.key!r} outlived the wall-clock budget')
+
+    monkeypatch.setattr(engine, '_dispatch_entry', slow_dispatch)
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.BUDGET
+    assert report.detail is not None
+    assert 'wall-clock budget of 30s exhausted during' in report.detail
+    assert report.failure_code == FailureCode.BUDGET_EXHAUSTED.value
+    assert [task.key for task in report.tasks] == ['coins_quiz']
+    assert report.tasks[0].state == 'aborted'
+    assert report.tasks[0].code == FailureCode.BUDGET_EXHAUSTED.value
+    assert context.state.snapshot().completed_night is False
+    # The task may have acted before the deadline, so the day must carry the
+    # conservative marker even though this attempt never returned a result.
+    assert context.state.is_acted_unverified('coins_quiz') is True
+    still_allowed = {(skip.key, skip.reason) for skip in report.skipped}
+    assert still_allowed == {('notifications', 'run budget')}
+    assert not any(skip.key == 'coins_quiz' for skip in report.skipped)
+    assert report.json_path.is_file()
+    assert report.summary_path.is_file()
+    summary = report.summary_path.read_text(encoding='utf-8')
+    assert '| Turn on notifications | run budget | wall-clock budget of 30s exhausted during' in summary
+    assert '| Take the coins quiz | run budget |' not in summary
+    payload = _report_payload(tmp_path)
+    assert payload['status'] == 'budget'
+    assert payload['night'] is None
+    assert payload['tasks'][0]['state'] == 'aborted'
+
+    # A later run must take the acted re-check path, not dispatch the possibly
+    # claimed row from a fresh roster.
+    second_roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    second_frame = _boost_frame('coins_quiz')
+    _surface(monkeypatch, second_roster, second_frame)
+    second = _context(
+        tmp_path,
+        capture=_Capture(second_frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+        budget=30.0,
+    )
+    second.wall_clock = lambda: CAPTURED_AT + timedelta(minutes=5)
+    dispatches: list[str] = []
+
+    def must_not_dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        dispatches.append(entry.key or '')
+        if entry.key == 'coins_quiz':
+            raise AssertionError('the possibly claimed row must not be dispatched again')
+        if entry.key is not None:
+            _context.state.record(entry.key)
+        return EngineResult('completed', 'fake', 'done', True, {'key': entry.key})
+
+    monkeypatch.setattr(engine, '_dispatch_entry', must_not_dispatch)
+    rechecks: list[str] = []
+
+    def recheck(_context: RunContext, _controller: Controller, entry: RosterEntry) -> tuple[bool, RosterEntry | None]:
+        rechecks.append(entry.key or '')
+        return True, None
+
+    monkeypatch.setattr(engine, '_recheck_acted_row', recheck)
+
+    second_report = engine.run_once(second)
+
+    assert rechecks == ['coins_quiz']
+    assert 'coins_quiz' not in dispatches
+    assert second_report.tasks[0].key == 'coins_quiz'
+    assert second_report.tasks[0].verification == 'already_done'
+    assert second.state.is_acted_unverified('coins_quiz') is True
+
+
+def test_the_task_budget_guard_checks_the_clock_and_capture_seams(
+    tmp_path: Path,
+    boost_frame: Snapshot,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    clock = _Clock()
+    context = _context(
+        tmp_path / 'clock',
+        capture=_Capture(boost_frame),
+        catalogue=catalogue,
+        corpus=corpus,
+        clock=clock,
+    )
+
+    def read_after_deadline() -> float:
+        clock.value = 5.0
+        return context.clock()
+
+    with pytest.raises(RunBudgetExceeded, match='wall-clock budget ended'), engine._task_budget(context, 5.0):
+        read_after_deadline()
+
+    def late_capture() -> Snapshot:
+        clock.value = 6.0
+        return boost_frame
+
+    clock.value = 0.0
+    context.capture = late_capture
+    with pytest.raises(RunBudgetExceeded, match='wall-clock budget ended'), engine._task_budget(context, 5.0):
+        engine._capture(context.capture)
 
 
 @pytest.mark.slow

@@ -62,8 +62,19 @@ DEFAULT_NTFY_SERVER = 'https://ntfy.sh'
 DEFAULT_JITTER_SECONDS = 180
 """A three-minute jitter: a few minutes, not a different schedule."""
 
-DEFAULT_RUN_BUDGET_SECONDS = 2700.0
-"""Forty-five minutes of wall clock for one night's work."""
+DEFAULT_RUN_BUDGET_SECONDS = 1200.0
+"""Twenty minutes of wall clock for one night's work: a safety net, not a guess.
+
+The measured worst night (`20261124T083006Z`) took 386.7 s — 6.4 minutes — with
+ten dispatches, and a night with nothing dispatchable exits in under a minute.
+The in-night retry loop (#123) and the daily ``max_per_run`` limits allow about
+twelve dispatches at roughly 25-40 s each over at most four passes, so a
+legitimate worst case is about 8-12 minutes. Twenty minutes covers that with
+headroom while bounding a stuck run at the executor's clock, sleep and capture
+seams; an in-flight adb command is bounded by its subprocess timeout, and a
+native OCR/PIL call has no in-process timeout.
+An operator may raise it for a slower device or more passes.
+"""
 
 DEFAULT_MAX_TASKS = 12
 """The default number of task dispatches one run may make."""

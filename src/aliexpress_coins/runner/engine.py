@@ -13,7 +13,8 @@ which the frame happened to enumerate its rows (#131). Four budgets bound it:
 
 * ``AECOINS_MAX_TASKS_PER_RUN`` is the task budget, counted in dispatches;
 * ``AECOINS_RUN_BUDGET_SECONDS`` is the wall-clock budget, checked before every
-  dispatch and after every completion;
+  dispatch, after every completion, and at the running task's clock/sleep/capture
+  seams so a task cannot overrun it silently;
 * ``AECOINS_MAX_PASSES`` bounds the full re-enumerated sweeps;
 * ``AECOINS_MAX_TASK_ATTEMPTS`` blacklists one task for the rest of the day.
 
@@ -34,8 +35,8 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Callable, Iterable, Mapping
-from contextlib import nullcontext
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -55,7 +56,7 @@ from aliexpress_coins.perception.templates import TemplateStore, load_templates
 from aliexpress_coins.perception.waits import wait_for_text, wait_until_stable
 from aliexpress_coins.runner.config import RunConfig
 from aliexpress_coins.runner.device import AdbDevice, HygieneDevice
-from aliexpress_coins.runner.errors import AppLoggedOut, ConfigError, RunInterrupted
+from aliexpress_coins.runner.errors import AppLoggedOut, ConfigError, RunBudgetExceeded, RunInterrupted
 from aliexpress_coins.runner.failures import (
     Failure,
     FailureCode,
@@ -698,13 +699,35 @@ def run_once(
                 def note_attempt(_identity: str = identity) -> None:
                     attempts[_identity] = attempts.get(_identity, 0) + 1
 
-                result = _dispatch_with_retry(
-                    context,
-                    controller,
-                    entry,
-                    on_attempt=note_attempt,
-                    recorder=recorder,
-                )
+                try:
+                    with _task_budget(context, started + budget):
+                        result = _dispatch_with_retry(
+                            context,
+                            controller,
+                            entry,
+                            on_attempt=note_attempt,
+                            recorder=recorder,
+                        )
+                except RunBudgetExceeded as exc:
+                    # The task may have tapped before it was cut off, so a later
+                    # run must re-check the fresh row instead of dispatching it
+                    # blind. Mark conservatively; an unacted row simply re-checks.
+                    _mark_acted_unverified(context, spec.key)
+                    detail = f'wall-clock budget of {budget:g}s exhausted during {entry.title!r}'
+                    report.abort_in_flight(
+                        code=RunStatus.BUDGET.value,
+                        reason=str(exc),
+                        failure=failure(FailureCode.BUDGET_EXHAUSTED, detail=detail),
+                        duration_seconds=_task_duration(context, task_started),
+                    )
+                    task_started = None
+                    status = RunStatus.BUDGET
+                    # The aborted task row is the record of this dispatch; do
+                    # not also list the same row as a never-run budget skip.
+                    blocked.add(identity)
+                    report.record_failure(failure(FailureCode.BUDGET_EXHAUSTED, detail=detail))
+                    report.write()
+                    break
                 made = attempts.get(identity, 0) - attempts_before
                 duration = max(0.0, context.clock() - task_started)
                 attempted.add(identity)
@@ -1600,6 +1623,51 @@ def _dispatch_entry(context: RunContext, controller: Controller, entry: RosterEn
     raise ValueError(f'{category.value!r} has no executor')  # pragma: no cover - guarded above
 
 
+@contextmanager
+def _task_budget(context: RunContext, deadline: float) -> Iterator[None]:
+    """Make the run's wall-clock budget active inside one task dispatch.
+
+    The outer loop can only check the budget between dispatches. An executor
+    that keeps capturing and sleeping could therefore run far past it, so the
+    same deadline is applied to the task's own injected seams: every clock read,
+    sleep and capture checks it. A blocked adb call is separately bounded by its
+    subprocess timeout (30 s for a capture, 10 s for an input command), so the
+    worst adb overrun is one in-flight command rather than an arbitrary task
+    tail. A native OCR/PIL call has no in-process timeout.
+    """
+    clock = context.clock
+    sleep = context.sleep
+    capture = context.capture
+
+    def check() -> float:
+        value = clock()
+        if value >= deadline:
+            raise RunBudgetExceeded('the wall-clock budget ended while a task was running')
+        return value
+
+    def guarded_sleep(seconds: float) -> None:
+        remaining = deadline - clock()
+        sleep(min(seconds, max(0.0, remaining)))
+        if remaining <= seconds:
+            raise RunBudgetExceeded('the wall-clock budget ended during a task sleep')
+
+    def guarded_capture() -> Snapshot:
+        check()
+        frame = _capture(capture)
+        check()
+        return frame
+
+    context.clock = check
+    context.sleep = guarded_sleep
+    context.capture = guarded_capture
+    try:
+        yield
+    finally:
+        context.clock = clock
+        context.sleep = sleep
+        context.capture = capture
+
+
 def _dispatch_with_retry(
     context: RunContext,
     controller: Controller,
@@ -1649,7 +1717,7 @@ def _dispatch_with_retry(
             _flush_abort_recording(context, recorder, code=exc.code.value, detail=exc.reason)
             raise
         except RunInterrupted as exc:
-            _flush_abort_recording(context, recorder, code='stopped', detail=str(exc))
+            _flush_abort_recording(context, recorder, code=_interrupt_code(exc), detail=str(exc))
             raise
         except BaseException:
             if recorder is not None:
@@ -1697,7 +1765,7 @@ def _dispatch_with_retry(
         _flush_abort_recording(context, recorder, code=exc.code.value, detail=exc.reason)
         raise
     except RunInterrupted as exc:
-        _flush_abort_recording(context, recorder, code='stopped', detail=str(exc))
+        _flush_abort_recording(context, recorder, code=_interrupt_code(exc), detail=str(exc))
         raise
     except BaseException:
         if recorder is not None:
@@ -1729,6 +1797,11 @@ def _record_attempt_result(context: RunContext, recorder: FailureRecorder | None
             failure_code=None if result.failure is None else result.failure.code.value,
             payload=result.payload,
         )
+
+
+def _interrupt_code(exc: RunInterrupted) -> str:
+    """Name a budget stop separately from an operator/scheduler stop."""
+    return FailureCode.BUDGET_EXHAUSTED.value if isinstance(exc, RunBudgetExceeded) else 'stopped'
 
 
 def _flush_abort_recording(
@@ -1828,11 +1901,16 @@ def _remember_acted_result(context: RunContext, entry: RosterEntry, result: Engi
     terminal = (
         result.completed or result.outcome != 'failed' or (result.failure is not None and not result.failure.retryable)
     )
+    if terminal:
+        _clear_acted_marker(context, key)
+    elif result.acted:
+        _mark_acted_unverified(context, key)
+
+
+def _mark_acted_unverified(context: RunContext, key: str) -> None:
+    """Record an action whose effect could not be proved, without failing the run."""
     try:
-        if terminal:
-            context.state.clear_acted_unverified(key)
-        elif result.acted:
-            context.state.mark_acted_unverified(key)
+        context.state.mark_acted_unverified(key)
     except Exception as exc:
         _log_state_marker_failure(context, key, exc)
 

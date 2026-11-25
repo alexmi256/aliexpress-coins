@@ -53,7 +53,7 @@ tapping a guessed coordinate ([`06-runbook.md`](06-runbook.md) §14).
   Match, Prize Land, Shelf Shuffle), currency conversion (water, diamonds, energy), buying, placing
   an order, adding to cart, leaving a review, or sharing/inviting.
 - **FR-10** Enforce per-task daily limits, `AECOINS_MAX_TASKS_PER_RUN` (default 12), and
-  `AECOINS_RUN_BUDGET_SECONDS` (default 2700 s).
+  `AECOINS_RUN_BUDGET_SECONDS` (default 1200 s).
 - **FR-11** Dedicated executors: **11a browse-and-wait** (sponsored items, shopping-credits check-in,
   learn to save — watch the right-edge timer chip, 15 s catalogue bound);
   **11b quiz** (+ **FR-22** — OCR options, answer from `data/quiz_bank.json`, learn
