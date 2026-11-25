@@ -277,7 +277,9 @@ def _results_frame() -> Snapshot:
         _box('Choice', 50, 880, 180, 930),
         _box('Marathon Men Sports Running', 50, 945, 550, 995),
         _box('200 sold', 47, 940, 301, 980),
+        _box('80 sold', 610, 940, 840, 980),
         _box('C$26.89', 70, 1126, 260, 1184),
+        _box('C$24.58', 631, 1017, 821, 1076),
     )
 
 
@@ -374,21 +376,14 @@ def _run(
     )
 
 
-def test_find_search_field_uses_the_band_above_the_first_heading() -> None:
-    landing = _landing_frame()
-
-    field = find_search_field(landing)
-
-    assert field is not None
-    assert field.top < field.center[1] < field.bottom
-    assert field.center[0] == landing.width / 2
-    assert field.submit[0] > field.center[0]
-    assert field.as_dict()['center'] == list(field.center)
-
-
-def test_find_search_field_caps_the_band_without_a_history_heading() -> None:
+def test_find_search_field_lands_on_the_measured_hint_and_search_control() -> None:
+    hint = _box('OPPO', 237, 188, 309, 216)
+    control = _box('Q', 1026, 182, 1095, 249)
     landing = _snapshot(
-        _box('Discover more', 60, 660, 400, 710),
+        hint,
+        control,
+        _box('Search history', 45, 335, 370, 392),
+        _box('Discover more', 35, 736, 299, 777),
         _box('Sneakers', 200, 800, 460, 850),
         _box('74k+ items', 200, 860, 380, 900),
     )
@@ -396,7 +391,30 @@ def test_find_search_field_caps_the_band_without_a_history_heading() -> None:
     field = find_search_field(landing)
 
     assert field is not None
-    assert field.bottom == landing.height * 0.20
+    assert field.center[0] == landing.width / 2
+    assert hint.bbox[1] <= field.center[1] <= hint.bbox[3]
+    assert control.bbox[0] <= field.submit[0] <= control.bbox[2]
+    assert control.bbox[1] <= field.submit[1] <= control.bbox[3]
+    assert field.as_dict()['center'] == list(field.center)
+
+
+def test_find_search_field_uses_the_hint_without_a_history_heading() -> None:
+    hint = _box('OPPO', 237, 188, 309, 216)
+    control = _box('Q', 1026, 182, 1095, 249)
+    landing = _snapshot(
+        hint,
+        control,
+        _box('Discover more', 35, 736, 299, 777),
+        _box('Sneakers', 200, 800, 460, 850),
+        _box('74k+ items', 200, 860, 380, 900),
+    )
+
+    field = find_search_field(landing)
+
+    assert field is not None
+    assert field.center[1] == hint.center[1]
+    assert control.bbox[1] <= field.submit[1] <= control.bbox[3]
+    assert field.bottom == landing.height * 0.15
 
 
 def test_find_search_field_requires_a_landing_heading() -> None:

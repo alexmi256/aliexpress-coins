@@ -65,6 +65,20 @@ _SEARCH_RESULT_QUERY_TOP_FRACTION = 0.35
 _SEARCH_RESULT_FIELD_TOP_FRACTION = 0.15
 """Without a known query, the field text must sit in this top band."""
 
+
+def _read_field_band(snapshot: Snapshot, *, bottom_fraction: float) -> str:
+    """Join readable text in the field band, excluding the status bar."""
+    top = snapshot.height * SYSTEM_UI_TOP_FRACTION
+    bottom = snapshot.height * bottom_fraction
+    boxes = [
+        box
+        for box in snapshot.boxes
+        if box.score >= DEFAULT_MIN_OCR_SCORE and box.bbox[1] >= top and box.bbox[3] <= bottom and box.text.strip()
+    ]
+    boxes.sort(key=lambda box: (box.bbox[1], box.bbox[0]))
+    return ' '.join(box.text for box in boxes)
+
+
 SEARCH_RESULTS_MARKERS = ('sold',)
 """The product-card copy shared by the measured results surface (#142)."""
 
@@ -369,11 +383,12 @@ def is_search_results(snapshot: Snapshot, *, query: str | None = None) -> bool:
 
     The measured results page keeps the query in its field near the top and
     paints product cards with prices and ``N sold`` copy. When the executor
-    knows the query it submitted, that text plus a price is enough; without a
-    query (the generic classifier used by the safety guard) the ``sold`` copy
-    is also required. Landing, coin/boost, coin-store and product-detail frames
-    are explicitly excluded, so a category grid or a purchase page can never be
-    mistaken for search results.
+    knows the query it submitted, the query is matched as normalised text across
+    the field band, so OCR may split ``wireless phone`` into two boxes. Without a
+    query (the generic classifier used by the safety guard), at least two product
+    prices and two ``N sold`` lines are required, above the status bar. Landing,
+    coin/boost, coin-store and product-detail frames are explicitly excluded, so
+    a category grid or a coupon page can never be mistaken for search results.
     """
     if (
         is_search_landing(snapshot)
@@ -396,23 +411,16 @@ def is_search_results(snapshot: Snapshot, *, query: str | None = None) -> bool:
         return False
 
     if query is not None:
-        match = find_text(
-            snapshot,
-            query,
-            min_score=DEFAULT_MIN_SCORE,
-            min_ocr_score=DEFAULT_MIN_OCR_SCORE,
-        )
-        return match is not None and match.box.bbox[1] <= snapshot.height * _SEARCH_RESULT_QUERY_TOP_FRACTION
+        field_text = normalize(_read_field_band(snapshot, bottom_fraction=_SEARCH_RESULT_QUERY_TOP_FRACTION))
+        return bool(normalize(query)) and normalize(query) in field_text
 
-    top_copy = any(
-        box.score >= DEFAULT_MIN_OCR_SCORE
-        and box.bbox[1] < snapshot.height * _SEARCH_RESULT_FIELD_TOP_FRACTION
-        and any(character.isalpha() for character in box.text)
-        and not _SEARCH_RESULT_PRICE.search(box.text)
-        for box in snapshot.boxes
-    )
-    sold = any(_SEARCH_RESULT_SOLD.search(box.text) for box in snapshot.boxes if box.score >= DEFAULT_MIN_OCR_SCORE)
-    return top_copy and sold
+    top_copy = _read_field_band(snapshot, bottom_fraction=_SEARCH_RESULT_FIELD_TOP_FRACTION)
+    if not any(character.isalpha() for character in top_copy):
+        return False
+    sold = [
+        box for box in snapshot.boxes if box.score >= DEFAULT_MIN_OCR_SCORE and _SEARCH_RESULT_SOLD.search(box.text)
+    ]
+    return len(prices) >= 2 and len(sold) >= 2
 
 
 def is_empty_boost(snapshot: Snapshot) -> bool:

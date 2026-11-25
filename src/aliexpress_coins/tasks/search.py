@@ -128,12 +128,12 @@ not an optimistic count.
 """
 
 SESSION_UI_TOP_FRACTION = 0.03
-SEARCH_FIELD_BOTTOM_FRACTION = 0.20
+SEARCH_FIELD_BOTTOM_FRACTION = 0.15
 """The search field sits between the status bar and these frame fractions.
 
 The landing's first heading (``Search history`` when present) normally sets the
 lower bound; the fraction caps it when that section is absent so the executor
-never taps into the history/category content.
+never taps into the history/category content or below the measured field bar.
 """
 
 SEARCH_BUTTON_RIGHT_FRACTION = 0.88
@@ -232,6 +232,10 @@ class SearchResult:
     failures are ``not_settled``, ``task_surface_unavailable``,
     ``landing_not_arrived``, ``search_field_not_found``, ``results_not_reached``,
     ``progress_unchanged``, ``return_failed`` or ``redeem_interstitial``.
+
+    When the final round removes the row, ``badge_after`` stays at the last badge
+    that was readable (``N-1/N``); ``verification='progress_complete'`` and the
+    detail's expected ``N/N`` are the authoritative completion evidence.
     """
 
     key: str
@@ -331,9 +335,10 @@ def find_search_field(snapshot: Snapshot) -> SearchField | None:
 
     The field is the band between the status bar and the landing's first heading,
     capped at :data:`SEARCH_FIELD_BOTTOM_FRACTION` so a missing history section
-    cannot make the executor tap into the category grid. The submit point is the
-    measured search control on the field's right edge. All values derive from the
-    frame, not from stored tablet pixels.
+    cannot make the executor tap into the category grid. Its visible hint or
+    query text sets the vertical tap point; the capped band is only the fallback
+    when OCR reads no hint. The submit point is on the field's right edge at the
+    same height. All values derive from the frame, not from stored tablet pixels.
     """
     top = snapshot.height * SESSION_UI_TOP_FRACTION
     limit = snapshot.height * SEARCH_FIELD_BOTTOM_FRACTION
@@ -355,7 +360,21 @@ def find_search_field(snapshot: Snapshot) -> SearchField | None:
     bottom = min(heading.box.bbox[1], limit)
     if bottom <= top:
         return None
-    center_y = top + (bottom - top) * 0.6
+    heading_labels = {normalize('Search history'), normalize('Discover more')}
+    hints = [
+        box
+        for box in snapshot.boxes
+        if box.score >= DEFAULT_MIN_OCR_SCORE
+        and top <= box.bbox[1]
+        and box.bbox[3] <= bottom
+        and sum(character.isalpha() for character in box.text) >= 2
+        and normalize(box.text) not in heading_labels
+    ]
+    if hints:
+        hint = max(hints, key=lambda box: box.width)
+        center_y = hint.center[1]
+    else:
+        center_y = top + (bottom - top) * 0.6
     return SearchField(
         center=(snapshot.width * 0.5, center_y),
         submit=(snapshot.width * SEARCH_BUTTON_RIGHT_FRACTION, center_y),

@@ -319,7 +319,9 @@ def test_search_results_require_a_query_price_and_product_copy() -> None:
     results = _snapshot(
         _box('wireless phone', 235, 186, 413, 220),
         _box('200 sold', 47, 940, 301, 980),
+        _box('80 sold', 610, 940, 840, 980),
         _box('C$32.99', 70, 1017, 257, 1076),
+        _box('C$24.58', 631, 1017, 821, 1076),
     )
 
     assert is_search_results(results, query='wireless phone')
@@ -333,6 +335,44 @@ def test_search_results_require_a_query_price_and_product_copy() -> None:
             _box('200 sold', 47, 940, 301, 980),
         )
     )
+
+
+def test_search_results_match_a_query_split_across_ocr_boxes() -> None:
+    results = _snapshot(
+        _box('wireless', 235, 186, 413, 220),
+        _box('phone', 430, 186, 540, 220),
+        _box('200 sold 4.9', 47, 940, 301, 980),
+        _box('80 sold 4.7', 610, 940, 840, 980),
+        _box('C$32.99', 70, 1017, 257, 1076),
+        _box('C$24.58', 631, 1017, 821, 1076),
+    )
+
+    assert is_search_results(results, query='wireless phone')
+    assert classify_surface(results) is Surface.SEARCH_RESULTS
+
+
+def test_a_coupon_header_and_one_sold_tile_are_not_search_results() -> None:
+    coupon_page = _snapshot(
+        _box('Coupon Center', 60, 100, 500, 140),
+        _box('C$31.27', 70, 1017, 257, 1076),
+        _box('C$30.00', 631, 1017, 821, 1076),
+        _box('7 sold', 60, 940, 240, 980),
+    )
+
+    assert not is_search_results(coupon_page)
+    assert classify_surface(coupon_page) is Surface.UNKNOWN
+
+
+def test_a_status_bar_glyph_is_not_search_field_copy() -> None:
+    frame = _snapshot(
+        _box('5G', 90, 10, 140, 40),
+        _box('200 sold', 47, 940, 301, 980),
+        _box('80 sold', 610, 940, 840, 980),
+        _box('C$32.99', 70, 1017, 257, 1076),
+        _box('C$24.58', 631, 1017, 821, 1076),
+    )
+
+    assert not is_search_results(frame)
 
 
 def test_a_landing_or_coin_store_is_never_search_results() -> None:
