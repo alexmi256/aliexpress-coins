@@ -88,7 +88,7 @@ flowchart TD
 | surprise grid | `Browse surprise items` + `Tap 3 items on this page` + `N /3` | boost row shares title; grid adds `N /3` |
 | surprise grid (scrolled) | two columns of card titles with price lines for the guard; the executor matches labels already read this round | header and pill are above the viewport; generic discount copy is not enough, and the executor restores the top before reading the counter (#100) |
 | **search landing** | `Discover more` + category cards with item-count lines (a `Search history` section may sit above it) | the heading alone is generic feed copy; boost row shares `Search for what you love`, and history text is account data, not an identifier |
-| **search results** | the submitted query in the top field + product prices + `N sold` copy; no `Discover more` grid | a category tap leaves the landing and does not submit; a coupon/coin page can share prices, so require the query or the top field copy and exclude known pages |
+| **search results** | the submitted query in the top field + product prices + `N sold` copy; no `Discover more` grid | a category tap does not leave the landing or submit; a coupon/coin page can share prices, so require the query or the top field copy and exclude known pages |
 | product detail | `Item 1/n` or `Add to cart` + `Buy now` | BACK only; never tap purchase controls |
 | mission overlay / coupon | `Mission Completed` over dimmed grid / `Sale coupons` + `Collect all: C$…` | — |
 | non-app clock surface | status-bar `H:MM` + weekday/day widget + no app content | a clock alone appears on every app frame; the date widget and empty content are required. Launchers with icons use the foreground-package probe |
