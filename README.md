@@ -196,9 +196,11 @@ quiz, surprise items, search and notifications — lives in the executors under
   ends by progress: it keeps sweeping while a pass dispatched a row or revealed new dispatchable
   rows, and stops after two consecutive sweeps that did neither. `AECOINS_MAX_PASSES` is the
   absolute ceiling and ends the run as `budget`, never as complete; so does the progress rule, and
-  its detail names any still-dispatchable row. A ceiling below the largest `max_per_run` logs
-  `pass_budget_below_daily_capacity` at startup. A blacklisted row is skipped for the rest of the
-  local day, while the rest of the roster continues; the run stays open for a later day. An
+  its detail names any still-dispatchable row. A ceiling below the retry-aware minimum
+  `max_per_run + max_task_attempts - 1` logs `pass_budget_below_daily_capacity` at startup, because
+  a retryable failure spends a sweep without completing a round. The shipped minimum is 7 (six
+  sponsored rounds plus one retry) and the default is 12. A blacklisted row is skipped for the rest
+  of the local day, while the rest of the roster continues; the run stays open for a later day. An
   unreadable, unknown or capped observation never dispatches from or completes on the stale roster.
 
 ### Permanent refusals

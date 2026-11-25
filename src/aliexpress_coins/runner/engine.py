@@ -2499,25 +2499,31 @@ def _dispatchable_identities(
 def _warn_pass_ceiling(config: RunConfig, catalogue: TaskCatalogue, log: logging.Logger) -> None:
     """Name a pass ceiling that cannot finish the largest daily family (#141).
 
-    The default ceiling is above every shipped ``max_per_run``, so this warning
-    only fires for an operator who configured ``AECOINS_MAX_PASSES`` below a
-    family's daily capacity. The run still starts: the ceiling is a hard bound,
+    The minimum is ``max_per_run + max_task_attempts - 1``: completing every
+    round takes ``max_per_run`` sweeps, and up to ``max_task_attempts - 1``
+    retryable failures can spend a sweep without completing a round before the
+    final attempt blacklists the row. The default 12 leaves headroom above the
+    shipped maximum of seven. The run still starts: the ceiling is a hard bound,
     and the report will say which row is still dispatchable when it stops.
     """
     largest = max(catalogue.allowed, key=lambda spec: spec.max_per_run)
-    if config.max_passes >= largest.max_per_run:
+    recommended = largest.max_per_run + config.max_task_attempts - 1
+    if config.max_passes >= recommended:
         return
     log.warning(
         '%s',
         _event(
             'pass_budget_below_daily_capacity',
             max_passes=config.max_passes,
+            recommended_passes=recommended,
             largest_max_per_run=largest.max_per_run,
+            max_task_attempts=config.max_task_attempts,
             key=largest.key,
             detail=(
-                f'AECOINS_MAX_PASSES={config.max_passes} is below the largest daily max_per_run '
-                f'({largest.max_per_run} for {largest.key!r}); the ceiling can end a night before '
-                'that family finishes its rounds'
+                f'AECOINS_MAX_PASSES={config.max_passes} is below the {recommended} sweeps needed '
+                f'for the largest family ({largest.max_per_run} rounds for {largest.key!r} plus '
+                f'retry headroom for {config.max_task_attempts} attempt(s) per task); the ceiling '
+                'can end a night before that family finishes its rounds'
             ),
         ),
     )

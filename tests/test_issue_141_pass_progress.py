@@ -57,6 +57,26 @@ def _complete(entry: RosterEntry) -> EngineResult:
     return EngineResult('completed', 'progress_badge', 'the round moved', True, {'key': entry.key})
 
 
+class _ScriptedObserver:
+    """Replay prepared observations and advance the roster the loop sees."""
+
+    def __init__(self, initial: Roster, observations: list[RosterObservation]) -> None:
+        self._roster = initial
+        self._observations = observations
+        self.sequence = 0
+
+    @property
+    def roster(self) -> Roster | None:
+        return self._roster
+
+    def observe(self, *_args: object, **_kwargs: object) -> RosterObservation:
+        observation = self._observations[min(self.sequence, len(self._observations) - 1)]
+        self.sequence += 1
+        if observation.roster is not None:
+            self._roster = observation.roster
+        return observation
+
+
 @pytest.mark.slow
 def test_six_sponsored_rounds_complete_in_one_run(
     tmp_path: Path,
@@ -157,6 +177,162 @@ def test_a_no_progress_roster_terminates_below_the_absolute_ceiling(
 
 
 @pytest.mark.slow
+def test_a_revealed_row_resets_the_idle_streak_without_a_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initial = replace(_roster('coins_quiz'), entries=(), surface_variant=Surface.UNKNOWN)
+    quiz = _roster('coins_quiz')
+    observations = [
+        RosterObservation(
+            sequence=1,
+            timestamp=CAPTURED_AT,
+            rows=(),
+            surface_variant=Surface.UNKNOWN,
+            roster=initial,
+        ),
+        # The restart reveals a row, but the read is untrustworthy, so the loop
+        # restarts again instead of dispatching from it. The reveal alone must
+        # reset the idle streak and earn the pass that eventually claims it.
+        RosterObservation(
+            sequence=2,
+            timestamp=CAPTURED_AT,
+            rows=(),
+            surface_variant=Surface.BOOST_PAGE,
+            error='unreadable',
+            roster=quiz,
+        ),
+        RosterObservation(
+            sequence=3,
+            timestamp=CAPTURED_AT,
+            rows=(),
+            surface_variant=Surface.BOOST_PAGE,
+            roster=quiz,
+        ),
+    ]
+    scripted = _ScriptedObserver(initial, observations)
+    monkeypatch.setattr(engine, 'discover_roster', lambda *args, **kwargs: initial)
+    monkeypatch.setattr(
+        engine,
+        '_observe',
+        lambda *args, **kwargs: scripted.observe(),
+    )
+    context = _context(
+        tmp_path,
+        capture=_Capture(_boost_frame('coins_quiz'), _coin_frame()),
+        catalogue=CATALOGUE,
+        corpus=CORPUS,
+    )
+    context.observer = cast(Any, scripted)
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        _context.state.record(entry.key or '')
+        return _complete(entry)
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert report.passes == 3
+    assert [task.key for task in report.tasks] == ['coins_quiz']
+    assert report.tasks[0].completed is True
+    assert context.state.count('coins_quiz') == 1
+    assert report.status is RunStatus.COMPLETED
+
+
+@pytest.mark.slow
+def test_a_revealed_row_is_counted_once_when_the_surface_stays_unreadable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initial = replace(_roster('coins_quiz'), entries=(), surface_variant=Surface.UNKNOWN)
+    quiz = _roster('coins_quiz')
+    observations = [
+        RosterObservation(
+            sequence=1,
+            timestamp=CAPTURED_AT,
+            rows=(),
+            surface_variant=Surface.UNKNOWN,
+            roster=initial,
+        ),
+        RosterObservation(
+            sequence=2,
+            timestamp=CAPTURED_AT,
+            rows=(),
+            surface_variant=Surface.BOOST_PAGE,
+            error='unreadable',
+            roster=quiz,
+        ),
+    ]
+    scripted = _ScriptedObserver(initial, observations)
+    monkeypatch.setattr(engine, 'discover_roster', lambda *args, **kwargs: initial)
+    monkeypatch.setattr(engine, '_observe', lambda *args, **kwargs: scripted.observe())
+    context = _context(
+        tmp_path,
+        capture=_Capture(_boost_frame('coins_quiz'), _coin_frame()),
+        catalogue=CATALOGUE,
+        corpus=CORPUS,
+    )
+    context.observer = cast(Any, scripted)
+
+    report = engine.run_once(context)
+
+    # Pass 2 counts the reveal; pass 3 no longer sees a new identity and becomes
+    # idle, pass 4 is the second idle pass. A missing pass-start baseline would
+    # keep treating the same revealed row as new and run to the 12-sweep ceiling.
+    assert report.passes == 4
+    assert report.status is RunStatus.BUDGET
+    assert report.detail is not None
+    assert 'consecutive no-progress pass' in report.detail
+    assert 'could not be read' in report.detail
+
+
+@pytest.mark.slow
+def test_an_idle_pass_after_a_dispatch_still_counts_toward_the_progress_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    roster = _roster('coins_quiz', 'daily_checkin')
+    quiz = _entry(roster, 'coins_quiz')
+    stuck = replace(_entry(roster, 'boost_checkin'), action=None)
+    roster = replace(roster, entries=(quiz, stuck))
+    observation = RosterObservation(
+        sequence=1,
+        timestamp=CAPTURED_AT,
+        rows=(),
+        surface_variant=Surface.BOOST_PAGE,
+        roster=roster,
+    )
+    scripted = _ScriptedObserver(roster, [observation])
+    monkeypatch.setattr(engine, 'discover_roster', lambda *args, **kwargs: roster)
+    monkeypatch.setattr(engine, '_observe', lambda *args, **kwargs: scripted.observe())
+    context = _context(
+        tmp_path,
+        capture=_Capture(_boost_frame('coins_quiz', 'daily_checkin'), _coin_frame()),
+        catalogue=CATALOGUE,
+        corpus=CORPUS,
+    )
+    context.observer = cast(Any, scripted)
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        _context.state.record(entry.key or '')
+        return _complete(entry)
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    # Pass 1 dispatches the quiz; the stuck row then gives passes 2 and 3 no
+    # dispatchable work. Leaving dispatched_this_pass set would keep resetting
+    # the idle streak and run to the ceiling instead of stopping here.
+    assert report.passes == 3
+    assert [task.key for task in report.tasks] == ['coins_quiz']
+    assert report.status is RunStatus.BUDGET
+    assert report.detail is not None
+    assert "'Daily check-in' was allowed but had no dispatchable action" in report.detail
+
+
+@pytest.mark.slow
 def test_a_configured_ceiling_still_names_the_row_it_left(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -214,15 +390,38 @@ def test_a_ceiling_below_the_largest_family_limit_warns_at_startup(
     )
     assert warning['event'] == 'pass_budget_below_daily_capacity'
     assert warning['max_passes'] == 4
+    assert warning['recommended_passes'] == 7
     assert warning['largest_max_per_run'] == 6
+    assert warning['max_task_attempts'] == 2
     assert warning['key'] == 'sponsored_items'
     detail = str(warning['detail'])
     assert 'AECOINS_MAX_PASSES=4' in detail
-    assert 'max_per_run (6 for' in detail
+    assert '7 sweeps needed' in detail
+    assert '6 rounds for' in detail
+    assert 'retry headroom for 2 attempt(s)' in detail
+
+
+def test_the_ceiling_warning_boundary_is_retry_aware(caplog: pytest.LogCaptureFixture) -> None:
+    config = RunConfig.from_environment({})
+    logger = logging.getLogger('test.ceiling')
+    caplog.set_level(logging.WARNING)
+
+    engine._warn_pass_ceiling(replace(config, max_passes=6), CATALOGUE, logger)
+    warnings = [
+        json.loads(record.message) for record in caplog.records if 'pass_budget_below_daily_capacity' in record.message
+    ]
+    assert len(warnings) == 1
+    assert warnings[0]['max_passes'] == 6
+    assert warnings[0]['recommended_passes'] == 7
+
+    caplog.clear()
+    engine._warn_pass_ceiling(replace(config, max_passes=7), CATALOGUE, logger)
+    assert not [record for record in caplog.records if 'pass_budget_below_daily_capacity' in record.message]
 
 
 def test_the_shipped_ceiling_covers_every_family_daily_limit() -> None:
     largest = max(spec.max_per_run for spec in CATALOGUE.allowed)
+    recommended = largest + RunConfig.from_environment({}).max_task_attempts - 1
 
-    assert largest <= DEFAULT_MAX_PASSES
+    assert recommended <= DEFAULT_MAX_PASSES
     assert RunConfig.from_environment({}).max_passes == DEFAULT_MAX_PASSES

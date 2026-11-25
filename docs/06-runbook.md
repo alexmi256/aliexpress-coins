@@ -526,9 +526,11 @@ attempts and the blacklist. The blacklist
 lives in the day-keyed state file, so a new local day starts empty, and a real completion clears the
 entry. A policy refusal is permanent by design and is never counted as a blacklist attempt. Hitting
 either pass bound ends the run as `budget`, never as complete. A configured ceiling below the
-largest `max_per_run` logs `pass_budget_below_daily_capacity` at startup, because the ceiling
-would stop that family before its daily rounds are done; raise `AECOINS_MAX_PASSES` to at least
-that value.
+retry-aware minimum `max_per_run + max_task_attempts - 1` logs
+`pass_budget_below_daily_capacity` at startup, because the ceiling would stop that family before
+its daily rounds are done. A retryable failure spends a sweep without completing a round, so the
+largest family's six rounds plus the per-task attempt bound make 7 the shipped minimum; the default
+12 leaves further headroom.
 
 A real schedule wait looks like this ✅:
 
