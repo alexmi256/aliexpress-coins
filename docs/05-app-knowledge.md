@@ -93,24 +93,30 @@ enough to call the list clean.
   `specs/tasks.yaml`; timer starts during load, measured `12s → 1s → check` in ~6 s); a page with no
   chip returns `absent`. **`Explore sponsored items` ✅** opens the coin store (`Use coins for
   discounts`, `Disc:` / `Applied` tiles, right-edge chip) — a recognised browse destination.
-- **`Browse recently viewed items` ✅ (supervised capture, 2026-11-25 ~17:10 EST, issue #116):** the
-  old run's post-tap launcher frame was **not** what this row does. On a settled inline coin page the
-  row's own `GO` centre was `(1018.5, 1470)`; tapping that current box opened the app's
-  `Recently viewed` list (`Recently viewed`, `Stack Coins, Save More!`, `History` / `Cart` tabs,
-  two-column product cards) ✅. The same right-edge dwell chip appeared at `x ≈ 0.97 · width` and
-  counted `14s → 13s → 10s → 4s → 3s → 2s → 1s` before vanishing at about 15.6 s after the tap ✅.
-  There is **no `N/M` badge or round counter** on the row or destination ✅. After the chip cleared,
-  the shortcut route returned to the coin page; the balance moved `107 → 108` and the row was gone
-  from both the inline coin page and the populated `Coins boost` list ✅. The server then rotated
-  `View Super discounts` into that slot ✅. Completion is therefore land-and-dwell-then-return; the
-  positive proof is the row's disappearance from a complete boost list plus the `+1` balance move,
-  never the tap or elapsed time alone. The earlier `[1020,1644]` dispatch was a **stale box**: it was
-  read before the roster reflow, so it did not hit this row's current control. The destination page
-  is still `unknown` to the surface classifier (it is accepted by the timer chip and the foreground
-  package probe), and the exact server-side dwell for future variants is `15 s` as a catalogue bound,
-  not a fixed sleep. Sanitized origin evidence remains in
-  `tests/data/flows/recently_viewed_issue_116.json`; the observed-today contract is summarised here
-  because its frames were captured outside a run directory.
+- **`Browse recently viewed items` ✅ observed / ⬜ inferred old cause / ❓ old launcher (supervised
+  capture, 2026-11-25 ~17:10 EST, issue #116):** on a settled inline coin page (committed frame
+  `tests/data/flows/recently_viewed_issue_116_entry.png`) the row's own `GO` centre was
+  `(1018.5, 1470)`; tapping that current box opened the app's `Recently viewed` list
+  (`Recently viewed`, `Stack Coins, Save More!`, `History` / `Cart` tabs, two-column product cards)
+  ✅. The same right-edge dwell chip appeared at `x ≈ 0.97 · width` and counted
+  `14s → 13s → 10s → 4s → 3s → 2s → 1s` before vanishing about 15.6 s after the tap ✅
+  (`recently_viewed_issue_116_destination.png`, `…_destination_cleared.png`). There is **no `N/M`
+  badge or round counter** on the row or destination ✅. After the chip cleared, the shortcut route
+  returned to the coin page; the balance moved `107 → 108` and the row was gone from both the inline
+  coin page and the populated `Coins boost` list ✅ (`recently_viewed_issue_116_row_gone.png`). The
+  server then rotated `View Super discounts` into that slot ✅. Completion is land-and-dwell-then-
+  return; the executor's decisive signal is the row disappearing from a complete populated list
+  after a cleared chip. The manual observation also saw the `+1`, but the executor does not read the
+  balance, so rotation remains a residual risk ❓. A foreground loss after `GO` is explicitly a
+  failed attempt, never `row_gone` completion (#116 recovery guard).
+  The earlier `[1020,1644]` dispatch is **best explained** by a stale roster box read before the
+  reflow ⬜; the old run retained no post-tap PNG or foreground-package record, and its tap point
+  matched the returned inline `GO`, so whether that tap hit the row and the app left anyway remains
+  ❓. Today's capture proves what a settled tap does; it does not retroactively prove the old
+  transition. The destination page is still `unknown` to the surface classifier and is accepted only
+  after the chip appears within the arrival bound, not from the destination header alone. The
+  catalogue poll bound is `20 s` (above the measured 15.6 s clear), never a fixed sleep. Provenance
+  for the committed frames is in `tests/data/flows/recently_viewed_issue_116_observation.json`.
 - **`Visit the page via coins shortcut` ✅ observed / ❓ completion source (2026-11-24 13:00 EST,
   issue #130):** the row sits below the first screenful, so its title OCRs on two lines:
   `Visit the page via coins` / `shortcut`, subtitle `Unlock a daily surprise`, reward `+1`, `GO`, no

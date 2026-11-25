@@ -61,7 +61,7 @@ ALLOWED_FAMILIES: tuple[tuple[str, TaskCategory, float], ...] = (
     ('View Super discounts', TaskCategory.BROWSE_WAIT, 15.0),
     ('Check in to win Shopping credits', TaskCategory.BROWSE_WAIT, 15.0),
     ('Learn to save money with Coins Credits', TaskCategory.BROWSE_WAIT, 15.0),
-    ('Browse recently viewed items', TaskCategory.BROWSE_WAIT, 15.0),
+    ('Browse recently viewed items', TaskCategory.BROWSE_WAIT, 20.0),
     ('Visit the page via coins shortcut', TaskCategory.SHORTCUT_VISIT, 0.0),
     ('Add a coins shortcut', TaskCategory.SHORTCUT, 0.0),
     ('Add & start using our widget', TaskCategory.WIDGET, 0.0),
@@ -433,10 +433,14 @@ def test_recently_viewed_is_the_measured_browse_wait_family() -> None:
     assert decision.spec is not None
     assert decision.rule == 'recently_viewed'
     assert decision.spec.category is TaskCategory.BROWSE_WAIT
-    assert decision.spec.wait_seconds == 15.0
+    assert decision.spec.wait_seconds == 20.0
     assert decision.spec.max_per_run == 1
     assert decision.matched_field == 'title'
-    assert catalogue.decide('Recently viewed').rule == 'recently_viewed'
+    # Only the measured task title is allowed. The destination header and a
+    # wrapped prefix are not task rows of their own.
+    assert catalogue.decide('Recently viewed').denied
+    assert catalogue.decide('Browse recently viewed').denied
+    assert catalogue.decide('Deals for you', subtitle='Recently viewed items').denied
     # The old title-only refusal also matched this row's merchandise copy; the
     # allowed family does not need the subtitle to dispatch the measured title.
     assert catalogue.decide('A title OCR mangled', subtitle='Coins deal on viewed, in-cart items').rule != (

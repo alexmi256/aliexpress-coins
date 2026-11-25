@@ -162,20 +162,19 @@ allowed:
   - key: recently_viewed
     label_patterns:
       - Browse recently viewed items
-      - Browse recently viewed
-      - Recently viewed
     category: browse_wait
-    wait_seconds: 15
+    wait_seconds: 20
     repeatable: false
     max_per_run: 1
     notes: >-
       Measured 2026-11-25 (#116): GO opens the `Recently viewed` product list
       (`Stack Coins, Save More!`, History/Cart tabs) with the same right-edge
       dwell chip as the other browse-and-wait pages. No badge or `N/M` counter.
-      The chip counted 14s -> 1s then disappeared; the balance moved 107 -> 108
-      and the row was gone from both the inline coin page and the populated
-      boost list. Completion is proved by that disappearance, never by the tap
-      or by elapsed time.
+      The chip counted 14s -> 1s then disappeared about 15.6s after the tap; the
+      balance moved 107 -> 108 and the row was gone from both the inline coin
+      page and the populated boost list. The 20s poll bound covers that measured
+      clear without becoming a fixed sleep. Completion is proved by the row
+      disappearing after a cleared chip, never by the tap or elapsed time.
 
   - key: coins_shortcut_visit
     label_patterns:

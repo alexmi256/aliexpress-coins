@@ -54,7 +54,7 @@ from aliexpress_coins.tasks.browse import (
     wait_for_timer_chip,
 )
 from aliexpress_coins.tasks.catalogue import TaskCatalogue, TaskCategory, load_task_catalogue
-from aliexpress_coins.tasks.discovery import RosterEntry, enumerate_roster
+from aliexpress_coins.tasks.discovery import DiscoveryRoute, RosterEntry, enumerate_roster
 from aliexpress_coins.tasks.dispatch import DispatchGate
 from aliexpress_coins.tasks.errors import TaskError
 from aliexpress_coins.tasks.surface import RouteFirer, SurfaceRoute
@@ -338,41 +338,6 @@ def _super_discounts_frame(*, with_row: bool = True) -> Snapshot:
     return _snapshot(*boxes)
 
 
-def _recently_viewed_frame(*, with_row: bool = True) -> Snapshot:
-    """The measured no-badge row shape from the 2026-11-25 capture (#116)."""
-    boxes = [
-        _box('Coins boost', 80, 90, 400, 150),
-        _box('Place an order on this page', 60, 1000, 500, 1050),
-        _box('GO', 1000, 1050, 1080, 1100),
-    ]
-    if with_row:
-        boxes.extend(
-            [
-                _box('Browse recently viewed items', 60, 420, 700, 470),
-                _box('+1', 200, 480, 300, 520),
-                _box('GO', 1000, 480, 1080, 530),
-            ],
-        )
-    return _snapshot(*boxes)
-
-
-def _recently_viewed_destination(*, chip: str | None = '14s') -> Snapshot:
-    """The measured Recently viewed list: header, tabs, cards and dwell chip."""
-    boxes = [
-        _box('Recently viewed', 60, 330, 500, 390),
-        _box('Stack Coins, Save More!', 60, 500, 700, 560),
-        _box('History', 60, 610, 300, 670),
-        _box('Cart', 620, 610, 900, 670),
-        _box('Wireless CarPlay interface for', 60, 740, 500, 790),
-        _box('C$197.64', 60, 900, 300, 950),
-        _box('Coins page only', 60, 980, 500, 1030),
-        _box('Applied', 620, 1040, 900, 1090),
-    ]
-    if chip is not None:
-        boxes.append(_box(chip, 1100, 1000, 1160, 1040))
-    return _snapshot(*boxes)
-
-
 def _coin_frame(*, inline: bool = False, badge: str = '1/6', earn_more: bool = True) -> Snapshot:
     boxes = [
         _box('Coins', 101, 194, 254, 242),
@@ -536,6 +501,26 @@ def launcher(engine: RapidOcrEngine) -> Snapshot:
     return _load(DATA / 'states' / 'launcher.png', engine)
 
 
+@pytest.fixture(scope='module')
+def recently_viewed_entry(engine: RapidOcrEngine) -> Snapshot:
+    return _load(DATA / 'flows' / 'recently_viewed_issue_116_entry.png', engine)
+
+
+@pytest.fixture(scope='module')
+def recently_viewed_destination(engine: RapidOcrEngine) -> Snapshot:
+    return _load(DATA / 'flows' / 'recently_viewed_issue_116_destination.png', engine)
+
+
+@pytest.fixture(scope='module')
+def recently_viewed_cleared(engine: RapidOcrEngine) -> Snapshot:
+    return _load(DATA / 'flows' / 'recently_viewed_issue_116_destination_cleared.png', engine)
+
+
+@pytest.fixture(scope='module')
+def recently_viewed_row_gone(engine: RapidOcrEngine) -> Snapshot:
+    return _load(DATA / 'flows' / 'recently_viewed_issue_116_row_gone.png', engine)
+
+
 def test_find_timer_chip_reads_the_right_edge_countdown() -> None:
     frame = _destination(chip='12s')
 
@@ -620,6 +605,31 @@ def test_wait_for_timer_chip_accepts_the_arrival_frame_as_the_initial_read() -> 
     assert capture.calls == 2
     assert wait.initial is not None
     assert wait.initial.countdown == 12
+
+
+def test_wait_for_timer_chip_covers_the_measured_recently_viewed_dwell() -> None:
+    capture = _QueueCapture(
+        [
+            _destination(chip='15s'),
+            _destination(chip='1s'),
+            _without_timer(_destination(chip=None)),
+        ],
+    )
+    clock = _SteppingClock(step=0.5)
+
+    wait = wait_for_timer_chip(
+        capture,
+        timeout=20.0,
+        interval=0.5,
+        clock=clock,
+        sleep=clock.sleep,
+    )
+
+    assert wait.status is ChipStatus.CLEARED
+    assert wait.seen is True
+    assert wait.bound == 20.0
+    assert wait.observations[0].reading is not None
+    assert wait.observations[0].reading.countdown == 15
 
 
 def test_wait_for_timer_chip_absent_is_a_finding_not_a_long_sleep() -> None:
@@ -1465,8 +1475,8 @@ def test_run_browse_task_recovers_from_the_captured_launcher_after_go(
         sleep=_SteppingClock().sleep,
     )
 
-    assert result.outcome is BrowseOutcome.COMPLETED
-    assert result.verification == 'row_gone'
+    assert result.outcome is BrowseOutcome.FAILED
+    assert result.verification == 'foreground_lost_after_action'
     assert result.returned is True
     assert result.presses == 1
     assert len(result.taps) == 1
@@ -1483,9 +1493,9 @@ def test_run_browse_task_recovers_from_the_captured_launcher_after_go(
     assert probes == [True, False]
     assert warm_starts == [True]
     assert recorded == [('sponsored_items', launcher)]
-    assert world.navigations == [SurfaceRoute.SHORTCUT, SurfaceRoute.SHORTCUT]
+    assert world.navigations == [SurfaceRoute.SHORTCUT]
     assert world.current == 'coins'
-    assert state.count('sponsored_items') == 1
+    assert state.count('sponsored_items') == 0
 
 
 @pytest.mark.slow
@@ -1629,8 +1639,8 @@ def test_run_browse_task_recognises_the_bare_clock_date_surface_without_a_probe(
         sleep=_SteppingClock().sleep,
     )
 
-    assert result.outcome is BrowseOutcome.COMPLETED
-    assert result.verification == 'row_gone'
+    assert result.outcome is BrowseOutcome.FAILED
+    assert result.verification == 'foreground_lost_after_action'
     assert result.arrival is not None
     assert result.arrival.left_app is True
     assert result.arrival.app_foreground is None
@@ -1640,7 +1650,7 @@ def test_run_browse_task_recognises_the_bare_clock_date_surface_without_a_probe(
     assert result.chip is not None
     assert result.chip.status is ChipStatus.NOT_WAITED
     assert warm_starts == [True]
-    assert world.navigations == [SurfaceRoute.SHORTCUT, SurfaceRoute.SHORTCUT]
+    assert world.navigations == [SurfaceRoute.SHORTCUT]
 
 
 @pytest.mark.parametrize('record', [True, False])
@@ -1863,30 +1873,33 @@ def test_run_browse_task_completes_when_the_row_disappears(
     assert result.returned is True
 
 
+def _recently_viewed_entry(catalogue: TaskCatalogue, frame: Snapshot) -> RosterEntry:
+    roster = enumerate_roster(frame, catalogue, route=DiscoveryRoute.INLINE)
+    entry = next(candidate for candidate in roster.entries if candidate.key == 'recently_viewed')
+    return DispatchGate(catalogue).authorize(entry)
+
+
 @pytest.mark.slow
 def test_run_browse_task_completes_the_measured_recently_viewed_row(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
     tmp_path: Path,
+    recently_viewed_entry: Snapshot,
+    recently_viewed_destination: Snapshot,
+    recently_viewed_cleared: Snapshot,
+    recently_viewed_row_gone: Snapshot,
 ) -> None:
     """#116: no badge, right-edge chip, and the row gone after the visit."""
-    roster = enumerate_roster(_recently_viewed_frame(), catalogue)
-    entry = next(candidate for candidate in roster.entries if candidate.key == 'recently_viewed')
-    entry = DispatchGate(catalogue).authorize(entry)
+    entry = _recently_viewed_entry(catalogue, recently_viewed_entry)
     world = _World(
         series={
-            'boost': (_recently_viewed_frame(),),
-            'destination': (
-                _recently_viewed_destination(chip='14s'),
-                _recently_viewed_destination(chip='14s'),
-                _recently_viewed_destination(chip='4s'),
-                _recently_viewed_destination(chip=None),
-            ),
+            'entry': (recently_viewed_entry,),
+            'destination': (recently_viewed_destination, recently_viewed_cleared),
             'coins': (_coin_frame(),),
-            'boost_after': (_recently_viewed_frame(with_row=False),),
+            'boost_after': (recently_viewed_row_gone,),
         },
         transitions={
-            ('boost', 'go'): 'destination',
+            ('entry', 'go'): 'destination',
             ('coins', 'earn more'): 'boost_after',
         },
     )
@@ -1898,7 +1911,7 @@ def test_run_browse_task_completes_the_measured_recently_viewed_row(
         _state(tmp_path),
         entry,
         navigate=world.navigate,
-        arrival_timeout=1.0,
+        arrival_timeout=2.0,
         load_timeout=1.0,
         chip_interval=0.5,
         return_timeout=2.0,
@@ -1909,7 +1922,7 @@ def test_run_browse_task_completes_the_measured_recently_viewed_row(
 
     assert entry.category is TaskCategory.BROWSE_WAIT
     assert entry.spec is not None
-    assert entry.spec.wait_seconds == 15.0
+    assert entry.spec.wait_seconds == 20.0
     assert result.outcome is BrowseOutcome.COMPLETED
     assert result.verification == 'row_gone'
     assert result.recorded is True
@@ -1919,6 +1932,106 @@ def test_run_browse_task_completes_the_measured_recently_viewed_row(
     assert result.chip.seen is True
     assert result.chip.status is ChipStatus.CLEARED
     assert result.returned is True
+
+
+@pytest.mark.slow
+def test_recently_viewed_waits_for_a_chip_that_paints_after_the_header(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+    recently_viewed_entry: Snapshot,
+    recently_viewed_destination: Snapshot,
+    recently_viewed_cleared: Snapshot,
+    recently_viewed_row_gone: Snapshot,
+) -> None:
+    """A settled header alone is not arrival; the chip may paint a frame later."""
+    entry = _recently_viewed_entry(catalogue, recently_viewed_entry)
+    world = _World(
+        series={
+            'entry': (recently_viewed_entry,),
+            'destination': (
+                recently_viewed_cleared,
+                recently_viewed_cleared,
+                recently_viewed_destination,
+                recently_viewed_cleared,
+            ),
+            'coins': (_coin_frame(),),
+            'boost_after': (recently_viewed_row_gone,),
+        },
+        transitions={
+            ('entry', 'go'): 'destination',
+            ('coins', 'earn more'): 'boost_after',
+        },
+    )
+
+    result = run_browse_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        entry,
+        navigate=world.navigate,
+        arrival_timeout=3.0,
+        load_timeout=1.0,
+        chip_interval=0.5,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.arrival is not None
+    assert result.arrival.arrived is True
+    assert result.chip is not None
+    assert result.chip.seen is True
+    assert result.chip.status is ChipStatus.CLEARED
+    assert result.outcome is BrowseOutcome.COMPLETED
+
+
+@pytest.mark.slow
+def test_recently_viewed_does_not_claim_row_gone_after_the_app_left(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+    recently_viewed_entry: Snapshot,
+    launcher: Snapshot,
+) -> None:
+    """A launcher frame after GO is recovery evidence, never completion proof."""
+    entry = _recently_viewed_entry(catalogue, recently_viewed_entry)
+    state = _state(tmp_path)
+    world = _World(
+        series={
+            'entry': (recently_viewed_entry,),
+            'launcher': (launcher,),
+            'coins': (_coin_frame(),),
+        },
+        transitions={('entry', 'go'): 'launcher'},
+    )
+
+    result = run_browse_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        state,
+        entry,
+        navigate=world.navigate,
+        app_foreground=lambda: world.current != 'launcher',
+        arrival_timeout=1.0,
+        load_timeout=1.0,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert result.outcome is BrowseOutcome.FAILED
+    assert result.verification == 'foreground_lost_after_action'
+    assert result.arrival is not None
+    assert result.arrival.left_app is True
+    assert result.chip is not None
+    assert result.chip.status is ChipStatus.NOT_WAITED
+    assert result.returned is True
+    assert state.count('recently_viewed') == 0
 
 
 @pytest.mark.slow

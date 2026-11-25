@@ -1284,6 +1284,18 @@ def run_browse_task(
                 break
 
         if stop is None and arrival is not None and arrival.arrived:
+            if find_timer_chip(arrival.snapshot) is None:
+                # A destination header can paint before its dwell chip. The
+                # arrival frame is not a chip-less page yet; poll the arrival
+                # bound for the chip before the chip wait decides it was absent.
+                deadline = clock() + arrival_timeout
+                while find_timer_chip(arrival.snapshot) is None:
+                    now = clock()
+                    if now >= deadline:
+                        break
+                    sleep(min(load_interval, max(0.0, deadline - now)))
+                    arrival = replace(arrival, snapshot=_capture(capture))
+
             chip_wait = wait_for_timer_chip(
                 capture,
                 timeout=max(0.0, spec.wait_seconds),
@@ -1402,15 +1414,20 @@ def run_browse_task(
                 logger=log,
             )
 
-        if presses == 0 and arrival is not None and arrival.left_app:
-            # No task action was taken. A row missing after recovery may simply
-            # be roster rotation, so it must not become row_gone completion.
+        if arrival is not None and arrival.left_app:
+            # A row missing after recovery may simply be roster rotation, so it
+            # must not become row_gone completion. A launcher frame proves the
+            # app left; it never proves the task's action completed.
             return _result(
                 spec,
                 entry.title,
                 BrowseOutcome.FAILED,
-                verification='foreground_lost_pre_action',
-                detail='the app was not in the foreground before GO; no tap was issued and the coins page was recovered',
+                verification=('foreground_lost_pre_action' if presses == 0 else 'foreground_lost_after_action'),
+                detail=(
+                    'the app was not in the foreground before GO; no tap was issued and the coins page was recovered'
+                    if presses == 0
+                    else 'the app left the foreground after GO; the coins page was recovered without claiming completion'
+                ),
                 limit=limit,
                 done_before=done_before,
                 done_after=state.count(spec.key),

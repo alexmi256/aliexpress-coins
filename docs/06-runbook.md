@@ -443,16 +443,14 @@ A browse task checks the foreground package before its `GO` and before accepting
 destination. A measured clock/date `non_app` frame, or a package probe naming another app, stops the
 arrival wait: the executor does not wait for a timer or tap `Collect`, saves
 `browse-<key>-foreground-lost.*` (a repeated loss for the same key gets `-2`, `-3`, … so an earlier
-frame is never overwritten), warm-starts AliExpress if needed, fires the shortcut route, and only
-then reopens the populated boost list for positive verification. `arrival.left_app` and the saved
-frame's labels are kept in `run.json`. If fresh proof is absent the task remains `task_unverified`;
-it is never called complete from the launcher frame. If foreground loss is detected before `GO`, the
-executor recovers but records `foreground_lost_pre_action` without action-based verification, because
-a missing row after roster rotation is not proof that this task completed. If the package probe is
-unreadable on an unknown destination, that page is still accepted as the destination, but the
-executor warm-starts before the return route so an icon launcher cannot cold-link into the empty-boost
-state. If initial route discovery also returns only `non_app`, the run fails as `navigation_failed`
-instead of declaring an empty night.
+frame is never overwritten), warm-starts AliExpress if needed and fires the shortcut route. It does
+**not** then interpret a missing task row as completion: `arrival.left_app` and the saved frame's
+labels are kept in `run.json`, and the attempt fails as `foreground_lost_after_action` (or
+`foreground_lost_pre_action` when no tap was issued), leaving the task retryable. A launcher frame is
+never completion proof. If the package probe is unreadable on an unknown destination, that page is
+still accepted as the destination, but the executor warm-starts before the return route so an icon
+launcher cannot cold-link into the empty-boost state. If initial route discovery also returns only
+`non_app`, the run fails as `navigation_failed` instead of declaring an empty night.
 
 ---
 

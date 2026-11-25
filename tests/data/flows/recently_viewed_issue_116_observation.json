@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "issue": 116,
+  "observation_id": "20261125T221003Z",
+  "evidence_kind": "supervised operator capture; not a runner run",
+  "device": {
+    "model": "T3_US",
+    "android": 15,
+    "sdk": 35,
+    "timezone": "America/Toronto",
+    "geometry": {"width": 1200, "height": 2000, "density": 240}
+  },
+  "tap": {
+    "surface": "inline coin page",
+    "row": "Browse recently viewed items",
+    "action_box": [977, 1444, 1060, 1496],
+    "action_center": [1018.5, 1470],
+    "point": [1018, 1470],
+    "settled_frame": "recently_viewed_issue_116_entry.png"
+  },
+  "frames": [
+    {
+      "file": "recently_viewed_issue_116_entry.png",
+      "source_capture": "frame-000-000.0.png",
+      "captured_at": "2026-11-25T22:10:03.181806Z",
+      "masked": ["coin balance", "coin-credit amounts"],
+      "shows": ["inline task row", "GO", "+1", "coin-page markers"]
+    },
+    {
+      "file": "recently_viewed_issue_116_destination.png",
+      "source_capture": "frame-025-013.6.png",
+      "captured_at": "2026-11-25T22:10:16.780114Z",
+      "masked": ["top balance", "operator search text"],
+      "shows": ["Recently viewed", "Stack Coins, Save More!", "History", "Cart", "4s chip"]
+    },
+    {
+      "file": "recently_viewed_issue_116_destination_cleared.png",
+      "source_capture": "frame-031-017.6.png",
+      "captured_at": "2026-11-25T22:10:20.780290Z",
+      "masked": ["top balance", "operator search text"],
+      "shows": ["Recently viewed", "Stack Coins, Save More!", "History", "Cart", "no chip digits"]
+    },
+    {
+      "file": "recently_viewed_issue_116_row_gone.png",
+      "source_capture": "boost_after.png",
+      "captured_at": "2026-11-25T22:10:50.493648Z",
+      "masked": ["header balance", "coin-credit amount", "hero balance"],
+      "shows": ["Coins boost", "populated list", "no Browse recently viewed items row"]
+    }
+  ],
+  "timeline": {
+    "tap_utc": "2026-11-25T22:10:05.18Z",
+    "chip_observed_sequence_seconds": [14, 13, 10, 4, 3, 2, 1],
+    "chip_cleared_after_tap_seconds": 15.6,
+    "balance_delta": 1,
+    "row_gone_from": ["inline coin page", "populated Coins boost list"],
+    "replacement_row": "View Super discounts"
+  },
+  "claims": {
+    "destination": "observed",
+    "dwell_chip": "observed",
+    "badge_or_round_counter": "none observed",
+    "completion_contract": "land-dwell-return; row disappears after a cleared chip",
+    "balance_delta": "observed manually; not read by the executor",
+    "old_20261124_launcher_cause": "inferred stale roster box; not proven because no post-tap frame was retained",
+    "old_20261124_tap_landing": "unknown; the retained point matches the returned inline GO"
+  }
+}
