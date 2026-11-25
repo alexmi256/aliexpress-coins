@@ -59,16 +59,26 @@ category grid's item-count lines below it.
 
 _SEARCH_RESULT_PRICE = re.compile(r'(?:C\$|US\s*\$|CS|\$)\s*\d', re.IGNORECASE)
 _SEARCH_RESULT_SOLD = re.compile(r'\b\d[\d,.]*\s*sold\b', re.IGNORECASE)
-_SEARCH_RESULT_QUERY_TOP_FRACTION = 0.35
-"""The submitted query remains in the results page's field near the top."""
-
+_SEARCH_RESULT_FIELD_TEXT_TOP_FRACTION = 0.07
 _SEARCH_RESULT_FIELD_TOP_FRACTION = 0.15
-"""Without a known query, the field text must sit in this top band."""
+"""The search field text sits between these frame fractions."""
+
+_QUERY_CONFUSABLES = str.maketrans({'0': 'o', '1': 'l', '2': 'z', '5': 's', '8': 'b'})
+"""Letter/digit shapes OCR confuses inside the submitted query field."""
 
 
-def _read_field_band(snapshot: Snapshot, *, bottom_fraction: float) -> str:
-    """Join readable text in the field band, excluding the status bar."""
-    top = snapshot.height * SYSTEM_UI_TOP_FRACTION
+def _fold_query_confusables(text: str) -> str:
+    return text.translate(_QUERY_CONFUSABLES)
+
+
+def _read_field_band(
+    snapshot: Snapshot,
+    *,
+    top_fraction: float = _SEARCH_RESULT_FIELD_TEXT_TOP_FRACTION,
+    bottom_fraction: float = _SEARCH_RESULT_FIELD_TOP_FRACTION,
+) -> str:
+    """Join readable text in the field band, excluding the status bar and header."""
+    top = snapshot.height * top_fraction
     bottom = snapshot.height * bottom_fraction
     boxes = [
         box
@@ -384,11 +394,12 @@ def is_search_results(snapshot: Snapshot, *, query: str | None = None) -> bool:
     The measured results page keeps the query in its field near the top and
     paints product cards with prices and ``N sold`` copy. When the executor
     knows the query it submitted, the query is matched as normalised text across
-    the field band, so OCR may split ``wireless phone`` into two boxes. Without a
-    query (the generic classifier used by the safety guard), at least two product
-    prices and two ``N sold`` lines are required, above the status bar. Landing,
-    coin/boost, coin-store and product-detail frames are explicitly excluded, so
-    a category grid or a coupon page can never be mistaken for search results.
+    the measured field band, with the matching layer's fuzzy threshold, so OCR
+    may split ``wireless phone`` into two boxes or misspell it slightly. Without
+    a query (the generic classifier used by the safety guard), field-like text
+    must sit below the header/status bands and the frame must show at least two
+    product prices and two ``N sold`` lines. Landing, coin/boost, coin-store and
+    product-detail frames are explicitly excluded.
     """
     if (
         is_search_landing(snapshot)
@@ -411,10 +422,17 @@ def is_search_results(snapshot: Snapshot, *, query: str | None = None) -> bool:
         return False
 
     if query is not None:
-        field_text = normalize(_read_field_band(snapshot, bottom_fraction=_SEARCH_RESULT_QUERY_TOP_FRACTION))
-        return bool(normalize(query)) and normalize(query) in field_text
+        field_text = normalize(_read_field_band(snapshot))
+        query_text = normalize(query)
+        if not query_text:
+            return False
+        folded_field = _fold_query_confusables(field_text)
+        folded_query = _fold_query_confusables(query_text)
+        if query_text in field_text or folded_query in folded_field:
+            return True
+        return max(similarity(query_text, field_text), similarity(folded_query, folded_field)) >= DEFAULT_MIN_SCORE
 
-    top_copy = _read_field_band(snapshot, bottom_fraction=_SEARCH_RESULT_FIELD_TOP_FRACTION)
+    top_copy = _read_field_band(snapshot)
     if not any(character.isalpha() for character in top_copy):
         return False
     sold = [
