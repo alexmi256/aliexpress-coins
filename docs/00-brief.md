@@ -89,7 +89,7 @@ tapping a guessed coordinate ([`06-runbook.md`](06-runbook.md) §14).
 | Explore sponsored items | ✅ allowed | `browse_wait` (`browse.py`) | timer chip (15 s bound), repeatable `6/day` |
 | Learn to save money with Coins Credits | ✅ allowed | `browse_wait` (`browse.py`) | timer chip (15 s bound) |
 | View Super discounts | ✅ allowed | `browse_wait` (`browse.py`) | timed view (~15 s), +1 coin, no purchase step; repeatability ❓ |
-| Browse recently viewed items | ❌ refused | `unrecognised_recently_viewed` | row observed with `GO`, `+1`, no badge; destination/completion never captured (#116) |
+| Browse recently viewed items | ✅ allowed | `browse_wait` (`browse.py`) | timer chip (~15 s); no badge, row disappears after the visit and pays +1 (#116) |
 | Check in to win Shopping credits | ✅ allowed | `browse_wait` (`browse.py`) | timer chip (15 s bound) |
 | Browse surprise items | ✅ allowed | `item_tap` (`surprise.py`) | 3 distinct products per round, `2` rounds |
 | Turn on notifications | ✅ allowed | `notification` (`notifications.py`) | handles system dialog / settings redirect |

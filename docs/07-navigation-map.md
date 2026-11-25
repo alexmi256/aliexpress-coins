@@ -62,6 +62,8 @@ flowchart TD
     sgrid -- BACK --> boost
     boost -- 'Learn to save money' GO --> explain[[Explainer page<br/>What are Coins Credits?]]
     explain -- BACK --> boost
+    boost -- 'Browse recently viewed items' GO --> recent[[Recently viewed list<br/>Stack Coins, Save More! + timer chip]]
+    recent -- 'dwell clears / shortcut' --> coin
     boost -- 'Search for what you love' GO --> landing[[Search landing<br/>field + history + category cards]]
     landing -- 'type query + submit' --> results[[Search results<br/>product cards + prices]]
     landing -. 'category tap' .-> landing
@@ -85,6 +87,7 @@ flowchart TD
 | redeem interstitial | `YOU CAN NOW REDEEM!` | — |
 | product collection | `Bundle Deals` / `Hot picks for you` + prices | — |
 | coin store (sponsored) | `Use coins for discounts` + `Disc:` / `Applied` + right-edge dwell chip | require header, not feed `discount` |
+| **recently viewed list** | `Recently viewed` + `Stack Coins, Save More!` + `History` / `Cart` tabs + right-edge dwell chip | the boost row shares `Browse recently viewed items`; the destination header alone is not a task row, and the page has no badge |
 | surprise grid | `Browse surprise items` + `Tap 3 items on this page` + `N /3` | boost row shares title; grid adds `N /3` |
 | surprise grid (scrolled) | two columns of card titles with price lines for the guard; the executor matches labels already read this round | header and pill are above the viewport; generic discount copy is not enough, and the executor restores the top before reading the counter (#100) |
 | **search landing** | `Discover more` + category cards with item-count lines (a `Search history` section may sit above it) | the heading alone is generic feed copy; boost row shares `Search for what you love`, and history text is account data, not an identifier |
@@ -105,6 +108,7 @@ coordinates, scroll distances, and unscaled crops do not (modal close fraction d
 | coin / boost | quiz `GO` → option → `Go back` | quiz → result → redeem / coin | `Coins quiz` → `Correct answer:` → BACK on redeem |
 | boost list | surprise `GO` → tile → BACK | grid → detail → grid | `N /3` advances on distinct product; tap `Mission Completed` at `3/3` |
 | boost list | search `GO` → focus field → type query → enter | landing → keyboard → results | results must show the query + a product price; returning row badge `0/2 → 1/2`; after the second verified search the row is gone from the populated list. The measured category tap did not navigate or submit and is not a search (#142). |
+| boost list / inline | recently-viewed `GO` | `Recently viewed` list | right-edge chip clears after the dwell; shortcut returns to the coin page; the row is gone from the populated boost list and the balance moved +1 (#116) |
 | boost list | notifications `GO` | claimed / pre-prompt / dialog / OS settings | check + balance, `Allow`, or stop at `All AliExpress notifications` |
 
 ## 5. Stuck states, change detection & recovery ✅

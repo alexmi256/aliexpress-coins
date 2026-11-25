@@ -318,8 +318,10 @@ Read it like this:
   legible on an `unknown` surface, the run fails as `surface_unverified`; `steps` is then evidence of
   what was read, not a forecast that the day is workable.
 - **refusals** are the deny-list decisions. `unrecognised` is default-deny: no catalogue rule matched.
-  `unrecognised_recently_viewed` is an explicit refusal for the unmeasured family (#116).
-  `spending_order` is another explicit refusal. A refusal is a safety feature, not a failure.
+  `Browse recently viewed items` is no longer refused; it is the measured `recently_viewed`
+  browse-and-wait family (#116). `spending_order`, `spending_cart`, `currency_water` and `social`
+  remain explicit refusals alongside the games and review rules. A refusal is a safety feature, not
+  a failure.
 - **roster warnings** name visible `GO` buttons that did not become task rows, or known task titles
   that could not be split from another row's copy. A recovered split is still reported; an
   incomplete read keeps the night open instead of letting a swallowed row prove the day is done.

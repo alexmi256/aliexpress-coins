@@ -258,7 +258,7 @@ _EXPECTED_BOOST: dict[str, tuple[tuple[str, str, TaskCategory | None, str | None
         ('Explore sponsored items', 'sponsored_items', TaskCategory.BROWSE_WAIT, None),
         ('Browse surprise items', 'surprise_items', TaskCategory.ITEM_TAP, None),
         ('Place an order on this page', 'spending_order', None, 'spending'),
-        ('Browse recently viewed items', 'unrecognised_recently_viewed', None, 'unrecognised'),
+        ('Browse recently viewed items', 'recently_viewed', TaskCategory.BROWSE_WAIT, None),
     ),
 }
 

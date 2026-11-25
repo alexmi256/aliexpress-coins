@@ -53,7 +53,7 @@ from aliexpress_coins.tasks.browse import (
     run_browse_task,
     wait_for_timer_chip,
 )
-from aliexpress_coins.tasks.catalogue import TaskCatalogue, load_task_catalogue
+from aliexpress_coins.tasks.catalogue import TaskCatalogue, TaskCategory, load_task_catalogue
 from aliexpress_coins.tasks.discovery import RosterEntry, enumerate_roster
 from aliexpress_coins.tasks.dispatch import DispatchGate
 from aliexpress_coins.tasks.errors import TaskError
@@ -335,6 +335,41 @@ def _super_discounts_frame(*, with_row: bool = True) -> Snapshot:
                 _box('GO', 1000, 480, 1080, 530),
             ],
         )
+    return _snapshot(*boxes)
+
+
+def _recently_viewed_frame(*, with_row: bool = True) -> Snapshot:
+    """The measured no-badge row shape from the 2026-11-25 capture (#116)."""
+    boxes = [
+        _box('Coins boost', 80, 90, 400, 150),
+        _box('Place an order on this page', 60, 1000, 500, 1050),
+        _box('GO', 1000, 1050, 1080, 1100),
+    ]
+    if with_row:
+        boxes.extend(
+            [
+                _box('Browse recently viewed items', 60, 420, 700, 470),
+                _box('+1', 200, 480, 300, 520),
+                _box('GO', 1000, 480, 1080, 530),
+            ],
+        )
+    return _snapshot(*boxes)
+
+
+def _recently_viewed_destination(*, chip: str | None = '14s') -> Snapshot:
+    """The measured Recently viewed list: header, tabs, cards and dwell chip."""
+    boxes = [
+        _box('Recently viewed', 60, 330, 500, 390),
+        _box('Stack Coins, Save More!', 60, 500, 700, 560),
+        _box('History', 60, 610, 300, 670),
+        _box('Cart', 620, 610, 900, 670),
+        _box('Wireless CarPlay interface for', 60, 740, 500, 790),
+        _box('C$197.64', 60, 900, 300, 950),
+        _box('Coins page only', 60, 980, 500, 1030),
+        _box('Applied', 620, 1040, 900, 1090),
+    ]
+    if chip is not None:
+        boxes.append(_box(chip, 1100, 1000, 1160, 1040))
     return _snapshot(*boxes)
 
 
@@ -1825,6 +1860,64 @@ def test_run_browse_task_completes_when_the_row_disappears(
     assert result.verification == 'row_gone'
     assert result.recorded is True
     assert result.badge_after is None
+    assert result.returned is True
+
+
+@pytest.mark.slow
+def test_run_browse_task_completes_the_measured_recently_viewed_row(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    tmp_path: Path,
+) -> None:
+    """#116: no badge, right-edge chip, and the row gone after the visit."""
+    roster = enumerate_roster(_recently_viewed_frame(), catalogue)
+    entry = next(candidate for candidate in roster.entries if candidate.key == 'recently_viewed')
+    entry = DispatchGate(catalogue).authorize(entry)
+    world = _World(
+        series={
+            'boost': (_recently_viewed_frame(),),
+            'destination': (
+                _recently_viewed_destination(chip='14s'),
+                _recently_viewed_destination(chip='14s'),
+                _recently_viewed_destination(chip='4s'),
+                _recently_viewed_destination(chip=None),
+            ),
+            'coins': (_coin_frame(),),
+            'boost_after': (_recently_viewed_frame(with_row=False),),
+        },
+        transitions={
+            ('boost', 'go'): 'destination',
+            ('coins', 'earn more'): 'boost_after',
+        },
+    )
+
+    result = run_browse_task(
+        _controller(world, world.frame),
+        world.capture,
+        corpus,
+        _state(tmp_path),
+        entry,
+        navigate=world.navigate,
+        arrival_timeout=1.0,
+        load_timeout=1.0,
+        chip_interval=0.5,
+        return_timeout=2.0,
+        return_interval=0.5,
+        clock=_SteppingClock(),
+        sleep=_SteppingClock().sleep,
+    )
+
+    assert entry.category is TaskCategory.BROWSE_WAIT
+    assert entry.spec is not None
+    assert entry.spec.wait_seconds == 15.0
+    assert result.outcome is BrowseOutcome.COMPLETED
+    assert result.verification == 'row_gone'
+    assert result.recorded is True
+    assert result.before is not None
+    assert result.before.badge is None
+    assert result.chip is not None
+    assert result.chip.seen is True
+    assert result.chip.status is ChipStatus.CLEARED
     assert result.returned is True
 
 

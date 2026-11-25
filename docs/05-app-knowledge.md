@@ -37,7 +37,7 @@ between loads (e.g., `Browse surprise items` rotated to `Search for what you lov
 | Take the coins quiz | — | +3~6 coins, +0~US$0.01 | — | allowed: `quiz` (`quiz.py`) |
 | Learn to save money with Coins Credits | Stack with coins, coupons and other discounts | +1 | — | allowed: `browse_wait` (`browse.py`) |
 | Explore sponsored items | Browse, shop and save | +1 | `1/6` | allowed: `browse_wait` (`browse.py`) |
-| Browse recently viewed items | Coins deal on viewed, in-cart items | +1 | — | **refused**: `unrecognised_recently_viewed` (#116) |
+| Browse recently viewed items | Coins deal on viewed, in-cart items | +1 | — | allowed: `recently_viewed` (`browse_wait`, `browse.py`); measured #116 |
 | Check in to win Shopping credits | Don't forget to check in today! | — | — | allowed: `browse_wait` (`browse.py`) |
 | Browse surprise items | Tap 3 items on this page to earn coins | +1 | `0/2` | allowed: `item_tap` (`surprise.py`) |
 | Turn on notifications | Stay informed when rewards drop | +1 | — | allowed: `notification` (`notifications.py`) |
@@ -53,9 +53,9 @@ between loads (e.g., `Browse surprise items` rotated to `Search for what you lov
 | *coin page only:* Merge Boss / Play & Earn / Prize Land | — | +30 / +900 | — | **refused** (games) |
 
 Explicit deny rows sit beside allowed rows with identical `GO` buttons — enforcing the deny
-list at dispatch is mandatory. `Search for what you love` is now an allowed browse row with its own
-search-submission executor (#108/#142). `Browse recently viewed items` is also present with the same
-`GO` shape, but #116 refuses it because its destination and completion contract were never captured.
+list at dispatch is mandatory. `Search for what you love` has its own search-submission executor
+(#108/#142). `Browse recently viewed items` is a measured `browse_wait` row: its timer chip and
+land-then-return completion contract are recorded in §5.
 
 ### 4b. The stuck state (`empty_boost`) ✅
 
@@ -93,23 +93,24 @@ enough to call the list clean.
   `specs/tasks.yaml`; timer starts during load, measured `12s → 1s → check` in ~6 s); a page with no
   chip returns `absent`. **`Explore sponsored items` ✅** opens the coin store (`Use coins for
   discounts`, `Disc:` / `Applied` tiles, right-edge chip) — a recognised browse destination.
-- **`Browse recently viewed items` ❓ (run `20261124T083006Z`, issue #116):** the boost row reads
-  `Browse recently viewed items`, subtitle `Coins deal on viewed, in-cart items`, `GO`, `+1`, and no
-  readable badge ✅. It was absent from the initial roster, appeared mid-run at observation 3, and
-  its `GO` moved again by observation 9 as the server rotated rows through the run; that reflow is
-  why the older boost-roster boxes cannot judge the tap. The requested point `[1020,1640]` matches
-  the centre of the `GO` box in the returned inline row and the jittered point `[1020,1644]` remains
-  inside it ⬜. That favours a hit on the fresh inline control rather than either stale boost-roster
-  box, but the pre-tap frame was not retained, so it is not proven. The only post-tap OCR retained is
-  `["3:36","0","日","24"]` with `surface=unknown`; there is **no post-tap PNG or foreground-package
-  record**, so the artifacts cannot prove the app left the foreground or distinguish launcher, crash,
-  external navigation or an interstitial ❓. The `non_app` recogniser is therefore **unverified
-  against a captured frame**: its test uses the retained OCR labels, not the missing image. One
-  shortcut navigation returned to the coin page ✅, where the row remained uncompleted. The
-  destination page, timer, badge/round count and completion contract are therefore unknown ❓. The
-  family is explicitly refused as `unrecognised_recently_viewed` until a supervised capture
-  establishes them; its `Browse` title is not a browse-wait contract. Sanitized evidence lives in
-  `tests/data/flows/recently_viewed_issue_116.json`.
+- **`Browse recently viewed items` ✅ (supervised capture, 2026-11-25 ~17:10 EST, issue #116):** the
+  old run's post-tap launcher frame was **not** what this row does. On a settled inline coin page the
+  row's own `GO` centre was `(1018.5, 1470)`; tapping that current box opened the app's
+  `Recently viewed` list (`Recently viewed`, `Stack Coins, Save More!`, `History` / `Cart` tabs,
+  two-column product cards) ✅. The same right-edge dwell chip appeared at `x ≈ 0.97 · width` and
+  counted `14s → 13s → 10s → 4s → 3s → 2s → 1s` before vanishing at about 15.6 s after the tap ✅.
+  There is **no `N/M` badge or round counter** on the row or destination ✅. After the chip cleared,
+  the shortcut route returned to the coin page; the balance moved `107 → 108` and the row was gone
+  from both the inline coin page and the populated `Coins boost` list ✅. The server then rotated
+  `View Super discounts` into that slot ✅. Completion is therefore land-and-dwell-then-return; the
+  positive proof is the row's disappearance from a complete boost list plus the `+1` balance move,
+  never the tap or elapsed time alone. The earlier `[1020,1644]` dispatch was a **stale box**: it was
+  read before the roster reflow, so it did not hit this row's current control. The destination page
+  is still `unknown` to the surface classifier (it is accepted by the timer chip and the foreground
+  package probe), and the exact server-side dwell for future variants is `15 s` as a catalogue bound,
+  not a fixed sleep. Sanitized origin evidence remains in
+  `tests/data/flows/recently_viewed_issue_116.json`; the observed-today contract is summarised here
+  because its frames were captured outside a run directory.
 - **`Visit the page via coins shortcut` ✅ observed / ❓ completion source (2026-11-24 13:00 EST,
   issue #130):** the row sits below the first screenful, so its title OCRs on two lines:
   `Visit the page via coins` / `shortcut`, subtitle `Unlock a daily surprise`, reward `+1`, `GO`, no
@@ -259,5 +260,4 @@ verification → return to coins page → `balance-after` → report. See
 | Does surprise-items distinctness reset between rounds? ❓ | resolves the fallback branch in `surprise.py` | #63: start at `0/2`, open same product in both rounds |
 | Quiz result & notification denial frames ❓ | completes `tests/data/flows/` fixtures | capture before rows are claimed |
 | Whether the quiz question set is finite ❓ | question-bank hit rate | observe `data/quiz_bank.json` growth |
-| What does `Browse recently viewed items` open, and what proves completion? ❓ | the row is visible with `GO` / `+1` but no badge; #116 could not retain its destination or post-tap frame | one supervised run that retains the pre-tap row, destination/timer, and populated boost verification frames |
 | Is a launcher launch strictly required to credit `Visit the page via coins shortcut`? ❓ | the observed +1 followed a home-screen shortcut launch, while a URI fired after creating the shortcut did not credit immediately | bracket the balance and row after each step on a fresh day, separating the home launch from the next coin-page reload (#130) |
