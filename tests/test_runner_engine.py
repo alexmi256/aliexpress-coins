@@ -1311,16 +1311,61 @@ def test_a_task_that_crosses_the_wall_clock_budget_ends_as_budget_with_its_repor
     assert report.tasks[0].state == 'aborted'
     assert report.tasks[0].code == FailureCode.BUDGET_EXHAUSTED.value
     assert context.state.snapshot().completed_night is False
+    # The task may have acted before the deadline, so the day must carry the
+    # conservative marker even though this attempt never returned a result.
+    assert context.state.is_acted_unverified('coins_quiz') is True
     still_allowed = {(skip.key, skip.reason) for skip in report.skipped}
-    assert still_allowed == {('coins_quiz', 'run budget'), ('notifications', 'run budget')}
+    assert still_allowed == {('notifications', 'run budget')}
+    assert not any(skip.key == 'coins_quiz' for skip in report.skipped)
     assert report.json_path.is_file()
     assert report.summary_path.is_file()
     summary = report.summary_path.read_text(encoding='utf-8')
     assert '| Turn on notifications | run budget | wall-clock budget of 30s exhausted during' in summary
+    assert '| Take the coins quiz | run budget |' not in summary
     payload = _report_payload(tmp_path)
     assert payload['status'] == 'budget'
     assert payload['night'] is None
     assert payload['tasks'][0]['state'] == 'aborted'
+
+    # A later run must take the acted re-check path, not dispatch the possibly
+    # claimed row from a fresh roster.
+    second_roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    second_frame = _boost_frame('coins_quiz')
+    _surface(monkeypatch, second_roster, second_frame)
+    second = _context(
+        tmp_path,
+        capture=_Capture(second_frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+        budget=30.0,
+    )
+    second.wall_clock = lambda: CAPTURED_AT + timedelta(minutes=5)
+    dispatches: list[str] = []
+
+    def must_not_dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        dispatches.append(entry.key or '')
+        if entry.key == 'coins_quiz':
+            raise AssertionError('the possibly claimed row must not be dispatched again')
+        if entry.key is not None:
+            _context.state.record(entry.key)
+        return EngineResult('completed', 'fake', 'done', True, {'key': entry.key})
+
+    monkeypatch.setattr(engine, '_dispatch_entry', must_not_dispatch)
+    rechecks: list[str] = []
+
+    def recheck(_context: RunContext, _controller: Controller, entry: RosterEntry) -> tuple[bool, RosterEntry | None]:
+        rechecks.append(entry.key or '')
+        return True, None
+
+    monkeypatch.setattr(engine, '_recheck_acted_row', recheck)
+
+    second_report = engine.run_once(second)
+
+    assert rechecks == ['coins_quiz']
+    assert 'coins_quiz' not in dispatches
+    assert second_report.tasks[0].key == 'coins_quiz'
+    assert second_report.tasks[0].verification == 'already_done'
+    assert second.state.is_acted_unverified('coins_quiz') is True
 
 
 def test_the_task_budget_guard_checks_the_clock_and_capture_seams(

@@ -638,8 +638,8 @@ report still lists every row that was allowed at the stop. The budget does not i
 command already in flight, but each command has its own subprocess timeout (30 s for a screenshot,
 20 s for a route/hygiene command, 10 s for an input tap or swipe), so the worst overrun from an adb
 command is that command plus report and cleanup time. A native OCR/PIL decode has no in-process
-timeout, so a native call that never returns is bounded only by the container's stop grace and
-SIGKILL.
+timeout, so a native call that never returns has no in-process or host-level bound; in the container
+deployment only the stop grace and SIGKILL remain.
 
 If the budget is routinely exhausted, look at the wall-clock budget
 (`AECOINS_RUN_BUDGET_SECONDS`, default 1200 s), the task cap

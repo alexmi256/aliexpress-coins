@@ -709,6 +709,10 @@ def run_once(
                             recorder=recorder,
                         )
                 except RunBudgetExceeded as exc:
+                    # The task may have tapped before it was cut off, so a later
+                    # run must re-check the fresh row instead of dispatching it
+                    # blind. Mark conservatively; an unacted row simply re-checks.
+                    _mark_acted_unverified(context, spec.key)
                     detail = f'wall-clock budget of {budget:g}s exhausted during {entry.title!r}'
                     report.abort_in_flight(
                         code=RunStatus.BUDGET.value,
@@ -718,6 +722,9 @@ def run_once(
                     )
                     task_started = None
                     status = RunStatus.BUDGET
+                    # The aborted task row is the record of this dispatch; do
+                    # not also list the same row as a never-run budget skip.
+                    blocked.add(identity)
                     report.record_failure(failure(FailureCode.BUDGET_EXHAUSTED, detail=detail))
                     report.write()
                     break
@@ -1894,11 +1901,16 @@ def _remember_acted_result(context: RunContext, entry: RosterEntry, result: Engi
     terminal = (
         result.completed or result.outcome != 'failed' or (result.failure is not None and not result.failure.retryable)
     )
+    if terminal:
+        _clear_acted_marker(context, key)
+    elif result.acted:
+        _mark_acted_unverified(context, key)
+
+
+def _mark_acted_unverified(context: RunContext, key: str) -> None:
+    """Record an action whose effect could not be proved, without failing the run."""
     try:
-        if terminal:
-            context.state.clear_acted_unverified(key)
-        elif result.acted:
-            context.state.mark_acted_unverified(key)
+        context.state.mark_acted_unverified(key)
     except Exception as exc:
         _log_state_marker_failure(context, key, exc)
 
