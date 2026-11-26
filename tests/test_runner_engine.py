@@ -331,6 +331,37 @@ def _boost_frame(*keys: str) -> Snapshot:
     return _snapshot(*boxes)
 
 
+def _all_claimed_boost_frame() -> Snapshot:
+    """The measured 2026-11-26 sheet: three cards, every control a checkmark.
+
+    The label copy and box bands come from ``notifications_row_completed.png``;
+    no ``GO`` is present because every row is already claimed (#150).
+    """
+    return _snapshot(
+        _box('Coins boost', 52, 467, 420, 543),
+        _box('Check in to win Shopping', 247, 694, 748, 751),
+        _box('credits', 247, 753, 393, 798),
+        _box("Don't forget to check in today!", 248, 807, 792, 857),
+        _box('Add & start using our widget', 247, 1082, 805, 1135),
+        _box('Add our widget to your', 246, 1138, 670, 1190),
+        _box('homescreen to use', 249, 1195, 600, 1235),
+        _box('+1', 327, 1283, 372, 1322),
+        _box('Turn on notifications', 249, 1467, 657, 1513),
+        _box('Stay informed when rewards', 248, 1522, 773, 1571),
+        _box('drop', 243, 1571, 346, 1630),
+        _box('+1', 327, 1664, 375, 1706),
+    )
+
+
+def _mixed_boost_frame() -> Snapshot:
+    """A readable sheet with one extra title-only partial card below the task rows."""
+    base = _boost_frame('coins_quiz', 'sponsored_items')
+    return replace(
+        base,
+        boxes=(*base.boxes, _box('Turn on notifications', 100, 1000, 700, 1040)),
+    )
+
+
 def _coin_frame(balance: str = '1,240') -> Snapshot:
     return _snapshot(
         _box('Coins', 100, 220, 300, 280),
@@ -1822,6 +1853,109 @@ def test_a_dry_run_prints_the_ordered_plan_and_every_refusal_without_tapping(
     payload = _report_payload(tmp_path)
     assert payload['plan']['steps'][0]['key'] == 'coins_quiz'
     assert payload['plan']['refusals'][0]['code'] == 'game_play_and_earn'
+
+
+def test_a_dry_run_reads_an_all_claimed_boost_sheet_as_an_empty_roster(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    """Issue #150: claimed-only rows are read, reported, and never dispatched."""
+    frame = _all_claimed_boost_frame()
+    context = _context(
+        tmp_path,
+        capture=_Capture(*([frame] * 6)),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+    device = _RecordingDevice()
+    context.controller = Controller.from_frame(device, frame, rng=random.Random(0))
+    monkeypatch.setattr(
+        engine,
+        '_dispatch_entry',
+        lambda *args, **kwargs: pytest.fail('a claimed row reached an executor'),
+    )
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.PLANNED
+    assert report.ok is True
+    assert report.plan is not None
+    assert report.plan['probe_failed'] is False
+    assert report.plan['surface'] == 'boost_page'
+    assert report.plan['steps'] == []
+    assert report.plan['refusals'] == []
+    assert report.plan['taps_issued'] == 0
+    assert report.plan['rows_read'] == 3
+    assert report.plan['rows_allowed'] == 3
+    assert report.plan['rows_refused'] == 0
+    assert report.plan['rows_dispatchable'] == 0
+    assert report.plan['rows_claimed'] == 3
+    assert report.roster is not None
+    assert report.roster['count'] == 3
+    assert report.roster['allowed_count'] == 3
+    assert report.roster['denied_count'] == 0
+    assert report.roster['dispatchable_count'] == 0
+    assert report.roster['claimed_count'] == 3
+    assert report.roster['incomplete'] is False
+    summary = report.summary_path.read_text(encoding='utf-8')
+    roster_line = next(line for line in summary.splitlines() if line.startswith('- **Roster:**'))
+    plan_line = next(line for line in summary.splitlines() if line.startswith('- **Plan (dry run):**'))
+    payload = _report_payload(tmp_path)
+    plan = cast(dict[str, int], payload['plan'])
+    expected = (
+        f'{plan["rows_read"]} row(s) read, {plan["rows_allowed"]} allowed, '
+        f'{plan["rows_refused"]} refused, {plan["rows_dispatchable"]} dispatchable, '
+        f'{plan["rows_claimed"]} already claimed'
+    )
+    assert expected == '3 row(s) read, 3 allowed, 0 refused, 0 dispatchable, 3 already claimed'
+    assert expected in roster_line
+    assert expected in plan_line
+    assert context.controller.tap_count == 0
+    assert device.taps == []
+
+
+def test_a_dry_run_keeps_a_mixed_sheet_with_one_partial_title(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    """A lone title beside readable rows is a warning, not a whole-surface failure."""
+    frame = _mixed_boost_frame()
+    context = _context(
+        tmp_path,
+        capture=_Capture(*([frame] * 8)),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+    device = _RecordingDevice()
+    context.controller = Controller.from_frame(device, frame, rng=random.Random(0))
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.PLANNED
+    assert report.ok is True
+    assert report.plan is not None
+    assert report.plan['probe_failed'] is False
+    assert report.plan['rows_read'] == 2
+    assert report.plan['rows_allowed'] == 2
+    assert report.plan['rows_dispatchable'] == 2
+    assert report.plan['rows_claimed'] == 0
+    assert [step['key'] for step in cast('list[dict[str, object]]', report.plan['steps'])] == [
+        'coins_quiz',
+        'sponsored_items',
+    ]
+    assert report.roster is not None
+    assert report.roster['card_structure_failures'] == 1
+    assert report.roster['card_structure_titles'] == ['Turn on notifications']
+    assert report.roster['incomplete'] is True
+    summary = report.summary_path.read_text(encoding='utf-8')
+    assert "'Turn on notifications' had no readable card structure" in summary
+    assert context.controller.tap_count == 0
+    assert device.taps == []
 
 
 def test_the_dry_run_plan_reports_every_reason_a_row_is_not_a_step(
@@ -7328,6 +7462,39 @@ def test_pass_restart_reasons_cover_unreadable_unknown_and_empty_surfaces(full_r
     assert (
         engine._pass_restart_reason(replace(full_roster, surface_variant=Surface.EMPTY_BOOST), None)
         == 'the task surface has not been read since the last attempt'
+    )
+
+
+def test_a_pass_restarts_when_a_task_title_has_no_card_structure(full_roster: Roster) -> None:
+    roster = replace(full_roster, entries=(), card_structure_failures=1)
+    observation = RosterObservation(sequence=1, timestamp=CAPTURED_AT, rows=(), roster=roster)
+
+    assert engine._pass_restart_reason(roster, observation) == (
+        'surface_incomplete: the roster read was incomplete because 1 task title(s) had no readable card structure'
+    )
+    readable = replace(roster, entries=full_roster.entries)
+    assert engine._pass_restart_reason(readable, observation) is None
+
+
+def test_stuck_row_reason_ignores_an_already_claimed_row(
+    tmp_path: Path,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    context = _context(tmp_path, capture=_Capture(_all_claimed_boost_frame()), catalogue=catalogue, corpus=corpus)
+    claimed = replace(_entry(full_roster, 'notifications'), action=None, claimed=True)
+    roster = replace(full_roster, entries=(claimed,))
+
+    assert (
+        engine._stuck_row_reason(
+            roster,
+            context.state,
+            settled=set(),
+            blocked=set(),
+            blacklisted={},
+        )
+        is None
     )
 
 

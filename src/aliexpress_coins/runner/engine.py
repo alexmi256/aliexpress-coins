@@ -1363,8 +1363,12 @@ def _plan_dry_run(
                 title=authorized.title,
                 key=spec.key,
                 category=spec.category.value,
-                reason='no action',
-                detail='the row has no dispatchable action in this frame',
+                reason='already claimed' if entry.claimed else 'no action',
+                detail=(
+                    'the row is already claimed on this sheet; no action is available'
+                    if entry.claimed
+                    else 'the row has no dispatchable action in this frame'
+                ),
             )
             continue
         if context.state.count(spec.key) >= spec.max_per_run:
@@ -1410,12 +1414,22 @@ def _plan_dry_run(
         report.detail = f'dry run: {len(steps)} task(s) planned, {len(refusals)} refusal(s); no tap was issued'
         plan_detail = report.detail
 
+    rows_read = roster.count
+    rows_allowed = len(roster.allowed_entries)
+    rows_refused = len(roster.denied_entries)
+    rows_dispatchable = len(roster.dispatchable_entries)
+    rows_claimed = len(roster.claimed_entries)
     report.plan = {
         'dry_run': True,
         'probe_failed': unreadable is not None,
         'surface': surface.value,
         'max_tasks': max_tasks,
         'budget_seconds': budget_seconds,
+        'rows_read': rows_read,
+        'rows_allowed': rows_allowed,
+        'rows_refused': rows_refused,
+        'rows_dispatchable': rows_dispatchable,
+        'rows_claimed': rows_claimed,
         'steps': steps,
         'refusals': refusals,
         'taps_issued': 0,
@@ -1431,6 +1445,11 @@ def _plan_dry_run(
         _event(
             'dry_run_plan',
             surface=surface.value,
+            rows_read=rows_read,
+            rows_allowed=rows_allowed,
+            rows_refused=rows_refused,
+            rows_dispatchable=rows_dispatchable,
+            rows_claimed=rows_claimed,
             steps=[step['label'] for step in steps],
             refusals=[refusal['label'] for refusal in refusals],
             taps_issued=0,
@@ -1515,6 +1534,16 @@ def _unreadable_plan_reason(
         else:
             rows = ', '.join(entry.title for entry in roster.entries)
             reason = f'surface_unverified: task rows were read but the coin page marker was missing (rows: {rows})'
+    elif roster.card_structure_failures and not roster.dispatchable_entries:
+        reason = (
+            'surface_incomplete: the task surface named task titles but no legible card structure '
+            f'({roster.card_structure_failures} title(s) without subtitle, reward or checkmark)'
+        )
+        if content_waits:
+            reason = (
+                f'{reason} (row wait {content_waits[-1]["status"]}) '
+                f'at the {cast(float, content_waits[-1]["bound"]):g}s deadline'
+            )
     elif not roster.empty:
         if stable_waits and stable_waits[-1]['status'] != 'satisfied':
             reason = 'surface_unverified: task rows were read but the surface never settled'
@@ -1969,6 +1998,10 @@ def _recheck_acted_row(
             # gone. Keep the acted marker and the task retryable.
             return False, None
     if fresh is not None:
+        if fresh.claimed:
+            # The fresh card has no action because it is already claimed. That
+            # is positive evidence the earlier action applied.
+            return True, None
         if fresh.progress is not None and fresh.progress.complete:
             return True, None
         return True, fresh
@@ -2462,6 +2495,13 @@ def _pass_restart_reason(
             'surface_incomplete: the roster read was incomplete because '
             f'{roster.unreadable_count} task row(s) had no readable title'
         )
+    if roster.card_structure_failures and not roster.dispatchable_entries:
+        # A visible task title without its card copy is a partial render, not a
+        # claimed row. Restart only when there was nothing dispatchable to do.
+        return (
+            'surface_incomplete: the roster read was incomplete because '
+            f'{roster.card_structure_failures} task title(s) had no readable card structure'
+        )
     return None
 
 
@@ -2574,6 +2614,10 @@ def _stuck_row_reason(
         return None
     for entry in _ordered_entries(roster.entries):
         if not entry.allowed or entry.spec is None or entry.spec.category not in _EXECUTORS:
+            continue
+        if entry.claimed:
+            # A claimed card is a read row with nothing to dispatch, not a
+            # stuck surface. Treating it as stuck restarts the route forever.
             continue
         identity = _identity(entry)
         if identity in settled or identity in blocked or identity in blacklisted:
@@ -2749,6 +2793,16 @@ def _record_policy_skips(
                 category=entry.spec.category.value,
                 reason='no executor',
                 detail=f'{entry.spec.category.value!r} has no executor in this issue',
+            )
+        elif entry.claimed:
+            _skip(
+                report,
+                logger,
+                title=entry.title,
+                key=entry.key,
+                category=entry.spec.category.value if entry.spec is not None else None,
+                reason='already claimed',
+                detail='the row is already claimed on this sheet; no action is available',
             )
         elif entry.dispatch_target is None:
             _skip(

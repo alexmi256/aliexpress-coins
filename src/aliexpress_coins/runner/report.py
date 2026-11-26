@@ -776,10 +776,23 @@ def _notification_summary(notification: dict[str, Any]) -> str:
 
 
 def _plan_summary(plan: dict[str, Any]) -> str:
-    steps = plan.get('steps') or []
     refusals = plan.get('refusals') or []
     detail = plan.get('detail') or 'no plan was produced'
-    return f'{detail} (surface: {plan.get("surface", "unknown")}, {len(steps)} step(s), {len(refusals)} refusal(s))'
+    parts = [f'surface: {plan.get("surface", "unknown")}']
+    rows_read = plan.get('rows_read')
+    if isinstance(rows_read, int):
+        parts.append(f'{rows_read} row(s) read')
+    rows_allowed = plan.get('rows_allowed', 0)
+    allowed = rows_allowed if isinstance(rows_allowed, int) else 0
+    parts.extend(
+        (
+            f'{allowed} allowed',
+            f'{len(refusals)} refused',
+            f'{plan.get("rows_dispatchable", 0)} dispatchable',
+            f'{plan.get("rows_claimed", 0)} already claimed',
+        ),
+    )
+    return f'{detail} ({", ".join(parts)})'
 
 
 def _night_summary(night: dict[str, Any]) -> str:
@@ -830,8 +843,10 @@ def _roster_summary(roster: dict[str, Any] | None) -> str:
     if not roster:
         return 'not read'
     summary = (
-        f'{roster.get("status", "?")}; {roster.get("count", 0)} row(s), '
-        f'{roster.get("allowed_count", 0)} allowed, {roster.get("denied_count", 0)} refused'
+        f'{roster.get("status", "?")}; {roster.get("count", 0)} row(s) read, '
+        f'{roster.get("allowed_count", 0)} allowed, {roster.get("denied_count", 0)} refused, '
+        f'{roster.get("dispatchable_count", 0)} dispatchable, '
+        f'{roster.get("claimed_count", 0)} already claimed'
     )
     scroll_count = roster.get('scroll_count') or 0
     if scroll_count or roster.get('scroll_attempts'):
