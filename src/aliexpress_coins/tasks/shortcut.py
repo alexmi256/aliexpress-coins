@@ -124,6 +124,9 @@ LAUNCHER_SHORTCUT_LABEL = 'Coins'
 LAUNCHER_APP_LABEL = 'AliExpress'
 """The app's launcher label; it proves the frame is the home screen, not the app."""
 
+MANUAL_SHORTCUT_CLEANUP = 'adb shell cmd shortcut clear-shortcuts com.alibaba.aliexpresshd'
+"""The manual cleanup command reported when a pin could not be confirmed."""
+
 LAUNCHER_PAGE_LABELS: tuple[str, ...] = (LAUNCHER_APP_LABEL, 'Settings')
 """Other home-screen labels accepted beside ``Coins`` as launcher evidence."""
 
@@ -209,6 +212,7 @@ class _ShortcutUse:
     taps: tuple[TapRecord, ...]
     balance_after: float | None
     final_surface: Surface
+    pin_unconfirmed: bool = False
 
 
 def run_shortcut_visit_task(
@@ -414,12 +418,22 @@ def run_shortcut_visit_task(
             and final_surface is not Surface.NON_APP
         ):
             done_after = state.record(spec.key, balance=balance_after)
-            detail = (
-                f'balance moved {balance_before:g} -> {balance_after:g} after the created shortcut was used'
-                if balance_before is not None and balance_after is not None
-                else 'balance moved by +1 after the created shortcut was used'
+            used_phrase = (
+                'the created shortcut'
+                if use.created
+                else ('the shortcut intent' if use.pin_unconfirmed else 'the reused shortcut')
             )
-            if not removed and remove_shortcut is not None:
+            detail = (
+                f'balance moved {balance_before:g} -> {balance_after:g} after {used_phrase} was used'
+                if balance_before is not None and balance_after is not None
+                else f'balance moved by +1 after {used_phrase} was used'
+            )
+            if use.pin_unconfirmed:
+                detail = (
+                    f'{detail}; the Coins pin could not be confirmed, so a shortcut may remain on the device; '
+                    f'remove it manually with `{MANUAL_SHORTCUT_CLEANUP}`'
+                )
+            elif use.created and not removed and remove_shortcut is not None:
                 detail = f'{detail}; the app-level shortcut cleanup (all AliExpress shortcuts) could not run'
             result = _result(
                 spec,
@@ -458,7 +472,12 @@ def run_shortcut_visit_task(
                 f'{detail}; no readable +1 was observed after using the shortcut '
                 f'(balance {balance_before!r} -> {balance_after!r})'
             )
-        if not removed and remove_shortcut is not None:
+        if use.pin_unconfirmed:
+            detail = (
+                f'{detail}; the Coins pin could not be confirmed, so a shortcut may remain on the device; '
+                f'remove it manually with `{MANUAL_SHORTCUT_CLEANUP}`'
+            )
+        elif use.created and not removed and remove_shortcut is not None:
             detail = f'{detail}; the app-level shortcut cleanup (all AliExpress shortcuts) could not run'
         result = _result(
             spec,
@@ -546,6 +565,7 @@ def _dispatch_launcher_shortcut(
     taps: list[TapRecord] = []
     created = False
     used = False
+    pin_unconfirmed = False
 
     def failed(verification: str, detail: str) -> _ShortcutUse:
         closed = _close_shortcut_sheet(
@@ -574,6 +594,7 @@ def _dispatch_launcher_shortcut(
             taps=tuple(taps),
             balance_after=_trusted_balance(arrival.snapshot),
             final_surface=classify_surface(arrival.snapshot),
+            pin_unconfirmed=pin_unconfirmed,
         )
 
     create = find_text(modal, CREATE_SHORTCUT_LABEL)
@@ -635,6 +656,7 @@ def _dispatch_launcher_shortcut(
                 'Add to home screen disappeared, but the shortcut service never showed the Coins pin',
             )
         created = confirmed is True
+        pin_unconfirmed = confirmed is None
     elif stage == 'exists':
         # A previous run left the item behind (the measured toast). Reuse that
         # one; creating a second item would leave two shortcuts on the tablet.
@@ -731,6 +753,7 @@ def _dispatch_launcher_shortcut(
             taps=tuple(taps),
             balance_after=_trusted_balance(final.snapshot),
             final_surface=final_surface,
+            pin_unconfirmed=pin_unconfirmed,
         )
     if not final.settled or final_surface not in _RETURN_COIN_SURFACES:
         return _ShortcutUse(
@@ -747,6 +770,7 @@ def _dispatch_launcher_shortcut(
             taps=tuple(taps),
             balance_after=_trusted_balance(final.snapshot),
             final_surface=final_surface,
+            pin_unconfirmed=pin_unconfirmed,
         )
     return _ShortcutUse(
         created=created,
@@ -757,6 +781,7 @@ def _dispatch_launcher_shortcut(
         taps=tuple(taps),
         balance_after=_trusted_balance(final.snapshot),
         final_surface=final_surface,
+        pin_unconfirmed=pin_unconfirmed,
     )
 
 
@@ -1010,9 +1035,9 @@ def _confirm_created_pin(
     transient unreadable probe never triggers the package-wide cleanup.
     """
     if shortcut_present is None:
-        # Tests without the device seam still have the measured Add control as
-        # evidence; the live engine always supplies the probe.
-        return True
+        # No probe means no confirmation. A caller with only a cleanup seam must
+        # not claim creation and then run the package-wide clear.
+        return None
     deadline = clock() + timeout
     saw_unreadable = False
     while True:

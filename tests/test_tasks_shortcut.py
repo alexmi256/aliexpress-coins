@@ -277,6 +277,7 @@ def test_the_sheet_is_accepted_and_the_created_shortcut_is_used_and_removed(
         state,
         entry,
         navigate=routes,
+        shortcut_present=lambda: True,
         launch_shortcut=lambda: launched.append('fired'),
         remove_shortcut=lambda: removed.append('cleared'),
         app_foreground=lambda: True,
@@ -658,6 +659,7 @@ def test_a_home_screen_without_a_proven_coins_shortcut_fails_honestly(
         _state(tmp_path),
         entry,
         navigate=_Routes(),
+        shortcut_present=lambda: True,
         clock=_Clock(),
         sleep=_Clock().sleep,
     )
@@ -716,6 +718,7 @@ def test_a_failed_shortcut_launch_still_returns_to_the_coins_page_and_cleans_up(
         _state(tmp_path),
         entry,
         navigate=_Routes(),
+        shortcut_present=lambda: True,
         launch_shortcut=broken_launch,
         remove_shortcut=lambda: removed.append('cleared'),
         clock=_Clock(),
@@ -894,6 +897,7 @@ def test_a_cleanup_failure_does_not_turn_a_verified_credit_into_a_failure(
         _state(tmp_path),
         entry,
         navigate=_Routes(),
+        shortcut_present=lambda: True,
         launch_shortcut=lambda: None,
         remove_shortcut=broken_cleanup,
         clock=_Clock(),
@@ -952,6 +956,7 @@ def test_a_two_coin_balance_change_is_not_accepted_as_the_advertised_plus_one(
         state,
         entry,
         navigate=_Routes(),
+        shortcut_present=lambda: True,
         launch_shortcut=lambda: None,
         remove_shortcut=broken_cleanup,
         clock=_Clock(),
@@ -1680,6 +1685,7 @@ def test_a_launcher_sheet_that_never_closes_does_not_claim_completion(
         _state(tmp_path),
         entry,
         navigate=_Routes(),
+        shortcut_present=lambda: True,
         launch_shortcut=lambda: None,
         clock=_Clock(),
         sleep=_Clock().sleep,
@@ -1697,6 +1703,7 @@ def test_an_unreadable_shortcut_presence_probe_does_not_stop_the_task(
 ) -> None:
     frame = _coin_page_with_row('87')
     entry = _entry(frame, catalogue)
+    removed: list[str] = []
 
     def broken_presence() -> bool | None:
         raise RuntimeError('shortcut service unreadable')
@@ -1710,11 +1717,48 @@ def test_an_unreadable_shortcut_presence_probe_does_not_stop_the_task(
         navigate=_Routes(),
         shortcut_present=broken_presence,
         launch_shortcut=lambda: None,
+        remove_shortcut=lambda: removed.append('cleared'),
         clock=_Clock(),
         sleep=_Clock().sleep,
     )
 
     assert result.outcome is ShortcutVisitOutcome.COMPLETED
+    assert result.shortcut_created is False
+    assert result.shortcut_removed is False
+    assert removed == []
+    assert 'could not be confirmed' in result.detail
+    assert 'clear-shortcuts com.alibaba.aliexpresshd' in result.detail
+    assert 'cleanup' not in result.detail
+
+
+def test_a_missing_presence_probe_is_unconfirmed_and_skips_cleanup(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _coin_page_with_row('87')
+    entry = _entry(frame, catalogue)
+    removed: list[str] = []
+
+    result = run_shortcut_visit_task(
+        Controller.from_frame(_Device(), frame, rng=random.Random(0)),
+        _Capture(_created_shortcut_frames(frame)),
+        corpus,
+        _state(tmp_path),
+        entry,
+        navigate=_Routes(),
+        launch_shortcut=lambda: None,
+        remove_shortcut=lambda: removed.append('cleared'),
+        clock=_Clock(),
+        sleep=_Clock().sleep,
+    )
+
+    assert result.outcome is ShortcutVisitOutcome.COMPLETED
+    assert result.shortcut_created is False
+    assert result.shortcut_removed is False
+    assert removed == []
+    assert 'could not be confirmed' in result.detail
+    assert 'clear-shortcuts com.alibaba.aliexpresshd' in result.detail
 
 
 def test_a_stop_during_cleanup_is_never_swallowed(
@@ -1736,6 +1780,7 @@ def test_a_stop_during_cleanup_is_never_swallowed(
             _state(tmp_path),
             entry,
             navigate=_Routes(),
+            shortcut_present=lambda: True,
             launch_shortcut=lambda: None,
             remove_shortcut=stop,
             clock=_Clock(),
