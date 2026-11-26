@@ -560,6 +560,29 @@ def _logger() -> logging.Logger:
     return logger
 
 
+def _seed_other_families(
+    context: RunContext,
+    catalogue: TaskCatalogue,
+    roster: Roster,
+    *,
+    keep: set[str] | None = None,
+) -> None:
+    """Record daily limits for catalogue families a fixture deliberately omits.
+
+    A clean completion now also requires that no unseen family is still
+    claimable. These tests are about other walk behaviour, so mark omitted
+    families as already earned today. ``keep`` names keys that must stay
+    unclaimed even when they are not in the fixture roster.
+    """
+    present = {entry.key for entry in roster.allowed_entries if entry.key is not None}
+    keep = keep or set()
+    for spec in catalogue.allowed:
+        if spec.key in present or spec.key in keep:
+            continue
+        for _ in range(spec.max_per_run):
+            context.state.record(spec.key)
+
+
 def _surface(
     monkeypatch: pytest.MonkeyPatch,
     roster: Roster,
@@ -1538,6 +1561,7 @@ def test_an_executor_exception_is_a_failed_task_and_an_incomplete_night(
 
     monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
 
+    _seed_other_families(context, catalogue, roster)
     report = engine.run_once(context)
 
     assert report.status is RunStatus.FAILED
@@ -5873,6 +5897,7 @@ def test_an_unverified_task_is_retried_once_and_the_second_result_stands(
 
     monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
 
+    _seed_other_families(context, catalogue, roster)
     report = engine.run_once(context)
 
     assert len(attempts) == 2
@@ -5977,6 +6002,7 @@ def test_all_retryable_failures_leave_the_night_open_for_a_later_run(
 
     monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
 
+    _seed_other_families(first, catalogue, roster)
     first_report = engine.run_once(first)
 
     snapshot = first.state.snapshot()
@@ -6011,6 +6037,7 @@ def test_all_retryable_failures_leave_the_night_open_for_a_later_run(
     )
     second.wall_clock = lambda: now[0]
 
+    _seed_other_families(second, catalogue, roster)
     second_report = engine.run_once(second)
 
     assert len(attempts) == 2
@@ -6055,6 +6082,7 @@ def test_a_cross_run_acted_failure_rechecks_before_tapping(
         )
 
     monkeypatch.setattr(engine, '_dispatch_entry', fail_acted)
+    _seed_other_families(first, catalogue, roster)
     engine.run_once(first)
 
     snapshot = first.state.snapshot()
@@ -6078,7 +6106,7 @@ def test_a_cross_run_acted_failure_rechecks_before_tapping(
         raise AssertionError('the claimed row must not be dispatched')
 
     monkeypatch.setattr(engine, '_dispatch_entry', must_not_dispatch)
-    recheck_frames = [_boost_frame('coins_quiz'), _boost_frame('notifications')]
+    recheck_frames = [_boost_frame('coins_quiz'), _boost_frame('notifications'), _boost_frame('coins_quiz')]
     opens: list[int] = []
 
     def open_boost(*args: Any, **kwargs: Any) -> BoostList:
@@ -6088,6 +6116,7 @@ def test_a_cross_run_acted_failure_rechecks_before_tapping(
 
     monkeypatch.setattr(engine, 'open_boost_list', open_boost)
 
+    _seed_other_families(second, catalogue, roster)
     report = engine.run_once(second)
 
     assert dispatches == []
@@ -6171,6 +6200,7 @@ def test_a_proven_acted_row_stays_marked_so_a_third_run_rechecks(
     assert second.state.snapshot().acted_unverified == ('coins_quiz',)
     assert second_report.tasks[0].verification == 'already_done'
 
+    opens.clear()
     now[0] = CAPTURED_AT + timedelta(minutes=10)
     third = _context(
         tmp_path,
@@ -6460,6 +6490,7 @@ def test_a_mixed_night_with_one_retryable_failure_stays_open(
 
     monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
 
+    _seed_other_families(context, catalogue, roster)
     report = engine.run_once(context)
 
     snapshot = context.state.snapshot()
@@ -6510,6 +6541,7 @@ def test_a_night_with_only_terminal_outcomes_still_completes_the_day(
 
     monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
 
+    _seed_other_families(context, catalogue, roster)
     report = engine.run_once(context)
 
     snapshot = context.state.snapshot()
@@ -6557,6 +6589,7 @@ def test_a_failed_task_at_its_daily_limit_is_not_unclaimed_work(
 
     monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
 
+    _seed_other_families(context, catalogue, roster)
     report = engine.run_once(context)
 
     assert report.tasks[0].outcome == 'failed'
@@ -6669,6 +6702,7 @@ def test_a_roster_with_only_policy_excluded_rows_still_completes_the_day(
 
     monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
 
+    _seed_other_families(context, catalogue, roster)
     report = engine.run_once(context)
 
     assert dispatched == []
@@ -6723,6 +6757,7 @@ def test_a_recently_viewed_row_is_dispatched_instead_of_refused(
 
     monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
 
+    _seed_other_families(context, catalogue, roster)
     report = engine.run_once(context)
 
     assert dispatched == ['recently_viewed']
@@ -7020,6 +7055,7 @@ def test_a_completed_sign_in_key_does_not_hide_the_other_keys_failure(
 
     monkeypatch.setattr(engine, 'claim_daily_signins', claim)
 
+    _seed_other_families(context, catalogue, roster, keep={'daily_checkin', 'boost_checkin'})
     report = engine.run_once(context)
 
     assert report.tasks[0].key == 'boost_checkin'
@@ -7035,7 +7071,8 @@ def test_a_completed_sign_in_key_does_not_hide_the_other_keys_failure(
     snapshot = context.state.snapshot()
     assert snapshot.completed_night is False
     assert snapshot.last_night is not None
-    assert snapshot.last_night.outcome is NightOutcome.RETRYABLE_FAILURES
+    assert snapshot.last_night.outcome is NightOutcome.INCOMPLETE_ROSTER
+    assert snapshot.last_night.retryable_failures == 1
     assert len(notifier.messages) == 1
     assert 'daily_checkin' in notifier.messages[0].body
     assert 'no fresh frame proved it' in notifier.messages[0].body
@@ -7277,6 +7314,7 @@ def test_a_row_that_vanished_is_dispatched_again_in_a_second_pass(
 
     monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
 
+    _seed_other_families(context, catalogue, roster)
     report = engine.run_once(context)
 
     assert attempts == ['coins_quiz', 'coins_quiz']
@@ -7329,6 +7367,7 @@ def test_a_repeatedly_failing_task_is_blacklisted_and_the_rest_of_the_roster_con
 
     monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
 
+    _seed_other_families(context, catalogue, roster)
     report = engine.run_once(context)
 
     assert attempts == ['coins_quiz', 'notifications', 'coins_quiz']
@@ -7390,6 +7429,7 @@ def test_an_unknown_surface_after_a_task_restarts_from_the_shortcut(
 
     monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
 
+    _seed_other_families(context, catalogue, roster)
     report = engine.run_once(context)
 
     assert order == ['coins_quiz', 'notifications']
@@ -7837,6 +7877,7 @@ def test_six_sponsored_rounds_finish_in_one_run(
 
     monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
 
+    _seed_other_families(context, catalogue, roster)
     report = engine.run_once(context)
 
     assert len(rounds) == 6
@@ -7902,6 +7943,7 @@ def test_a_roster_with_nothing_left_completes_in_one_pass(
     )
     context.state.record('coins_quiz')
 
+    _seed_other_families(context, catalogue, roster)
     report = engine.run_once(context)
 
     assert report.status is RunStatus.COMPLETED
@@ -8099,6 +8141,7 @@ def test_a_repeatable_row_is_offered_again_until_its_daily_limit(
 
     monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
 
+    _seed_other_families(context, catalogue, roster)
     report = engine.run_once(context)
 
     assert attempts == ['surprise_items', 'surprise_items']

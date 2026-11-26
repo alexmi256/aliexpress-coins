@@ -533,6 +533,7 @@ class RunReport:
             f'- **Surface:** {self.surface or "unknown"}',
             f'- **Route:** {_route_summary(self.roster)}',
             f'- **Roster:** {_roster_summary(self.roster)}',
+            f'- **Rotation:** {_rotation_summary(self.roster)}',
             f'- **Observations:** {self.observations} (`roster.jsonl`)',
             f'- **Balance:** {_balance_delta(self.balance_before, self.balance_after, self.balance_delta)}',
             f'- **Popups closed:** {_popup_summary(self.popups_closed)}',
@@ -855,6 +856,29 @@ def _roster_summary(roster: dict[str, Any] | None) -> str:
         summary = f'{summary}; scroll bound reached'
     warning = roster.get('warning')
     return summary if not warning else f'{summary}; warning: {warning}'
+
+
+def _rotation_summary(roster: dict[str, Any] | None) -> str:
+    """Name how many sheet reads backed the completion decision and what was missed."""
+    rotation = (roster or {}).get('rotation')
+    if not isinstance(rotation, dict):
+        return 'not sampled'
+    samples = rotation.get('samples', 0)
+    agreeing = rotation.get('agreeing_samples', 0)
+    if not samples:
+        return 'not sampled'
+    confirmed = rotation.get('confirmed')
+    unread = rotation.get('unread_families') or []
+    claimed = rotation.get('already_claimed_families') or []
+    if confirmed:
+        detail = f'confirmed after {agreeing} agreeing sample(s) of {samples}'
+    else:
+        detail = f'not confirmed after {samples} sample(s); two freshly opened reads did not agree'
+    if unread:
+        detail = f'{detail}; not seen in any read and still claimable today: {", ".join(str(key) for key in unread)}'
+    if claimed:
+        detail = f'{detail}; already claimed today, so absent as expected: {", ".join(str(key) for key in claimed)}'
+    return detail
 
 
 def _returned(returned: bool | None, error: str | None) -> str:

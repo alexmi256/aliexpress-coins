@@ -36,6 +36,7 @@ from tests.test_runner_engine import (
     _coin_frame,
     _context,
     _entry,
+    _seed_other_families,
     _surface,
 )
 
@@ -101,6 +102,7 @@ def test_six_sponsored_rounds_complete_in_one_run(
 
     monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
 
+    _seed_other_families(context, CATALOGUE, roster)
     report = engine.run_once(context)
 
     assert calls == ['sponsored_items'] * 6
@@ -129,6 +131,7 @@ def test_a_roster_with_nothing_left_completes_in_one_pass(
     for _ in range(6):
         context.state.record('sponsored_items')
 
+    _seed_other_families(context, CATALOGUE, roster)
     report = engine.run_once(context)
 
     assert report.passes == 1

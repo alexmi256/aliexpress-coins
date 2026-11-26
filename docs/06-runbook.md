@@ -498,7 +498,18 @@ measured.
 **What "complete" means.** A finished roster walk marks the day complete only when the roster was
 read completely and nothing dispatched is worth retrying: every row either completed, was
 skipped/refused (policy, daily limit, or the app reporting it unavailable), or failed with a failure
-class that spends no retry. Any `failed` row whose taxonomy entry is retryable (`task_unverified`,
+class that spends no retry. The `Coins boost` sheet rotates, so the roster is widened across the
+night: every readable read is merged by catalogue key (normalised title when the row is refused),
+and a row seen earlier stays a candidate even if a later frame omits it. Daily state, the blacklist
+and the settled/blocked sets still remove finished work. A single read is only one rotation sample;
+before the walk may end with `no dispatchable row remains`, the engine re-opens the sheet once inside
+that pass and requires the new read to agree with the read before it. A changed set is a new pass,
+bounded by `AECOINS_MAX_PASSES`; it is reported as `budget` with the sample counts, never as
+complete. A catalogue family that no read saw and that is still claimable today also keeps
+`completed_night` false: its absence is unknown rotation, not proof the app offered nothing. A
+family already completed to today's daily limit is the carve-out — it was claimed earlier today, so
+its absence is expected; the report names it as already claimed rather than unseen. Any `failed` row
+whose taxonomy entry is retryable (`task_unverified`,
 including a timeout or a recovered unknown screen), or a visible action that could not be attached
 to a task row, keeps `completed_night` false even if another row completed, because unclaimed work
 may still be hidden by the splitter. This is a cross-run retry, not the in-run rule that
@@ -518,7 +529,10 @@ one `Night:` line.
 completed, failed, or a row that vanished between enumeration and dispatch — the engine
 re-enumerates the surface and continues while something is still dispatchable. An unreadable or
 unknown surface restarts from the shortcut route instead of ending the night. A full pass that
-finds no allowed, unblacklisted work may complete the day. The pass loop is bounded by **progress,
+finds no allowed, unblacklisted work performs one fresh re-open of the sheet inside that pass; only
+two consecutive reads that agree may complete the day. A different read adds its rows to the union
+and spends another pass, so rows that rotate in are worked and rows that rotate out do not vanish.
+The pass loop is bounded by **progress,
 not a fixed count**: it keeps sweeping while a pass dispatched a row or revealed new dispatchable
 rows, and stops after two consecutive sweeps that did neither (`engine.MAX_NO_PROGRESS_PASSES`).
 That is what lets a family with six daily rounds finish all six in one night instead of being cut
@@ -579,6 +593,7 @@ gate in #41.
 | **Surface** | the screen family the roster was read from (`rows_present`, `boost_page`, ...) |
 | **Route** | the route used and the routes tried, including a warm re-entry |
 | **Roster** | row count, allowed count and refused count, with the read status and any swallowed-row warning |
+| **Rotation** | how many Coins boost sheet samples backed the conclusion, whether two fresh reads agreed, and which catalogue families no read saw (still claimable vs already claimed today) |
 | **Observations** | how many roster diffs were logged in `roster.jsonl` |
 | **Balance** | before and after, with the delta when both frames were readable |
 | **Popups closed** | verified dismissals by family, or `none` |
@@ -594,6 +609,9 @@ A good night looks like:
 - `Roster: available; N row(s) read, M allowed, K refused, D dispatchable, C already claimed` with
   `N` greater than zero, `M` the catalogue-allowed rows, and `D` the rows that still carry a
   dispatchable control;
+- `Rotation: confirmed after 2 agreeing sample(s) of N`, so the final “nothing left” conclusion was
+  not taken from one server-rotation sample; any still-claimable unseen families keep the night
+  open, while families already claimed today are named as absent-but-expected;
 - at least one task row with `completed` and an evidence value that names what proved it (a balance
   move, a progress badge, a row gone from a complete surface, or a recorded state transition);
 - `Balance: <before> -> <after> (<delta>)` with a non-negative delta, or `unknown` when a frame was
@@ -675,7 +693,7 @@ Raise a limit only deliberately; a larger budget is not a fix for a slow network
 | `run_id`, `status`, `detail` | identity and terminal sentence |
 | `started_at`, `finished_at`, `budget` | wall-clock evidence |
 | `hygiene`, `geometry` | what the device said before the first capture |
-| `surface`, `roster`, `route_error`, `observations` | what the roster looked like |
+| `surface`, `roster`, `route_error`, `observations` | what the roster looked like; `roster.rotation` carries `samples`, `agreeing_samples`, `confirmed`, `unread_families` (still claimable and fatal) and `already_claimed_families` |
 | `balance_before`, `balance_after`, `balance_delta`, `balance_note` | the two recorded frames, or why one is unknown |
 | `popups_closed`, `shots`, `artifact_errors` | artifacts and best-effort write failures |
 | `failure_recordings` | one entry per recorded attempt: task/key/attempt, failure or abort code, artifact directory, frame and sidecar paths |

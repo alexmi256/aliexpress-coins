@@ -1,7 +1,7 @@
 # 05 — What the app actually does
 
 Observed behaviour of AliExpress `8.180.1` on the reference tablet (`T3_US`, Android 15, Canada /
-`en`). Measured 2026-11-19 through 2026-11-24; reviewed flow fixtures live under `tests/data/flows/`.
+`en`). Measured 2026-11-19 through 2026-11-26; reviewed flow fixtures live under `tests/data/flows/`.
 
 Legend: ✅ observed · ⬜ inferred from an observation · ❓ unknown.
 
@@ -80,6 +80,68 @@ The sanity check now compares every `GO` seen across the scrolled frames with th
 rows. A button that never becomes a row in any frame stays unassigned and appears as
 `GO button(s) across N frame(s) but ... task action(s) were not enumerated`; one screenful is no longer
 enough to call the list clean.
+
+### 4d. The boost sheet is sampled, not a fixed list ✅/⬜/❓ (#149)
+
+The sheet's row set is not a fixed list. Measured on 2026-11-26 on the same account and modal;
+sanitized full frames are
+[`boost_rotation_issue_149_first_read.png`](../tests/data/flows/boost_rotation_issue_149_first_read.png),
+[`…_open_36m.png`](../tests/data/flows/boost_rotation_issue_149_open_36m.png),
+[`…_top.png`](../tests/data/flows/boost_rotation_issue_149_top.png),
+[`…_scrolled.png`](../tests/data/flows/boost_rotation_issue_149_scrolled.png) and
+[`…_bottom.png`](../tests/data/flows/boost_rotation_issue_149_bottom.png). Exact capture times,
+source files, commands and hashes are in
+[`boost_rotation_issue_149_observation.json`](../tests/data/flows/boost_rotation_issue_149_observation.json).
+
+- **The top set did not change while the sheet stayed open ❓.** The first read at 14:45:48Z read
+  `Explore sponsored items` (`4/6`), `Browse surprise items` (`1/2`), `Place an order on this page`,
+  `Add 5 items to your cart`; the same open modal read the same four rows at 15:22:04Z
+  (`…_first_read.png`, `…_open_36m.png`). The app hides the status-bar clock, so the interval comes
+  from the command log and file timestamps, not an on-frame clock; the elapsed-time test is
+  therefore **❓**, not a timer measurement.
+- **A simple close/re-open produced the same top set ✅.** Closing with the header arrow and tapping
+  `Earn more` again at 15:22:10Z produced a frame byte-identical to the 15:22:04Z capture, so it is
+  not kept as a second fixture; the provenance JSON records the duplicate hash and command.
+  Reloading the whole page through the shortcut route produced the same top set at 15:23:02Z
+  (`…_top.png`).
+- **Scroll position changes what one read sees ✅.** One viewport scroll exposed
+  `Water to win a US $0.10 prize` and `Share coins with friends` (`…_scrolled.png`, 15:23:08 UTC);
+  further scrolls exposed `Browse recently viewed items`, `Add & start using our widget` and
+  `Turn on notifications` (`…_bottom.png`), then stopped on a stable frame ✅. The read before the
+  scroll and the read after it therefore differ, but the measured cause here is the scroll, not a
+  timer. Holding the bottom for three minutes and then closing/re-opening and scrolling back to it
+  produced the same bottom set at 15:26:41Z ✅.
+- **`View Super discounts` was read and completed before this measurement ✅.** Run
+  `20261126T100143Z` (a different worktree using the pre-#149 code) recorded
+  `policy_decision key=recently_viewed allow` at 10:06:35Z; its post-tap frame already listed
+  `View Super discounts` / `Check out this page for 15` / `GO` / `seconds` on the same
+  `boost_page`. It then recorded `policy_decision key=super_discounts allow` at 10:08:48Z, tapped at
+  `(1007,1830)` at 10:08:49Z, and recorded
+  `task_outcome key=super_discounts outcome=completed verification=row_gone seconds=53.427
+  recorded=true` at 10:09:40Z. The row is therefore absent from the 14:45–15:27Z sheet because it
+  was **already claimed for the day**, not because the app never offered it; a second live
+  completion in the same day cannot be produced. That run proves the row exists on the device; it
+  is **not** evidence for the new rotation rule, because it predates the change.
+- **The later read is consistent with that claim ✅.** Run `20261126T152715Z` read the sheet twice
+  (`rotation.samples: 2`, `agreeing_samples: 2`) after the 10:08Z claim, found no Super-discounts
+  row, reported `super_discounts` under `not seen in any read`, and left the night open
+  (`incomplete_roster`) rather than claiming a complete day. That run used an isolated temporary
+  state that did not carry the 10:08Z completion; with the real day state the carve-out now reports
+  it as already claimed instead of unseen. The earlier in-place swaps in
+  `20261125T175208Z`'s roster log (`Check in to win Shopping credits` → `Water …` between
+  observations 2 and 5) are still best explained by a server refresh on load/completion ⬜; an
+  in-place swap while the same frame is left open was not reproduced today ❓.
+
+The runner therefore treats every readable read as one rotation sample, merges samples by
+catalogue key (normalised title for refused rows), and requires two freshly opened reads to agree
+before it may report `no dispatchable row remains`; a changed sample spends another pass and its
+rows stay in the union. A catalogue family no read saw is **not** silently equated with "the app had
+nothing": if it is still claimable today, it makes the roster incomplete and the night
+`INCOMPLETE_ROSTER`. The one carve-out is a family already completed to its daily limit in the day
+state — its absence is expected because it was claimed earlier today. Those families are still named
+in the report as already claimed, not as unseen. `super_discounts` is the motivating case: run
+`20261126T100143Z` claimed it at 10:08Z, so its absence from every later sheet is expected, while an
+unseen and unclaimed family keeps the day open (#149).
 
 ## 5. Reward mechanics ✅
 

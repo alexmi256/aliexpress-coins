@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "issue": 149,
+  "device": "T3_US",
+  "note": "The app hides the status-bar clock while the Coins boost sheet is open. Capture times below come from the command log or, where no date command was run in that step, the source file's mtime. No on-frame clock is used.",
+  "captures": [
+    {
+      "fixture": "boost_rotation_issue_149_first_read.png",
+      "source": "/tmp/opencode/issue149/open1.png",
+      "source_sha256": "cb8843d2b76097584907c5158bbde6eaf885e8aa43d0d1436980467c257bf55b",
+      "sha256": "ca99f327d9d5c9cb971dfccb8223a0c2f6dfb7e925826ec6eda6141d3dc3902e",
+      "captured_at_utc": "2026-11-26T14:45:48Z",
+      "timestamp_provenance": "source file mtime; no date command was run in this first capture step",
+      "command": "adb -s 192.168.8.65:5555 shell input tap 1025 946; .venv/bin/python /tmp/opencode/issue149/ocr.py /tmp/opencode/issue149/open1.png",
+      "shows": "top of the sheet: Explore sponsored items 4/6, Browse surprise items 1/2, Place an order on this page, Add 5 items to your cart",
+      "supports": "first top read of the open-sheet comparison"
+    },
+    {
+      "fixture": "boost_rotation_issue_149_open_36m.png",
+      "source": "/tmp/opencode/issue149/open-late-20m.png",
+      "source_sha256": "2cd07971a1ed77f44a80ee8943723c7b1c3975501a2776b006894844cdd52e2e",
+      "sha256": "af78ca1531930d4047d1c4da030cada550a5f625e5f0a7138f65022f773f6d01",
+      "captured_at_utc": "2026-11-26T15:22:04Z",
+      "timestamp_provenance": "date -u in the capture command; source mtime 15:22:05.98Z",
+      "elapsed_since_first_read_seconds": 2176,
+      "command": "sleep 1020; date -u; .venv/bin/python /tmp/opencode/issue149/ocr.py /tmp/opencode/issue149/open-late-20m.png (sheet still open from the 14:45 read)",
+      "command_note": "The sleep-1020 command was started later by a background shell, after the first read, not at 14:45:48Z; its launch time was not logged. The sheet stayed open from the first read, and the exact idle interval is derived from the two capture timestamps: 14:45:48Z -> 15:22:04Z = 36m16s (2176s). The sleep explains only the final 17 minutes before this capture.",
+      "shows": "same four top rows as the first read after 36m16s with the modal left open",
+      "supports": "top set unchanged over the logged 14:45:48Z -> 15:22:04Z interval; no on-frame clock, so the elapsed-time test remains unknown"
+    },
+    {
+      "fixture": "boost_rotation_issue_149_top.png",
+      "source": "/tmp/opencode/issue149/open-route-reload.png",
+      "source_sha256": "eafe823afebb81c0fa82aa624c28fa0ef2970c72ed8620a1b6b1e925ea44dd10",
+      "sha256": "3c0aae28b8ada9916d746b998e6a2bc5f7df2fcaec52870e43bf100e4e130bee",
+      "captured_at_utc": "2026-11-26T15:23:02Z",
+      "timestamp_provenance": "date -u in the capture command; source mtime 15:23:03.88Z",
+      "command": "adb shell am start -a android.intent.action.VIEW -d 'aliexpress://goto?url=https%3A%2F%2Fm.aliexpress.com%2Fp%2Fcoin-index%2Findex.html'; sleep 6; adb shell input tap 1025 946; sleep 2; date -u; .venv/bin/python /tmp/opencode/issue149/ocr.py /tmp/opencode/issue149/open-route-reload.png",
+      "shows": "same four top rows after a full shortcut reload",
+      "supports": "same top set after a full page load"
+    },
+    {
+      "fixture": "boost_rotation_issue_149_scrolled.png",
+      "source": "/tmp/opencode/issue149/open-scroll1.png",
+      "source_sha256": "54710aa95e9f1dc48b9b50e86fa8cfd3accfd77c00fd75e546a8bb81a25170e1",
+      "sha256": "65c50787b40c9d5c96e479e8dfa706ddb37ab70967a94ca1454fceb0314b9b72",
+      "captured_at_utc": "2026-11-26T15:23:08Z",
+      "timestamp_provenance": "date -u in the capture command; source mtime 15:23:12.99Z",
+      "command": "adb shell input swipe 600 1600 600 700 300; sleep 2; date -u; .venv/bin/python /tmp/opencode/issue149/ocr.py /tmp/opencode/issue149/open-scroll1.png",
+      "shows": "Water to win a US $0.10 prize and Share coins with friends after one viewport scroll",
+      "supports": "scroll position changes the visible row set"
+    },
+    {
+      "fixture": "boost_rotation_issue_149_bottom.png",
+      "source": "/tmp/opencode/issue149/bottom-late.png",
+      "source_sha256": "e6c252fd412fb51778baf71e8dd60cbd422795bf2ae437b06a84e84b6c6869ca",
+      "sha256": "d48fb153d4364023b7791a50d473e307572068d4153fa2c060a31720237c5cc8",
+      "captured_at_utc": "2026-11-26T15:26:41Z",
+      "timestamp_provenance": "date -u in the capture command; source mtime 15:26:43.34Z",
+      "command": "sleep 180; date -u; .venv/bin/python /tmp/opencode/issue149/ocr.py /tmp/opencode/issue149/bottom-late.png (sheet still at the bottom)",
+      "shows": "stable bottom: Browse recently viewed items, Add & start using our widget, Turn on notifications",
+      "supports": "stable bottom frame after further scrolling; same bottom set as the 15:23 read"
+    }
+  ],
+  "dropped_duplicates": [
+    {
+      "source": "/tmp/opencode/issue149/open-late-20m-reopen.png",
+      "source_sha256": "2cd07971a1ed77f44a80ee8943723c7b1c3975501a2776b006894844cdd52e2e",
+      "captured_at_utc": "2026-11-26T15:22:10Z",
+      "reason": "Byte-identical to the open_36m source after closing with the header arrow and tapping Earn more again. It is not kept as a separate fixture because it cannot be presented as a second moment; the command log records the re-open and the identical hash."
+    }
+  ]
+}
