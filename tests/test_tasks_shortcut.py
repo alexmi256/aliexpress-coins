@@ -767,6 +767,74 @@ def test_a_launcher_frame_after_the_dispatch_is_a_foreground_loss(
     assert result.recorded is False
 
 
+def test_a_boost_page_after_the_dispatch_is_not_a_foreground_loss(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _coin_page_with_row('87')
+    entry = _entry(frame, catalogue)
+    frames = (
+        frame,
+        _shortcut_sheet(),
+        _launcher_add_sheet(),
+        _shortcut_sheet(),
+        _shortcut_sheet(),
+        _coin_page('87'),
+        _boost('88'),
+    )
+
+    result = run_shortcut_visit_task(
+        Controller.from_frame(_Device(), frame, rng=random.Random(0)),
+        _Capture(frames),
+        corpus,
+        _state(tmp_path),
+        entry,
+        navigate=_Routes(),
+        launch_shortcut=lambda: None,
+        clock=_Clock(),
+        sleep=_Clock().sleep,
+    )
+
+    assert result.outcome is ShortcutVisitOutcome.FAILED
+    assert result.verification != 'foreground_lost_after_action'
+    assert result.verification == 'return_to_coins_page_failed'
+
+
+def test_a_reward_interstitial_after_the_dispatch_is_not_a_foreground_loss(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _coin_page_with_row('87')
+    entry = _entry(frame, catalogue)
+    interstitial = _snapshot(_box('YOU CAN NOW REDEEM!', 100, 700, 900, 760))
+    frames = (
+        frame,
+        _shortcut_sheet(),
+        _launcher_add_sheet(),
+        _shortcut_sheet(),
+        _shortcut_sheet(),
+        _coin_page('87'),
+        interstitial,
+    )
+
+    result = run_shortcut_visit_task(
+        Controller.from_frame(_Device(), frame, rng=random.Random(0)),
+        _Capture(frames),
+        corpus,
+        _state(tmp_path),
+        entry,
+        navigate=_Routes(),
+        launch_shortcut=lambda: None,
+        clock=_Clock(),
+        sleep=_Clock().sleep,
+    )
+
+    assert result.outcome is ShortcutVisitOutcome.FAILED
+    assert result.verification == 'return_to_coins_page_failed'
+
+
 def test_the_home_shortcut_is_used_when_no_launcher_intent_is_injected(
     tmp_path: Path,
     catalogue: TaskCatalogue,

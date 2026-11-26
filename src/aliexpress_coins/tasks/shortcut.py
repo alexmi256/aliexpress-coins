@@ -135,6 +135,9 @@ APP_PAGE_MARKERS: tuple[str, ...] = (
 )
 """App-page markers that keep an app sheet from being mistaken for the launcher."""
 
+_RETURN_COIN_SURFACES = frozenset({Surface.ROWS_PRESENT, Surface.ROWS_ABSENT, Surface.BOOST_PAGE})
+"""App surfaces that are still on the coins page after a shortcut dispatch."""
+
 
 class ShortcutVisitOutcome(StrEnum):
     """What one shortcut-row attempt established."""
@@ -440,11 +443,15 @@ def run_shortcut_visit_task(
         verification = use.failure or (
             'foreground_lost_after_action' if final_surface is Surface.NON_APP else 'shortcut_sheet_no_credit'
         )
-        if use.used and final_surface not in (Surface.ROWS_PRESENT, Surface.ROWS_ABSENT):
-            # A dispatch that finished anywhere but the coin page lost the app
-            # foreground, even when a launcher with icons classifies as UNKNOWN
-            # and the focus probe is unreadable.
-            verification = 'foreground_lost_after_action'
+        if use.used and final_surface not in _RETURN_COIN_SURFACES:
+            # A dispatch that finished on a known non-coin app surface is not a
+            # foreground loss; an UNKNOWN launcher frame is handled as one by
+            # the helper, because it can never settle as a coin page.
+            verification = (
+                'foreground_lost_after_action'
+                if final_surface is Surface.NON_APP or final_surface is Surface.UNKNOWN
+                else 'return_to_coins_page_failed'
+            )
         detail = use.detail
         if use.failure is None:
             detail = (
@@ -696,13 +703,29 @@ def _dispatch_launcher_shortcut(
     )
     final_surface = classify_surface(final.snapshot)
     in_app = foreground() if foreground is not None else None
-    if final_surface is Surface.NON_APP or not final.settled or in_app is False:
+    if final_surface is Surface.NON_APP or in_app is False or (final_surface is Surface.UNKNOWN and not final.settled):
         return _ShortcutUse(
             created=created,
             used=used,
             failure='foreground_lost_after_action',
             detail=(
                 'the shortcut was launched but the run did not finish on the coins page: '
+                f'launch_surface={classify_surface(arrival.snapshot).value}, '
+                f'return_surface={final_surface.value}, settled={final.settled}, '
+                f'app_foreground={in_app!r}'
+            ),
+            labels=tuple(labels),
+            taps=tuple(taps),
+            balance_after=_trusted_balance(final.snapshot),
+            final_surface=final_surface,
+        )
+    if not final.settled or final_surface not in _RETURN_COIN_SURFACES:
+        return _ShortcutUse(
+            created=created,
+            used=used,
+            failure='return_to_coins_page_failed',
+            detail=(
+                'the shortcut was launched but the run did not return to the coins page: '
                 f'launch_surface={classify_surface(arrival.snapshot).value}, '
                 f'return_surface={final_surface.value}, settled={final.settled}, '
                 f'app_foreground={in_app!r}'
