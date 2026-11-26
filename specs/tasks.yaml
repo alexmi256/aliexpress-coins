@@ -156,8 +156,14 @@ allowed:
     repeatable: false
     max_per_run: 1
     notes: >-
-      Opens the Coins Credits explainer. The timer chip turns green, the row
-      disappears, and the visit paid +1 (docs/05 §5b).
+      The catalogue row is retained because an unseen still-claimable family
+      must keep the night open (#149); do not remove it to make a night look
+      complete. It was not offered in any of the repeated #159 samples on
+      2026-11-26 (docs/05 §4e), so the destination, badge/counter, return
+      route, timing and reward are unknown. The historical 2026-11-20 note
+      that an explainer page paid +1 retained no frame and is not a measured
+      contract. `browse_wait` remains the only allowed executor if the row
+      appears; `wait_seconds` is an unverified upper bound, not an observation.
 
   - key: recently_viewed
     label_patterns:

@@ -1,0 +1,546 @@
+{
+  "schema": 1,
+  "issue": 159,
+  "device": {
+    "model": "T3_US",
+    "android": 15,
+    "sdk": 35,
+    "timezone": "America/Toronto",
+    "geometry": {
+      "width": 1200,
+      "height": 2000,
+      "density": 240
+    }
+  },
+  "sampling": {
+    "method": "shortcut route reload, tap Earn more, scan the Coins boost sheet from the top to a stable bottom (AdbSnapshotter + RapidOCR; PNG raw frames under /tmp/opencode/issue159/samples[234])",
+    "batches": [
+      "/tmp/opencode/issue159/samples2",
+      "/tmp/opencode/issue159/samples3",
+      "/tmp/opencode/issue159/samples4"
+    ],
+    "samples": [
+      {
+        "batch": "samples2",
+        "sample": 1,
+        "reloaded": true,
+        "first_frame_at_utc": "2026-11-26T21:42:45.242511+00:00",
+        "last_frame_at_utc": "2026-11-26T21:42:54.915478+00:00",
+        "sheet_views": 5,
+        "rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize",
+          "Share coins with friends",
+          "Explore sponsored items",
+          "Browse surprise items",
+          "Browse recently viewed items",
+          "Add a coins shortcut",
+          "Add & start using our widget",
+          "Turn on notifications"
+        ],
+        "learn_to_save_seen": false,
+        "coin_frame_at_utc": "2026-11-26T21:42:39.796973+00:00",
+        "coin_rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize"
+        ]
+      },
+      {
+        "batch": "samples2",
+        "sample": 2,
+        "reloaded": true,
+        "first_frame_at_utc": "2026-11-26T21:43:46.710004+00:00",
+        "last_frame_at_utc": "2026-11-26T21:43:56.232513+00:00",
+        "sheet_views": 5,
+        "rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize",
+          "Share coins with friends",
+          "Explore sponsored items",
+          "Browse surprise items",
+          "Browse recently viewed items",
+          "Add a coins shortcut",
+          "Add & start using our widget",
+          "Turn on notifications"
+        ],
+        "learn_to_save_seen": false,
+        "coin_frame_at_utc": "2026-11-26T21:43:41.403479+00:00",
+        "coin_rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize"
+        ]
+      },
+      {
+        "batch": "samples2",
+        "sample": 3,
+        "reloaded": true,
+        "first_frame_at_utc": "2026-11-26T21:44:47.581605+00:00",
+        "last_frame_at_utc": "2026-11-26T21:44:56.967214+00:00",
+        "sheet_views": 5,
+        "rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize",
+          "Share coins with friends",
+          "Explore sponsored items",
+          "Browse surprise items",
+          "Browse recently viewed items",
+          "Add a coins shortcut",
+          "Add & start using our widget",
+          "Turn on notifications"
+        ],
+        "learn_to_save_seen": false,
+        "coin_frame_at_utc": "2026-11-26T21:44:42.465677+00:00",
+        "coin_rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize"
+        ]
+      },
+      {
+        "batch": "samples2",
+        "sample": 4,
+        "reloaded": true,
+        "first_frame_at_utc": "2026-11-26T21:45:48.358985+00:00",
+        "last_frame_at_utc": "2026-11-26T21:45:57.932635+00:00",
+        "sheet_views": 5,
+        "rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize",
+          "Share coins with friends",
+          "Explore sponsored items",
+          "Browse surprise items",
+          "Browse recently viewed items",
+          "Add a coins shortcut",
+          "Add & start using our widget",
+          "Turn on notifications"
+        ],
+        "learn_to_save_seen": false,
+        "coin_frame_at_utc": "2026-11-26T21:45:43.131990+00:00",
+        "coin_rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize"
+        ]
+      },
+      {
+        "batch": "samples2",
+        "sample": 5,
+        "reloaded": true,
+        "first_frame_at_utc": "2026-11-26T21:46:49.751308+00:00",
+        "last_frame_at_utc": "2026-11-26T21:46:57.001580+00:00",
+        "sheet_views": 4,
+        "rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize",
+          "Share coins with friends",
+          "Explore sponsored items",
+          "Browse surprise items",
+          "Browse recently viewed items",
+          "Add a coins shortcut",
+          "Add & start using our widget",
+          "Turn on notifications"
+        ],
+        "learn_to_save_seen": false,
+        "coin_frame_at_utc": "2026-11-26T21:46:44.279985+00:00",
+        "coin_rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize"
+        ]
+      },
+      {
+        "batch": "samples2",
+        "sample": 6,
+        "reloaded": true,
+        "first_frame_at_utc": "2026-11-26T21:47:48.675231+00:00",
+        "last_frame_at_utc": "2026-11-26T21:47:58.375016+00:00",
+        "sheet_views": 5,
+        "rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize",
+          "Share coins with friends",
+          "Explore sponsored items",
+          "Browse surprise items",
+          "Browse recently viewed items",
+          "Add a coins shortcut",
+          "Add & start using our widget",
+          "Turn on notifications"
+        ],
+        "learn_to_save_seen": false,
+        "coin_frame_at_utc": "2026-11-26T21:47:43.392973+00:00",
+        "coin_rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize"
+        ]
+      },
+      {
+        "batch": "samples2",
+        "sample": 7,
+        "reloaded": true,
+        "first_frame_at_utc": "2026-11-26T21:48:51.687577+00:00",
+        "last_frame_at_utc": "2026-11-26T21:48:59.346027+00:00",
+        "sheet_views": 4,
+        "rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize",
+          "Share coins with friends",
+          "Explore sponsored items",
+          "Browse surprise items",
+          "Browse recently viewed items",
+          "Add a coins shortcut",
+          "Add & start using our widget",
+          "Turn on notifications"
+        ],
+        "learn_to_save_seen": false,
+        "coin_frame_at_utc": "2026-11-26T21:48:45.631235+00:00",
+        "coin_rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize"
+        ]
+      },
+      {
+        "batch": "samples3",
+        "sample": 1,
+        "reloaded": true,
+        "first_frame_at_utc": "2026-11-26T22:07:11.813768+00:00",
+        "last_frame_at_utc": "2026-11-26T22:07:18.937351+00:00",
+        "sheet_views": 4,
+        "rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize",
+          "Share coins with friends",
+          "Explore sponsored items",
+          "Browse surprise items",
+          "Browse recently viewed items",
+          "Add a coins shortcut",
+          "Add & start using our widget",
+          "Turn on notifications"
+        ],
+        "learn_to_save_seen": false,
+        "coin_frame_at_utc": "2026-11-26T22:07:06.726038+00:00",
+        "coin_rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize"
+        ]
+      },
+      {
+        "batch": "samples3",
+        "sample": 2,
+        "reloaded": true,
+        "first_frame_at_utc": "2026-11-26T22:08:10.436122+00:00",
+        "last_frame_at_utc": "2026-11-26T22:08:19.992757+00:00",
+        "sheet_views": 5,
+        "rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize",
+          "Share coins with friends",
+          "Explore sponsored items",
+          "Browse surprise items",
+          "Browse recently viewed items",
+          "Add a coins shortcut",
+          "Add & start using our widget",
+          "Turn on notifications"
+        ],
+        "learn_to_save_seen": false,
+        "coin_frame_at_utc": "2026-11-26T22:08:05.276108+00:00",
+        "coin_rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize"
+        ]
+      },
+      {
+        "batch": "samples4",
+        "sample": 1,
+        "reloaded": true,
+        "first_frame_at_utc": "2026-11-26T22:26:23.873855+00:00",
+        "last_frame_at_utc": "2026-11-26T22:26:33.386338+00:00",
+        "sheet_views": 5,
+        "rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize",
+          "Share coins with friends",
+          "Explore sponsored items",
+          "Browse surprise items",
+          "Browse recently viewed items",
+          "Add a coins shortcut",
+          "Add & start using our widget",
+          "Turn on notifications"
+        ],
+        "learn_to_save_seen": false,
+        "coin_frame_at_utc": "2026-11-26T22:26:18.767698+00:00",
+        "coin_rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize"
+        ]
+      },
+      {
+        "batch": "samples4",
+        "sample": 2,
+        "reloaded": true,
+        "first_frame_at_utc": "2026-11-26T22:27:14.761916+00:00",
+        "last_frame_at_utc": "2026-11-26T22:27:24.261183+00:00",
+        "sheet_views": 5,
+        "rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize",
+          "Share coins with friends",
+          "Explore sponsored items",
+          "Browse surprise items",
+          "Browse recently viewed items",
+          "Add a coins shortcut",
+          "Add & start using our widget",
+          "Turn on notifications"
+        ],
+        "learn_to_save_seen": false,
+        "coin_frame_at_utc": "2026-11-26T22:27:09.554029+00:00",
+        "coin_rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize"
+        ]
+      },
+      {
+        "batch": "samples4",
+        "sample": 3,
+        "reloaded": true,
+        "first_frame_at_utc": "2026-11-26T22:28:05.831530+00:00",
+        "last_frame_at_utc": "2026-11-26T22:28:12.979372+00:00",
+        "sheet_views": 4,
+        "rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize",
+          "Share coins with friends",
+          "Explore sponsored items",
+          "Browse surprise items",
+          "Browse recently viewed items",
+          "Add a coins shortcut",
+          "Add & start using our widget",
+          "Turn on notifications"
+        ],
+        "learn_to_save_seen": false,
+        "coin_frame_at_utc": "2026-11-26T22:28:00.476238+00:00",
+        "coin_rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize"
+        ]
+      },
+      {
+        "batch": "samples4",
+        "sample": 4,
+        "reloaded": true,
+        "first_frame_at_utc": "2026-11-26T22:28:54.501217+00:00",
+        "last_frame_at_utc": "2026-11-26T22:29:04.034190+00:00",
+        "sheet_views": 5,
+        "rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize",
+          "Share coins with friends",
+          "Explore sponsored items",
+          "Browse surprise items",
+          "Browse recently viewed items",
+          "Add a coins shortcut",
+          "Add & start using our widget",
+          "Turn on notifications"
+        ],
+        "learn_to_save_seen": false,
+        "coin_frame_at_utc": "2026-11-26T22:28:49.278091+00:00",
+        "coin_rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize"
+        ]
+      },
+      {
+        "batch": "samples4",
+        "sample": 5,
+        "reloaded": true,
+        "first_frame_at_utc": "2026-11-26T22:29:45.872884+00:00",
+        "last_frame_at_utc": "2026-11-26T22:29:53.080383+00:00",
+        "sheet_views": 4,
+        "rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize",
+          "Share coins with friends",
+          "Explore sponsored items",
+          "Browse surprise items",
+          "Browse recently viewed items",
+          "Add a coins shortcut",
+          "Add & start using our widget",
+          "Turn on notifications"
+        ],
+        "learn_to_save_seen": false,
+        "coin_frame_at_utc": "2026-11-26T22:29:40.327745+00:00",
+        "coin_rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize"
+        ]
+      },
+      {
+        "batch": "samples4",
+        "sample": 6,
+        "reloaded": true,
+        "first_frame_at_utc": "2026-11-26T22:30:34.690657+00:00",
+        "last_frame_at_utc": "2026-11-26T22:30:44.184968+00:00",
+        "sheet_views": 5,
+        "rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize",
+          "Share coins with friends",
+          "Explore sponsored items",
+          "Browse surprise items",
+          "Browse recently viewed items",
+          "Add a coins shortcut",
+          "Add & start using our widget",
+          "Turn on notifications"
+        ],
+        "learn_to_save_seen": false,
+        "coin_frame_at_utc": "2026-11-26T22:30:29.536786+00:00",
+        "coin_rows": [
+          "Place an order on this page",
+          "Add 5 items to your cart",
+          "Water to win a US $0.10 prize"
+        ]
+      }
+    ],
+    "note": "Three batches were taken around the same settled 130-coin day: 7 samples, then 2, then 6. The wall-clock span includes the gaps between batches; the per-sample timestamps are exact."
+  },
+  "result": {
+    "seen": false,
+    "first_seen_at_utc": null,
+    "sample_count": 15,
+    "first_sample_at_utc": "2026-11-26T21:42:45.242511+00:00",
+    "last_sample_at_utc": "2026-11-26T22:30:44.184968+00:00",
+    "span_seconds": 2878
+  },
+  "frames": [
+    {
+      "fixture": "learn_to_save_issue_159_sheet_top.png",
+      "source": "/tmp/opencode/issue159/samples2/s07-sheet-00.png",
+      "source_sha256": "251e95a8fd9f95da7c4fe5916f8687c7cd116e1eec05a0ad5dd7afa1e1c43f39",
+      "sha256": "9cc524537a90a8141c80760d7d944c3d954df9a01e872da1ef65eee6532f90f8",
+      "captured_at_utc": "2026-11-26T21:48:51.687577Z",
+      "masked": [
+        "coin balance",
+        "coin-credit balance",
+        "coin page behind the sheet"
+      ],
+      "mask_rects": [
+        [
+          0,
+          0,
+          1200,
+          450
+        ]
+      ],
+      "shows": [
+        "Coins boost",
+        "Place an order on this page",
+        "Add 5 items to your cart",
+        "Water to win a US $0.10 prize",
+        "Share coins with friends",
+        "no Learn to save money with Coins Credits row"
+      ],
+      "supports": "the top of the sheet offers no learn_to_save row in this sample"
+    },
+    {
+      "fixture": "learn_to_save_issue_159_sheet_bottom.png",
+      "source": "/tmp/opencode/issue159/samples2/s07-sheet-02.png",
+      "source_sha256": "ac3a86496115a950dee009ee49ca0f65d3a35284f7926b080137466a04ba53d4",
+      "sha256": "75f6b8aa0d09f28c632aebd8532b03ea52af74339c3fe71de08d942611d0348a",
+      "captured_at_utc": "2026-11-26T21:48:56.788332Z",
+      "masked": [
+        "coin balance",
+        "coin-credit balance",
+        "coin page behind the sheet"
+      ],
+      "mask_rects": [
+        [
+          0,
+          0,
+          1200,
+          450
+        ]
+      ],
+      "shows": [
+        "Coins boost",
+        "Add a coins shortcut",
+        "Add & start using our widget",
+        "Turn on notifications",
+        "stable bottom",
+        "no Learn to save money with Coins Credits row"
+      ],
+      "supports": "the bottom of the same sheet offers no learn_to_save row and the list is stable"
+    }
+  ],
+  "live_run": {
+    "run_id": "20261126T223057Z",
+    "command": "AECOINS_DEVICE=192.168.8.65:5555 AECOINS_TIMEZONE=America/Toronto AECOINS_STATE_DIR=/tmp/opencode/issue159/state AECOINS_RUNS_DIR=/tmp/opencode/issue159/runs AECOINS_MAX_PASSES=4 .venv/bin/python -m aliexpress_coins run --once",
+    "status": "budget",
+    "passes": 2,
+    "balance_before": 130.0,
+    "balance_after": 130.0,
+    "balance_delta": 0.0,
+    "detail": "pass budget stopped after 2 consecutive no-progress pass(es); surface_incomplete: the roster read was incomplete because 2 task title(s) had no readable card structure",
+    "night": null,
+    "rotation": {
+      "samples": 3,
+      "agreeing_samples": 1,
+      "confirmed": false,
+      "unread_families": [
+        "learn_to_save"
+      ],
+      "already_claimed_families": [
+        "daily_checkin",
+        "boost_checkin",
+        "coins_quiz",
+        "sponsored_items",
+        "surprise_items",
+        "search_for_what_you_love",
+        "super_discounts",
+        "recently_viewed",
+        "coins_shortcut_visit"
+      ]
+    },
+    "state_note": "The isolated day state was seeded with the issue\u2019s already-claimed families so only learn_to_save remained claimable. The run did not seed or record learn_to_save."
+  },
+  "claims": {
+    "row_offer": "not observed in any of 15 samples over 2026-11-26T21:42:45Z..22:30:44Z",
+    "destination": "unknown",
+    "progress": "unknown",
+    "badge_or_counter": "unknown",
+    "return_route": "unknown",
+    "timing_or_dwell": "unknown",
+    "reward": "unknown",
+    "catalogue_policy": "retained as allowed browse_wait; unseen and still claimable keeps the night open (#149)",
+    "historical_paid_plus_one": "inferred only from an unbacked 2026-11-20 operator note; not used as a contract"
+  },
+  "limitations": [
+    "The family was not offered in the measured window; this is absence over 15 samples, not proof it will never be offered.",
+    "The live run ended status=budget after two consecutive no-progress passes; its surface_incomplete condition was raised because the already-claimed Browse recently viewed items row and the Add & start using our widget row (skipped no executor) had no readable card structure, and the sheet did not produce two agreeing reads. It still names learn_to_save as unseen and still claimable.",
+    "No destination, timer chip, badge or return route was observed, so no executor change was made."
+  ]
+}

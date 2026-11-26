@@ -51,6 +51,8 @@ arbitrary screenshots anywhere else in the tree.
 | `boost_rotation_issue_149_top.png` | `boost_rotation` / route reload (#149) | same sheet after a full shortcut reload, captured 15:23:02Z from `open-route-reload.png`: same four top rows | same mask; no account data |
 | `boost_rotation_issue_149_scrolled.png` | `boost_rotation` / one scroll (#149) | same sheet after one viewport scroll, captured 15:23:08Z from `open-scroll1.png`: `Water to win a US $0.10 prize` and `Share coins with friends` exposed | same mask; no account data |
 | `boost_rotation_issue_149_bottom.png` | `boost_rotation` / stable bottom (#149) | same sheet at a stable bottom, captured 15:26:41Z from `bottom-late.png`: `Browse recently viewed items`, `Add & start using our widget`, `Turn on notifications` | same mask; no account data |
+| `learn_to_save_issue_159_sheet_top.png` | `learn_to_save` / sample top (#159) | top of the sheet captured 21:48:51Z from `s07-sheet-00.png`: the four refused rows and no learn-to-save row | band `0..450` masked (coin balance, coin-credit balance, coin page behind the sheet); task rows retained; no account data |
+| `learn_to_save_issue_159_sheet_bottom.png` | `learn_to_save` / sample bottom (#159) | stable bottom of the same sheet captured 21:48:56Z from `s07-sheet-02.png`: `Add a coins shortcut`, `Add & start using our widget`, `Turn on notifications`, no learn-to-save row | same mask `0..450`; task rows retained; no account data |
 
 `search_results_issue_142.png` is the live results surface captured on 2026-11-25 while fixing the
 search task. The measured `OPPO` category tap did not navigate or submit (its grey placeholder was
@@ -102,6 +104,18 @@ sheet header is masked with a solid rectangle, which removes the header balance/
 coin page behind the sheet without cropping the system UI or task rows. The files are
 palette-quantized for the fixture budget; no account nickname, balance, order, cart or notification
 content remains.
+
+The two `learn_to_save_issue_159_*.png` frames are live full-frame captures from the #159 sampling
+window (2026-11-26 21:42:45Z–22:30:44Z), not a runner success. They show the top and stable bottom
+of one fully scanned `Coins boost` sheet with no `Learn to save money with Coins Credits` row.
+Exact source capture, timestamp, source/fixture SHA-256, masking rectangle and the claim each frame
+supports are recorded in
+[`learn_to_save_issue_159_observation.json`](learn_to_save_issue_159_observation.json). The band
+`y = 0..450` is masked to remove the coin balance, coin-credit balance and the coin page behind the
+sheet; no account nickname, order, cart, address or notification content remains. The same
+observation JSON records all 15 sample timestamps and distinct rows, the live run
+`20261126T223057Z`, and the ❓ contract claims. These frames prove absence in the measured window,
+not that the family no longer exists.
 
 `shortcut_visit_issue_130.json` is sanitized evidence for issue #130's below-the-fold
 `Visit the page via coins shortcut` row. It records the row's two-line title, the Android
