@@ -2142,13 +2142,15 @@ def test_recently_viewed_fails_if_the_app_leaves_after_the_chip_clears(
 
 
 @pytest.mark.slow
-def test_recently_viewed_uses_the_clock_frame_when_the_focus_probe_is_unreadable(
+@pytest.mark.parametrize('probe', [None, lambda: None], ids=['omitted', 'unreadable'])
+def test_recently_viewed_uses_the_clock_frame_without_a_usable_focus_probe(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
     tmp_path: Path,
     recently_viewed_entry: Snapshot,
     recently_viewed_destination: Snapshot,
     recently_viewed_cleared: Snapshot,
+    probe: Callable[[], bool | None] | None,
 ) -> None:
     clock_surface = _snapshot(
         _box('3:36', 20, 5, 100, 35),
@@ -2179,7 +2181,7 @@ def test_recently_viewed_uses_the_clock_frame_when_the_focus_probe_is_unreadable
         state,
         entry,
         navigate=world.navigate,
-        app_foreground=lambda: None,
+        app_foreground=probe,
         record_foreground_loss=lambda key, frame: recorded.append((key, frame)),
         arrival_timeout=2.0,
         load_timeout=1.0,

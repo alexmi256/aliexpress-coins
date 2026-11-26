@@ -1324,7 +1324,7 @@ def run_browse_task(
                 # the launcher. A cleared chip is not completion if the frame is
                 # no longer AliExpress. When the package probe is unreadable,
                 # fall back to the measured clock/date frame.
-                probe = app_foreground() if app_foreground is not None else True
+                probe = app_foreground() if app_foreground is not None else None
                 loss_frame = _capture(capture) if probe is not True else None
                 left_app = probe is False or (loss_frame is not None and is_non_app_surface(loss_frame))
                 if left_app and loss_frame is not None:
