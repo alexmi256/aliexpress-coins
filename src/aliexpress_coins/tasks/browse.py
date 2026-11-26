@@ -1284,6 +1284,18 @@ def run_browse_task(
                 break
 
         if stop is None and arrival is not None and arrival.arrived:
+            if find_timer_chip(arrival.snapshot) is None:
+                # A destination header can paint before its dwell chip. The
+                # arrival frame is not a chip-less page yet; poll the arrival
+                # bound for the chip before the chip wait decides it was absent.
+                deadline = clock() + arrival_timeout
+                while find_timer_chip(arrival.snapshot) is None:
+                    now = clock()
+                    if now >= deadline:
+                        break
+                    sleep(min(load_interval, max(0.0, deadline - now)))
+                    arrival = replace(arrival, snapshot=_capture(capture))
+
             chip_wait = wait_for_timer_chip(
                 capture,
                 timeout=max(0.0, spec.wait_seconds),
@@ -1307,7 +1319,27 @@ def run_browse_task(
                     detail='the destination page showed no timer chip; verification decides',
                 )
 
-            if stop is None:
+            if chip_wait.ready:
+                # The chip can clear while the app is being covered or sent to
+                # the launcher. A cleared chip is not completion if the frame is
+                # no longer AliExpress. When the package probe is unreadable,
+                # fall back to the measured clock/date frame.
+                probe = app_foreground() if app_foreground is not None else None
+                loss_frame = _capture(capture) if probe is not True else None
+                left_app = probe is False or (loss_frame is not None and is_non_app_surface(loss_frame))
+                if left_app and loss_frame is not None:
+                    if record_foreground_loss is not None:
+                        record_foreground_loss(spec.key, loss_frame)
+                    arrival = replace(
+                        arrival,
+                        snapshot=loss_frame,
+                        arrived=False,
+                        left_app=True,
+                        app_foreground=probe,
+                        evidence=_evidence(loss_frame, entry.title),
+                    )
+
+            if stop is None and not arrival.left_app:
                 sweep, stop = _sweep(
                     controller,
                     capture,
@@ -1322,7 +1354,7 @@ def run_browse_task(
                     dismissals.append(sweep)
                 current = sweep.frames[-1].snapshot if sweep is not None and sweep.frames else _capture(capture)
 
-            if stop is None:
+            if stop is None and not arrival.left_app:
                 control = find_collect_control(current)
                 if control is not None:
                     collect_tap = controller.tap_box(
@@ -1402,15 +1434,20 @@ def run_browse_task(
                 logger=log,
             )
 
-        if presses == 0 and arrival is not None and arrival.left_app:
-            # No task action was taken. A row missing after recovery may simply
-            # be roster rotation, so it must not become row_gone completion.
+        if arrival is not None and arrival.left_app:
+            # A row missing after recovery may simply be roster rotation, so it
+            # must not become row_gone completion. A launcher frame proves the
+            # app left; it never proves the task's action completed.
             return _result(
                 spec,
                 entry.title,
                 BrowseOutcome.FAILED,
-                verification='foreground_lost_pre_action',
-                detail='the app was not in the foreground before GO; no tap was issued and the coins page was recovered',
+                verification=('foreground_lost_pre_action' if presses == 0 else 'foreground_lost_after_action'),
+                detail=(
+                    'the app was not in the foreground before GO; no tap was issued and the coins page was recovered'
+                    if presses == 0
+                    else 'the app left the foreground after GO; the coins page was recovered without claiming completion'
+                ),
                 limit=limit,
                 done_before=done_before,
                 done_after=state.count(spec.key),
@@ -1502,6 +1539,20 @@ def run_browse_task(
                     stop=stop,
                     logger=log,
                 )
+
+        if spec.key == 'recently_viewed' and verdict.status == 'row_gone' and not chip_wait.ready:
+            # This family has no badge and rotates: a missing row without a
+            # cleared chip cannot distinguish completion from a roster refresh.
+            verdict = _Verdict(
+                status='chip_not_cleared',
+                decisive=False,
+                detail=(
+                    f'{entry.title!r} disappeared without a cleared dwell chip '
+                    f'({chip_wait.status.value}); rotation is not completion'
+                ),
+                badge=verdict.badge,
+                evidence=verdict.evidence,
+            )
 
         if verdict.decisive:
             state.record(spec.key)

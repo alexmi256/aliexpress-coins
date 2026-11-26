@@ -8,6 +8,8 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 EVIDENCE = ROOT / 'tests' / 'data' / 'flows' / 'recently_viewed_issue_116.json'
+OBSERVATION = ROOT / 'tests' / 'data' / 'flows' / 'recently_viewed_issue_116_observation.json'
+FLOWS = ROOT / 'tests' / 'data' / 'flows'
 
 
 def test_issue_116_preserves_what_the_run_proves_and_what_it_does_not() -> None:
@@ -44,3 +46,26 @@ def test_the_requested_point_matches_the_fresh_inline_go_not_the_stale_roster_bo
     assert payload['conclusions']['roster_boxes_were_stale_after_reflow'] is True
     assert [entry['target'] for entry in payload['roster_targets']] == [[1007, 1829.5], [1007, 1497.5]]
     assert all(entry['target'] != center for entry in payload['roster_targets'])
+
+
+def test_the_2026_11_25_observation_has_real_committed_frames_and_its_limits() -> None:
+    payload: Any = json.loads(OBSERVATION.read_text(encoding='utf-8'))
+
+    assert payload['observation_id'] == '20261125T221003Z'
+    assert payload['evidence_kind'].startswith('supervised operator capture')
+    assert payload['tap']['action_center'] == [1018.5, 1470]
+    assert payload['tap']['point'] == [1018, 1470]
+    for frame in payload['frames']:
+        assert (FLOWS / frame['file']).is_file()
+        assert frame['source_capture'].endswith('.png')
+        assert frame['masked']
+        assert frame['mask_rects']
+        for left, top, right, bottom in frame['mask_rects']:
+            assert 0 <= left < right <= 1200
+            assert 0 <= top < bottom <= 2000
+    assert payload['timeline']['chip_observed_sequence_seconds'] == [14, 13, 10, 4, 3, 2, 1]
+    assert payload['timeline']['chip_cleared_after_tap_seconds'] == 15.6
+    assert payload['timeline']['row_gone_from'] == ['inline coin page', 'populated Coins boost list']
+    assert payload['claims']['badge_or_round_counter'] == 'none observed'
+    assert payload['claims']['old_20261124_launcher_cause'].startswith('inferred stale roster box')
+    assert payload['claims']['old_20261124_tap_landing'].startswith('unknown')

@@ -31,8 +31,9 @@
 # an allow pattern: it is not a boost row, and matching the bare word would let
 # an unknown row whose subtitle contains "collect" pass row dispatch. #23 owns
 # that control. Learn to save money is the other allowed row from the measured
-# roster. Recently viewed was listed in the brief but never measured; #116 moves
-# it to an explicit unrecognised refusal rather than inferring a browse contract
+# roster. Browse recently viewed items was measured on 2026-11-25 (#116): its GO
+# opens the Recently viewed product list with the same right-edge dwell chip as
+# the other browse-and-wait rows, so it is a real browse_wait family, not a guess
 # from its title. Search for what you love (#108/#142) has no timer chip and
 # therefore no browse-wait contract; it is allowed only through its own
 # search-submission executor and badge verification.
@@ -157,6 +158,23 @@ allowed:
     notes: >-
       Opens the Coins Credits explainer. The timer chip turns green, the row
       disappears, and the visit paid +1 (docs/05 §5b).
+
+  - key: recently_viewed
+    label_patterns:
+      - Browse recently viewed items
+    category: browse_wait
+    wait_seconds: 20
+    repeatable: false
+    max_per_run: 1
+    notes: >-
+      Measured 2026-11-25 (#116): GO opens the `Recently viewed` product list
+      (`Stack Coins, Save More!`, History/Cart tabs) with the same right-edge
+      dwell chip as the other browse-and-wait pages. No badge or `N/M` counter.
+      The chip counted 14s -> 1s then disappeared about 15.6s after the tap; the
+      balance moved 107 -> 108 and the row was gone from both the inline coin
+      page and the populated boost list. The 20s poll bound covers that measured
+      clear without becoming a fixed sleep. Completion is proved by the row
+      disappearing after a cleared chip, never by the tap or elapsed time.
 
   - key: coins_shortcut_visit
     label_patterns:
@@ -306,13 +324,3 @@ denied:
       - share
       - invite
     deny_reason: "social: sharing coins or inviting friends is refused"
-
-  - key: unrecognised_recently_viewed
-    label_patterns:
-      - Browse recently viewed items
-      - Recently viewed
-      - Coins deal on viewed, in-cart items
-    deny_reason: >-
-      unrecognised: the destination, timer, badge and completion contract for
-      Browse recently viewed items were never captured; issue #116 refuses the
-      family until a supervised run establishes them

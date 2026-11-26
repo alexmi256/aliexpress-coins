@@ -129,6 +129,22 @@ def test_the_gate_mints_a_sealed_token_and_logs_the_allow(
     assert 'Take the coins quiz' in caplog.text
 
 
+def test_the_recently_viewed_header_and_prefix_are_not_authorized(
+    catalogue: TaskCatalogue,
+) -> None:
+    gate = DispatchGate(catalogue)
+    cases = (
+        ('Recently viewed', None),
+        ('Browse recently viewed', None),
+        ('Deals for you', 'Recently viewed items'),
+    )
+
+    for title, subtitle in cases:
+        with pytest.raises(PolicyRefused) as raised:
+            gate.authorize(_entry(catalogue, title, subtitle=subtitle))
+        assert raised.value.refusal.code == 'unrecognised'
+
+
 def test_a_token_cannot_be_constructed_without_the_gate() -> None:
     with pytest.raises(ValueError, match='minted by the policy gate'):
         DispatchAuthorization(

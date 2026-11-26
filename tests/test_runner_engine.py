@@ -6232,6 +6232,29 @@ def test_an_acted_failure_is_marked_before_a_signed_out_guard_stops_the_run(
     assert context.state.is_acted_unverified('coins_quiz') is True
 
 
+def test_a_chip_not_cleared_failure_does_not_become_a_terminal_acted_marker(
+    tmp_path: Path,
+    full_roster: Roster,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    context = _context(tmp_path, capture=_Capture(_coin_frame()), catalogue=catalogue, corpus=corpus)
+    entry = _entry(full_roster, 'coins_quiz')
+    result = EngineResult(
+        'failed',
+        'chip_not_cleared',
+        'the row disappeared without a cleared dwell chip; rotation is not completion',
+        False,
+        {'key': entry.key},
+        failure=failure(FailureCode.TASK_UNVERIFIED, detail='chip_not_cleared'),
+        acted=True,
+    )
+
+    engine._remember_acted_result(context, entry, result)
+
+    assert context.state.is_acted_unverified('coins_quiz') is False
+
+
 def test_acted_marker_write_failures_are_logged_without_failing_the_task(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

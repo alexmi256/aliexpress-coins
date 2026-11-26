@@ -318,8 +318,10 @@ Read it like this:
   legible on an `unknown` surface, the run fails as `surface_unverified`; `steps` is then evidence of
   what was read, not a forecast that the day is workable.
 - **refusals** are the deny-list decisions. `unrecognised` is default-deny: no catalogue rule matched.
-  `unrecognised_recently_viewed` is an explicit refusal for the unmeasured family (#116).
-  `spending_order` is another explicit refusal. A refusal is a safety feature, not a failure.
+  `Browse recently viewed items` is no longer refused; it is the measured `recently_viewed`
+  browse-and-wait family (#116). `spending_order`, `spending_cart`, `currency_water` and `social`
+  remain explicit refusals alongside the games and review rules. A refusal is a safety feature, not
+  a failure.
 - **roster warnings** name visible `GO` buttons that did not become task rows, or known task titles
   that could not be split from another row's copy. A recovered split is still reported; an
   incomplete read keeps the night open instead of letting a swallowed row prove the day is done.
@@ -441,16 +443,16 @@ A browse task checks the foreground package before its `GO` and before accepting
 destination. A measured clock/date `non_app` frame, or a package probe naming another app, stops the
 arrival wait: the executor does not wait for a timer or tap `Collect`, saves
 `browse-<key>-foreground-lost.*` (a repeated loss for the same key gets `-2`, `-3`, … so an earlier
-frame is never overwritten), warm-starts AliExpress if needed, fires the shortcut route, and only
-then reopens the populated boost list for positive verification. `arrival.left_app` and the saved
-frame's labels are kept in `run.json`. If fresh proof is absent the task remains `task_unverified`;
-it is never called complete from the launcher frame. If foreground loss is detected before `GO`, the
-executor recovers but records `foreground_lost_pre_action` without action-based verification, because
-a missing row after roster rotation is not proof that this task completed. If the package probe is
-unreadable on an unknown destination, that page is still accepted as the destination, but the
-executor warm-starts before the return route so an icon launcher cannot cold-link into the empty-boost
-state. If initial route discovery also returns only `non_app`, the run fails as `navigation_failed`
-instead of declaring an empty night.
+frame is never overwritten), warm-starts AliExpress if needed and fires the shortcut route. It does
+**not** then interpret a missing task row as completion: `arrival.left_app` and the saved frame's
+labels are kept in `run.json`, and the attempt fails as `foreground_lost_after_action` (or
+`foreground_lost_pre_action` when no tap was issued). The failure is retryable, but the next dispatch
+first applies the acted-row recheck: if the populated boost list no longer contains the row, it is
+reported `already_done` without another tap. A launcher frame is never completion proof. If the
+package probe is unreadable on an unknown destination, that page is still accepted as the
+destination, but the executor warm-starts before the return route so an icon launcher cannot
+cold-link into the empty-boost state. If initial route discovery also returns only `non_app`, the run
+fails as `navigation_failed` instead of declaring an empty night.
 
 ---
 
@@ -504,8 +506,11 @@ may still be hidden by the splitter. This is a cross-run retry, not the in-run r
 `acted_unverified`; its next dispatch first re-reads the fresh task surface. A row that still shows
 its unclaimed `GO` may proceed, a row that is gone/checked on a complete surface is reported
 `already_done` with no tap, and an unreadable or partial surface stays retryable rather than
-guessing. The marker remains until the row is proven done — a recorded completion or a terminal
-executor outcome — and every dispatch while it remains re-checks instead of tapping from a stale
+guessing. The `chip_not_cleared` failure is deliberately not acted-marked: a missing row without a
+cleared dwell chip is the rotation evidence the gate rejected, so carrying the marker into the next
+run would turn it back into a terminal `already_done`. The marker remains until the row is proven
+done — a recorded completion or a terminal executor outcome — and every dispatch while it remains
+re-checks instead of tapping from a stale
 roster. The decision is recorded as `last_night` in the daily state and printed by the report as
 one `Night:` line.
 

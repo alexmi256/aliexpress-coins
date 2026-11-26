@@ -42,6 +42,10 @@ arbitrary screenshots anywhere else in the tree.
 | `surprise_items_issue_115_loading_grid.png` | `surprise_items` / opening load (#115) | `Browse surprise items` header and `0/3` pill over empty skeleton cards; `find_surprise_tiles` returns none | status-bar clock retained; no account data |
 | `surprise_items_issue_115_loaded_grid.png` | `surprise_items` / settled grid (#115) | the same `0/3` grid a moment later, with product cards, titles and prices painted | status-bar clock retained; product titles and prices only; no account data |
 | `search_results_issue_142.png` | `search_for_what_you_love` / results (#142) | the product-results surface after submitting `wireless phone`: query in the field, product cards, `200 sold 4.9`, `C$32.99` and `Disc:` prices | status-bar clock retained; no account nickname, balance, order, cart or address; the query is the benign test query from `SEARCH_QUERIES` |
+| `recently_viewed_issue_116_entry.png` | `recently_viewed` / entry (#116) | the settled inline coin page carrying `Browse recently viewed items`, `GO`, `+1` and the coin-page markers | coin balance and coin-credit amounts masked; task rows retained |
+| `recently_viewed_issue_116_destination.png` | `recently_viewed` / destination (#116) | `Recently viewed`, `Stack Coins, Save More!`, `History` / `Cart` tabs, product cards and the right-edge `4s` dwell chip | top balance and operator search text masked; product titles/prices retained; no account data |
+| `recently_viewed_issue_116_destination_cleared.png` | `recently_viewed` / cleared (#116) | the same destination after the chip digits disappeared | top balance and operator search text masked; product titles/prices retained; no account data |
+| `recently_viewed_issue_116_row_gone.png` | `recently_viewed` / verification (#116) | populated `Coins boost` list after the visit, without `Browse recently viewed items` | header/hero balance and coin-credit amount masked; other task rows retained |
 
 `search_results_issue_142.png` is the live results surface captured on 2026-11-25 while fixing the
 search task. The measured `OPPO` category tap did not navigate or submit (its grey placeholder was
@@ -66,6 +70,16 @@ boost-roster boxes had become stale after
 reflow; the missing frame means neither launcher foreground ownership nor the cause of the transition
 can be proven retrospectively. `states/launcher.png` is a separate recon capture used only to replay
 recovery from a launcher that draws app icons.
+
+The four `recently_viewed_issue_116_*.png` files are the real frames from the supervised observation
+`20261125T221003Z`, not a runner run and not a synthetic screen. They were palette-quantized from the
+full 1200×2000 captures to stay under the 550 KB budget; the masking rectangles are recorded in
+`recently_viewed_issue_116_observation.json`, together with the source capture names, timestamps and
+which claims are observed versus inferred. The destination and cleared frames retain the measured
+`Recently viewed` header and the chip; the entry frame retains the row and its current `GO`; the
+row-gone frame is the populated boost list after the visit. The old
+`recently_viewed_issue_116.json` remains the evidence from run `20261124T083006Z` and deliberately
+records that its launcher transition cannot be proven.
 
 `shortcut_visit_issue_130.json` is sanitized evidence for issue #130's below-the-fold
 `Visit the page via coins shortcut` row. It records the row's two-line title, the Android

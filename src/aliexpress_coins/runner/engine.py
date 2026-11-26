@@ -1987,7 +1987,11 @@ def _remember_acted_result(context: RunContext, entry: RosterEntry, result: Engi
     terminal = (
         result.completed or result.outcome != 'failed' or (result.failure is not None and not result.failure.retryable)
     )
-    if terminal:
+    # A missing row without a cleared dwell chip is rotation, not proof the tap
+    # completed. Do not mark it acted-unproven: that marker would turn the next
+    # missing row into a terminal `already_done`, reintroducing the false claim.
+    unproven_rotation = result.verification == 'chip_not_cleared'
+    if terminal or unproven_rotation:
         _clear_acted_marker(context, key)
     elif result.acted:
         _mark_acted_unverified(context, key)

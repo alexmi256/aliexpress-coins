@@ -61,6 +61,7 @@ ALLOWED_FAMILIES: tuple[tuple[str, TaskCategory, float], ...] = (
     ('View Super discounts', TaskCategory.BROWSE_WAIT, 15.0),
     ('Check in to win Shopping credits', TaskCategory.BROWSE_WAIT, 15.0),
     ('Learn to save money with Coins Credits', TaskCategory.BROWSE_WAIT, 15.0),
+    ('Browse recently viewed items', TaskCategory.BROWSE_WAIT, 20.0),
     ('Visit the page via coins shortcut', TaskCategory.SHORTCUT_VISIT, 0.0),
     ('Add a coins shortcut', TaskCategory.SHORTCUT, 0.0),
     ('Add & start using our widget', TaskCategory.WIDGET, 0.0),
@@ -130,6 +131,7 @@ def test_the_committed_catalogue_loads_and_covers_both_policies() -> None:
         'super_discounts',
         'shopping_credits_checkin',
         'learn_to_save',
+        'recently_viewed',
         'coins_shortcut_visit',
         'coins_shortcut',
         'coins_widget',
@@ -149,7 +151,6 @@ def test_the_committed_catalogue_loads_and_covers_both_policies() -> None:
         'spending_cart',
         'review',
         'social',
-        'unrecognised_recently_viewed',
     )
 
 
@@ -419,7 +420,7 @@ def test_a_deny_rule_can_match_the_subtitle_the_title_does_not_name() -> None:
     assert decision.matched_field == 'subtitle'
 
 
-def test_recently_viewed_is_explicitly_unrecognised_until_its_contract_is_measured() -> None:
+def test_recently_viewed_is_the_measured_browse_wait_family() -> None:
     catalogue = load_task_catalogue(CATALOGUE_PATH)
 
     decision = catalogue.decide(
@@ -427,16 +428,23 @@ def test_recently_viewed_is_explicitly_unrecognised_until_its_contract_is_measur
         subtitle='Coins deal on viewed, in-cart items',
     )
 
-    assert decision.denied
-    assert decision.spec is None
-    assert decision.rule == 'unrecognised_recently_viewed'
-    assert decision.reason is not None
-    assert decision.reason.startswith('unrecognised:')
-    assert 'never captured' in decision.reason
+    assert decision.allowed
+    assert decision.deny_reason is None
+    assert decision.spec is not None
+    assert decision.rule == 'recently_viewed'
+    assert decision.spec.category is TaskCategory.BROWSE_WAIT
+    assert decision.spec.wait_seconds == 20.0
+    assert decision.spec.max_per_run == 1
     assert decision.matched_field == 'title'
-    assert catalogue.decide('Recently viewed').rule == 'unrecognised_recently_viewed'
-    assert catalogue.decide('A title OCR mangled', subtitle='Coins deal on viewed, in-cart items').rule == (
-        'unrecognised_recently_viewed'
+    # Only the measured task title is allowed. The destination header and a
+    # wrapped prefix are not task rows of their own.
+    assert catalogue.decide('Recently viewed').denied
+    assert catalogue.decide('Browse recently viewed').denied
+    assert catalogue.decide('Deals for you', subtitle='Recently viewed items').denied
+    # The old title-only refusal also matched this row's merchandise copy; the
+    # allowed family does not need the subtitle to dispatch the measured title.
+    assert catalogue.decide('A title OCR mangled', subtitle='Coins deal on viewed, in-cart items').rule != (
+        'recently_viewed'
     )
 
 
