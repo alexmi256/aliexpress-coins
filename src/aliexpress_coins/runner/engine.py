@@ -281,6 +281,9 @@ class RunContext:
     state: DailyStateStore
     app_foreground: Callable[[], bool | None] | None = None
     warm_start: Callable[[], None] | None = None
+    shortcut_present: Callable[[], bool | None] | None = None
+    launch_shortcut: Callable[[], None] | None = None
+    remove_shortcut: Callable[[], None] | None = None
     controller: Controller | None = None
     controller_factory: Callable[[Snapshot], Controller] | None = None
     observer: RosterObserver | None = None
@@ -431,6 +434,18 @@ def make_live_context(
     foreground = _guarded_call(device.is_app_foreground, stop)
     warm_start = _guarded_call(device.warm_start, stop)
     fire_route = _guarded_call(device.navigate, stop)
+    read_shortcut = _guarded_call(device.coins_shortcut_pinned, stop)
+    launch_shortcut_call = _guarded_call(device.launch_coins_shortcut, stop)
+    remove_shortcut_call = _guarded_call(device.clear_app_shortcuts, stop)
+
+    def shortcut_present() -> bool | None:
+        return cast(bool | None, read_shortcut())
+
+    def launch_shortcut() -> None:
+        launch_shortcut_call()
+
+    def remove_shortcut() -> None:
+        remove_shortcut_call()
 
     def navigate(route: SurfaceRoute) -> None:
         if route is SurfaceRoute.SHORTCUT and foreground() is False:
@@ -469,6 +484,9 @@ def make_live_context(
         navigate=navigate,
         app_foreground=foreground,
         warm_start=warm_start,
+        shortcut_present=shortcut_present,
+        launch_shortcut=launch_shortcut,
+        remove_shortcut=remove_shortcut,
         state=state,
         controller_factory=controller_for,
         templates=templates,
@@ -1907,8 +1925,24 @@ def _dispatch_entry(context: RunContext, controller: Controller, entry: RosterEn
             run_surprise_task(controller, context.capture, context.corpus, context.state, entry, **common),
         )
     if category is TaskCategory.SHORTCUT_VISIT:
+        shortcut_options = dict(common)
+        if context.app_foreground is not None:
+            shortcut_options['app_foreground'] = context.app_foreground
+        if context.shortcut_present is not None:
+            shortcut_options['shortcut_present'] = context.shortcut_present
+        if context.launch_shortcut is not None:
+            shortcut_options['launch_shortcut'] = context.launch_shortcut
+        if context.remove_shortcut is not None:
+            shortcut_options['remove_shortcut'] = context.remove_shortcut
         return _from_executor(
-            run_shortcut_visit_task(controller, context.capture, context.corpus, context.state, entry, **common),
+            run_shortcut_visit_task(
+                controller,
+                context.capture,
+                context.corpus,
+                context.state,
+                entry,
+                **shortcut_options,
+            ),
         )
     if category is TaskCategory.NOTIFICATION:
         return _from_executor(

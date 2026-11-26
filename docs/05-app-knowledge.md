@@ -42,7 +42,7 @@ between loads (e.g., `Browse surprise items` rotated to `Search for what you lov
 | Browse surprise items | Tap 3 items on this page to earn coins | +1 | `0/2` | allowed: `item_tap` (`surprise.py`) |
 | Turn on notifications | Stay informed when rewards drop | +1 | — | allowed: `notification` (`notifications.py`) |
 | Add a coins shortcut | One tap away from your daily rewards | +1 | — | catalogued `shortcut`; descoped (#27, skipped `no executor`) |
-| **Visit the page via coins shortcut** | Unlock a daily surprise | +1 | — | allowed: `shortcut_visit` (`shortcut.py`); `GO` opens the OS shortcut sheet, so a launcher visit remains operator work (#130) |
+| **Visit the page via coins shortcut** | Unlock a daily surprise | +1 | — | allowed: `shortcut_visit` (`shortcut.py`); accepts the shortcut sheet, uses the launcher item, verifies +1 and removes the pin (#130, #158) |
 | Add & start using our widget | Add our widget to your homescreen to use | +1 | — | catalogued `widget`; descoped (#27, skipped `no executor`) |
 | Search for what you love | Earn by using keywords to explore items | +1 | `0/2` | allowed: `browse` (`search.py`) |
 | View Super discounts | Check out this page for 15 seconds | +1 | — | allowed: `super_discounts` (`browse_wait`, `browse.py`) |
@@ -190,14 +190,23 @@ unseen and unclaimed family keeps the day open (#149).
   app still left the balance at `87` and the row present ✅. Launching the created `Coins` shortcut
   from the home screen, then reloading the coin page, showed balance `87 → 88` and the row gone ✅.
   The exact instant of the credit (home launch versus the later reload) was not bracketed, so
-  whether a launcher launch is strictly required rather than a delayed URI is ❓. The collector does
-  **not** create or tap launcher items (#27); `shortcut.py` taps this row's `GO`, recognises the
-  sheet, closes it and records `shortcut_sheet_no_credit` unless a readable +1 appears ✅. Sanitized
-  evidence is in `tests/data/flows/shortcut_visit_issue_130.json`.
+  whether a launcher launch is strictly required rather than a delayed URI is ❓. The executor now
+  owns the measured path (#158): it accepts the sheet's explicit `Create shortcut` control, confirms
+  the launcher's `Add to home screen`, reuses an item when the `Shortcut has existed` toast says one
+  is already pinned, fires that item's own persisted intent
+  (`SHORTCUT_LAUNCH_DEEP_LINK`, with `from=shortcut` / `shortcutId=coinsPromotion`), reloads the
+  coin page once, and records completion only on a readable `+1` while the app is foreground. A
+  launcher frame after the dispatch is a foreground loss, never completion. Cleanup runs
+  `adb shell cmd shortcut clear-shortcuts com.alibaba.aliexpresshd`. Android exposes no per-pin adb
+  delete, so this is package-wide: it also drops the app's ordinary long-press shortcuts (Search,
+  Cart, Orders, Account), which the app republishes on its next launch. The operator-facing detail
+  says so; it is a deliberate platform limitation, not a targeted delete. Sanitized #130 evidence is
+  in `tests/data/flows/shortcut_visit_issue_130.json`.
 - **Launcher items ✅ (descoped #27):** adding earns the task row and a widget visit rendered
-  `Collect`/inline rows in session 2; automation is descoped because the shortcut URI needs no
-  launcher item. The `Visit the page via coins shortcut` row above is now a separate numbered
-  family; its observed credit followed a launcher launch, not the URI alone (#130).
+  `Collect`/inline rows in session 2. The `Visit the page via coins shortcut` row is a separate
+  numbered family: its observed credit followed a launcher launch, so #158 now creates, uses and
+  removes that one item instead of leaving the row for the operator (#130). The generic shortcut and
+  widget catalogue families remain without executors.
 
 ### 5b. Flows walked end to end
 
@@ -328,4 +337,4 @@ verification → return to coins page → `balance-after` → report. See
 | Does surprise-items distinctness reset between rounds? ❓ | resolves the fallback branch in `surprise.py` | #63: start at `0/2`, open same product in both rounds |
 | Quiz result & notification denial frames ❓ | completes `tests/data/flows/` fixtures | capture before rows are claimed |
 | Whether the quiz question set is finite ❓ | question-bank hit rate | observe `data/quiz_bank.json` growth |
-| Is a launcher launch strictly required to credit `Visit the page via coins shortcut`? ❓ | the observed +1 followed a home-screen shortcut launch, while a URI fired after creating the shortcut did not credit immediately | bracket the balance and row after each step on a fresh day, separating the home launch from the next coin-page reload (#130) |
+| Which step credits `Visit the page via coins shortcut`? ❓ | the observed +1 followed a home-screen shortcut launch, while a plain URI fired after creating the shortcut did not credit immediately; #158 now fires the shortcut's own persisted launcher intent and then reloads | bracket the balance and row after the launcher intent and again after the reload on a fresh day (#130, #158) |

@@ -111,6 +111,13 @@ followed launching the created `Coins` shortcut from the home screen. It deliber
 whether the launch or the later coin-page reload delivered the credit, and carries no screenshot or
 account data.
 
+`shortcut_visit_issue_158.json` is the supervised manual validation that followed #130. It records
+the exact `Create shortcut` and `Add to home screen` controls, the `Shortcut has existed` toast, the
+home-screen `Coins` item, the pinned shortcut's own launcher intent (with `from=shortcut` and
+`shortcutId=coinsPromotion`), the later `129 -> 130` credit with the row gone, and the
+`cmd shortcut clear-shortcuts` cleanup. It is explicitly not a collector run: the row was claimed by
+the manual validation before the executor could record it, which is the limitation it states.
+
 `surprise_items_issue_139.json` is sanitized OCR evidence from run `20261125T151001Z`'s failure
 record `frame-004.jpg`. It keeps the grid header, counter, product-card titles and prices, and the
 `Add To Cart` line painted inside the lower-left Hyundai card's photograph. The image itself is not

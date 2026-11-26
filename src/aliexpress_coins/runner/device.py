@@ -49,12 +49,17 @@ from aliexpress_coins.runner.errors import (
     DeviceSleeping,
     DeviceUnavailable,
 )
-from aliexpress_coins.tasks.surface import SHORTCUT_DEEP_LINK, SurfaceRoute
+from aliexpress_coins.tasks.surface import (
+    SHORTCUT_DEEP_LINK,
+    SHORTCUT_LAUNCH_DEEP_LINK,
+    SurfaceRoute,
+)
 from aliexpress_coins.transport import AdbResult, AdbRunner, SubprocessAdbRunner
 
 __all__ = [
     'APP_ACTIVITY',
     'APP_PACKAGE',
+    'SHORTCUT_PIN_ID',
     'AdbDevice',
     'CommandRunner',
     'DeviceCommandResult',
@@ -76,6 +81,9 @@ APP_PACKAGE = 'com.alibaba.aliexpresshd'
 
 APP_ACTIVITY = f'{APP_PACKAGE}/com.aliexpress.app.FirstActivity'
 """The normal launcher activity; starting it warms the process the route needs."""
+
+SHORTCUT_PIN_ID = 'coinsPromotion'
+"""The app's pinned ``Coins`` shortcut id (docs/05 §5)."""
 
 _PREVIEW_BYTES = 200
 RESTORE_TIMEOUT_SECONDS = 1.5
@@ -273,6 +281,57 @@ class AdbDevice:
             '-d',
             SHORTCUT_DEEP_LINK,
             why='take the measured shortcut route to the coin page',
+        )
+
+    def coins_shortcut_pinned(self) -> bool | None:
+        """Whether AliExpress currently has the ``Coins`` shortcut pinned.
+
+        ``dumpsys shortcut`` names every pinned shortcut per package. A readable
+        dump with no pinned section for the package proves there is nothing to
+        reuse (``False``); an unreadable dump is ``None``, never an absence.
+        """
+        result = self._run(('adb', '-s', self.serial, 'shell', 'dumpsys', 'shortcut'))
+        if result.returncode != 0:
+            return None
+        return _coins_shortcut_pinned(result.stdout_text)
+
+    def launch_coins_shortcut(self) -> str:
+        """Launch the created ``Coins`` launcher shortcut by its own intent.
+
+        Tapping a home-screen coordinate would be brittle and depend on the
+        launcher grid. The shortcut's persisted intent is a data URI with the
+        measured ``from=shortcut`` / ``shortcutId`` parameters; firing that is
+        exactly what a tap on the launcher item does (#158).
+        """
+        return self._shell(
+            'am',
+            'start',
+            '-a',
+            'android.intent.action.VIEW',
+            '-d',
+            SHORTCUT_LAUNCH_DEEP_LINK,
+            '-f',
+            '0x04000000',
+            why='launch the created Coins launcher shortcut',
+        )
+
+    def clear_app_shortcuts(self) -> str:
+        """Clear AliExpress shortcuts, including the pinned item a run created.
+
+        Android exposes no per-pin delete through adb, so ``cmd shortcut
+        clear-shortcuts <package>`` is the platform's only measured handle. It
+        is deliberately package-wide: it also drops the app's ordinary
+        long-press shortcuts (Search, Cart, Orders, Account), which the app
+        republishes on its next launch. This is broader than the one pinned item
+        the shortcut row creates; the operator-facing detail says so, and docs
+        record the tradeoff rather than presenting it as a targeted delete.
+        """
+        return self._shell(
+            'cmd',
+            'shortcut',
+            'clear-shortcuts',
+            APP_PACKAGE,
+            why='clear AliExpress shortcuts, including the Coins pin the run created',
         )
 
     def is_app_foreground(self) -> bool | None:
@@ -496,6 +555,26 @@ def _foreground_package(output: str) -> str | None:
             if match is not None:
                 return match.group(1)
     return None
+
+
+_PINNED_SHORTCUTS = re.compile(
+    rf'Package:\s*{re.escape(APP_PACKAGE)}\s+User:\s*\d+\s*\n\s*Pinned:\s*(?P<ids>[^\n]*)',
+)
+
+
+def _coins_shortcut_pinned(output: str) -> bool | None:
+    """Read the pinned shortcut list for AliExpress from ``dumpsys shortcut``.
+
+    An empty dump is not a readable absence. A readable dump without the
+    package section means the package has no pinned shortcuts at all.
+    """
+    if not output.strip():
+        return None
+    match = _PINNED_SHORTCUTS.search(output)
+    if match is None:
+        return False
+    ids = {part.strip() for part in match.group('ids').split(',') if part.strip()}
+    return SHORTCUT_PIN_ID in ids
 
 
 def _package_installed(output: str) -> bool:

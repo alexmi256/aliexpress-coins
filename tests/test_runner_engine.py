@@ -844,9 +844,12 @@ def test_dispatch_entry_routes_the_shortcut_visit_row(
     entry = DispatchGate(catalogue).authorize(enumerate_roster(frame, catalogue).entries[0])
     context = _context(tmp_path, capture=_Capture(frame), catalogue=catalogue, corpus=corpus)
     called: list[str] = []
+    seen: dict[str, object] = {}
 
-    def executor(*_args: Any, **_kwargs: Any) -> _FakeResult:
+    def executor(*_args: Any, **kwargs: Any) -> _FakeResult:
         called.append('shortcut')
+        seen.clear()
+        seen.update(kwargs)
         return _FakeResult(completed=True)
 
     monkeypatch.setattr(engine, 'run_shortcut_visit_task', executor)
@@ -855,6 +858,23 @@ def test_dispatch_entry_routes_the_shortcut_visit_row(
 
     assert result.completed is True
     assert called == ['shortcut']
+    assert 'shortcut_present' not in seen
+    assert 'launch_shortcut' not in seen
+    assert 'remove_shortcut' not in seen
+    assert 'app_foreground' not in seen
+
+    context.shortcut_present = lambda: False
+    context.launch_shortcut = lambda: None
+    context.remove_shortcut = lambda: None
+    context.app_foreground = lambda: True
+    result = engine._dispatch_entry(context, cast(Controller, context.controller), entry)
+
+    assert result.completed is True
+    assert called == ['shortcut', 'shortcut']
+    assert seen['shortcut_present'] is context.shortcut_present
+    assert seen['launch_shortcut'] is context.launch_shortcut
+    assert seen['remove_shortcut'] is context.remove_shortcut
+    assert seen['app_foreground'] is context.app_foreground
 
 
 def test_an_acted_recheck_scrolls_for_a_key_below_the_fold(
@@ -3611,6 +3631,15 @@ def test_make_live_context_wraps_the_real_seams(
         def is_app_foreground(self) -> bool | None:
             return self.foreground
 
+        def coins_shortcut_pinned(self) -> bool | None:
+            return False
+
+        def launch_coins_shortcut(self) -> str:
+            return 'Starting: Intent'
+
+        def clear_app_shortcuts(self) -> str:
+            return 'Success'
+
         def warm_start(self) -> str:
             self.warm_starts += 1
             return 'Starting: Intent'
@@ -3655,6 +3684,12 @@ def test_make_live_context_wraps_the_real_seams(
     assert context.app_foreground is not None
     assert context.app_foreground() is True
     assert context.warm_start is not None
+    assert context.shortcut_present is not None
+    assert context.shortcut_present() is False
+    assert context.launch_shortcut is not None
+    context.launch_shortcut()
+    assert context.remove_shortcut is not None
+    context.remove_shortcut()
     context.navigate(SurfaceRoute.SHORTCUT)
     assert navigated == [SurfaceRoute.SHORTCUT]
     assert cast(Any, context.hygiene).warm_starts == 0

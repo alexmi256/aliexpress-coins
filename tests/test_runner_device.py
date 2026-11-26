@@ -27,7 +27,7 @@ from aliexpress_coins.runner.errors import (
     DeviceSleeping,
     DeviceUnavailable,
 )
-from aliexpress_coins.tasks.surface import SHORTCUT_DEEP_LINK, SurfaceRoute
+from aliexpress_coins.tasks.surface import SHORTCUT_DEEP_LINK, SHORTCUT_LAUNCH_DEEP_LINK, SurfaceRoute
 from tests.support.adb import ScriptedAdbRunner, fail, ok
 
 _ok = ok
@@ -337,6 +337,84 @@ def test_a_failed_navigation_is_a_device_error() -> None:
     device = AdbDevice('usb-serial', runner=runner)
     with pytest.raises(DeviceError, match='take the measured shortcut route'):
         device.navigate(SurfaceRoute.SHORTCUT)
+
+
+@pytest.mark.parametrize(
+    ('dump', 'expected'),
+    [
+        (
+            f'Package: {APP_PACKAGE} User: 0\n  Pinned: coinsPromotion\n',
+            True,
+        ),
+        (
+            f'Package: {APP_PACKAGE} User: 0\n  Pinned: other\n',
+            False,
+        ),
+        ('No shortcuts here', False),
+        ('', None),
+    ],
+)
+def test_the_pinned_shortcut_probe_reads_only_a_positive_pin(dump: str, expected: bool | None) -> None:
+    runner = ScriptedAdbRunner(_ok(dump))
+    device = AdbDevice('usb-serial', runner=runner)
+
+    assert device.coins_shortcut_pinned() is expected
+    assert runner.calls == [('adb', '-s', 'usb-serial', 'shell', 'dumpsys', 'shortcut')]
+
+
+def test_an_unreadable_pinned_shortcut_dump_is_not_an_absence() -> None:
+    device = AdbDevice('usb-serial', runner=ScriptedAdbRunner(_fail('dumpsys failed')))
+
+    assert device.coins_shortcut_pinned() is None
+
+
+def test_launching_the_coins_shortcut_fires_its_persisted_intent() -> None:
+    runner = ScriptedAdbRunner(_ok('Starting: Intent'))
+    device = AdbDevice('usb-serial', runner=runner)
+
+    device.launch_coins_shortcut()
+
+    assert runner.calls == [
+        (
+            'adb',
+            '-s',
+            'usb-serial',
+            'shell',
+            'am',
+            'start',
+            '-a',
+            'android.intent.action.VIEW',
+            '-d',
+            SHORTCUT_LAUNCH_DEEP_LINK,
+            '-f',
+            '0x04000000',
+        ),
+    ]
+
+
+def test_a_failed_shortcut_launch_is_a_device_error() -> None:
+    device = AdbDevice('usb-serial', runner=ScriptedAdbRunner(_fail('no activity found')))
+
+    with pytest.raises(DeviceError, match='launch the created Coins launcher shortcut'):
+        device.launch_coins_shortcut()
+
+
+def test_clearing_the_app_shortcuts_removes_the_package_pin() -> None:
+    runner = ScriptedAdbRunner(_ok('Success'))
+    device = AdbDevice('usb-serial', runner=runner)
+
+    device.clear_app_shortcuts()
+
+    assert runner.calls == [
+        ('adb', '-s', 'usb-serial', 'shell', 'cmd', 'shortcut', 'clear-shortcuts', APP_PACKAGE),
+    ]
+
+
+def test_a_failed_shortcut_cleanup_is_a_device_error() -> None:
+    device = AdbDevice('usb-serial', runner=ScriptedAdbRunner(_fail('shortcut service unavailable')))
+
+    with pytest.raises(DeviceError, match='clear AliExpress shortcuts'):
+        device.clear_app_shortcuts()
 
 
 def test_a_timeout_is_a_device_error() -> None:
