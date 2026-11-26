@@ -54,7 +54,7 @@ from aliexpress_coins.perception.scroll import (
     scroll_until_found,
 )
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
-from aliexpress_coins.perception.state import CaptureSource
+from aliexpress_coins.perception.state import CaptureSource, ScreenState
 from aliexpress_coins.perception.templates import TemplateStore
 from aliexpress_coins.runner.errors import RunInterrupted
 from aliexpress_coins.runner.safety import RunAborted
@@ -613,7 +613,6 @@ def _dispatch_launcher_shortcut(
                 label=ADD_TO_HOME_LABEL,
             ),
         )
-        created = True
         _wait_for_add_to_finish(
             capture,
             timeout=modal_timeout,
@@ -622,6 +621,20 @@ def _dispatch_launcher_shortcut(
             sleep=sleep,
             labels=labels,
         )
+        confirmed = _confirm_created_pin(
+            presence,
+            timeout=max(modal_timeout, 10.0),
+            interval=interval,
+            clock=clock,
+            sleep=sleep,
+            log=log,
+        )
+        if confirmed is False:
+            return failed(
+                'shortcut_creation_uncertain',
+                'Add to home screen disappeared, but the shortcut service never showed the Coins pin',
+            )
+        created = confirmed is True
     elif stage == 'exists':
         # A previous run left the item behind (the measured toast). Reuse that
         # one; creating a second item would leave two shortcuts on the tablet.
@@ -942,6 +955,10 @@ def _wait_for_launched_page(
         )
         if wait.timed_out or not wait.settled:
             return wait
+        if any(state is not ScreenState.PAGE for state in wait.history):
+            # A loading/unknown frame proves the launch replaced the stale
+            # pre-launch page even when the settled page looks identical.
+            return wait
         if frame_difference(before_launch, wait.snapshot) > STABLE_FRAME_MAX_DIFFERENCE:
             return wait
         if clock() >= deadline:
@@ -974,6 +991,39 @@ def _return_to_coin_page(
         clock=clock,
         sleep=sleep,
     )
+
+
+def _confirm_created_pin(
+    shortcut_present: Callable[[], bool | None] | None,
+    *,
+    timeout: float,
+    interval: float,
+    clock: Callable[[], float],
+    sleep: Callable[[float], None],
+    log: logging.Logger,
+) -> bool | None:
+    """Confirm the launcher's Add step actually produced the Coins pin.
+
+    ``True`` means the pin is readable, ``False`` means the probe stayed
+    readable but negative, and ``None`` means at least one read was unreadable.
+    The caller continues on ``None`` without claiming the pin was created, so a
+    transient unreadable probe never triggers the package-wide cleanup.
+    """
+    if shortcut_present is None:
+        # Tests without the device seam still have the measured Add control as
+        # evidence; the live engine always supplies the probe.
+        return True
+    deadline = clock() + timeout
+    saw_unreadable = False
+    while True:
+        reading = _read_shortcut_presence(shortcut_present, log)
+        if reading is True:
+            return True
+        if reading is None:
+            saw_unreadable = True
+        if clock() >= deadline:
+            return None if saw_unreadable else False
+        sleep(min(interval, max(0.0, deadline - clock())))
 
 
 def _read_shortcut_presence(

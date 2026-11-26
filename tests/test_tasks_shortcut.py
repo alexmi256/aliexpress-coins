@@ -1554,6 +1554,111 @@ def test_a_direct_credit_without_the_sheet_is_still_recorded(
     assert state.count('coins_shortcut_visit') == 1
 
 
+def test_an_add_confirmed_by_the_pin_probe_is_created_and_cleared(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _coin_page_with_row('87')
+    entry = _entry(frame, catalogue)
+    readings = iter((False, True))
+    removed: list[str] = []
+
+    result = run_shortcut_visit_task(
+        Controller.from_frame(_Device(), frame, rng=random.Random(0)),
+        _Capture(_created_shortcut_frames(frame)),
+        corpus,
+        _state(tmp_path),
+        entry,
+        navigate=_Routes(),
+        shortcut_present=lambda: next(readings, True),
+        launch_shortcut=lambda: None,
+        remove_shortcut=lambda: removed.append('cleared'),
+        clock=_Clock(),
+        sleep=_Clock().sleep,
+    )
+
+    assert result.outcome is ShortcutVisitOutcome.COMPLETED
+    assert result.shortcut_created is True
+    assert result.shortcut_removed is True
+    assert removed == ['cleared']
+
+
+def test_a_swallowed_add_without_a_pin_is_not_created_or_cleared(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _coin_page_with_row('87')
+    entry = _entry(frame, catalogue)
+    removed: list[str] = []
+    frames = (
+        frame,
+        _shortcut_sheet(),
+        _launcher_add_sheet(),
+        _shortcut_sheet(),
+        _coin_page('87'),
+    )
+
+    result = run_shortcut_visit_task(
+        Controller.from_frame(_Device(), frame, rng=random.Random(0)),
+        _Capture(frames),
+        corpus,
+        _state(tmp_path),
+        entry,
+        navigate=_Routes(),
+        shortcut_present=lambda: False,
+        launch_shortcut=lambda: None,
+        remove_shortcut=lambda: removed.append('cleared'),
+        clock=_Clock(),
+        sleep=_Clock().sleep,
+    )
+
+    assert result.outcome is ShortcutVisitOutcome.FAILED
+    assert result.verification == 'shortcut_creation_uncertain'
+    assert 'never showed the Coins pin' in result.detail
+    assert result.shortcut_created is False
+    assert result.shortcut_removed is False
+    assert removed == []
+
+
+def test_an_unchanged_page_after_a_loading_transition_does_not_wait_the_full_bound(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _coin_page_with_row('87')
+    entry = _entry(frame, catalogue)
+    sleeps: list[float] = []
+    frames = (
+        frame,
+        _shortcut_sheet(),
+        _launcher_add_sheet(),
+        _shortcut_sheet(),
+        _shortcut_sheet(),
+        _coin_page('87'),
+        _coin_page('87'),
+        _snapshot(),
+        _coin_page('87'),
+    )
+
+    result = run_shortcut_visit_task(
+        Controller.from_frame(_Device(), frame, rng=random.Random(0)),
+        _Capture(frames),
+        corpus,
+        _state(tmp_path),
+        entry,
+        navigate=_Routes(),
+        launch_shortcut=lambda: None,
+        clock=_Clock(),
+        sleep=sleeps.append,
+    )
+
+    assert result.outcome is ShortcutVisitOutcome.FAILED
+    assert result.verification == 'shortcut_sheet_no_credit'
+    assert max(sleeps) < 6.0
+
+
 def test_a_launcher_sheet_that_never_closes_does_not_claim_completion(
     tmp_path: Path,
     catalogue: TaskCatalogue,
