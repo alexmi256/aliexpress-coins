@@ -591,7 +591,9 @@ gate in #41.
 A good night looks like:
 
 - `Status: completed`;
-- `Roster: available; N row(s), M allowed, K refused` with `N` greater than zero;
+- `Roster: available; N row(s) read, M allowed, K refused, D dispatchable, C already claimed` with
+  `N` greater than zero, `M` the catalogue-allowed rows, and `D` the rows that still carry a
+  dispatchable control;
 - at least one task row with `completed` and an evidence value that names what proved it (a balance
   move, a progress badge, a row gone from a complete surface, or a recorded state transition);
 - `Balance: <before> -> <after> (<delta>)` with a non-negative delta, or `unknown` when a frame was
@@ -871,7 +873,7 @@ gets an unattended night.
 | Android / app | Android 15 (sdk 35), AliExpress `8.180.1` | An update can move a row, change a label or add a popup. The deny list still refuses unknown rows, but the allowed catalogue may stop matching; capture a fixture and update the catalogue rather than tapping a guess. |
 | store region / locale | AliExpress Canada store, `en`, coin values in `C$` | The catalogue and patterns were built from this region. Another region or locale changes labels, row ordering and currency rendering; treat it as unmeasured and re-run recon. |
 | account and device use | one signed-in account, one device, no concurrency | The collector assumes the tablet is unlocked with no PIN/biometric lock, the charger is attached, and no human is using it. Runs that share a state directory serialise on `state/run.lock`; runs with different state directories are not coordinated and would each drive the device. |
-| daily reset hour | ✅ observed at 00:00 device-local, bracketed by 23:45 and 00:05 EST dry runs; schedule is 03:30 local plus up to 180 s jitter | A run before the device's day rolls finds every task already claimed and reports a successful, empty night. Keep the schedule after midnight; weigh human tablet use against same-night retry room before moving it (§7, §9). |
+| daily reset hour | ✅ observed at 00:00 device-local, bracketed by 23:45 and 00:05 EST dry runs; schedule is 03:30 local plus up to 180 s jitter | A run before the device's day rolls finds every task already claimed and reports a successful, empty night: `Roster: nothing available; N row(s) read, M allowed, 0 refused, 0 dispatchable, N already claimed`. Keep the schedule after midnight; weigh human tablet use against same-night retry room before moving it (§7, §9). |
 | balance and verification | OCR on the shipped frame | Account data is never in git; screenshots contain the nickname, cart and orders. A frame that cannot be read leaves the balance `unknown`, never guessed. |
 
 ### Before the first unattended night

@@ -23,6 +23,7 @@ from aliexpress_coins.control.controller import Controller
 from aliexpress_coins.control.popups import DismissReport, PopupCorpus, load_popup_corpus
 from aliexpress_coins.perception.errors import SnapshotError, StateTimeout
 from aliexpress_coins.perception.geometry import DeviceGeometry
+from aliexpress_coins.perception.layout import Row
 from aliexpress_coins.perception.matching import find_text
 from aliexpress_coins.perception.ocr import RapidOcrEngine
 from aliexpress_coins.perception.scroll import STABLE_FRAME_MAX_DIFFERENCE
@@ -52,10 +53,18 @@ from aliexpress_coins.tasks.discovery import (
     RosterSplitFailure,
     RosterStatus,
     _capture_after_gesture,
+    _claimed_roster_entry,
+    _cluster_identity,
+    _copy_text,
+    _has_card_copy,
+    _has_claimed_card_structure,
+    _is_lower_line_of_previous_card,
     _merge_frame_rosters,
     _observation_problem,
     _roster_swipe,
     _roster_to_top,
+    _rows_by_cluster,
+    _same_row_card_copy,
     _surface_family,
     _task_signature,
     collect_roster,
@@ -857,6 +866,371 @@ def test_a_claimed_card_without_any_task_action_is_not_a_usable_roster() -> None
     assert roster.empty
     assert roster.visible_action_count == 0
     assert roster.incomplete is False
+
+
+def test_an_all_claimed_boost_sheet_reads_every_card_as_a_non_dispatchable_row(
+    engine: RapidOcrEngine,
+    catalogue: TaskCatalogue,
+) -> None:
+    """Issue #150: three checked cards are three rows, not an unreadable surface."""
+    frame = _load(ROOT / 'tests' / 'data' / 'flows' / 'notifications_row_completed.png', engine)
+    frame_text = ' '.join(box.text for box in frame.boxes)
+    assert 'Check in to win Shopping credits' in frame_text
+    assert 'Add & start using our widget' in frame_text
+    assert 'Turn on notifications' in frame_text
+
+    roster = enumerate_roster(frame, catalogue, route=DiscoveryRoute.BOOST)
+
+    assert roster.titles == (
+        'Check in to win Shopping credits',
+        'Add & start using our widget',
+        'Turn on notifications',
+    )
+    assert roster.count == 3
+    assert [entry.action for entry in roster.entries] == [None, None, None]
+    assert all(entry.allowed for entry in roster.entries)
+    assert all(entry.claimed for entry in roster.entries)
+    assert all(not entry.dispatchable for entry in roster.entries)
+    assert all(entry.dispatch_target is None for entry in roster.entries)
+    assert roster.allowed_entries == roster.entries
+    assert roster.claimed_entries == roster.entries
+    assert roster.denied_entries == ()
+    assert roster.dispatchable_entries == ()
+    assert roster.incomplete is False
+    assert roster.warning is None
+    assert roster.card_structure_failures == 0
+    assert roster.visible_action_count == 0
+    assert roster.unassigned_action_count == 0
+    assert roster.unreadable_count == 0
+    payload = roster.as_dict()
+    assert payload['count'] == 3
+    assert payload['allowed_count'] == 3
+    assert payload['denied_count'] == 0
+    assert payload['dispatchable_count'] == 0
+    assert payload['claimed_count'] == 3
+
+
+def test_a_claimed_card_may_be_confirmed_by_its_checkmark(catalogue: TaskCatalogue) -> None:
+    frame = _boost_frame(
+        (
+            _box('Turn on notifications', 100, 300, 700, 340),
+            _box('✓', 900, 305, 950, 335),
+        ),
+    )
+
+    roster = enumerate_roster(frame, catalogue)
+
+    assert roster.titles == ('Turn on notifications',)
+    assert roster.entries[0].claimed is True
+    assert roster.entries[0].dispatchable is False
+    assert roster.card_structure_failures == 0
+
+
+def test_a_lone_task_title_is_not_a_claimed_card(catalogue: TaskCatalogue) -> None:
+    """A title before its control is still a partial render, never a claimed row."""
+    frame = _boost_frame((_box('Take the coins quiz', 180, 1269, 700, 1305),))
+
+    roster = enumerate_roster(frame, catalogue, route=DiscoveryRoute.BOOST)
+
+    assert roster.empty
+    assert roster.count == 0
+    assert roster.card_structure_failures == 1
+    assert roster.card_structure_titles == ('Take the coins quiz',)
+    assert roster.warning == "'Take the coins quiz' had no readable card structure and were not counted"
+    assert roster.incomplete is True
+    assert roster.dispatchable_entries == ()
+
+
+def test_an_empty_frame_does_not_become_a_claimed_roster(catalogue: TaskCatalogue) -> None:
+    roster = enumerate_roster(_snapshot(), catalogue)
+
+    assert roster.empty
+    assert roster.count == 0
+    assert roster.card_structure_failures == 0
+    assert roster.incomplete is False
+    assert roster.allowed_entries == ()
+    assert roster.dispatchable_entries == ()
+
+
+def test_a_claimed_continuation_box_that_is_itself_catalogued_is_not_a_title(
+    catalogue: TaskCatalogue,
+) -> None:
+    frame = _boost_frame(
+        (
+            _box('Mystery errand', 100, 300, 700, 340),
+            _box('review', 100, 345, 760, 375),
+        ),
+    )
+
+    roster = enumerate_roster(frame, catalogue)
+
+    assert roster.empty
+    assert roster.card_structure_failures == 0
+
+
+def test_a_wrapped_unknown_title_is_not_a_claimed_row(catalogue: TaskCatalogue) -> None:
+    frame = _boost_frame(
+        (
+            _box('Moon', 100, 300, 300, 340),
+            _box('cheese', 100, 345, 400, 375),
+            _box('+1', 100, 380, 160, 410),
+        ),
+    )
+
+    roster = enumerate_roster(frame, catalogue)
+
+    assert roster.empty
+    assert roster.card_structure_failures == 0
+
+
+def test_duplicate_claimed_cards_are_listed_once(catalogue: TaskCatalogue) -> None:
+    frame = _boost_frame(
+        (
+            _box('Turn on notifications', 100, 300, 700, 340),
+            _box('Stay informed when rewards drop', 100, 345, 760, 375),
+            _box('+1', 100, 380, 160, 410),
+        ),
+        (
+            _box('Turn on notifications', 100, 600, 700, 640),
+            _box('Stay informed when rewards drop', 100, 645, 760, 675),
+            _box('+1', 100, 680, 160, 710),
+        ),
+    )
+
+    roster = enumerate_roster(frame, catalogue)
+
+    assert roster.titles == ('Turn on notifications',)
+    assert roster.count == 1
+
+
+def test_the_streak_collect_is_not_counted_as_an_unassigned_task_action(catalogue: TaskCatalogue) -> None:
+    frame = _snapshot(
+        _box('Coins boost', 100, 10, 500, 40),
+        _box('Daily coins', 100, 100, 500, 140),
+        _box('Collect', 980, 105, 1080, 135),
+        _box('Worth C$0.01', 100, 145, 400, 175),
+    )
+
+    roster = enumerate_roster(frame, catalogue, action_labels=('GO', 'Collect'))
+
+    assert roster.titles == ('Daily coins',)
+    assert roster.visible_action_count == 1
+    assert roster.unassigned_action_count == 0
+
+
+def test_claimed_entry_rejects_the_streak_and_mini_app_cards(catalogue: TaskCatalogue) -> None:
+    snapshot = _snapshot()
+    tolerance = 100.0
+    streak = Row(
+        (
+            _box('Daily coins', 100, 100, 500, 140),
+            _box('Worth C$0.01', 100, 145, 400, 175),
+        ),
+    )
+    mini_app = Row(
+        (
+            _box('Prize Land', 100, 300, 500, 340),
+            _box('+1', 100, 345, 160, 375),
+        ),
+    )
+
+    assert (
+        _claimed_roster_entry(
+            snapshot,
+            streak,
+            catalogue,
+            ('GO',),
+            rows=(streak,),
+            tolerance=tolerance,
+        )
+        is None
+    )
+    assert (
+        _claimed_roster_entry(
+            snapshot,
+            mini_app,
+            catalogue,
+            ('GO',),
+            rows=(mini_app,),
+            tolerance=tolerance,
+        )
+        is None
+    )
+
+
+def test_same_row_card_copy_accepts_rewards_and_rejects_another_family(
+    catalogue: TaskCatalogue,
+) -> None:
+    decision = catalogue.decide('Turn on notifications')
+    rewarded = Row(
+        (
+            _box('Turn on notifications', 100, 100, 700, 140),
+            _box('+1', 100, 105, 160, 135),
+        ),
+    )
+    clash = Row(
+        (
+            _box('Turn on notifications', 100, 100, 700, 140),
+            _box('Place an order on this page', 100, 105, 700, 135),
+        ),
+    )
+
+    assert (
+        _same_row_card_copy(
+            rewarded,
+            decision=decision,
+            catalogue=catalogue,
+            action_labels=('GO',),
+        )
+        is True
+    )
+    assert (
+        _same_row_card_copy(
+            clash,
+            decision=decision,
+            catalogue=catalogue,
+            action_labels=('GO',),
+        )
+        is False
+    )
+    assert (
+        _same_row_card_copy(
+            Row(
+                (
+                    _box('Turn on notifications', 100, 100, 700, 140),
+                    _box('GO', 980, 105, 1040, 135),
+                ),
+            ),
+            decision=decision,
+            catalogue=catalogue,
+            action_labels=('GO',),
+        )
+        is None
+    )
+    assert (
+        _same_row_card_copy(
+            Row(
+                (
+                    _box('Turn on notifications', 100, 100, 700, 140),
+                    _box('✓', 900, 105, 950, 135),
+                ),
+            ),
+            decision=decision,
+            catalogue=catalogue,
+            action_labels=('GO',),
+        )
+        is True
+    )
+    assert (
+        _same_row_card_copy(
+            Row(
+                (
+                    _box('Turn on notifications', 100, 100, 700, 140),
+                    _box('...', 900, 105, 950, 135),
+                ),
+            ),
+            decision=decision,
+            catalogue=catalogue,
+            action_labels=('GO',),
+        )
+        is None
+    )
+
+
+def test_has_card_copy_reads_badges_rewards_and_checks_but_not_controls() -> None:
+    assert _has_card_copy(Row((_box('GO', 980, 100, 1040, 130), _box('...', 900, 100, 950, 130))), ('GO',)) is False
+    assert _has_card_copy(Row((_box('0/2', 900, 100, 1000, 130),)), ('GO',)) is True
+    assert _has_card_copy(Row((_box('+1', 100, 100, 160, 130),)), ('GO',)) is True
+    assert _has_card_copy(Row((_box('A subtitle', 100, 100, 400, 130),)), ('GO',)) is True
+    assert _has_card_copy(Row((_box('✓', 900, 100, 950, 130),)), ('GO',)) is True
+
+
+def test_claimed_card_structure_requires_copy_inside_the_card(catalogue: TaskCatalogue) -> None:
+    snapshot = _snapshot()
+    decision = catalogue.decide('Turn on notifications')
+    title = Row((_box('Turn on notifications', 100, 100, 700, 140),))
+    reward = Row((_box('+1', 100, 160, 160, 190),))
+    far = Row((_box('+1', 100, 1000, 160, 1030),))
+    other = Row((_box('Place an order on this page', 100, 160, 700, 190),))
+    action = Row((_box('GO', 980, 160, 1040, 190),))
+    noise = Row((_box('...', 900, 160, 950, 190),))
+
+    def has_structure(rows: Sequence[Row]) -> bool:
+        return _has_claimed_card_structure(
+            snapshot,
+            title,
+            decision=decision,
+            catalogue=catalogue,
+            action_labels=('GO',),
+            rows=rows,
+            tolerance=100.0,
+        )
+
+    assert has_structure((title, reward)) is True
+    assert has_structure((title, far)) is False
+    assert has_structure((title, other)) is False
+    assert has_structure((title, action)) is False
+    assert has_structure((title, noise)) is False
+    assert has_structure((reward,)) is False
+
+
+def test_lower_line_of_previous_card_skips_unrelated_and_far_lines(catalogue: TaskCatalogue) -> None:
+    snapshot = _snapshot()
+    decision = catalogue.decide('Turn on notifications')
+    candidate = Row((_box('Turn on notifications', 100, 300, 700, 340),))
+    prior_action = Row(
+        (
+            _box('Explore sponsored items', 100, 100, 700, 140),
+            _box('GO', 980, 105, 1040, 135),
+        ),
+    )
+    prior_unknown = Row(
+        (
+            _box('Mystery line', 100, 100, 700, 140),
+            _box('+1', 100, 145, 160, 175),
+        ),
+    )
+    prior_other = Row(
+        (
+            _box('Place an order on this page', 100, 100, 700, 140),
+            _box('+1', 100, 145, 160, 175),
+        ),
+    )
+    far = Row((_box('Somewhere else', 100, 0, 700, 40),))
+
+    def is_lower(rows: Sequence[Row], tolerance: float) -> bool:
+        return _is_lower_line_of_previous_card(
+            snapshot,
+            candidate,
+            decision=decision,
+            catalogue=catalogue,
+            action_labels=('GO',),
+            rows=rows,
+            tolerance=tolerance,
+        )
+
+    assert is_lower((prior_action, candidate), 200.0) is False
+    assert is_lower((prior_unknown, candidate), 200.0) is False
+    assert is_lower((prior_other, candidate), 200.0) is True
+    assert is_lower((far, candidate), 50.0) is False
+    assert is_lower((prior_action,), 200.0) is False
+
+
+def test_cluster_identity_and_rows_by_cluster_skip_spanning_rows() -> None:
+    one = _box('one', 100, 100, 200, 140)
+    two = _box('two', 100, 200, 200, 240)
+    three = _box('three', 100, 300, 200, 340)
+    single = Row((one,))
+    spanning = Row((two, three))
+    cluster_of = {id(one): 0, id(two): 1, id(three): 2}
+
+    assert _cluster_identity(single, cluster_of) == 0
+    assert _cluster_identity(spanning, cluster_of) is None
+    assert _rows_by_cluster((single, spanning), cluster_of) == {0: [single]}
+
+
+def test_copy_text_returns_none_for_a_blank_title() -> None:
+    assert _copy_text((_box('   ', 100, 100, 200, 140),)) == (None, None)
 
 
 def test_a_known_title_with_different_case_is_not_a_split_failure() -> None:

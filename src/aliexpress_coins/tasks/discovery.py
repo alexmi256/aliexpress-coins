@@ -199,6 +199,8 @@ _MAX_OBSERVATIONS_ENV = 'AECOINS_MAX_ROSTER_OBSERVATIONS'
 
 _REWARD = re.compile(r'^\s*[+\uff0b]\s*\d')
 _REWARD_WORDS = frozenset({'coin', 'coins'})
+_CHECKMARK_WORDS = frozenset({'check', 'checked'})
+"""The normalised text of a drawn claimed-row check, including ``✓``/``✔``."""
 
 _KNOWN_ROW_TITLES: tuple[str, ...] = (*TASK_TITLES, *MINI_APP_TITLES, STREAK_MARKER)
 """Text that names a task surface or a shortcut tile, never another row's copy.
@@ -234,6 +236,11 @@ class RosterEntry:
     so a refused row cannot be tapped by accident. ``policy_context`` preserves
     which OCR elements belong to the row and which belong to its neighbours, so
     the dispatch gate can repeat the decision without trusting flattened copy.
+
+    ``claimed`` marks a card that was read from its title/subtitle/reward rather
+    than from an actionable control. It is a real row, but it has nothing to
+    dispatch: the app renders a filled check instead of ``GO`` once a row is
+    already claimed for the day.
     """
 
     title: str
@@ -244,6 +251,7 @@ class RosterEntry:
     row: Row
     authorization: DispatchAuthorization | None = None
     policy_context: TaskPolicyContext | None = None
+    claimed: bool = False
 
     @property
     def allowed(self) -> bool:
@@ -346,6 +354,7 @@ class RosterEntry:
                     else None
                 ),
                 'dispatchable': self.dispatchable,
+                'claimed': self.claimed,
                 'authorized': self.authorized,
                 'authorization': (
                     {
@@ -412,12 +421,15 @@ class Roster:
     scroll_surface_lost: bool = False
     scroll_surface_unconfirmed: bool = False
     unreadable_count: int = 0
+    card_structure_failures: int = 0
+    card_structure_titles: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, 'entries', tuple(self.entries))
         object.__setattr__(self, 'routes_taken', tuple(self.routes_taken))
         object.__setattr__(self, 'variants_seen', tuple(self.variants_seen))
         object.__setattr__(self, 'split_failures', tuple(self.split_failures))
+        object.__setattr__(self, 'card_structure_titles', tuple(self.card_structure_titles))
 
     @property
     def tasks(self) -> tuple[RosterEntry, ...]:
@@ -436,8 +448,14 @@ class Roster:
 
     @property
     def nothing_available(self) -> bool:
-        """The report wording for an empty surface, including the empty boost page."""
-        return not self.entries
+        """Whether the surface showed no row that can be dispatched.
+
+        A sheet whose rows are all already claimed still carries a readable
+        roster, but it has no work to offer. That is a valid empty day, not a
+        failed read, so this is deliberately about dispatchable rows rather than
+        about ``entries`` being empty.
+        """
+        return not self.dispatchable_entries
 
     @property
     def status(self) -> RosterStatus:
@@ -453,6 +471,16 @@ class Roster:
     def denied_entries(self) -> tuple[RosterEntry, ...]:
         """Every refused or unrecognised row, in reading order."""
         return tuple(entry for entry in self.entries if entry.denied)
+
+    @property
+    def dispatchable_entries(self) -> tuple[RosterEntry, ...]:
+        """Every row that is both allowed and has an action to tap."""
+        return tuple(entry for entry in self.entries if entry.dispatchable)
+
+    @property
+    def claimed_entries(self) -> tuple[RosterEntry, ...]:
+        """Every row that was read from its card and is already claimed."""
+        return tuple(entry for entry in self.entries if entry.claimed)
 
     @property
     def allowed(self) -> tuple[RosterEntry, ...]:
@@ -479,6 +507,7 @@ class Roster:
             # positive evidence that the day has no work.
             or self.surface_variant is Surface.ROWS_ABSENT
             or self.unreadable_count > 0
+            or self.card_structure_failures > 0
             or self.unassigned_action_count > 0
             or self.scroll_limit_reached
             or self.scroll_surface_lost
@@ -504,6 +533,13 @@ class Roster:
             problems.append(f'{button_count} but {self.unassigned_action_count} task action(s) were not enumerated')
         if self.unreadable_count:
             problems.append(f'{self.unreadable_count} task row(s) had no readable title and were not counted')
+        if self.card_structure_failures:
+            subject = (
+                ', '.join(repr(title) for title in self.card_structure_titles)
+                if self.card_structure_titles
+                else f'{self.card_structure_failures} task title(s)'
+            )
+            problems.append(f'{subject} had no readable card structure and were not counted')
         unrecovered = sum(not failure.recovered for failure in self.split_failures)
         if unrecovered:
             problems.append(f'{unrecovered} known task title(s) could not be split from another row')
@@ -539,6 +575,8 @@ class Roster:
             'count': self.count,
             'allowed_count': len(self.allowed_entries),
             'denied_count': len(self.denied_entries),
+            'dispatchable_count': len(self.dispatchable_entries),
+            'claimed_count': len(self.claimed_entries),
             'nothing_available': self.nothing_available,
             'visible_action_count': self.visible_action_count,
             'unassigned_action_count': self.unassigned_action_count,
@@ -548,6 +586,8 @@ class Roster:
             'scroll_surface_lost': self.scroll_surface_lost,
             'scroll_surface_unconfirmed': self.scroll_surface_unconfirmed,
             'unreadable_count': self.unreadable_count,
+            'card_structure_failures': self.card_structure_failures,
+            'card_structure_titles': list(self.card_structure_titles),
             'incomplete': self.incomplete,
             'warning': self.warning,
             'split_failures': [failure.as_dict() for failure in self.split_failures],
@@ -580,6 +620,7 @@ class RosterRow:
     action: str | None
     dispatch_target: tuple[float, float] | None = None
     candidate: bool = False
+    claimed: bool = False
 
     @classmethod
     def from_entry(cls, entry: RosterEntry) -> RosterRow:
@@ -595,6 +636,7 @@ class RosterRow:
             action=entry.action.text if entry.action is not None else None,
             dispatch_target=entry.dispatch_target.center if entry.dispatch_target is not None else None,
             candidate=entry.key is None and entry.rule is None,
+            claimed=entry.claimed,
         )
 
     @property
@@ -613,6 +655,7 @@ class RosterRow:
             'reason': self.reason,
             'action': self.action,
             'candidate': self.candidate,
+            'claimed': self.claimed,
             'dispatch_target': list(self.dispatch_target) if self.dispatch_target is not None else None,
         }
 
@@ -1721,8 +1764,12 @@ def enumerate_roster(
     The streak card is a task surface with its own ``Collect`` control. Task
     rows below it are action-bearing rows whose title is the first meaningful
     label in the action's band; progress badges, rewards and the action itself
-    are not part of the title or subtitle. The policy is *not* used to filter:
-    denied and unrecognised rows remain in the roster with their reason.
+    are not part of the title or subtitle. A card whose task is already claimed
+    has no action left, but it is still a row: when its title names a catalogue
+    family and the card carries readable copy below that title, it is enumerated
+    with ``action=None`` so it is counted as read and never dispatched (#150).
+    The policy is *not* used to filter: denied and unrecognised rows remain in
+    the roster with their reason, and a denied claimed row stays denied.
 
     A known task title found in another row's copy is a split failure. The raw
     nearest-neighbour cluster is checked before the action-aware split, so a
@@ -1747,11 +1794,15 @@ def enumerate_roster(
             reported.add((failure.title, failure.container_title))
             split_failures.append(failure)
 
+    tolerance = row_tolerance(snapshot.boxes, snapshot.geometry)
+    cluster_of = _cluster_index(snapshot)
+    cluster_rows = _rows_by_cluster(expanded, cluster_of)
     streak_entry, streak_rows = _streak_roster_entry(snapshot, expanded, catalogue, action_labels)
     entries: list[RosterEntry] = []
     seen: set[str] = set()
     assigned_actions: set[TextBox] = set()
     unreadable = 0
+    card_failure_titles: list[str] = []
     if streak_entry is not None and (streak_entry.action is not None or visible_action_count > 0):
         entries.append(streak_entry)
         seen.add(normalize(streak_entry.title))
@@ -1767,6 +1818,40 @@ def enumerate_roster(
             continue
         action = find_action_in_row(row, action_labels)
         if action is None:
+            cluster = _cluster_identity(row, cluster_of)
+            claimed = _claimed_roster_entry(
+                snapshot,
+                row,
+                catalogue,
+                action_labels,
+                rows=cluster_rows.get(cluster, ()) if cluster is not None else (),
+                tolerance=tolerance,
+            )
+            if claimed is None:
+                # A catalogued title with no legible companion copy is a
+                # partial render, not an empty day (#120/#137). A line below a
+                # title is that card's subtitle, not a second unreadable title.
+                found = _claimed_title_decision(snapshot, row, catalogue, action_labels)
+                if (
+                    found is not None
+                    and not _is_mini_app_title(found[0])
+                    and not _is_lower_line_of_previous_card(
+                        snapshot,
+                        row,
+                        decision=found[2],
+                        catalogue=catalogue,
+                        action_labels=action_labels,
+                        rows=cluster_rows.get(cluster, ()) if cluster is not None else (),
+                        tolerance=tolerance,
+                    )
+                ):
+                    card_failure_titles.append(found[0])
+                continue
+            identity = normalize(claimed.title)
+            if not identity or identity in seen:
+                continue
+            seen.add(identity)
+            entries.append(claimed)
             continue
         candidates = _title_candidates(row, action, action_labels)
         title, subtitle = _copy_text(candidates)
@@ -1806,6 +1891,8 @@ def enumerate_roster(
         unassigned_action_count=max(0, visible_action_count - len(assigned_actions)),
         split_failures=tuple(split_failures),
         unreadable_count=unreadable,
+        card_structure_failures=len(card_failure_titles),
+        card_structure_titles=tuple(card_failure_titles),
     )
 
 
@@ -1950,6 +2037,10 @@ def collect_roster(
         scroll_surface_lost=surface_lost,
         scroll_surface_unconfirmed=surface_unconfirmed,
         unreadable_count=max((roster.unreadable_count for roster in rosters), default=0),
+        card_structure_failures=max((roster.card_structure_failures for roster in rosters), default=0),
+        card_structure_titles=tuple(
+            dict.fromkeys(title for roster in rosters for title in roster.card_structure_titles)
+        ),
     )
 
 
@@ -2067,6 +2158,10 @@ def _merge_frame_rosters(rosters: Sequence[Roster]) -> Roster:
         catalogue_version=first.catalogue_version,
         default_deny_reason=first.default_deny_reason,
         split_failures=tuple(failures.values()),
+        card_structure_failures=max((roster.card_structure_failures for roster in rosters), default=0),
+        card_structure_titles=tuple(
+            dict.fromkeys(title for roster in rosters for title in roster.card_structure_titles)
+        ),
     )
 
 
@@ -2340,6 +2435,272 @@ def _split_known_title_row(
             detail=f'{consumed!r} was grouped into {title!r}; split at its own title box',
         )
     return (row,), None
+
+
+def _is_mini_app_title(title: str) -> bool:
+    """Whether ``title`` names a mini-app shortcut tile rather than a task row."""
+    return any(similarity(candidate, title) >= 0.9 for candidate in MINI_APP_TITLES)
+
+
+def _cluster_index(snapshot: Snapshot) -> dict[int, int]:
+    """Map each OCR box to the raw nearest-neighbour cluster that contains it."""
+    return {
+        id(box): index
+        for index, cluster in enumerate(group_row_clusters(snapshot.boxes, snapshot.geometry))
+        for box in cluster
+    }
+
+
+def _cluster_identity(row: Row, cluster_of: Mapping[int, int]) -> int | None:
+    """The one raw cluster a split row came from, or ``None`` when it spans two."""
+    clusters = {cluster_of.get(id(box)) for box in row.boxes}
+    if len(clusters) != 1:
+        return None
+    return clusters.pop()
+
+
+def _rows_by_cluster(rows: Sequence[Row], cluster_of: Mapping[int, int]) -> dict[int, list[Row]]:
+    """Group the split rows back onto the raw card clusters they came from."""
+    grouped: dict[int, list[Row]] = {}
+    for row in rows:
+        cluster = _cluster_identity(row, cluster_of)
+        if cluster is not None:
+            grouped.setdefault(cluster, []).append(row)
+    return grouped
+
+
+def _claimed_title_decision(
+    snapshot: Snapshot,
+    row: Row,
+    catalogue: TaskCatalogue,
+    action_labels: Sequence[str],
+) -> tuple[str, str | None, TaskDecision, TaskPolicyContext] | None:
+    """Read a claimed card's title and keep its catalogue decision.
+
+    Only the title names the row's family. The first candidate is the title
+    line; a wrapped title is split across two OCR boxes in the same row band
+    (``Check in to win Shopping`` / ``credits``), so the joined candidates are
+    tried only when none of the continuation boxes is itself a catalogued label.
+    A recognised *subtitle* never promotes an unknown line above it into a title.
+    """
+    candidates = _title_candidates(row, None, action_labels)
+    if not candidates:
+        return None
+    title = candidates[0].text.strip()
+    subtitle = _copy_text(candidates)[1]
+    policy_context = _policy_context(snapshot, row, candidates)
+    decision = catalogue.decide(title, context=policy_context)
+    if decision.rule is not None:
+        return title, subtitle, decision, policy_context
+
+    if len(candidates) < 2:
+        return None
+    if any(catalogue.decide(box.text.strip()).rule is not None for box in candidates[1:]):
+        return None
+    joined = ' '.join(' '.join(box.text.split()) for box in candidates)
+    joined_context = _policy_context(snapshot, row, candidates, title_elements=(joined,))
+    joined_decision = catalogue.decide(joined, context=joined_context)
+    if joined_decision.rule is None:
+        return None
+    return joined, None, joined_decision, joined_context
+
+
+def _claimed_roster_entry(
+    snapshot: Snapshot,
+    row: Row,
+    catalogue: TaskCatalogue,
+    action_labels: Sequence[str],
+    *,
+    rows: Sequence[Row],
+    tolerance: float,
+) -> RosterEntry | None:
+    """Turn one claimed card into a non-dispatchable roster row (#150).
+
+    The card must carry a catalogued title and readable copy below it in its own
+    raw cluster. A bare title is a partial render, not a claimed row: that keeps
+    #120's "a title before its control is not a row" rule intact. The title must
+    also sit above that copy rather than being another row's subtitle, and the
+    streak card remains the dedicated sign-in surface, never a claimed task row.
+    """
+    found = _claimed_title_decision(snapshot, row, catalogue, action_labels)
+    if found is None:
+        return None
+    title, subtitle, decision, policy_context = found
+    if _row_has_text(row, STREAK_MARKER) or normalize(title) == normalize(STREAK_MARKER):
+        return None
+    if _is_mini_app_title(title):
+        # The shortcut strip below the task rows is never a claimed task card.
+        return None
+    if not _has_claimed_card_structure(
+        snapshot,
+        row,
+        decision=decision,
+        catalogue=catalogue,
+        action_labels=action_labels,
+        rows=rows,
+        tolerance=tolerance,
+    ):
+        return None
+    return RosterEntry(
+        title=title,
+        subtitle=subtitle,
+        action=None,
+        progress=find_progress_badge(row),
+        decision=decision,
+        row=row,
+        policy_context=policy_context,
+        claimed=True,
+    )
+
+
+def _same_row_card_copy(
+    row: Row,
+    *,
+    decision: TaskDecision,
+    catalogue: TaskCatalogue,
+    action_labels: Sequence[str],
+) -> bool | None:
+    """Whether this row itself carries a claimed card's subtitle/reward/badge.
+
+    ``None`` means the row only names a title. ``False`` means the row also
+    absorbed a *different* catalogue family's title, so it is a split failure
+    rather than a card. A subtitle that belongs to the same family (for example
+    ``Finish today's check-in`` under ``Daily check-in``) is legitimate copy.
+    """
+    candidates = _title_candidates(row, None, action_labels)
+    title_box = candidates[0] if candidates else None
+    found = False
+    for box in row.boxes:
+        if box is title_box or box.score < DEFAULT_MIN_OCR_SCORE:
+            continue
+        if _is_action_text(box.text, action_labels):
+            continue
+        if (
+            parse_progress_badge(box.text) is not None
+            or _is_reward_text(box.text)
+            or normalize(box.text) in _CHECKMARK_WORDS
+        ):
+            found = True
+            continue
+        if not any(character.isalpha() for character in box.text):
+            continue
+        other = catalogue.decide(box.text.strip())
+        if other.rule is not None and other.rule != decision.rule:
+            return False
+        found = True
+    return found if found else None
+
+
+def _is_lower_line_of_previous_card(
+    snapshot: Snapshot,
+    row: Row,
+    *,
+    decision: TaskDecision,
+    catalogue: TaskCatalogue,
+    action_labels: Sequence[str],
+    rows: Sequence[Row],
+    tolerance: float,
+) -> bool:
+    """Whether ``row`` sits directly below a title rather than naming one.
+
+    A same-family line above is this card's subtitle, and any non-action title
+    directly above makes the candidate a subtitle too. An action-bearing line
+    above belongs to an earlier card, so a claimed row may follow it.
+    """
+    try:
+        index = rows.index(row)
+    except ValueError:
+        return False
+    for prior in reversed(rows[:index]):
+        gap = row.top - prior.bottom
+        if gap > tolerance:
+            break
+        prior_found = _claimed_title_decision(snapshot, prior, catalogue, action_labels)
+        if prior_found is None:
+            continue
+        prior_decision = prior_found[2]
+        if prior_decision.rule == decision.rule:
+            return True
+        if find_action_in_row(prior, action_labels) is None:
+            return True
+    return False
+
+
+def _has_claimed_card_structure(
+    snapshot: Snapshot,
+    row: Row,
+    *,
+    decision: TaskDecision,
+    catalogue: TaskCatalogue,
+    action_labels: Sequence[str],
+    rows: Sequence[Row],
+    tolerance: float,
+) -> bool:
+    """Whether ``row`` is a card title with readable copy beneath it.
+
+    The copy can be in the same OCR row (a short card whose title and subtitle
+    share one band) or in the row below it (a wrapped subtitle). A line from a
+    *different* catalogue family below the title ends the card: that is another
+    row, not this one's subtitle. A line directly above from the same family is
+    this card's own subtitle, so the row above is the title; an action-bearing
+    line above belongs to an earlier card and does not disqualify a claimed row
+    below it. A lone title is a partial render and stays an unconfirmed surface.
+    """
+    try:
+        index = rows.index(row)
+    except ValueError:
+        return False
+
+    if _is_lower_line_of_previous_card(
+        snapshot,
+        row,
+        decision=decision,
+        catalogue=catalogue,
+        action_labels=action_labels,
+        rows=rows,
+        tolerance=tolerance,
+    ):
+        return False
+
+    same_row = _same_row_card_copy(
+        row,
+        decision=decision,
+        catalogue=catalogue,
+        action_labels=action_labels,
+    )
+    if same_row is not None:
+        return same_row
+
+    for later in rows[index + 1 :]:
+        gap = later.top - row.bottom
+        if gap > tolerance:
+            break
+        if find_action_in_row(later, action_labels) is not None:
+            continue
+        later_found = _claimed_title_decision(snapshot, later, catalogue, action_labels)
+        if later_found is not None:
+            if later_found[2].rule == decision.rule:
+                return True
+            break
+        if _has_card_copy(later, action_labels):
+            return True
+    return False
+
+
+def _has_card_copy(row: Row, action_labels: Sequence[str]) -> bool:
+    """Whether a claimed card's lower line is subtitle, reward or progress copy."""
+    for box in row.boxes:
+        if box.score < DEFAULT_MIN_OCR_SCORE or _is_action_text(box.text, action_labels):
+            continue
+        if (
+            parse_progress_badge(box.text) is not None
+            or _is_reward_text(box.text)
+            or normalize(box.text) in _CHECKMARK_WORDS
+        ):
+            return True
+        if any(character.isalpha() for character in box.text):
+            return True
+    return False
 
 
 def _streak_roster_entry(
