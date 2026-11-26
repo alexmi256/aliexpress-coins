@@ -133,6 +133,7 @@ __all__ = [
     'enumerate_roster',
     'is_boost_page',
     'is_empty_boost',
+    'merge_rosters',
     'observe_roster',
     'open_boost_list',
     'read_roster_log',
@@ -423,6 +424,16 @@ class Roster:
     unreadable_count: int = 0
     card_structure_failures: int = 0
     card_structure_titles: tuple[str, ...] = ()
+    rotation_samples: int = 0
+    """How many readable sheet reads this roster's night has seen."""
+    rotation_agreeing_samples: int = 0
+    """How many of the most recent reads agreed, including the first of the streak."""
+    rotation_confirmed: bool = True
+    """Whether two consecutive freshly opened reads agreed before a night was closed."""
+    unread_families: tuple[str, ...] = ()
+    """Catalogue families still claimable today that no read of this night showed."""
+    already_claimed_families: tuple[str, ...] = ()
+    """Catalogue families already completed today that no read of this night showed."""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, 'entries', tuple(self.entries))
@@ -430,6 +441,8 @@ class Roster:
         object.__setattr__(self, 'variants_seen', tuple(self.variants_seen))
         object.__setattr__(self, 'split_failures', tuple(self.split_failures))
         object.__setattr__(self, 'card_structure_titles', tuple(self.card_structure_titles))
+        object.__setattr__(self, 'unread_families', tuple(self.unread_families))
+        object.__setattr__(self, 'already_claimed_families', tuple(self.already_claimed_families))
 
     @property
     def tasks(self) -> tuple[RosterEntry, ...]:
@@ -512,6 +525,8 @@ class Roster:
             or self.scroll_limit_reached
             or self.scroll_surface_lost
             or self.scroll_surface_unconfirmed
+            or not self.rotation_confirmed
+            or bool(self.unread_families)
             or any(not failure.recovered for failure in self.split_failures)
         )
 
@@ -552,6 +567,16 @@ class Roster:
             problems.append('the boost surface was left during scrolling; the row set is incomplete')
         if self.scroll_surface_unconfirmed:
             problems.append('the Coins boost list did not prove it was open before its rows were read')
+        if not self.rotation_confirmed:
+            problems.append(
+                'the Coins boost sheet did not produce two agreeing reads after a fresh open; '
+                'a single rotation sample is not proof the night is finished'
+            )
+        if self.unread_families:
+            problems.append(
+                'catalogue families still claimable today were not seen in any read: '
+                + ', '.join(repr(key) for key in self.unread_families)
+            )
         if problems:
             return '; '.join(problems)
         if self.split_failures:
@@ -590,6 +615,13 @@ class Roster:
             'card_structure_titles': list(self.card_structure_titles),
             'incomplete': self.incomplete,
             'warning': self.warning,
+            'rotation': {
+                'samples': self.rotation_samples,
+                'agreeing_samples': self.rotation_agreeing_samples,
+                'confirmed': self.rotation_confirmed,
+                'unread_families': list(self.unread_families),
+                'already_claimed_families': list(self.already_claimed_families),
+            },
             'split_failures': [failure.as_dict() for failure in self.split_failures],
             'catalogue': {
                 'version': self.catalogue_version,
@@ -2042,6 +2074,43 @@ def collect_roster(
             dict.fromkeys(title for roster in rosters for title in roster.card_structure_titles)
         ),
     )
+
+
+def merge_rosters(accumulated: Roster | None, current: Roster) -> Roster:
+    """Merge two reads of the rotating sheet by identity, keeping the union.
+
+    The server rotates rows in place, so the latest frame is a *sample*, not the
+    whole night's work. Identity is the catalogue key when the row is allowed and
+    the normalised title otherwise, which keeps an OCR case/spacing change from
+    creating a second row. A later read wins for a row it repeats, because its
+    badge and action are the fresher evidence; rows only the earlier read saw
+    stay in the union so they remain candidates. Daily state, the blacklist and
+    the settled/blocked sets still decide whether a retained row may dispatch,
+    and the caller supplies the latest surface metadata.
+
+    ``current`` owns the surface diagnostics: the final read is what proves the
+    sheet could be read completely. The union only widens the row set.
+    """
+    if accumulated is None or not accumulated.entries:
+        return current
+    entries: dict[str, RosterEntry] = {}
+    order: list[str] = []
+    for entry in accumulated.entries:
+        identity = _entry_identity(entry)
+        if identity not in entries:
+            order.append(identity)
+        entries[identity] = entry
+    for entry in current.entries:
+        identity = _entry_identity(entry)
+        if identity not in entries:
+            order.append(identity)
+        entries[identity] = entry
+    return replace(current, entries=tuple(entries[identity] for identity in order))
+
+
+def _entry_identity(entry: RosterEntry) -> str:
+    """The cross-read key: catalogue key when known, otherwise the title."""
+    return entry.key if entry.key is not None else normalize(entry.title)
 
 
 def _roster_to_top(

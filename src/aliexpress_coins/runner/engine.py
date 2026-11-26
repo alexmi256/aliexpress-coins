@@ -54,6 +54,7 @@ from aliexpress_coins.control.popups import DismissReport, PopupCorpus, load_pop
 from aliexpress_coins.perception.artifacts import ArtifactStore
 from aliexpress_coins.perception.capture import AdbSnapshotter
 from aliexpress_coins.perception.errors import FrameDecodeError, SnapshotError, StateTimeout
+from aliexpress_coins.perception.matching import normalize
 from aliexpress_coins.perception.ocr import RapidOcrEngine
 from aliexpress_coins.perception.snapshot import Snapshot
 from aliexpress_coins.perception.state import CaptureSource, ScreenState, classify
@@ -98,6 +99,7 @@ from aliexpress_coins.tasks.discovery import (
     collect_roster,
     discover_roster,
     enumerate_roster,
+    merge_rosters,
     open_boost_list,
     wait_for_coin_page,
 )
@@ -213,6 +215,57 @@ class EngineResult:
             'failure': None if self.failure is None else self.failure.as_dict(),
             'acted': self.acted,
         }
+
+
+_RotationSignature = tuple[tuple[str, str | None, tuple[int, int] | None, str | None, bool], ...]
+
+
+@dataclass(slots=True)
+class _RotationTracker:
+    """Count readable sheet samples and how long the latest content has agreed.
+
+    The sheet rotates between loads, so one read is one sample. A night may only
+    be called finished when the last two readable reads agree *and* one of them
+    was a fresh re-open. ``agreeing`` is the trailing run length, including the
+    first read of that run; a changed row set (even a pure reorder is ignored by
+    the signature's sort) resets it to one.
+    """
+
+    samples: int = 0
+    agreeing: int = 0
+    signature: _RotationSignature | None = None
+
+    def record(self, roster: Roster) -> None:
+        """Record one readable roster read."""
+        current = _rotation_signature(roster)
+        self.samples += 1
+        self.agreeing = self.agreeing + 1 if current == self.signature else 1
+        self.signature = current
+
+    @property
+    def confirmed(self) -> bool:
+        """Whether the latest reads agree on the visible row set."""
+        return self.agreeing >= 2
+
+
+def _rotation_signature(roster: Roster) -> _RotationSignature:
+    """The content set two rotation samples must share before a night closes."""
+    rows = tuple(
+        (
+            normalize(entry.title),
+            entry.key,
+            (entry.progress.completed, entry.progress.total) if entry.progress is not None else None,
+            normalize(entry.action.text) if entry.action is not None else None,
+            entry.claimed,
+        )
+        for entry in roster.entries
+    )
+    return tuple(
+        sorted(
+            rows,
+            key=lambda row: (row[0], row[1] or '', row[2] or (-1, -1), row[3] or '', row[4]),
+        ),
+    )
 
 
 @dataclass(slots=True)
@@ -588,12 +641,34 @@ def run_once(
                     max_observations=task_limit + context.config.max_passes + 2,
                 )
             )
-            last_observation = _observe(
-                context,
-                controller,
-                observer,
-                route=roster.route,
-                on_dismiss=record_dismissal,
+            union_roster: Roster | None = roster
+            rotation = _RotationTracker()
+            rotation.record(roster)
+            confirmation_attempted = False
+            confirmation_read = False
+            rotation_incomplete = False
+            last_observation: RosterObservation | None = None
+
+            def absorb(observation: RosterObservation | None) -> bool:
+                """Fold one readable observation into the night's union of rows."""
+                nonlocal union_roster, last_observation
+                last_observation = observation
+                if observation is None:
+                    return False
+                if observation.roster is None or observation.failed or observation.cap_reached:
+                    return False
+                union_roster = merge_rosters(union_roster, observation.roster)
+                rotation.record(observation.roster)
+                return True
+
+            absorb(
+                _observe(
+                    context,
+                    controller,
+                    observer,
+                    route=roster.route,
+                    on_dismiss=record_dismissal,
+                ),
             )
             _record_policy_skips(report, roster, logger=log, gate=gate)
             report.observations = observer.sequence
@@ -612,7 +687,7 @@ def run_once(
             dispatched_this_pass = False
             no_progress_passes = 0
             pass_start_dispatchable = _dispatchable_identities(
-                roster,
+                union_roster if union_roster is not None else roster,
                 context.state,
                 blocked=blocked,
                 blacklisted=blacklist,
@@ -636,9 +711,11 @@ def run_once(
                     report.record_failure(failure(FailureCode.BUDGET_EXHAUSTED, detail=detail))
                     break
 
-                current = observer.roster if observer.roster is not None else roster
-                if current is None:  # pragma: no cover - set immediately above
+                latest = observer.roster if observer.roster is not None else roster
+                if latest is None:  # pragma: no cover - set immediately above
                     break
+                union_roster = merge_rosters(union_roster, latest)
+                current = union_roster
                 current_dispatchable = _dispatchable_identities(
                     current,
                     context.state,
@@ -651,7 +728,7 @@ def run_once(
                     current_dispatchable,
                     pass_start_dispatchable,
                 )
-                surface_reason = _pass_restart_reason(current, last_observation)
+                surface_reason = _pass_restart_reason(latest, last_observation)
                 if surface_reason is not None:
                     bound, no_progress_passes = _next_pass_bound(
                         passes=passes,
@@ -663,18 +740,23 @@ def run_once(
                         status = RunStatus.BUDGET
                         detail = f'{bound}; {surface_reason}'
                         report.record_failure(failure(FailureCode.BUDGET_EXHAUSTED, detail=detail))
+                        rotation_incomplete = confirmation_attempted and not confirmation_read
                         break
                     passes += 1
                     report.passes = passes
                     attempted_this_pass.clear()
                     dispatched_this_pass = False
+                    confirmation_attempted = False
+                    confirmation_read = False
                     pass_start_dispatchable = current_dispatchable
-                    last_observation = _restart_surface(
-                        context,
-                        controller,
-                        observer,
-                        on_dismiss=record_dismissal,
-                        reason=surface_reason,
+                    absorb(
+                        _restart_surface(
+                            context,
+                            controller,
+                            observer,
+                            on_dismiss=record_dismissal,
+                            reason=surface_reason,
+                        ),
                     )
                     _record_policy_skips(
                         report,
@@ -710,8 +792,76 @@ def run_once(
                         blacklisted=blacklist,
                     )
                     if pending is None and restart_reason is None:
-                        detail = 'no dispatchable row remains'
-                        break
+                        if latest.incomplete:
+                            # The read already proves the night is open. Another
+                            # sample cannot turn an incomplete roster into proof.
+                            detail = 'no dispatchable row remains'
+                            break
+                        if not confirmation_attempted:
+                            # A finished pass is only one rotation sample. Re-open
+                            # the sheet once inside this pass and compare what comes
+                            # back before the night may be called complete. This is
+                            # the bound: one proof read per pass, not a poll.
+                            confirmation_attempted = True
+                            confirmation_read = absorb(
+                                _restart_surface(
+                                    context,
+                                    controller,
+                                    observer,
+                                    on_dismiss=record_dismissal,
+                                    reason=(
+                                        'one rotation sample is not proof the night is finished; '
+                                        're-open the Coins boost sheet'
+                                    ),
+                                ),
+                            )
+                            _record_policy_skips(
+                                report,
+                                observer.roster or current,
+                                logger=log,
+                                gate=gate,
+                            )
+                            report.observations = observer.sequence
+                            report.write()
+                            continue
+                        if (
+                            confirmation_read
+                            and rotation.confirmed
+                            and last_observation is not None
+                            and not last_observation.failed
+                        ):
+                            detail = 'no dispatchable row remains'
+                            break
+                        # The fresh open still disagrees with the read before it.
+                        # Spend a pass, never a busy loop, and stop honestly if
+                        # the sheet keeps rotating without two agreeing reads.
+                        bound, no_progress_passes = _next_pass_bound(
+                            passes=passes,
+                            max_passes=max_passes,
+                            no_progress_passes=no_progress_passes,
+                            progressed=progressed,
+                        )
+                        if bound is not None:
+                            status = RunStatus.BUDGET
+                            detail = (
+                                f'{bound}; the Coins boost sheet kept rotating without two agreeing reads '
+                                f'({rotation.samples} sample(s), {rotation.agreeing} agreeing)'
+                            )
+                            report.record_failure(failure(FailureCode.BUDGET_EXHAUSTED, detail=detail))
+                            rotation_incomplete = True
+                            break
+                        passes += 1
+                        report.passes = passes
+                        attempted_this_pass.clear()
+                        dispatched_this_pass = False
+                        confirmation_attempted = False
+                        confirmation_read = False
+                        pass_start_dispatchable = current_dispatchable
+                        # The next loop's confirmation branch performs the fresh
+                        # open for this pass; opening here too spent two reads per
+                        # disagreeing pass.
+                        report.write()
+                        continue
                     bound, no_progress_passes = _next_pass_bound(
                         passes=passes,
                         max_passes=max_passes,
@@ -731,14 +881,18 @@ def run_once(
                     report.passes = passes
                     attempted_this_pass.clear()
                     dispatched_this_pass = False
+                    confirmation_attempted = False
+                    confirmation_read = False
                     pass_start_dispatchable = current_dispatchable
                     if restart_reason is not None:
-                        last_observation = _restart_surface(
-                            context,
-                            controller,
-                            observer,
-                            on_dismiss=record_dismissal,
-                            reason=restart_reason,
+                        absorb(
+                            _restart_surface(
+                                context,
+                                controller,
+                                observer,
+                                on_dismiss=record_dismissal,
+                                reason=restart_reason,
+                            ),
                         )
                         _record_policy_skips(
                             report,
@@ -835,12 +989,16 @@ def run_once(
                     # Re-enumerate after every real attempt, including a failure
                     # and a row that vanished between enumeration and dispatch.
                     # A no-tap refusal/re-check did not change the surface.
-                    last_observation = _observe(
-                        context,
-                        controller,
-                        observer,
-                        route=None,
-                        on_dismiss=record_dismissal,
+                    confirmation_attempted = False
+                    confirmation_read = False
+                    absorb(
+                        _observe(
+                            context,
+                            controller,
+                            observer,
+                            route=None,
+                            on_dismiss=record_dismissal,
+                        ),
                     )
                     _record_policy_skips(report, observer.roster or current, logger=log, gate=gate)
                     report.observations = observer.sequence
@@ -899,7 +1057,23 @@ def run_once(
             report.passes = passes
             report.attempts = dict(attempts)
             report.blacklist = dict(blacklist)
-            final_roster = observer.roster if observer is not None and observer.roster is not None else roster
+            latest_roster = observer.roster if observer is not None and observer.roster is not None else roster
+            final_roster = merge_rosters(union_roster, latest_roster) if latest_roster is not None else union_roster
+            if final_roster is not None:
+                unread_families, already_claimed_families = _unread_families(
+                    final_roster,
+                    context.catalogue,
+                    context.state,
+                    blacklist,
+                )
+                final_roster = replace(
+                    final_roster,
+                    rotation_samples=rotation.samples,
+                    rotation_agreeing_samples=rotation.agreeing,
+                    rotation_confirmed=rotation.confirmed and not rotation_incomplete,
+                    unread_families=unread_families,
+                    already_claimed_families=already_claimed_families,
+                )
             _record_unrun(
                 report,
                 final_roster,
@@ -1002,6 +1176,11 @@ def run_once(
             log.error('%s', _event('run_aborted', code=exc.code.value, detail=detail))
         if status in (RunStatus.COMPLETED, RunStatus.BUDGET) and not context.config.dry_run:
             finished_walk = status is RunStatus.COMPLETED
+            rotation_open = bool(
+                report.roster
+                and cast(dict[str, Any], report.roster.get('rotation') or {}).get('confirmed') is False
+                and not _roster_incomplete_without_rotation(report.roster),
+            )
             incomplete = _incomplete_run_detail(report, context.state, context.catalogue)
             if incomplete is not None:
                 # A finished walk is not a finished day. Every allowed row that
@@ -1014,7 +1193,7 @@ def run_once(
                     detail = incomplete
                     report.record_failure(failure(FailureCode.TASK_UNVERIFIED, detail=incomplete))
                 status = RunStatus.FAILED
-            if finished_walk or incomplete is not None:
+            if finished_walk or incomplete is not None or rotation_open:
                 night = _night_record(report, context.state, context.catalogue)
                 try:
                     context.state.record_night(night)
@@ -2898,6 +3077,23 @@ def _record_unrun(
         )
 
 
+def _roster_incomplete_without_rotation(roster: dict[str, Any] | None) -> bool:
+    """Whether the roster is open for a reason other than the rotation sample."""
+    if not roster:
+        return False
+    split_failures = cast(list[dict[str, Any]], roster.get('split_failures') or [])
+    return bool(
+        roster.get('surface_variant') in {'non_app', 'rows_absent'}
+        or roster.get('unreadable_count')
+        or roster.get('card_structure_failures')
+        or roster.get('unassigned_action_count')
+        or roster.get('scroll_limit_reached')
+        or roster.get('scroll_surface_lost')
+        or roster.get('scroll_surface_unconfirmed')
+        or any(not failure.get('recovered', False) for failure in split_failures)
+    )
+
+
 def _night_record(report: RunReport, state: DailyStateStore, catalogue: TaskCatalogue) -> NightRecord:
     """Decide what a finished roster walk leaves for the rest of the day (#97).
 
@@ -2990,6 +3186,40 @@ def _daily_count(state: DailyStateStore, key: str) -> int | None:
             _event('state_claimability_failed', key=key, detail=f'{type(exc).__name__}: {exc}'),
         )
         return None
+
+
+def _unread_families(
+    roster: Roster,
+    catalogue: TaskCatalogue,
+    state: DailyStateStore,
+    blacklisted: Mapping[str, int],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Split unseen catalogue families into unknown work and already earned work.
+
+    The sheet rotates, so a family absent from the union of every readable sample
+    is unknown, not proof that the app had nothing. It is fatal to the night when
+    it still has daily capacity: the app may be hiding claimable work behind a
+    rotation the reads never saw.
+
+    The one carve-out is a family already completed to today's daily limit in the
+    day state. Its absence is expected: it was claimed earlier today. Today's
+    ``super_discounts`` row is the motivating case (claimed at 10:08Z by run
+    ``20261126T100143Z``), and treating it as unread for the rest of the day would
+    keep the day open forever for a family that is already earned. Those keys are
+    still named in the report, as already claimed rather than unseen.
+    """
+    seen = {entry.key for entry in roster.allowed_entries if entry.key is not None}
+    unread: list[str] = []
+    claimed: list[str] = []
+    for spec in catalogue.allowed:
+        if spec.category not in _EXECUTORS or spec.key in seen or spec.key in blacklisted:
+            continue
+        count = _daily_count(state, spec.key)
+        if count is not None and count >= spec.max_per_run:
+            claimed.append(spec.key)
+        else:
+            unread.append(spec.key)
+    return tuple(unread), tuple(claimed)
 
 
 def _incomplete_run_detail(

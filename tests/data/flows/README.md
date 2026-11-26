@@ -46,6 +46,11 @@ arbitrary screenshots anywhere else in the tree.
 | `recently_viewed_issue_116_destination.png` | `recently_viewed` / destination (#116) | `Recently viewed`, `Stack Coins, Save More!`, `History` / `Cart` tabs, product cards and the right-edge `4s` dwell chip | top balance and operator search text masked; product titles/prices retained; no account data |
 | `recently_viewed_issue_116_destination_cleared.png` | `recently_viewed` / cleared (#116) | the same destination after the chip digits disappeared | top balance and operator search text masked; product titles/prices retained; no account data |
 | `recently_viewed_issue_116_row_gone.png` | `recently_viewed` / verification (#116) | populated `Coins boost` list after the visit, without `Browse recently viewed items` | header/hero balance and coin-credit amount masked; other task rows retained |
+| `boost_rotation_issue_149_first_read.png` | `boost_rotation` / first read (#149) | top of the sheet, captured 14:45:48Z from `open1.png`: `Explore sponsored items` `4/6`, `Browse surprise items` `1/2`, `Place an order on this page`, `Add 5 items to your cart` | band below the status bar masked (header balance/credit pills and the coin page behind the sheet); task rows retained; no account data |
+| `boost_rotation_issue_149_open_36m.png` | `boost_rotation` / open 36m16s (#149) | same modal still open, captured 15:22:04Z from `open-late-20m.png`: same four top rows | same mask as `…_first_read.png`; no account data |
+| `boost_rotation_issue_149_top.png` | `boost_rotation` / route reload (#149) | same sheet after a full shortcut reload, captured 15:23:02Z from `open-route-reload.png`: same four top rows | same mask; no account data |
+| `boost_rotation_issue_149_scrolled.png` | `boost_rotation` / one scroll (#149) | same sheet after one viewport scroll, captured 15:23:08Z from `open-scroll1.png`: `Water to win a US $0.10 prize` and `Share coins with friends` exposed | same mask; no account data |
+| `boost_rotation_issue_149_bottom.png` | `boost_rotation` / stable bottom (#149) | same sheet at a stable bottom, captured 15:26:41Z from `bottom-late.png`: `Browse recently viewed items`, `Add & start using our widget`, `Turn on notifications` | same mask; no account data |
 
 `search_results_issue_142.png` is the live results surface captured on 2026-11-25 while fixing the
 search task. The measured `OPPO` category tap did not navigate or submit (its grey placeholder was
@@ -80,6 +85,23 @@ which claims are observed versus inferred. The destination and cleared frames re
 row-gone frame is the populated boost list after the visit. The old
 `recently_viewed_issue_116.json` remains the evidence from run `20261124T083006Z` and deliberately
 records that its launcher transition cannot be proven.
+
+The five `boost_rotation_issue_149_*.png` files are live full-frame captures from 2026-11-26, taken
+while issue #149 measured the sheet's rotation. Exact per-file provenance — capture timestamp,
+source temp file, command, source and fixture SHA-256, and the claim each supports — is recorded in
+[`boost_rotation_issue_149_observation.json`](boost_rotation_issue_149_observation.json). The
+capture times are 14:45:48Z, 15:22:04Z, 15:23:02Z, 15:23:08Z and 15:26:41Z; the app hides the
+status-bar clock while the sheet is open, so no on-frame clock is used. The first two captures are
+36m16s apart (2176s); the background `sleep 1020` was started later and its launch time was not
+logged, so the JSON records the exact interval from the capture timestamps and explains that the
+sleep covers only the final 17 minutes. The PNG create/modify metadata
+is the 16:05Z fixture-encoding pass, not the capture time; the JSON's command-log/file timestamps are
+authoritative. A close/re-open capture at 15:22:10Z was byte-identical to the 15:22:04Z frame and is
+deliberately not kept as a separate fixture; the JSON records the duplicate hash and command. The band below the status bar down to the
+sheet header is masked with a solid rectangle, which removes the header balance/credit pills and the
+coin page behind the sheet without cropping the system UI or task rows. The files are
+palette-quantized for the fixture budget; no account nickname, balance, order, cart or notification
+content remains.
 
 `shortcut_visit_issue_130.json` is sanitized evidence for issue #130's below-the-fold
 `Visit the page via coins shortcut` row. It records the row's two-line title, the Android

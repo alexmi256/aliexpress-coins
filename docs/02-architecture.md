@@ -99,6 +99,15 @@ The dry-run roster signature and boost-arrival task signature sort their row-con
 comparison, so a pure reorder is not mistaken for unfinished rendering. This does not reorder the
 roster written to `roster.jsonl` or `run.json`.
 
+Because the sheet rotates between loads, the walk also keeps a union of every readable read, keyed
+by catalogue key (normalised title for a refused row). A row seen earlier remains a candidate until
+daily state, the blacklist or a settled/blocked outcome removes it, so a later frame cannot make it
+vanish from the plan. Completion needs two consecutive reads that agree, and the engine spends one
+fresh re-open per pass to obtain the second; a different read spends another pass instead of being
+silently accepted (#149). A family that no read saw and that is still claimable today also keeps the
+roster incomplete; a family already completed to today's daily limit is named as already claimed and
+does not block completion.
+
 Repeated failures are handled by the pass and attempt bounds (`_needs_another_pass`,
 `_blacklist_task`), not by moving a row around in the sort. The pass bound follows progress, not a
 fixed count (#141): a sweep that dispatches a row or reveals new dispatchable rows earns another
