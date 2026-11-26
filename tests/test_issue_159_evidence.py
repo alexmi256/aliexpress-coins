@@ -56,7 +56,14 @@ def test_issue_159_sample_log_records_every_read_and_every_distinct_row() -> Non
         assert sample['reloaded'] is True
         assert sample['sheet_views'] >= 4
         assert sample['rows'] == EXPECTED_ROWS
+        assert sample['coin_rows'] == [
+            'Place an order on this page',
+            'Add 5 items to your cart',
+            'Water to win a US $0.10 prize',
+        ]
         assert 'Learn to save money with Coins Credits' not in sample['rows']
+        assert 'Learn to save money with Coins Credits' not in sample['coin_rows']
+        assert sample['coin_frame_at_utc']
         assert sample['learn_to_save_seen'] is False
 
 

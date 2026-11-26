@@ -151,9 +151,9 @@ times on 2026-11-26, in three batches around the same settled 130-coin day:
 
 | batch | first sample (UTC) | last sample (UTC) | samples |
 |---|---|---|---|
-| 1 | `21:42:45` | `21:48:56` | 7 |
-| 2 | `22:07:19` | `22:08:20` | 2 |
-| 3 | `22:26:33` | `22:30:44` | 6 |
+| 1 | `21:42:45.242` | `21:48:59.346` | 7 |
+| 2 | `22:07:11.813` | `22:08:19.992` | 2 |
+| 3 | `22:26:23.873` | `22:30:44.184` | 6 |
 
 Each sample fired the shortcut route, tapped `Earn more`, and scanned the sheet from the top until a
 stable bottom. Every sample read the same ten rows: `Place an order on this page`,
@@ -161,7 +161,10 @@ stable bottom. Every sample read the same ten rows: `Place an order on this page
 `Explore sponsored items` (`6/6`), `Browse surprise items` (`2/2`), `Browse recently viewed items`,
 `Add a coins shortcut`, `Add & start using our widget` and `Turn on notifications`.
 `Learn to save money with Coins Credits` never appeared on the coin page or in any sheet frame. The
-complete per-sample timestamps and distinct rows, source captures, hashes and masking rectangles are
+observation JSON also records the inline coin-page titles read in each sample; they were
+`Place an order on this page`, `Add 5 items to your cart` and `Water to win a US $0.10 prize`, never
+the learn-to-save row. The complete per-sample timestamps and distinct rows, source captures, hashes
+and masking rectangles are
 in [`learn_to_save_issue_159_observation.json`](../tests/data/flows/learn_to_save_issue_159_observation.json);
 the reviewed top and bottom frames are
 [`learn_to_save_issue_159_sheet_top.png`](../tests/data/flows/learn_to_save_issue_159_sheet_top.png)
@@ -181,9 +184,11 @@ and [`learn_to_save_issue_159_sheet_bottom.png`](../tests/data/flows/learn_to_sa
 
 A live run in this work (`20261126T223057Z`) read the sheet with only `learn_to_save` still
 claimable, did not find the row, moved the balance `130 -> 130`, and named `learn_to_save` under
-`unread_families` with `confirmed: false`. It stopped `budget` because two already-claimed rows had
-no readable card structure, so it is an honest exclusion observation, not a completed night. The
-catalogue row is deliberately **not** removed to make a night complete.
+`unread_families` with `confirmed: false`. It stopped `budget` after two consecutive no-progress
+passes; `surface_incomplete` was raised because the already-claimed `Browse recently viewed items`
+row and the `Add & start using our widget` row (skipped `no executor`) had no readable card
+structure, and the sheet did not produce two agreeing reads. It is an honest exclusion observation,
+not a completed night. The catalogue row is deliberately **not** removed to make a night complete.
 
 ## 5. Reward mechanics ✅
 
