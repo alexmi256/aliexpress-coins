@@ -6468,6 +6468,43 @@ def test_a_claimability_read_failure_keeps_the_failed_row_visible(
     assert 'state_claimability_failed' in caplog.text
 
 
+def _policy_refused_rows(catalogue: TaskCatalogue) -> tuple[tuple[str, str], ...]:
+    """Derive one row per deny rule from the live policy.
+
+    The title is the rule's first multi-word pattern. A single generic word
+    such as ``order`` or ``game`` is trusted only in the title, so it is still
+    safe there; the subtitle stays neutral and never carries a label the rule
+    is not allowed to match. Both assertions below make a family whose status
+    changes fail at construction instead of silently invalidating a typed list.
+    """
+    rows: list[tuple[str, str]] = []
+    for rule in catalogue.denied:
+        title = next(
+            (pattern for pattern in rule.label_patterns if ' ' in pattern),
+            rule.label_patterns[0],
+        )
+        subtitle = 'A neutral subtitle'
+        decision = catalogue.decide(title, subtitle=subtitle)
+        assert decision.denied, f'{rule.key!r} no longer refuses its own pattern {title!r}: {decision.as_dict()!r}'
+        assert decision.rule == rule.key, f'{title!r} is now refused by {decision.rule!r}, not {rule.key!r}'
+        rows.append((title, subtitle))
+    return tuple(rows)
+
+
+def _roster_frame(rows: tuple[tuple[str, str], ...]) -> Snapshot:
+    """Build a readable boost frame from ``(title, subtitle)`` rows."""
+    boxes: list[TextBox] = [_box('Coins boost', 100, 100, 500, 150)]
+    for index, (title, subtitle) in enumerate(rows):
+        top = 260 + index * 150
+        boxes.append(_box(title, 100, top, 900, top + 40))
+        boxes.append(_box(subtitle, 100, top + 45, 900, top + 75))
+        boxes.append(_box('GO', 980, top + 20, 1040, top + 60))
+    # One row per deny rule is listed here, so the frame grows with the
+    # catalogue instead of clipping the last rows on a taller policy.
+    size = (1200, max(2000, 260 + len(rows) * 150 + 100))
+    return _snapshot(*boxes, size=size)
+
+
 @pytest.mark.slow
 def test_a_roster_with_only_policy_excluded_rows_still_completes_the_day(
     tmp_path: Path,
@@ -6476,20 +6513,8 @@ def test_a_roster_with_only_policy_excluded_rows_still_completes_the_day(
     corpus: PopupCorpus,
 ) -> None:
     """Exclusion is success: a day whose only unclaimed rows are refused is finished."""
-    excluded = (
-        ('Place an order on this page', 'Shop and earn'),
-        ('Add 5 items to your cart', 'Fill your cart'),
-        ('Water to win a US $0.10 prize', 'Play now'),
-        ('Share coins with friends', 'Invite friends'),
-        ('Browse recently viewed items', 'Pick up where you left off'),
-    )
-    boxes: list[TextBox] = [_box('Coins boost', 100, 100, 500, 150)]
-    for index, (title, subtitle) in enumerate(excluded):
-        top = 260 + index * 150
-        boxes.append(_box(title, 100, top, 900, top + 40))
-        boxes.append(_box(subtitle, 100, top + 45, 900, top + 75))
-        boxes.append(_box('GO', 980, top + 20, 1040, top + 60))
-    frame = _snapshot(*boxes)
+    excluded = _policy_refused_rows(catalogue)
+    frame = _roster_frame(excluded)
     roster = replace(
         enumerate_roster(frame, catalogue, route=DiscoveryRoute.BOOST),
         surface_variant=Surface.BOOST_PAGE,
@@ -6514,6 +6539,62 @@ def test_a_roster_with_only_policy_excluded_rows_still_completes_the_day(
 
     assert dispatched == []
     assert report.tasks == []
+    assert report.status is RunStatus.COMPLETED
+    assert report.ok is True
+    assert report.failure is None
+    assert {skip.title for skip in report.skipped} == {title for title, _ in excluded}
+    assert all(skip.reason == 'policy' for skip in report.skipped)
+    snapshot = context.state.snapshot()
+    assert snapshot.completed_night is True
+    assert snapshot.last_night is not None
+    assert snapshot.last_night.outcome is NightOutcome.EXHAUSTED
+
+
+@pytest.mark.slow
+def test_a_recently_viewed_row_is_dispatched_instead_of_refused(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    """#116 made the measured browse-and-wait row a real task, not a policy refusal."""
+    spec = catalogue.allowed_by_key('recently_viewed')
+    assert spec.label_patterns[0] == 'Browse recently viewed items'
+    decision = catalogue.decide(spec.label_patterns[0])
+    assert decision.allowed
+    assert decision.spec is not None
+    assert decision.spec.key == 'recently_viewed'
+    assert decision.spec.category is TaskCategory.BROWSE_WAIT
+
+    rows = (*_policy_refused_rows(catalogue), (spec.label_patterns[0], 'Pick up where you left off'))
+    frame = _roster_frame(rows)
+    roster = replace(
+        enumerate_roster(frame, catalogue, route=DiscoveryRoute.BOOST),
+        surface_variant=Surface.BOOST_PAGE,
+        routes_taken=(SurfaceRoute.SHORTCUT,),
+    )
+    _surface(monkeypatch, roster, frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    dispatched: list[str] = []
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        dispatched.append(entry.key or '')
+        _context.state.record(entry.key or '')
+        return EngineResult('completed', 'fake', 'done', True, {'key': entry.key})
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert dispatched == ['recently_viewed']
+    assert [task.key for task in report.tasks] == ['recently_viewed']
+    assert report.tasks[0].category == TaskCategory.BROWSE_WAIT.value
+    assert report.tasks[0].completed is True
     assert report.status is RunStatus.COMPLETED
     assert report.ok is True
     assert report.failure is None
