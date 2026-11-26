@@ -444,6 +444,45 @@ def test_an_unseen_family_already_claimed_today_is_not_fatal(
     assert 'super_discounts' in line
 
 
+@pytest.mark.slow
+def test_learn_to_save_stays_claimable_and_unseen_keeps_the_night_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#159: absence must not be turned into a completed night by catalogue edits."""
+    roster = _roster('coins_quiz')
+    frame = _frame('coins_quiz')
+    _surface(monkeypatch, roster, frame)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=CATALOGUE,
+        corpus=CORPUS,
+    )
+    context.state.record('coins_quiz')
+    for spec in CATALOGUE.allowed:
+        if spec.key in {'coins_quiz', 'learn_to_save'}:
+            continue
+        for _ in range(spec.max_per_run):
+            context.state.record(spec.key)
+
+    report = engine.run_once(context)
+
+    assert 'learn_to_save' in CATALOGUE.allowed_keys
+    rotation = cast(dict[str, Any], cast(dict[str, Any], report.roster)['rotation'])
+    assert 'learn_to_save' in cast(list[str], rotation['unread_families'])
+    assert report.night is not None
+    assert report.night['outcome'] == 'incomplete_roster'
+    assert context.state.snapshot().completed_night is False
+    line = next(
+        line
+        for line in report.summary_path.read_text(encoding='utf-8').splitlines()
+        if line.startswith('- **Rotation:**')
+    )
+    assert 'learn_to_save' in line
+    assert 'still claimable today' in line
+
+
 def test_the_rotation_summary_states_the_samples_and_unread_families() -> None:
     assert report_module._rotation_summary(None) == 'not sampled'
     assert report_module._rotation_summary({'rotation': {'samples': 0}}) == 'not sampled'

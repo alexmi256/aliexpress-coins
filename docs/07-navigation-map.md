@@ -60,8 +60,7 @@ flowchart TD
     sgrid -- '3rd distinct product' --> sdone[[Mission Completed]]
     sdone -- tap --> sgrid
     sgrid -- BACK --> boost
-    boost -- 'Learn to save money' GO --> explain[[Explainer page<br/>What are Coins Credits?]]
-    explain -- BACK --> boost
+    boost -. 'Learn to save money' not observed in #159 .-> explain[[Destination and contract unknown ❓]]
     boost -- 'Browse recently viewed items' GO --> recent[[Recently viewed list<br/>Stack Coins, Save More! + timer chip]]
     recent -- 'dwell clears / shortcut' --> coin
     boost -- 'Search for what you love' GO --> landing[[Search landing<br/>field + history + category cards]]

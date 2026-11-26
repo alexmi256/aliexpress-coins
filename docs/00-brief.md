@@ -87,7 +87,7 @@ tapping a guessed coordinate ([`06-runbook.md`](06-runbook.md) §14).
 | Daily coins (streak `Collect`) & `Daily check-in` | ✅ allowed | `sign_in` (`signin.py`) | two independent claims per day |
 | Take the coins quiz | ✅ allowed | `quiz` (`quiz.py`) | 2 or 4 options; learns into `data/quiz_bank.json` |
 | Explore sponsored items | ✅ allowed | `browse_wait` (`browse.py`) | timer chip (15 s bound), repeatable `6/day` |
-| Learn to save money with Coins Credits | ✅ allowed | `browse_wait` (`browse.py`) | timer chip (15 s bound) |
+| Learn to save money with Coins Credits | ✅ allowed | `browse_wait` (`browse.py`) | catalogue row retained; not offered in any #159 sample, so destination, timer chip and reward are ❓ (`docs/05` §4e) |
 | View Super discounts | ✅ allowed | `browse_wait` (`browse.py`) | timed view (~15 s), +1 coin, no purchase step; repeatability ❓ |
 | Browse recently viewed items | ✅ allowed | `browse_wait` (`browse.py`) | timer chip (20 s bound, measured ~15.6 s clear); no badge, row disappears after the visit and pays +1 (#116) |
 | Check in to win Shopping credits | ✅ allowed | `browse_wait` (`browse.py`) | timer chip (15 s bound) |

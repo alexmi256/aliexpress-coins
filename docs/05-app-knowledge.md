@@ -35,7 +35,7 @@ between loads (e.g., `Browse surprise items` rotated to `Search for what you lov
 |---|---|---|---|---|
 | Daily check-in *(boost row)* | Finish today's check-in | +1 | — | allowed: `sign_in` (`signin.py`) |
 | Take the coins quiz | — | +3~6 coins, +0~US$0.01 | — | allowed: `quiz` (`quiz.py`) |
-| Learn to save money with Coins Credits | Stack with coins, coupons and other discounts | +1 | — | allowed: `browse_wait` (`browse.py`) |
+| Learn to save money with Coins Credits | Stack with coins, coupons and other discounts | ❓ | — | allowed: `browse_wait` (`browse.py`); subtitle ⬜ from old recon; **not offered in any #159 sample**, contract ❓ (§4e) |
 | Explore sponsored items | Browse, shop and save | +1 | `1/6` | allowed: `browse_wait` (`browse.py`) |
 | Browse recently viewed items | Coins deal on viewed, in-cart items | +1 | — | allowed: `recently_viewed` (`browse_wait`, `browse.py`); measured #116 |
 | Check in to win Shopping credits | Don't forget to check in today! | — | — | allowed: `browse_wait` (`browse.py`) |
@@ -143,6 +143,48 @@ in the report as already claimed, not as unseen. `super_discounts` is the motiva
 `20261126T100143Z` claimed it at 10:08Z, so its absence from every later sheet is expected, while an
 unseen and unclaimed family keeps the day open (#149).
 
+### 4e. `learn_to_save` was not offered in the #159 sample window ❓
+
+The catalogue keeps `learn_to_save`; absence from a rotating sheet is not proof that the family was
+removed. The coin page and a freshly re-opened, fully scanned `Coins boost` sheet were sampled 15
+times on 2026-11-26, in three batches around the same settled 130-coin day:
+
+| batch | first sample (UTC) | last sample (UTC) | samples |
+|---|---|---|---|
+| 1 | `21:42:45` | `21:48:56` | 7 |
+| 2 | `22:07:19` | `22:08:20` | 2 |
+| 3 | `22:26:33` | `22:30:44` | 6 |
+
+Each sample fired the shortcut route, tapped `Earn more`, and scanned the sheet from the top until a
+stable bottom. Every sample read the same ten rows: `Place an order on this page`,
+`Add 5 items to your cart`, `Water to win a US $0.10 prize`, `Share coins with friends`,
+`Explore sponsored items` (`6/6`), `Browse surprise items` (`2/2`), `Browse recently viewed items`,
+`Add a coins shortcut`, `Add & start using our widget` and `Turn on notifications`.
+`Learn to save money with Coins Credits` never appeared on the coin page or in any sheet frame. The
+complete per-sample timestamps and distinct rows, source captures, hashes and masking rectangles are
+in [`learn_to_save_issue_159_observation.json`](../tests/data/flows/learn_to_save_issue_159_observation.json);
+the reviewed top and bottom frames are
+[`learn_to_save_issue_159_sheet_top.png`](../tests/data/flows/learn_to_save_issue_159_sheet_top.png)
+and [`learn_to_save_issue_159_sheet_bottom.png`](../tests/data/flows/learn_to_save_issue_159_sheet_bottom.png).
+
+| claim | status | evidence |
+|---|---|---|
+| the row is offered today | ❓ | absent from all 15 full reads; the catalogue still regards it as claimable |
+| destination page | ❓ | never opened |
+| what counts as progress | ❓ | never observed |
+| badge / `N/M` counter | ❓ | never observed |
+| return route | ❓ | never observed |
+| timer / dwell timing | ❓ | no timer chip observed |
+| reward amount | ❓ | no balance movement tied to this family |
+| catalogue retention | ✅ | still an allowed `browse_wait` row; an unseen claimable family keeps the night open (#149) |
+| historical “paid +1” note | ⬜ | 2026-11-20 operator prose with no retained frame; not a measured contract |
+
+A live run in this work (`20261126T223057Z`) read the sheet with only `learn_to_save` still
+claimable, did not find the row, moved the balance `130 -> 130`, and named `learn_to_save` under
+`unread_families` with `confirmed: false`. It stopped `budget` because two already-claimed rows had
+no readable card structure, so it is an honest exclusion observation, not a completed night. The
+catalogue row is deliberately **not** removed to make a night complete.
+
 ## 5. Reward mechanics ✅
 
 - **Daily check-in (two independent claims) ✅:** streak-row `Collect` (+2 coins, disappears) and
@@ -210,8 +252,12 @@ unseen and unclaimed family keeps the day open (#149).
 
 ### 5b. Flows walked end to end
 
-- **`Learn to save money with Coins Credits` ✅:** explainer page with the same timer chip; paid +1
-  and removed the row.
+- **`Learn to save money with Coins Credits` ❓ (issue #159):** not offered in any of the coin-page
+  or `Coins boost` samples taken on 2026-11-26 (§4e). The historical 2026-11-20 note that an
+  explainer page with the same timer chip paid +1 retained no frame, so the destination, dwell
+  chip, reward, badge/counter, return route and timing are all ❓. The catalogue row and
+  `browse_wait` mapping remain; an unseen, still-claimable family keeps the night open (#149). It
+  is not removed to make a night complete.
 - **`Browse surprise items` ✅ (2026-11-22):** two rounds of three distinct products (`N/2` row,
   `N/3` counter). Tapping a tile opens `AIProductDetailActivity` (`Item 1/n`, `Add to cart` /
   `Buy now` — **never tapped**); **BACK** increments the counter per **distinct product**, not per
@@ -338,3 +384,4 @@ verification → return to coins page → `balance-after` → report. See
 | Quiz result & notification denial frames ❓ | completes `tests/data/flows/` fixtures | capture before rows are claimed |
 | Whether the quiz question set is finite ❓ | question-bank hit rate | observe `data/quiz_bank.json` growth |
 | Which step credits `Visit the page via coins shortcut`? ❓ | the observed +1 followed a home-screen shortcut launch, while a plain URI fired after creating the shortcut did not credit immediately; #158 now fires the shortcut's own persisted launcher intent and then reloads | bracket the balance and row after the launcher intent and again after the reload on a fresh day (#130, #158) |
+| When is `Learn to save money with Coins Credits` offered? ❓ | it was absent from 15 full reads on 2026-11-26 while the catalogue still called it claimable; the destination, timer and reward are unverified (§4e) | sample another day/window and check whether the account completed it before the daily-state era; do not remove the catalogue row just to close a night (#159) |
