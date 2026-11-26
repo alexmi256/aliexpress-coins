@@ -189,8 +189,15 @@ allowed:
       The measured 2026-11-24 row sits below the first screenful and its title
       wraps as `Visit the page via coins` / `shortcut`. `GO` opens the OS
       `Create shortcut` sheet, not the coin page; the reward was observed only
-      after the created launcher shortcut was used. The executor therefore
-      recognises the sheet instead of creating a launcher item (#130, #27).
+      after the created launcher shortcut was used. The executor accepts the
+      sheet's explicit `Create shortcut` control, confirms the launcher's
+      `Add to home screen`, reuses an item when Android reports `Shortcut has
+      existed`, fires that item's own persisted launcher intent, reloads the
+      coin page and requires a readable `+1` while the app is foreground.
+      Cleanup runs `cmd shortcut clear-shortcuts <package>`; Android has no
+      per-pin adb delete, so this also clears the app's ordinary long-press
+      shortcuts, which the app republishes. A launcher frame after the dispatch
+      is a foreground loss, never completion (#130, #158).
 
   - key: coins_shortcut
     label_patterns:

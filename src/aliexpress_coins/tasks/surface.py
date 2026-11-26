@@ -192,6 +192,22 @@ must not learn how to spawn adb. It is a *navigation* command, not a launch
 command: the app has to be started and settled first.
 """
 
+SHORTCUT_LAUNCH_DEEP_LINK = (
+    'aliexpress://goto?url=https%3A%2F%2Fm.aliexpress.com%2Fp%2Fcoin-index%2Findex.html'
+    '%3F_immersiveMode%3Dtrue%26from%3Dshortcut%26user_growth_type%3Dshortcut'
+    '%26homescreen_src%3DcoinD11%26shortcutId%3DcoinsPromotion'
+)
+"""The intent a tap on the created ``Coins`` launcher shortcut sends (#158).
+
+Measured 2026-11-26 from the pinned shortcut's persisted intent
+(``/data/system_ce/0/shortcut_service/packages/com.alibaba.aliexpresshd.xml``):
+the shortcut adds ``from=shortcut``, ``user_growth_type=shortcut``,
+``homescreen_src=coinD11`` and ``shortcutId=coinsPromotion`` to the ordinary
+coin-page URL. Firing the plain :data:`SHORTCUT_DEEP_LINK` after creation left
+the balance unchanged in the #130 observation; this is the launcher's own
+intent, not a home-screen coordinate.
+"""
+
 SURFACE_REFRESH_LIMIT = 1
 """The number of warm re-entries a route may spend on an absent surface.
 
@@ -545,6 +561,7 @@ __all__ = [
     'REDEEM_MARKER',
     'SEARCH_LANDING_MARKER',
     'SHORTCUT_DEEP_LINK',
+    'SHORTCUT_LAUNCH_DEEP_LINK',
     'SIGN_IN_MARKERS',
     'STREAK_CARD_HEIGHT_RATIO',
     'STREAK_CONTROL_LABELS',

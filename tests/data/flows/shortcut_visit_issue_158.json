@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "issue": 158,
+  "kind": "supervised manual validation of the pinned shortcut intent (not a collector run)",
+  "observed_at_local": "2026-11-26T14:09:00-05:00",
+  "observed_at_utc": "2026-11-26T19:09:00Z",
+  "device": "T3_US / Android 15 / AliExpress 8.180.1",
+  "row": {
+    "title_lines": ["Visit the page via coins", "shortcut"],
+    "title": "Visit the page via coins shortcut",
+    "subtitle": "Unlock a daily surprise",
+    "reward": "+1",
+    "action": "GO"
+  },
+  "pre_tap": {
+    "balance": 129,
+    "worth": "C$1.88",
+    "row_present": true,
+    "labels": [
+      "Coins boost",
+      "Place an order on this page",
+      "Add 5 items to your cart",
+      "Water to win a US $0.10 prize",
+      "Visit the page via coins",
+      "shortcut",
+      "Unlock a daily surprise"
+    ]
+  },
+  "shortcut_sheet": {
+    "labels": [
+      "Once you've created a shortcut, find it",
+      "on your home screen. Tap it to enter",
+      "Coins",
+      "Got it",
+      "Create shortcut"
+    ],
+    "balance": 129,
+    "row_present": true
+  },
+  "launcher_add": {
+    "labels": ["AliExpress", "Coins", "1x1", "Cancel", "Add to home screen"],
+    "toast": "Shortcut has existed",
+    "balance": 129,
+    "row_present": true
+  },
+  "home_shortcut": {
+    "labels": ["AliExpress", "Coins", "Settings"],
+    "balance_after_home_tap": 129,
+    "credited_on_home_tap": false
+  },
+  "launcher_intent": {
+    "deep_link": "aliexpress://goto?url=https%3A%2F%2Fm.aliexpress.com%2Fp%2Fcoin-index%2Findex.html%3F_immersiveMode%3Dtrue%26from%3Dshortcut%26user_growth_type%3Dshortcut%26homescreen_src%3DcoinD11%26shortcutId%3DcoinsPromotion",
+    "flags": "0x04000000",
+    "balance_before": 129,
+    "balance_after": 130,
+    "worth_after": "C$1.89",
+    "credited": true,
+    "row_gone_in_later_boost_read": true
+  },
+  "cleanup": {
+    "command": "adb -s 192.168.8.65:5555 shell cmd shortcut clear-shortcuts com.alibaba.aliexpresshd",
+    "scope": "package-wide; also clears ordinary long-press shortcuts, which the app republishes",
+    "verified_no_pinned_shortcut": true,
+    "verified_no_launcher_item": true
+  },
+  "limitation": "The task row was claimed by this supervised validation before the final collector was ready, so a same-day `aliexpress-coins run --once` with a live task record could not be produced. The new executor fires this measured launcher intent and applies the same +1/row-gone evidence and cleanup."
+}
