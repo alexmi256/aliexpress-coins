@@ -171,17 +171,16 @@ def test_a_directly_built_roster_cannot_report_a_row_as_an_unreadable_card() -> 
 
 
 def test_a_directly_built_roster_counts_a_repeated_key_once() -> None:
-    entry = _roster(_full_widget_frame()).entries[0]
     roster = Roster(
-        entries=(entry,),
+        entries=(),
         card_structure_failures=2,
-        card_structure_titles=(NOTIFICATIONS, NOTIFICATIONS),
-        card_structure_keys=('notifications', 'notifications'),
+        card_structure_titles=(WIDGET, WIDGET),
+        card_structure_keys=('coins_widget', 'coins_widget'),
     )
 
     assert roster.card_structure_failures == 1
-    assert roster.card_structure_titles == (NOTIFICATIONS,)
-    assert roster.card_structure_keys == ('notifications',)
+    assert roster.card_structure_titles == (WIDGET,)
+    assert roster.card_structure_keys == ('coins_widget',)
 
 
 def test_collect_roster_drops_a_failure_when_a_scrolled_frame_reads_the_card() -> None:
@@ -247,6 +246,16 @@ def test_two_labels_for_one_failure_key_count_as_one_diagnostic() -> None:
     assert merged.card_structure_failures == 1
     assert merged.card_structure_titles == (WIDGET,)
     assert merged.card_structure_keys == ('coins_widget',)
+
+
+def test_a_keyless_failure_is_upgraded_by_the_same_title_with_a_key() -> None:
+    keyless = Roster(entries=(), card_structure_failures=1, card_structure_titles=(WIDGET,))
+    keyed = _roster(_bare_frame(WIDGET))
+
+    for merged in (merge_rosters(keyless, keyed), merge_rosters(keyed, keyless)):
+        assert merged.card_structure_failures == 1
+        assert merged.card_structure_titles == (WIDGET,)
+        assert merged.card_structure_keys == ('coins_widget',)
 
 
 def test_a_merged_summary_counts_only_the_rows_it_records() -> None:

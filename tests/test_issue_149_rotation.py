@@ -477,6 +477,47 @@ def test_a_stale_bare_title_sample_does_not_reopen_a_reconciled_night(
 
 
 @pytest.mark.slow
+def test_a_restart_roster_keeps_card_keys_in_step_with_the_union_titles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    widget = replace(_card_failure_roster('Add & start using our widget'), card_structure_keys=('coins_widget',))
+    quiz = replace(_card_failure_roster('Take the coins quiz'), card_structure_keys=('coins_quiz',))
+    union = merge_rosters(widget, quiz)
+    observations: list[RosterObservation | None] = [
+        _observation(1, quiz),
+        _observation(2, quiz),
+        _observation(3, quiz),
+    ]
+    scripted = _ScriptedObserver(quiz, observations)
+    captured: list[Roster] = []
+    original = engine._pass_restart_reason
+
+    def capture(roster: Roster | None, observation: RosterObservation | None) -> str | None:
+        if roster is not None:
+            captured.append(roster)
+        return original(roster, observation)
+
+    monkeypatch.setattr(engine, 'discover_roster', lambda *args, **kwargs: union)
+    monkeypatch.setattr(engine, '_observe', lambda *args, **kwargs: scripted.observe())
+    monkeypatch.setattr(engine, '_pass_restart_reason', capture)
+    context = _context(
+        tmp_path,
+        capture=_Capture(_frame('notifications'), _coin_frame()),
+        catalogue=CATALOGUE,
+        corpus=CORPUS,
+    )
+    context.observer = cast(Any, scripted)
+    _seed_other_families(context, seen=set())
+
+    engine.run_once(context)
+
+    first = captured[0]
+    assert first.card_structure_titles == ('Add & start using our widget', 'Take the coins quiz')
+    assert first.card_structure_keys == ('coins_widget', 'coins_quiz')
+
+
+@pytest.mark.slow
 def test_a_late_titleless_sample_still_restarts_the_surface(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

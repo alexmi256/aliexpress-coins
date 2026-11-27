@@ -800,6 +800,7 @@ def run_once(
                     latest,
                     card_structure_failures=current.card_structure_failures,
                     card_structure_titles=current.card_structure_titles,
+                    card_structure_keys=current.card_structure_keys,
                 )
                 surface_reason = _pass_restart_reason(restart_roster, last_observation)
                 if surface_reason is not None:

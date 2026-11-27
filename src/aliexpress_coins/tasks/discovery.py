@@ -430,8 +430,8 @@ def _reconcile_card_structure(
     label for the same family.
     """
     keys = _aligned_card_keys(titles, keys)
-    if not titles or not entries:
-        return failures, tuple(titles), keys
+    if not titles:
+        return failures, (), ()
     row_titles = {normalize(entry.title) for entry in entries}
     row_keys = {entry.rule for entry in entries if entry.rule is not None}
     kept_titles: list[str] = []
@@ -2307,10 +2307,11 @@ def _merged_card_structure(rosters: Sequence[Roster]) -> tuple[int, tuple[str, .
     """Union the card failures of several reads, keeping their untitled residual.
 
     Failures with a known catalogue key are the same failure even when the OCR
-    label varies; without a key the normalised title is the identity. ``Roster``
-    reconciles the union against the merged entries, which is what drops a
-    failure another sample read as a row. The untitled residual is the largest
-    any sample carried, because an unnamed failure has no identity to
+    label varies; without a key the normalised title is the identity, and a
+    keyless failure is upgraded when another sample supplies that title's key.
+    ``Roster`` reconciles the union against the merged entries, which is what
+    drops a failure another sample read as a row. The untitled residual is the
+    largest any sample carried, because an unnamed failure has no identity to
     deduplicate against.
     """
     failures: dict[tuple[str, str], tuple[str, str | None]] = {}
@@ -2318,9 +2319,22 @@ def _merged_card_structure(rosters: Sequence[Roster]) -> tuple[int, tuple[str, .
         keys = _aligned_card_keys(roster.card_structure_titles, roster.card_structure_keys)
         for title, key in zip(roster.card_structure_titles, keys, strict=True):
             identity = ('key', key) if key is not None else ('title', normalize(title))
-            previous = failures.get(identity)
-            if previous is None or (previous[1] is None and key is not None):
-                failures[identity] = (title, key)
+            if identity in failures:
+                continue
+            same_title = next(
+                (
+                    existing
+                    for existing, (known_title, _) in failures.items()
+                    if normalize(known_title) == normalize(title)
+                ),
+                None,
+            )
+            if same_title is not None:
+                if failures[same_title][1] is None and key is not None:
+                    failures.pop(same_title)
+                    failures[identity] = (title, key)
+                continue
+            failures[identity] = (title, key)
     items = tuple(failures.values())
     titles = tuple(title for title, _ in items)
     keys = tuple(key for _, key in items)
