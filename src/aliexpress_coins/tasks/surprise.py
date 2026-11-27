@@ -24,6 +24,10 @@ Three facts keep this executor honest:
   returned row agrees. A counter seen before any tile tap, or read from a
   headerless crop, is not that evidence. A failed task writes no completion and
   cannot consume the day's limit or foreclose its retry.
+* **a misrouted BACK is re-entered, not spent.** BACK normally returns to the
+  grid, but if it lands on the coin page, the boost sheet or elsewhere, the
+  executor re-opens the grid through the shortcut/boost route and keeps reading
+  the grid's own counter. A tap that never returns is not progress (#164).
 
 The run never taps a purchase control: only a product card, the page's own
 ``Next round``, the overlay, and BACK. Every completion is recorded from a
@@ -65,7 +69,7 @@ from aliexpress_coins.tasks.browse import (
     return_to_coins_page,
 )
 from aliexpress_coins.tasks.catalogue import AllowedTaskSpec, TaskCategory
-from aliexpress_coins.tasks.discovery import RosterEntry
+from aliexpress_coins.tasks.discovery import RosterEntry, open_boost_list
 from aliexpress_coins.tasks.dispatch import authorization_of
 from aliexpress_coins.tasks.errors import TaskError
 from aliexpress_coins.tasks.surface import (
@@ -1165,10 +1169,15 @@ def run_surprise_task(
                 spec=spec,
                 task_tried=task_tried,
                 templates=templates,
+                navigate=navigate,
+                route=route,
                 arrival_timeout=arrival_timeout,
                 exit_timeout=exit_timeout,
                 counter_timeout=counter_timeout,
                 tile_timeout=tile_timeout,
+                return_timeout=return_timeout,
+                return_interval=return_interval,
+                return_attempts=return_attempts,
                 interval=interval,
                 settle=settle,
                 back=back,
@@ -1443,6 +1452,11 @@ def _run_round(
     keys: list[KeyRecord],
     swipes: list[SwipeRecord],
     dismissals: list[DismissReport],
+    navigate: RouteFirer | None = None,
+    route: SurfaceRoute = SurfaceRoute.SHORTCUT,
+    return_timeout: float = DEFAULT_RETURN_TIMEOUT,
+    return_interval: float = DEFAULT_RETURN_INTERVAL,
+    return_attempts: int = DEFAULT_RETURN_ATTEMPTS,
 ) -> tuple[RoundRecord, Snapshot, str | None]:
     """Walk one round until its counter is complete or the round proves stuck."""
     if record_round_grid is not None:
@@ -1652,8 +1666,41 @@ def _run_round(
                 detail = 'the reward interstitial appeared while returning from a product'
                 break
             if not arrived:
-                detail = 'BACK did not return to the grid; no completion was recorded'
-                break
+                # BACK normally returns straight to the grid, but a measured
+                # misroute lands on the coin page or the boost sheet instead.
+                # Re-open the grid explicitly rather than spending the round on
+                # whatever BACK happened to leave behind (#164).
+                recovered, stop = _reenter_grid(
+                    controller,
+                    capture,
+                    corpus,
+                    navigate,
+                    current,
+                    spec=spec,
+                    templates=templates,
+                    route=route,
+                    arrival_timeout=arrival_timeout,
+                    return_timeout=return_timeout,
+                    return_interval=return_interval,
+                    return_attempts=return_attempts,
+                    interval=interval,
+                    settle=settle,
+                    clock=clock,
+                    sleep=sleep,
+                    logger=logger,
+                    taps=taps,
+                    dismissals=dismissals,
+                )
+                if stop is not None:
+                    detail = 'the reward interstitial appeared while re-entering the grid after a misrouted BACK'
+                    break
+                if recovered is None:
+                    detail = (
+                        'BACK did not return to the grid and the shortcut/boost route could not re-enter it; '
+                        'no completion was recorded'
+                    )
+                    break
+                current = recovered
             current, stop = _dismiss_mission(
                 controller,
                 capture,
@@ -1770,6 +1817,159 @@ def _run_round(
         ),
         current,
         stop,
+    )
+
+
+def _reenter_grid(
+    controller: Controller,
+    capture: CaptureSource,
+    corpus: PopupCorpus,
+    navigate: RouteFirer | None,
+    snapshot: Snapshot,
+    *,
+    spec: AllowedTaskSpec,
+    templates: TemplateStore | None,
+    route: SurfaceRoute,
+    arrival_timeout: float,
+    return_timeout: float,
+    return_interval: float,
+    return_attempts: int,
+    interval: float,
+    settle: float,
+    clock: Callable[[], float],
+    sleep: Callable[[float], None],
+    logger: logging.Logger,
+    taps: list[TapRecord],
+    dismissals: list[DismissReport],
+) -> tuple[Snapshot | None, str | None]:
+    """Re-open the surprise grid after BACK lands somewhere other than it.
+
+    The measured product page returns to the grid with one BACK, but a misrouted
+    BACK can leave the app on the coin page or the boost sheet. In that case the
+    grid is re-entered through the same explicit route every task return uses:
+    the shortcut proves the coin page, the boost sheet (or its inline rows)
+    supplies the row, and the row's own ``GO`` opens the grid. No tile is tapped
+    from a guessed coordinate and no purchase control is involved (#164).
+
+    Returns the settled grid frame, or ``None`` when the route cannot prove one;
+    a reward interstitial is returned as the caller's ``stop``.
+    """
+    if navigate is None:
+        _warn_grid_reentry(logger, spec.key, 'no navigation route was supplied for the explicit grid re-entry')
+        return None, None
+    try:
+        returned = return_to_coins_page(
+            controller,
+            capture,
+            corpus,
+            navigate,
+            snapshot=snapshot,
+            templates=templates,
+            route=route,
+            timeout=return_timeout,
+            interval=return_interval,
+            attempts=return_attempts,
+            settle=settle,
+            clock=clock,
+            sleep=sleep,
+            logger=logger,
+            on_dismiss=dismissals.append,
+        )
+    except RunAborted, RunInterrupted:
+        raise
+    except Exception as exc:
+        _warn_grid_reentry(logger, spec.key, f'{type(exc).__name__}: {exc}')
+        return None, None
+    if not returned.returned or returned.snapshot is None:
+        _warn_grid_reentry(logger, spec.key, 'the shortcut route did not prove the coins page')
+        return None, None
+
+    current = returned.snapshot
+    row, action, _ = find_task_row(current, SURPRISE_TITLE)
+    if row is None or action is None:
+        try:
+            boost = open_boost_list(
+                controller,
+                capture,
+                corpus,
+                templates=templates,
+                timeout=arrival_timeout,
+                interval=interval,
+                settle=settle,
+                clock=clock,
+                sleep=sleep,
+                logger=logger,
+                on_dismiss=dismissals.append,
+            )
+        except RunAborted, RunInterrupted:
+            raise
+        except Exception as exc:
+            _warn_grid_reentry(logger, spec.key, f'{type(exc).__name__}: {exc}')
+            return None, None
+        if boost.tap is not None:
+            taps.append(boost.tap)
+        if boost.retap is not None:
+            taps.append(boost.retap)
+        current = boost.snapshot
+        row, action, _ = find_task_row(current, SURPRISE_TITLE)
+
+    if row is None or action is None:
+        _warn_grid_reentry(logger, spec.key, f'{SURPRISE_TITLE!r} is not on the returned task surface')
+        return None, None
+
+    taps.append(
+        controller.tap_box(
+            action,
+            why=f'surprise {spec.key}: re-enter the grid after a misrouted BACK',
+            label=action.text,
+        ),
+    )
+    current, arrived, dismiss, stop = _wait_for_surface(
+        controller,
+        capture,
+        corpus,
+        _is_grid_surface,
+        timeout=arrival_timeout,
+        interval=interval,
+        settle=settle,
+        clock=clock,
+        sleep=sleep,
+        logger=logger,
+        templates=templates,
+        taps=taps,
+    )
+    if dismiss is not None:
+        dismissals.append(dismiss)
+    if stop is not None:
+        return current, stop
+    if not arrived or _read_grid_counter(current) is None:
+        _warn_grid_reentry(logger, spec.key, 'the row did not open a grid with a readable counter')
+        return None, None
+
+    logger.info(
+        '%s',
+        json.dumps(
+            {
+                'event': 'surprise_grid_reentry',
+                'key': spec.key,
+                'detail': 'BACK left the grid; the shortcut/boost route re-entered it',
+            },
+            separators=(',', ':'),
+            sort_keys=True,
+        ),
+    )
+    return current, None
+
+
+def _warn_grid_reentry(logger: logging.Logger, key: str | None, detail: str) -> None:
+    """Record why the explicit route could not put the executor back on the grid."""
+    logger.warning(
+        '%s',
+        json.dumps(
+            {'event': 'surprise_grid_reentry_failed', 'key': key, 'detail': detail},
+            separators=(',', ':'),
+            sort_keys=True,
+        ),
     )
 
 

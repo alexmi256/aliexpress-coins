@@ -328,7 +328,10 @@ returns; the full copy remains unmeasured (§4e table: row offer ❓).
   and a non-advancing badge fails `progress_unchanged`, but an absent row leaves the counter as the
   evidence. Until
   #63 settles cross-round reset ❓, `surprise.py` tries per-round distinctness first and falls back
-  once to whole-task exclusion.
+  once to whole-task exclusion. On 2026-11-27 (run `20261127T140626Z`) one product BACK landed on
+  the launcher, not the grid, and the round ended on the coin page at `1/2`; the executor now
+  re-enters the grid through the shortcut/boost route and keeps reading the page's own counter
+  (#164).
 - **`Turn on notifications` 🟡:** paid +1 on 2026-11-20 with no dialog and `POST_NOTIFICATION: ignore`
   unchanged. App settings' toggle deep-links to OS settings (no runtime dialog). The executor
   handles all four outcomes: immediate credit, app pre-prompt, runtime dialog (`Allow` / `Don't allow`),
