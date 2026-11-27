@@ -2195,10 +2195,13 @@ def test_the_settled_search_waits_for_a_swipe_and_re_resolves_the_row() -> None:
     )
 
     assert found.target is not None
-    # The after-swipe guard is independent of the operator's settle knob.
+    # The after-swipe guard is independent of the operator's settle knob. The
+    # fresh stable frame carries a new TextBox, proving the row was re-resolved
+    # rather than returned from the search result.
+    stable = _boost(with_row=True, shade='#d0d0d0')
     action, settled = shortcut_module._settled_action(
         controller,
-        _Capture((below, below, below, below)),
+        _Capture((stable, stable, stable)),
         'Visit the page via coins',
         found,
         settle=0.0,
@@ -2208,7 +2211,10 @@ def test_the_settled_search_waits_for_a_swipe_and_re_resolves_the_row() -> None:
     )
 
     assert action is not None
+    assert action is not found.target
     assert settled.target is action
+    assert settled.frames[-1] is stable
+    assert len(settled.frames) == len(found.frames) + 1
 
 
 def test_a_foreground_loss_after_the_launched_page_cannot_be_read_is_still_reported(
