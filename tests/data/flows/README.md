@@ -132,6 +132,15 @@ home-screen `Coins` item, the pinned shortcut's own launcher intent (with `from=
 `cmd shortcut clear-shortcuts` cleanup. It is explicitly not a collector run: the row was claimed by
 the manual validation before the executor could record it, which is the limitation it states.
 
+`shortcut_visit_issue_158_round2.json` records the first live run's failure (`20261127T140626Z`:
+the row was tapped while the scrolled list was still moving, no shortcut sheet opened, the pinned
+intent was never fired, and both balance reads were `None`) and the live collector run that closed
+the acceptance (`20261127T145922Z`: `balance_delta`, `151 -> 152` for the task, the full run's
+`147 -> 152` balance shots retained, the row removed from observation 5, the created pin cleared,
+and `AdcActivity` resumed at the end). It states the named step failures that replaced the
+unfalsifiable `None -> None`. The full-frame failure recordings remain in the runs volume, not in
+git.
+
 `surprise_items_issue_139.json` is sanitized OCR evidence from run `20261125T151001Z`'s failure
 record `frame-004.jpg`. It keeps the grid header, counter, product-card titles and prices, and the
 `Add To Cart` line painted inside the lower-left Hyundai card's photograph. The image itself is not

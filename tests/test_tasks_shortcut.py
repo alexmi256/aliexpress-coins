@@ -214,6 +214,16 @@ def _home_with_shortcut() -> Snapshot:
     )
 
 
+def _clock_surface() -> Snapshot:
+    """The measured launcher/clock frame, positively classified ``NON_APP``."""
+    return _snapshot(
+        _box('3:36', 20, 5, 100, 35),
+        _box('0', 1120, 5, 1160, 35),
+        _box('日', 500, 700, 560, 760),
+        _box('24', 580, 700, 640, 760),
+    )
+
+
 def _created_shortcut_frames(initial: Snapshot, after: str = '88') -> tuple[Snapshot, ...]:
     """The measured sheet -> launcher -> app -> reload path for one attempt."""
     return (
@@ -298,7 +308,9 @@ def test_the_sheet_is_accepted_and_the_created_shortcut_is_used_and_removed(
     assert 'Add to home screen' in result.modal_labels
     assert 'Coins' in result.modal_labels
     assert device.keys == []
-    assert routes.routes == [SurfaceRoute.SHORTCUT]
+    # The pinned intent landed on the credited coin page; no extra plain-route
+    # reload is fired after a successful launch.
+    assert routes.routes == []
     assert state.count('coins_shortcut_visit') == 1
 
 
@@ -341,9 +353,9 @@ def test_a_live_boost_start_brackets_the_balance_on_the_coin_page(
 
     assert result.outcome is ShortcutVisitOutcome.COMPLETED
     assert (result.balance_before, result.balance_after) == (87.0, 88.0)
-    # One route reads the trusted balance before GO; the other reloads after the
-    # shortcut launch so the server-side +1 can appear.
-    assert routes.routes == [SurfaceRoute.SHORTCUT, SurfaceRoute.SHORTCUT]
+    # One route reads the trusted balance before GO. The pinned intent then
+    # lands on the credited coin page, so no second plain-route reload is spent.
+    assert routes.routes == [SurfaceRoute.SHORTCUT]
 
 
 def test_a_failed_preflight_route_still_brackets_and_uses_the_shortcut(
@@ -846,6 +858,7 @@ def test_the_home_shortcut_is_used_when_no_launcher_intent_is_injected(
     frame = _coin_page_with_row('87')
     entry = _entry(frame, catalogue)
     device = _Device()
+    routes = _Routes()
     frames = (
         frame,
         _shortcut_sheet(),
@@ -854,7 +867,8 @@ def test_the_home_shortcut_is_used_when_no_launcher_intent_is_injected(
         _shortcut_sheet(),
         _home_with_shortcut(),
         _home_with_shortcut(),
-        _coin_page('88'),
+        _clock_surface(),  # the launcher/clock frame immediately after the tap
+        _coin_page('88'),  # the bounded recovery returns the coin page
     )
 
     result = run_shortcut_visit_task(
@@ -863,12 +877,13 @@ def test_the_home_shortcut_is_used_when_no_launcher_intent_is_injected(
         corpus,
         _state(tmp_path),
         entry,
-        navigate=_Routes(),
+        navigate=routes,
         clock=_Clock(),
         sleep=_Clock().sleep,
     )
 
     assert result.outcome is ShortcutVisitOutcome.COMPLETED
+    assert routes.routes == [SurfaceRoute.SHORTCUT]
     assert device.keys == ['KEYCODE_HOME']
     assert [tap.label for tap in result.taps] == [
         entry.title,
@@ -1012,12 +1027,29 @@ def test_an_exhausted_scrolled_list_without_the_row_is_row_vanished(
     """Positive control: every swipe moved and the attempt bound ended the read."""
     entry = _entry(_boost(), catalogue)
     device = _Device()
-    frames = (
-        _boost_without_shortcut(shade='white'),
-        _boost_without_shortcut(shade='#e0e0e0'),
-        _boost_without_shortcut(shade='#d0d0d0'),
-        _boost_without_shortcut(shade='#c0c0c0'),
-        _boost_without_shortcut(shade='#b0b0b0'),
+    # Each settled swipe now spends frames proving the list stopped moving;
+    # repeat each shade so the stability wait can finish before the next move.
+    frames = tuple(
+        _boost_without_shortcut(shade=shade)
+        for shade in (
+            'white',
+            '#e0e0e0',
+            '#e0e0e0',
+            '#e0e0e0',
+            '#e0e0e0',
+            '#d0d0d0',
+            '#d0d0d0',
+            '#d0d0d0',
+            '#d0d0d0',
+            '#c0c0c0',
+            '#c0c0c0',
+            '#c0c0c0',
+            '#c0c0c0',
+            '#b0b0b0',
+            '#b0b0b0',
+            '#b0b0b0',
+            '#b0b0b0',
+        )
     )
 
     result = run_shortcut_visit_task(
@@ -1530,7 +1562,152 @@ def test_a_tap_without_the_sheet_still_requires_a_balance_increase(
     )
 
     assert result.outcome is ShortcutVisitOutcome.FAILED
-    assert result.verification == 'no_credit'
+    assert result.verification == 'shortcut_sheet_absent'
+    assert 'did not appear' in result.detail
+
+
+def test_a_stale_boost_frame_is_not_accepted_as_the_pre_dispatch_balance(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The live failure: the route had not replaced the boost sheet yet."""
+    frame = _boost('87')
+    entry = _entry(frame, catalogue)
+    monkeypatch.setattr(
+        shortcut_module,
+        'open_boost_list',
+        lambda *_args, **_kwargs: _reopened_boost(_boost('87')),
+    )
+    frames = (
+        frame,
+        _boost('87'),  # still the stale pre-route sheet
+        _coin_page('87'),  # the route's own coin page
+        _shortcut_sheet(),
+        _launcher_add_sheet(),
+        _shortcut_sheet(),
+        _shortcut_sheet(),
+        _coin_page('88'),
+    )
+
+    result = run_shortcut_visit_task(
+        Controller.from_frame(_Device(), frame, rng=random.Random(0)),
+        _Capture(frames),
+        corpus,
+        _state(tmp_path),
+        entry,
+        navigate=_Routes(),
+        launch_shortcut=lambda: None,
+        clock=_Clock(),
+        sleep=_Clock().sleep,
+    )
+
+    assert result.outcome is ShortcutVisitOutcome.COMPLETED
+    assert (result.balance_before, result.balance_after) == (87.0, 88.0)
+
+
+def test_an_unreadable_pre_dispatch_balance_fails_with_that_reason_and_taps_nothing(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _boost('87')
+    entry = _entry(frame, catalogue)
+    device = _Device()
+    no_balance_coin = _snapshot(
+        _box('Coins credits to redeem', 100, 330, 700, 380),
+        _box('Daily coins', 100, 560, 500, 610),
+        _box('Earn more', 916, 926, 1133, 967),
+    )
+
+    result = run_shortcut_visit_task(
+        Controller.from_frame(device, frame, rng=random.Random(0)),
+        _Capture((frame, no_balance_coin, no_balance_coin, _boost('87'))),
+        corpus,
+        _state(tmp_path),
+        entry,
+        navigate=_Routes(),
+        clock=_Clock(),
+        sleep=_Clock().sleep,
+    )
+
+    assert result.outcome is ShortcutVisitOutcome.FAILED
+    assert result.verification == 'balance_unreadable_before'
+    assert 'no shortcut-row GO tap was issued' in result.detail
+    assert result.balance_before is None
+    assert result.taps == ()
+    # The pre-read really did tap Earn more; only the shortcut row's GO was
+    # withheld, which is what the detail now says.
+    assert device.taps
+
+
+def test_an_unreadable_post_dispatch_balance_fails_with_that_reason(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _coin_page_with_row('87')
+    entry = _entry(frame, catalogue)
+    no_balance = _snapshot(
+        _box('Coins credits to redeem', 100, 330, 700, 380),
+        _box('Daily coins', 100, 560, 500, 610),
+    )
+    routes = _Routes()
+
+    result = run_shortcut_visit_task(
+        Controller.from_frame(_Device(), frame, rng=random.Random(0)),
+        _Capture(
+            (
+                frame,
+                _shortcut_sheet(),
+                _launcher_add_sheet(),
+                _shortcut_sheet(),
+                _shortcut_sheet(),
+                no_balance,
+            )
+        ),
+        corpus,
+        _state(tmp_path),
+        entry,
+        navigate=routes,
+        launch_shortcut=lambda: None,
+        clock=_Clock(),
+        sleep=_Clock().sleep,
+    )
+
+    assert result.outcome is ShortcutVisitOutcome.FAILED
+    assert result.verification == 'balance_unreadable_after'
+    assert result.balance_after is None
+    assert routes.routes == [SurfaceRoute.SHORTCUT]
+
+
+def test_a_row_still_moving_before_the_tap_is_not_tapped(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _coin_page_with_row('87')
+    entry = _entry(frame, catalogue)
+    device = _Device()
+    moving = tuple(_coin_page_with_row('87', shade='white' if index % 2 == 0 else '#808080') for index in range(20))
+
+    result = run_shortcut_visit_task(
+        Controller.from_frame(device, frame, rng=random.Random(0)),
+        _Capture(moving),
+        corpus,
+        _state(tmp_path),
+        entry,
+        navigate=_Routes(),
+        settle=1.0,
+        clock=_Clock(),
+        sleep=_Clock().sleep,
+    )
+
+    assert result.outcome is ShortcutVisitOutcome.FAILED
+    assert result.verification == 'row_not_settled'
+    assert result.taps == ()
+    assert device.taps == []
 
 
 def test_a_direct_credit_without_the_sheet_is_still_recorded(
@@ -1879,3 +2056,215 @@ def test_a_dispatch_without_an_action_or_authorization_is_refused(
             replace(entry, action=None),
             navigate=_Routes(),
         )
+
+
+def test_a_direct_tap_with_an_unreadable_after_balance_names_the_read(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _coin_page_with_row('87')
+    entry = _entry(frame, catalogue)
+    no_balance = _snapshot(
+        _box('Coins credits to redeem', 100, 330, 700, 380),
+        _box('Daily coins', 100, 560, 500, 610),
+    )
+
+    result = run_shortcut_visit_task(
+        Controller.from_frame(_Device(), frame, rng=random.Random(0)),
+        _Capture((frame, no_balance)),
+        corpus,
+        _state(tmp_path),
+        entry,
+        navigate=_Routes(),
+        clock=_Clock(),
+        sleep=_Clock().sleep,
+    )
+
+    assert result.outcome is ShortcutVisitOutcome.FAILED
+    assert result.verification == 'balance_unreadable_after'
+    assert 'could not be read afterwards' in result.detail
+    assert result.balance_after is None
+
+
+def test_an_unreadable_coin_page_is_polled_before_spending_the_reload(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _coin_page_with_row('87')
+    entry = _entry(frame, catalogue)
+    no_balance = _snapshot(
+        _box('Coins credits to redeem', 100, 330, 700, 380),
+        _box('Daily coins', 100, 560, 500, 610),
+    )
+    frames = (
+        frame,
+        _shortcut_sheet(),
+        _launcher_add_sheet(),
+        _shortcut_sheet(),
+        _shortcut_sheet(),
+        _shortcut_sheet(),  # captured before the launch
+        no_balance,  # the arrival: settled coin page, balance not rendered yet
+        _coin_page('88'),  # the readable balance arrives on a later poll
+    )
+    routes = _Routes()
+
+    result = run_shortcut_visit_task(
+        Controller.from_frame(_Device(), frame, rng=random.Random(0)),
+        _Capture(frames),
+        corpus,
+        _state(tmp_path),
+        entry,
+        navigate=routes,
+        launch_shortcut=lambda: None,
+        clock=_Clock(),
+        sleep=_Clock().sleep,
+    )
+
+    assert result.outcome is ShortcutVisitOutcome.COMPLETED
+    assert (result.balance_before, result.balance_after) == (87.0, 88.0)
+    assert routes.routes == []
+
+
+def test_the_balance_can_arrive_after_the_launched_page_renders(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _coin_page_with_row('87')
+    entry = _entry(frame, catalogue)
+    frames = (
+        frame,
+        _shortcut_sheet(),
+        _launcher_add_sheet(),
+        _shortcut_sheet(),
+        _shortcut_sheet(),
+        _coin_page('87'),  # the pinned page renders before the credit is visible
+        _coin_page('88'),  # the server-side +1 lands on a later poll
+    )
+    routes = _Routes()
+
+    result = run_shortcut_visit_task(
+        Controller.from_frame(_Device(), frame, rng=random.Random(0)),
+        _Capture(frames),
+        corpus,
+        _state(tmp_path),
+        entry,
+        navigate=routes,
+        launch_shortcut=lambda: None,
+        clock=_Clock(),
+        sleep=_Clock().sleep,
+    )
+
+    assert result.outcome is ShortcutVisitOutcome.COMPLETED
+    assert (result.balance_before, result.balance_after) == (87.0, 88.0)
+    # The +1 arrived on the pinned page; no reload was spent before it landed.
+    assert routes.routes == []
+
+
+def test_a_launched_page_with_the_same_surface_but_a_new_frame_is_accepted() -> None:
+    before = _coin_page('87', shade='white')
+    after = _coin_page('88', shade='#808080')
+    wait = shortcut_module._wait_for_launched_page(
+        _Capture((after,)),
+        before,
+        timeout=2.0,
+        interval=0.1,
+        clock=_Clock(),
+        sleep=_Clock().sleep,
+    )
+
+    assert wait.snapshot is after
+
+
+def test_the_settled_search_waits_for_a_swipe_and_re_resolves_the_row() -> None:
+    top = _boost(with_row=False, shade='white')
+    below = _boost(with_row=True, shade='#e0e0e0')
+    controller = Controller.from_frame(_Device(), top, rng=random.Random(0))
+
+    found = shortcut_module._read_row(
+        controller,
+        _Capture((top, below, below, below)),
+        'Visit the page via coins',
+        top,
+        settle=0.0,
+        interval=0.5,
+        clock=_Clock(),
+        sleep=_Clock().sleep,
+    )
+
+    assert found.target is not None
+    # The after-swipe guard is independent of the operator's settle knob. The
+    # fresh stable frame carries a new TextBox, proving the row was re-resolved
+    # rather than returned from the search result.
+    stable = _boost(with_row=True, shade='#d0d0d0')
+    action, settled = shortcut_module._settled_action(
+        controller,
+        _Capture((stable, stable, stable)),
+        'Visit the page via coins',
+        found,
+        settle=0.0,
+        interval=0.5,
+        clock=_Clock(),
+        sleep=_Clock().sleep,
+    )
+
+    assert action is not None
+    assert action is not found.target
+    assert settled.target is action
+    assert settled.frames[-1] is stable
+    assert len(settled.frames) == len(found.frames) + 1
+
+
+def test_a_foreground_loss_after_the_launched_page_cannot_be_read_is_still_reported(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _coin_page_with_row('87')
+    entry = _entry(frame, catalogue)
+    no_balance = _snapshot(
+        _box('Coins credits to redeem', 100, 330, 700, 380),
+        _box('Daily coins', 100, 560, 500, 610),
+    )
+    frames = (
+        frame,
+        _shortcut_sheet(),
+        _launcher_add_sheet(),
+        _shortcut_sheet(),
+        _shortcut_sheet(),
+        _shortcut_sheet(),
+        no_balance,
+        _home_with_shortcut(),
+    )
+
+    result = run_shortcut_visit_task(
+        Controller.from_frame(_Device(), frame, rng=random.Random(0)),
+        _Capture(frames),
+        corpus,
+        _state(tmp_path),
+        entry,
+        navigate=_Routes(),
+        launch_shortcut=lambda: None,
+        clock=_Clock(),
+        sleep=_Clock().sleep,
+    )
+
+    assert result.outcome is ShortcutVisitOutcome.FAILED
+    assert result.verification == 'foreground_lost_after_action'
+    assert 'launch_surface=rows_absent' in result.detail
+
+
+def test_the_balance_poll_stops_on_the_readable_plus_one() -> None:
+    wait, balance = shortcut_module._wait_for_balance(
+        _Capture((_coin_page('87'), _coin_page('88'))),
+        87,
+        timeout=2.0,
+        interval=0.1,
+        clock=_Clock(),
+        sleep=_Clock().sleep,
+    )
+
+    assert balance == 88.0
+    assert wait.settled is True

@@ -260,14 +260,32 @@ returns; the full copy remains unmeasured (§4e table: row offer ❓).
   owns the measured path (#158): it accepts the sheet's explicit `Create shortcut` control, confirms
   the launcher's `Add to home screen`, reuses an item when the `Shortcut has existed` toast says one
   is already pinned, fires that item's own persisted intent
-  (`SHORTCUT_LAUNCH_DEEP_LINK`, with `from=shortcut` / `shortcutId=coinsPromotion`), reloads the
-  coin page once, and records completion only on a readable `+1` while the app is foreground. A
-  launcher frame after the dispatch is a foreground loss, never completion. Cleanup runs
-  `adb shell cmd shortcut clear-shortcuts com.alibaba.aliexpresshd`. Android exposes no per-pin adb
-  delete, so this is package-wide: it also drops the app's ordinary long-press shortcuts (Search,
-  Cart, Orders, Account), which the app republishes on its next launch. The operator-facing detail
-  says so; it is a deliberate platform limitation, not a targeted delete. Sanitized #130 evidence is
-  in `tests/data/flows/shortcut_visit_issue_130.json`.
+  (`SHORTCUT_LAUNCH_DEEP_LINK`, with `from=shortcut` / `shortcutId=coinsPromotion`), waits for the
+  launched coin page to settle, polls for the readable `+1`, and only reloads the page once if the
+  first read cannot see it. A launcher frame after the dispatch gets the bounded return route;
+  if the app is still on a launcher/unknown surface, or no longer foreground, after that recovery,
+  it is a foreground loss, never completion. Other off-coin-page app surfaces are reported as a
+  return or balance-read failure. Cleanup runs
+  `adb shell cmd shortcut clear-shortcuts com.alibaba.aliexpresshd`.
+  Android exposes no per-pin adb delete, so this is package-wide: it also drops the app's ordinary
+  long-press shortcuts (Search, Cart, Orders, Account), which the app republishes on its next
+  launch. The operator-facing detail says so; it is a deliberate platform limitation, not a
+  targeted delete. Sanitized #130 evidence is in `tests/data/flows/shortcut_visit_issue_130.json`.
+
+  The first live run after #160 (`20261127T140626Z`) did none of that successfully: the boost list
+  was still flinging when the settled-search row was tapped, so no `Create shortcut` sheet appeared;
+  the pre-read route accepted the stale boost sheet as the coin page, so both balance reads were
+  `None`; the pinned intent was never fired. Frames show the tap at `(1009,1528)` on a row that the
+  next frame had carried above the fold, followed by the boost sheet and the coin-page skeleton, not
+  the shortcut dialog. The executor now searches with a gentler swipe and waits for a stable frame,
+  re-resolves the row immediately before the tap, brackets the balance on a *changed* (fresh) coin
+  page, and fails with the step that was not observed (`balance_unreadable_before`,
+  `row_not_settled`, `shortcut_sheet_absent`, `balance_unreadable_after`) instead of `None -> None`.
+  Live acceptance then passed in run `20261127T145922Z`: the task recorded `balance_delta`
+  `151 -> 152`, created and removed the shortcut item, the next roster observation removed
+  `Visit the page via coins`, and `AdcActivity` was resumed at the end. The run's own balance shots
+  bracket the whole night at `147 -> 152`. Sanitized evidence is in
+  `tests/data/flows/shortcut_visit_issue_158_round2.json`.
 - **Launcher items ✅ (descoped #27):** adding earns the task row and a widget visit rendered
   `Collect`/inline rows in session 2. The `Visit the page via coins shortcut` row is a separate
   numbered family: its observed credit followed a launcher launch, so #158 now creates, uses and
@@ -408,5 +426,5 @@ verification → return to coins page → `balance-after` → report. See
 | Does surprise-items distinctness reset between rounds? ❓ | resolves the fallback branch in `surprise.py` | #63: start at `0/2`, open same product in both rounds |
 | Quiz result & notification denial frames ❓ | completes `tests/data/flows/` fixtures | capture before rows are claimed |
 | Whether the quiz question set is finite ❓ | question-bank hit rate | observe `data/quiz_bank.json` growth |
-| Which step credits `Visit the page via coins shortcut`? ❓ | the observed +1 followed a home-screen shortcut launch, while a plain URI fired after creating the shortcut did not credit immediately; #158 now fires the shortcut's own persisted launcher intent and then reloads | bracket the balance and row after the launcher intent and again after the reload on a fresh day (#130, #158) |
+| Which step credits `Visit the page via coins shortcut`? ⬜ | the observed +1 followed a home-screen shortcut launch, while a plain URI fired after creating the shortcut did not credit immediately; #158 fires the shortcut's own persisted launcher intent, and the live run `20261127T145922Z` bracketed the task at `151 -> 152` with the row gone (exact instant between the intent and the first page read still not isolated) | repeat with frame timestamps around the launcher intent if the exact instant matters (#130, #158) |
 | When is `Learn to save money with Coins Credits` offered? ❓ | it was absent from 15 full reads on 2026-11-26 while the catalogue still called it claimable; the destination, timer and reward are unverified (§4e) | sample another day/window and check whether the account completed it before the daily-state era; do not remove the catalogue row just to close a night (#159) |

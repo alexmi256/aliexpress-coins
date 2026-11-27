@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "issue": 158,
+  "kind": "round 2: first live run failed, subsequent live collector run earned the +1",
+  "failed_run": {
+    "run_id": "20261127T140626Z",
+    "task": "Visit the page via coins",
+    "outcome": "failed",
+    "verification": "no_credit",
+    "detail": "'Visit the page via coins' was tapped but no +1 was observed (balance None -> None)",
+    "attempt": 1,
+    "frames": "failures/coins_shortcut_visit-attempt-1-20261127T141623Z",
+    "frame_count": 22,
+    "row_tap": {
+      "requested": [1007, 1528],
+      "point": [1009, 1528],
+      "at": "2026-11-27T14:16:39.544278+00:00"
+    },
+    "observed_steps": {
+      "create_sheet_opened": false,
+      "create_tap_issued": false,
+      "pinned_intent_fired": false,
+      "shortcut_created": false,
+      "balance_before": null,
+      "balance_after": null
+    },
+    "diagnosis": "The tap named a row that was still inside the search swipe's fling; the next frame had carried it above the fold, so the shortcut sheet never opened. The pre-read route accepted the stale boost sheet as the coin page, so both balance reads were None and no pinned intent was fired."
+  },
+  "fix": {
+    "row_search": "a gentler 0.4-viewport swipe with a 700 ms drag, followed by a bounded stability wait; the row is re-resolved on a settled frame immediately before the tap",
+    "balance_pre_read": "the route must replace the pre-route frame (or pass through loading) before the balance is trusted; an unreadable balance fails as balance_unreadable_before with no tap",
+    "launch": "after the pinned SHORTCUT_LAUNCH_DEEP_LINK, wait for the launched coin page, poll for the readable +1, and spend at most one reload if the first read cannot see it",
+    "named_failures": [
+      "row_not_settled",
+      "balance_unreadable_before",
+      "shortcut_sheet_absent",
+      "balance_unreadable_after"
+    ]
+  },
+  "live_run": {
+    "run_id": "20261127T145922Z",
+    "started_utc": "2026-11-27T14:59:22.712179+00:00",
+    "finished_utc": "2026-11-27T15:08:34.701210+00:00",
+    "run_status": "failed on other families; the shortcut task itself completed",
+    "shortcut_task": {
+      "outcome": "completed",
+      "verification": "balance_delta",
+      "balance_before": 151,
+      "balance_after": 152,
+      "shortcut_created": true,
+      "shortcut_removed": true,
+      "recorded": true,
+      "seconds": 55.021,
+      "taps": [
+        {"label": "Visit the page via coins", "requested": [1007, 1851], "point": [1001, 1848]},
+        {"label": "Create shortcut", "requested": [600, 1427], "point": [597, 1429]},
+        {"label": "Add to home screen", "requested": [924, 1868], "point": [928, 1865]},
+        {"label": "Got it", "requested": [601, 1267], "point": [603, 1267]}
+      ],
+      "modal_labels": [
+        "Once you've created a shortcut, find it",
+        "on your home screen. Tap it to enter",
+        "Got it",
+        "Create shortcut",
+        "AliExpress",
+        "Add to home screen"
+      ]
+    },
+    "run_balance": {
+      "before": 147,
+      "after": 152,
+      "before_shot": "shots/balance-before.png",
+      "after_shot": "shots/balance-after.png"
+    },
+    "row_gone": {
+      "observation_seq": 5,
+      "timestamp": "2026-11-27T15:06:59.062569+00:00",
+      "removed": ["Visit the page via coins"]
+    },
+    "cleanup": {
+      "pinned_before": false,
+      "pinned_after": false,
+      "command": "adb shell cmd shortcut clear-shortcuts com.alibaba.aliexpresshd"
+    },
+    "foreground_after": {
+      "resumed_activity": "com.alibaba.aliexpresshd/com.aliexpress.adc.ui.impl.AdcActivity",
+      "balance_screenshot": 152
+    }
+  }
+}
