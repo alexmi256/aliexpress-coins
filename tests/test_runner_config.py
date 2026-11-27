@@ -11,6 +11,8 @@ import tzlocal
 
 from aliexpress_coins.runner.config import (
     DEFAULT_APP_SETTLE_SECONDS,
+    DEFAULT_FAMILY_DORMANCY_DAYS,
+    DEFAULT_FAMILY_RETRY_DAYS,
     DEFAULT_JITTER_SECONDS,
     DEFAULT_KEEP_RUNS,
     DEFAULT_MAX_TASKS,
@@ -18,6 +20,7 @@ from aliexpress_coins.runner.config import (
     DEFAULT_RUN_BUDGET_SECONDS,
     DEFAULT_SCHEDULE_TIME,
     DEFAULT_SETTLE_SECONDS,
+    MIN_FAMILY_DORMANCY_DAYS,
     RunConfig,
 )
 from aliexpress_coins.runner.errors import ConfigError
@@ -48,6 +51,8 @@ def test_defaults_keep_the_container_paths_and_the_local_zone() -> None:
     assert config.ntfy_server == DEFAULT_NTFY_SERVER
     assert config.notify_on_empty is False
     assert config.notify_balance_delta is False
+    assert config.family_dormancy_days == DEFAULT_FAMILY_DORMANCY_DAYS
+    assert config.family_retry_days == DEFAULT_FAMILY_RETRY_DAYS
 
 
 def test_the_default_run_budget_is_the_measured_twenty_minute_safety_net() -> None:
@@ -79,6 +84,8 @@ def test_every_documented_variable_is_read() -> None:
             'AECOINS_NTFY_SERVER': 'https://ntfy.example',
             'AECOINS_NOTIFY_ON_EMPTY': 'true',
             'AECOINS_NOTIFY_BALANCE_DELTA': 'yes',
+            'AECOINS_FAMILY_DORMANCY_DAYS': '14',
+            'AECOINS_FAMILY_RETRY_DAYS': '9',
         },
         root='/srv/app',
     )
@@ -105,6 +112,8 @@ def test_every_documented_variable_is_read() -> None:
     assert config.ntfy_server == 'https://ntfy.example'
     assert config.notify_on_empty is True
     assert config.notify_balance_delta is True
+    assert config.family_dormancy_days == 14
+    assert config.family_retry_days == 9
 
 
 @pytest.mark.parametrize('value', ['0', 'false', 'no', 'off'])
@@ -171,6 +180,10 @@ def test_explicit_timezone_wins_over_tz() -> None:
         ({'AECOINS_TIMEZONE': 'Mars/Olympus'}, 'unknown timezone'),
         ({'AECOINS_DRY_RUN': 'maybe'}, 'must be a boolean'),
         ({'AECOINS_NOTIFY_BALANCE_DELTA': 'sometimes'}, 'AECOINS_NOTIFY_BALANCE_DELTA must be a boolean'),
+        ({'AECOINS_FAMILY_DORMANCY_DAYS': 'never'}, 'must be an integer'),
+        ({'AECOINS_FAMILY_DORMANCY_DAYS': '0'}, 'must be at least'),
+        ({'AECOINS_FAMILY_DORMANCY_DAYS': '1'}, 'must be at least'),
+        ({'AECOINS_FAMILY_RETRY_DAYS': '0'}, 'must be positive'),
     ],
 )
 def test_invalid_values_raise_a_configuration_error(environment: dict[str, str], message: str) -> None:
@@ -196,3 +209,12 @@ def test_retry_loop_bounds_default_and_read_from_the_environment() -> None:
 def test_retry_loop_bounds_reject_a_non_positive_value(name: str) -> None:
     with pytest.raises(ConfigError, match='must be positive'):
         RunConfig.from_environment({name: '0'})
+
+
+def test_family_dormancy_default_and_floor_rationale_are_pinned() -> None:
+    assert DEFAULT_FAMILY_DORMANCY_DAYS == 7
+    assert MIN_FAMILY_DORMANCY_DAYS == 3
+    assert DEFAULT_FAMILY_RETRY_DAYS == 7
+
+    at_floor = RunConfig.from_environment({'AECOINS_FAMILY_DORMANCY_DAYS': str(MIN_FAMILY_DORMANCY_DAYS)})
+    assert at_floor.family_dormancy_days == MIN_FAMILY_DORMANCY_DAYS

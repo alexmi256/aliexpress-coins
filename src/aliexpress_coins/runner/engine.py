@@ -43,7 +43,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from typing import Any, Protocol, cast
 
@@ -83,7 +83,7 @@ from aliexpress_coins.runner.safety import (
     SafetyGuard,
     unwrap_capture,
 )
-from aliexpress_coins.runner.state import DailyStateStore, NightOutcome, NightRecord
+from aliexpress_coins.runner.state import DailyStateStore, FamilyObservationStore, NightOutcome, NightRecord
 from aliexpress_coins.tasks.browse import return_to_coins_page, run_browse_task
 from aliexpress_coins.tasks.catalogue import AllowedTaskSpec, TaskCatalogue, TaskCategory, load_task_catalogue
 from aliexpress_coins.tasks.discovery import (
@@ -108,6 +108,7 @@ from aliexpress_coins.tasks.dispatch import (
     PolicyRefused,
     authorization_of,
 )
+from aliexpress_coins.tasks.families import FamilyEvidence
 from aliexpress_coins.tasks.notifications import run_notifications_task
 from aliexpress_coins.tasks.quiz import run_quiz_task
 from aliexpress_coins.tasks.search import run_search_task
@@ -287,6 +288,7 @@ class RunContext:
     controller: Controller | None = None
     controller_factory: Callable[[Snapshot], Controller] | None = None
     observer: RosterObserver | None = None
+    family_store: FamilyObservationStore | None = None
     templates: TemplateStore | None = None
     scroll_rosters: bool = True
     clock: Callable[[], float] = time.monotonic
@@ -542,6 +544,7 @@ def run_once(
     controller = context.controller
     observer = context.observer
     roster: Roster | None = None
+    final_roster: Roster | None = None
     status = RunStatus.COMPLETED
     detail: str | None = None
     attempted: set[str] = set()
@@ -662,6 +665,7 @@ def run_once(
             union_roster: Roster | None = roster
             rotation = _RotationTracker()
             rotation.record(roster)
+            read_defect_seen = _roster_incomplete_without_rotation(roster.as_dict())
             confirmation_attempted = False
             confirmation_read = False
             rotation_incomplete = False
@@ -669,10 +673,17 @@ def run_once(
 
             def absorb(observation: RosterObservation | None) -> bool:
                 """Fold one readable observation into the night's union of rows."""
-                nonlocal union_roster, last_observation
+                nonlocal union_roster, last_observation, read_defect_seen
                 last_observation = observation
                 if observation is None:
+                    read_defect_seen = True
                     return False
+                if observation.failed or observation.cap_reached:
+                    read_defect_seen = True
+                if observation.roster is not None and _roster_incomplete_without_rotation(
+                    observation.roster.as_dict(),
+                ):
+                    read_defect_seen = True
                 if observation.roster is None or observation.failed or observation.cap_reached:
                     return False
                 union_roster = merge_rosters(union_roster, observation.roster)
@@ -1078,11 +1089,29 @@ def run_once(
             latest_roster = observer.roster if observer is not None and observer.roster is not None else roster
             final_roster = merge_rosters(union_roster, latest_roster) if latest_roster is not None else union_roster
             if final_roster is not None:
-                unread_families, already_claimed_families = _unread_families(
+                read_trustworthy = (
+                    rotation.confirmed
+                    and not rotation_incomplete
+                    and not final_roster.incomplete
+                    and not read_defect_seen
+                )
+                family_store = context.family_store or FamilyObservationStore.from_state(
+                    context.state,
+                    clock=lambda: context.wall_clock().astimezone(context.config.timezone),
+                    logger=log,
+                )
+                unread_families, already_claimed_families, not_offered, dormant = _family_rotation(
                     final_roster,
                     context.catalogue,
                     context.state,
                     blacklist,
+                    family_store,
+                    day=context.wall_clock().astimezone(context.config.timezone).date(),
+                    samples=rotation.samples,
+                    dormancy_days=context.config.family_dormancy_days,
+                    retry_days=context.config.family_retry_days,
+                    trustworthy=read_trustworthy,
+                    logger=log,
                 )
                 final_roster = replace(
                     final_roster,
@@ -1090,6 +1119,8 @@ def run_once(
                     rotation_agreeing_samples=rotation.agreeing,
                     rotation_confirmed=rotation.confirmed and not rotation_incomplete,
                     unread_families=unread_families,
+                    not_offered_families=not_offered,
+                    dormant_families=dormant,
                     already_claimed_families=already_claimed_families,
                 )
             _record_unrun(
@@ -1212,7 +1243,7 @@ def run_once(
                     report.record_failure(failure(FailureCode.TASK_UNVERIFIED, detail=incomplete))
                 status = RunStatus.FAILED
             if finished_walk or incomplete is not None or rotation_open:
-                night = _night_record(report, context.state, context.catalogue)
+                night = _night_record(report, context.state, context.catalogue, roster=final_roster)
                 try:
                     context.state.record_night(night)
                 except Exception as exc:
@@ -3128,7 +3159,13 @@ def _roster_incomplete_without_rotation(roster: dict[str, Any] | None) -> bool:
     )
 
 
-def _night_record(report: RunReport, state: DailyStateStore, catalogue: TaskCatalogue) -> NightRecord:
+def _night_record(
+    report: RunReport,
+    state: DailyStateStore,
+    catalogue: TaskCatalogue,
+    *,
+    roster: Roster | None = None,
+) -> NightRecord:
     """Decide what a finished roster walk leaves for the rest of the day (#97).
 
     A night is ``exhausted`` when nothing dispatched is worth retrying: every
@@ -3140,7 +3177,8 @@ def _night_record(report: RunReport, state: DailyStateStore, catalogue: TaskCata
 
     Any unresolved failure keeps the day open even when another row completed:
     the failed row is still unclaimed work, and the operator most needs the
-    daemon to try it while asleep.
+    daemon to try it while asleep. A dormant family is not unfinished work, but
+    it is recorded on the night so the day state names what it relied on (#161).
     """
     completed = sum(1 for task in report.tasks if task.completed)
     retryable = len(_claimable_task_failures(report, state, catalogue))
@@ -3160,6 +3198,7 @@ def _night_record(report: RunReport, state: DailyStateStore, catalogue: TaskCata
         dispatched=len(report.tasks),
         completed=completed,
         retryable_failures=retryable,
+        dormant_families=() if roster is None else roster.dormant_families,
     )
 
 
@@ -3222,38 +3261,143 @@ def _daily_count(state: DailyStateStore, key: str) -> int | None:
         return None
 
 
-def _unread_families(
+def _family_rotation(
     roster: Roster,
     catalogue: TaskCatalogue,
     state: DailyStateStore,
     blacklisted: Mapping[str, int],
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Split unseen catalogue families into unknown work and already earned work.
+    store: FamilyObservationStore,
+    *,
+    day: date,
+    samples: int,
+    dormancy_days: int,
+    retry_days: int,
+    trustworthy: bool,
+    logger: logging.Logger,
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[FamilyEvidence, ...], tuple[FamilyEvidence, ...]]:
+    """Split unseen catalogue families into unread, claimed and not offered.
 
     The sheet rotates, so a family absent from the union of every readable sample
-    is unknown, not proof that the app had nothing. It is fatal to the night when
-    it still has daily capacity: the app may be hiding claimable work behind a
-    rotation the reads never saw.
+    is not automatically "unread". This function keeps the cross-night evidence:
 
-    The one carve-out is a family already completed to today's daily limit in the
-    day state. Its absence is expected: it was claimed earlier today. Today's
-    ``super_discounts`` row is the motivating case (claimed at 10:08Z by run
-    ``20261126T100143Z``), and treating it as unread for the rest of the day would
-    keep the day open forever for a family that is already earned. Those keys are
-    still named in the report, as already claimed rather than unseen.
+    * ``unread`` — no complete absence streak yet, so the read may have missed
+      the family behind another rotation. It keeps the night open (#149).
+    * ``already claimed`` — the day state already reached the family's daily
+      limit, so its absence is expected.
+    * ``not offered`` — the family crossed :data:`family_dormancy_days`
+      consecutive complete days without a sighting. It no longer blocks
+      completion, but it is named with its streak and sample count and is
+      re-probed on the slower ``retry_days`` cadence (#161).
+
+    A read with a lost surface or unreadable rows is *not* evidence of absence:
+    ``trustworthy`` is false and the stored streak is left untouched, so the bad
+    read keeps the night open without manufacturing dormancy.
     """
     seen = {entry.key for entry in roster.allowed_entries if entry.key is not None}
-    unread: list[str] = []
+    unclaimed: list[str] = []
     claimed: list[str] = []
+    tracked: list[str] = []
     for spec in catalogue.allowed:
-        if spec.category not in _EXECUTORS or spec.key in seen or spec.key in blacklisted:
+        if spec.category not in _EXECUTORS:
+            continue
+        seen_key = spec.key in seen
+        if spec.key in blacklisted:
+            # A blacklisted family is not absence evidence, but a sighting is
+            # still positive evidence and must be able to clear dormancy.
+            if seen_key:
+                tracked.append(spec.key)
             continue
         count = _daily_count(state, spec.key)
         if count is not None and count >= spec.max_per_run:
             claimed.append(spec.key)
+            # A sighting still clears stale dormancy even when the card was
+            # claimed earlier in the day.
+            if seen_key:
+                tracked.append(spec.key)
+            continue
+        unclaimed.append(spec.key)
+        tracked.append(spec.key)
+
+    missing_tracked = tuple(key for key in tracked if key not in seen)
+    seen_tracked = tuple(key for key in tracked if key in seen)
+    try:
+        observations: tuple[FamilyEvidence, ...]
+        if trustworthy:
+            observations = store.observe(
+                day=day,
+                keys=tracked,
+                seen=seen,
+                samples=samples,
+                dormancy_days=dormancy_days,
+                retry_days=retry_days,
+            )
         else:
-            unread.append(spec.key)
-    return tuple(unread), tuple(claimed)
+            # A sighting is positive evidence even when another row made the
+            # read incomplete, so clear dormancy for what was seen. A miss is
+            # not evidence in this pass, so only peek at the missing families.
+            sightings = (
+                store.observe(
+                    day=day,
+                    keys=seen_tracked,
+                    seen=seen,
+                    samples=samples,
+                    dormancy_days=dormancy_days,
+                    retry_days=retry_days,
+                )
+                if seen_tracked
+                else ()
+            )
+            observations = tuple(sightings) + store.peek(missing_tracked)
+    except Exception as exc:
+        # Evidence storage is an artifact, not the task surface. A failed read
+        # or write must not turn an unknown family into a missing one, so fall
+        # back to the #149 rule: every unseen claimable family stays unread.
+        logger.warning(
+            '%s',
+            _event(
+                'family_observation_failed',
+                detail=f'{type(exc).__name__}: {exc}',
+            ),
+        )
+        observations = ()
+    by_key = {evidence.key: evidence for evidence in observations}
+
+    unread: list[str] = []
+    not_offered: list[FamilyEvidence] = []
+    for key in unclaimed:
+        if key in seen:
+            continue
+        evidence = by_key.get(key, FamilyEvidence(key=key))
+        if evidence.dormant:
+            not_offered.append(evidence)
+        else:
+            unread.append(key)
+
+    if not_offered:
+        logger.info(
+            '%s',
+            _event(
+                'families_not_offered',
+                families=[evidence.as_dict() for evidence in not_offered],
+                samples=samples,
+                trustworthy=trustworthy,
+            ),
+        )
+    for evidence in not_offered:
+        if evidence.probe_due:
+            logger.info(
+                '%s',
+                _event(
+                    'family_probe_due',
+                    key=evidence.key,
+                    missed_days=evidence.missed_days,
+                    samples=evidence.samples,
+                    next_probe=None if evidence.next_probe is None else evidence.next_probe.isoformat(),
+                ),
+            )
+
+    dormant = tuple(evidence for evidence in observations if evidence.dormant)
+    return tuple(unread), tuple(claimed), tuple(not_offered), dormant
 
 
 def _incomplete_run_detail(

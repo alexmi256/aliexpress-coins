@@ -191,7 +191,11 @@ quiz, surprise items, search and notifications — lives in the executors under
   [`_night_record()`](src/aliexpress_coins/runner/engine.py) leaves `completed_night: false` if a task
   failure is still retryable or the roster was incomplete. Only an `exhausted` decision records
   `completed_night: true` through [`DailyStateStore.record_night()`](src/aliexpress_coins/runner/state.py),
-  so the scheduler does not mistake an unfinished night for success.
+  so the scheduler does not mistake an unfinished night for success. A catalogue family that no
+  complete read has shown stays `unread` until `AECOINS_FAMILY_DORMANCY_DAYS` consecutive days
+  (default 7, floor 3) prove it is not being offered; then it is reported as `not_offered`, named in
+  the day state and re-probed every `AECOINS_FAMILY_RETRY_DAYS` (default 7), and the night may
+  finish. A sighting clears that dormancy immediately (#161).
 - **Pass and attempt bounds (#123, #141):** a pass is a full re-enumerated sweep. The loop normally
   ends by progress: it keeps sweeping while a pass dispatched a row or revealed new dispatchable
   rows, and stops after two consecutive sweeps that did neither. `AECOINS_MAX_PASSES` is the

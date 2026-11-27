@@ -802,17 +802,36 @@ def _night_summary(night: dict[str, Any]) -> str:
     dispatched = night.get('dispatched', 0)
     completed = night.get('completed', 0)
     retryable = night.get('retryable_failures', 0)
+    dormant = _night_dormant_summary(night.get('dormant_families'))
     if outcome == NightOutcome.EXHAUSTED.value:
-        return (
+        text = (
             'complete — the roster was walked and nothing dispatched is worth retrying '
             f'({completed}/{dispatched} task(s) completed)'
         )
+        return text if not dormant else f'{text}; dormant and not offered: {dormant}'
     if outcome == NightOutcome.INCOMPLETE_ROSTER.value:
-        return 'open — the roster read was incomplete; the day is not complete and a later run may retry'
-    return (
+        text = 'open — the roster read was incomplete; the day is not complete and a later run may retry'
+        return text if not dormant else f'{text}; dormant and not offered: {dormant}'
+    text = (
         f'open — {retryable} retryable task failure(s) of {dispatched} dispatch(es) remain; '
         'the day is not complete and a later run may retry'
     )
+    return text if not dormant else f'{text}; dormant and not offered: {dormant}'
+
+
+def _night_dormant_summary(families: object) -> str:
+    if not isinstance(families, list):
+        return ''
+    parts: list[str] = []
+    for family in families:
+        if not isinstance(family, dict):
+            continue
+        key = family.get('key', '?')
+        days = family.get('missed_days', 0)
+        samples = family.get('samples', 0)
+        since = family.get('dormant_since') or family.get('unseen_since') or 'unknown'
+        parts.append(f'{key} since {since} ({days} day(s), {samples} sample(s))')
+    return ', '.join(parts)
 
 
 def _abort_summary(abort: dict[str, Any]) -> str:
@@ -869,6 +888,7 @@ def _rotation_summary(roster: dict[str, Any] | None) -> str:
         return 'not sampled'
     confirmed = rotation.get('confirmed')
     unread = rotation.get('unread_families') or []
+    not_offered = rotation.get('not_offered') or []
     claimed = rotation.get('already_claimed_families') or []
     if confirmed:
         detail = f'confirmed after {agreeing} agreeing sample(s) of {samples}'
@@ -876,9 +896,36 @@ def _rotation_summary(roster: dict[str, Any] | None) -> str:
         detail = f'not confirmed after {samples} sample(s); two freshly opened reads did not agree'
     if unread:
         detail = f'{detail}; not seen in any read and still claimable today: {", ".join(str(key) for key in unread)}'
+    if not_offered:
+        detail = f'{detail}; {_not_offered_summary(not_offered)}'
     if claimed:
         detail = f'{detail}; already claimed today, so absent as expected: {", ".join(str(key) for key in claimed)}'
     return detail
+
+
+def _not_offered_summary(families: object) -> str:
+    """Name dormant families with the evidence that supports the conclusion."""
+    if not isinstance(families, list):
+        return 'not offered on this account'
+    parts: list[str] = []
+    for family in families:
+        if not isinstance(family, dict):
+            continue
+        key = family.get('key', '?')
+        days = family.get('missed_days', 0)
+        samples = family.get('samples', 0)
+        since = family.get('dormant_since') or family.get('unseen_since') or 'unknown'
+        next_probe = family.get('next_probe')
+        retried = family.get('retried_on')
+        text = f'{key} not offered for {days} day(s), dormant since {since}, 0 sightings in {samples} sample(s)'
+        if retried:
+            text = f'{text}; retried on {retried}'
+        if next_probe:
+            text = f'{text}; next probe {next_probe}'
+        parts.append(text)
+    if not parts:
+        return 'not offered on this account'
+    return '; '.join(parts)
 
 
 def _returned(returned: bool | None, error: str | None) -> str:

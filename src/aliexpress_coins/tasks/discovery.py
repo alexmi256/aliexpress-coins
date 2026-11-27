@@ -86,6 +86,7 @@ from aliexpress_coins.tasks.catalogue import (
     TaskPolicyContext,
 )
 from aliexpress_coins.tasks.errors import RosterLogError
+from aliexpress_coins.tasks.families import FamilyEvidence
 from aliexpress_coins.tasks.surface import (
     BOOST_MARKER,
     EMPTY_BOOST_MARKER,
@@ -432,6 +433,10 @@ class Roster:
     """Whether two consecutive freshly opened reads agreed before a night was closed."""
     unread_families: tuple[str, ...] = ()
     """Catalogue families still claimable today that no read of this night showed."""
+    not_offered_families: tuple[FamilyEvidence, ...] = ()
+    """Families absent for the configured threshold: dormant, not an incomplete read."""
+    dormant_families: tuple[FamilyEvidence, ...] = ()
+    """The subset of absent families whose dormancy this night relied on."""
     already_claimed_families: tuple[str, ...] = ()
     """Catalogue families already completed today that no read of this night showed."""
 
@@ -442,6 +447,8 @@ class Roster:
         object.__setattr__(self, 'split_failures', tuple(self.split_failures))
         object.__setattr__(self, 'card_structure_titles', tuple(self.card_structure_titles))
         object.__setattr__(self, 'unread_families', tuple(self.unread_families))
+        object.__setattr__(self, 'not_offered_families', tuple(self.not_offered_families))
+        object.__setattr__(self, 'dormant_families', tuple(self.dormant_families))
         object.__setattr__(self, 'already_claimed_families', tuple(self.already_claimed_families))
 
     @property
@@ -620,6 +627,9 @@ class Roster:
                 'agreeing_samples': self.rotation_agreeing_samples,
                 'confirmed': self.rotation_confirmed,
                 'unread_families': list(self.unread_families),
+                'not_offered': [family.as_dict() for family in self.not_offered_families],
+                'not_offered_families': [family.key for family in self.not_offered_families],
+                'dormant_families': [family.as_dict() for family in self.dormant_families],
                 'already_claimed_families': list(self.already_claimed_families),
             },
             'split_failures': [failure.as_dict() for failure in self.split_failures],

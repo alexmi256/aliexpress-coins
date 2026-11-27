@@ -136,12 +136,16 @@ The runner therefore treats every readable read as one rotation sample, merges s
 catalogue key (normalised title for refused rows), and requires two freshly opened reads to agree
 before it may report `no dispatchable row remains`; a changed sample spends another pass and its
 rows stay in the union. A catalogue family no read saw is **not** silently equated with "the app had
-nothing": if it is still claimable today, it makes the roster incomplete and the night
-`INCOMPLETE_ROSTER`. The one carve-out is a family already completed to its daily limit in the day
-state — its absence is expected because it was claimed earlier today. Those families are still named
-in the report as already claimed, not as unseen. `super_discounts` is the motivating case: run
-`20261126T100143Z` claimed it at 10:08Z, so its absence from every later sheet is expected, while an
-unseen and unclaimed family keeps the day open (#149).
+nothing": while the absence is still ambiguous it is `unread` and makes the roster incomplete and
+the night `INCOMPLETE_ROSTER`. The first carve-out is a family already completed to its daily limit
+in the day state — its absence is expected because it was claimed earlier today. Those families are
+still named in the report as already claimed, not as unseen. `super_discounts` is the motivating
+case: run `20261126T100143Z` claimed it at 10:08Z, so its absence from every later sheet is expected,
+while an unseen and unclaimed family keeps the day open (#149). The second carve-out is dormancy
+(#161): after `AECOINS_FAMILY_DORMANCY_DAYS` (default 7, floor 3) consecutive complete nights with
+no sighting, the family is reported as `not_offered`, stops blocking completion, remains named with
+its `missed_days`/`samples`, and is re-probed every `AECOINS_FAMILY_RETRY_DAYS` (default 7). A
+sighting clears the record, so a returning row resumes normal dispatch immediately.
 
 ### 4e. `learn_to_save` was not offered in the #159 sample window ❓
 
@@ -179,7 +183,7 @@ and [`learn_to_save_issue_159_sheet_bottom.png`](../tests/data/flows/learn_to_sa
 | return route | ❓ | never observed |
 | timer / dwell timing | ❓ | no timer chip observed |
 | reward amount | ❓ | no balance movement tied to this family |
-| catalogue retention | ✅ | still an allowed `browse_wait` row; an unseen claimable family keeps the night open (#149) |
+| catalogue retention | ✅ | still an allowed `browse_wait` row; after the configured complete-night threshold it is reported `not_offered`/dormant rather than blocking every night (#161) |
 | historical “paid +1” note | ⬜ | 2026-11-20 operator prose with no retained frame; not a measured contract |
 
 A live run in this work (`20261126T223057Z`) read the sheet with only `learn_to_save` still
@@ -189,6 +193,19 @@ passes; `surface_incomplete` was raised because the already-claimed `Browse rece
 row and the `Add & start using our widget` row (skipped `no executor`) had no readable card
 structure, and the sheet did not produce two agreeing reads. It is an honest exclusion observation,
 not a completed night. The catalogue row is deliberately **not** removed to make a night complete.
+
+**Bounded dormancy (#161).** One absent night is still `unread`, but a family absent from every
+complete read for `AECOINS_FAMILY_DORMANCY_DAYS` consecutive local days (default 7; startup floor 3)
+is reported as **`not_offered`** and becomes dormant. Its evidence — `unseen_since`, the number of
+consecutive unsighted days, the readable samples in that streak and zero sightings — is written to
+`run.json`, `summary.md` and the day state. It stops keeping the night open, and a weekly re-probe
+(`AECOINS_FAMILY_RETRY_DAYS`, default 7) revalidates the verdict. A sighting anywhere clears
+dormancy immediately and makes the row dispatchable again. A pass that lost the boost surface or
+had unreadable rows records no absence: that is the #149 regression guard, and it still makes the
+roster incomplete. The label strings are **not** known to be stale: the #159 frames contain no row
+resembling either the title or the subtitle, so there is nothing for OCR to match. The title and
+subtitle prefixes are kept as additional patterns so a changed suffix still matches if the row
+returns; the full copy remains unmeasured (§4e table: row offer ❓).
 
 ## 5. Reward mechanics ✅
 
@@ -261,7 +278,8 @@ not a completed night. The catalogue row is deliberately **not** removed to make
   or `Coins boost` samples taken on 2026-11-26 (§4e). The historical 2026-11-20 note that an
   explainer page with the same timer chip paid +1 retained no frame, so the destination, dwell
   chip, reward, badge/counter, return route and timing are all ❓. The catalogue row and
-  `browse_wait` mapping remain; an unseen, still-claimable family keeps the night open (#149). It
+  `browse_wait` mapping remain; after the configured complete-night threshold it is reported
+  `not_offered`/dormant instead of keeping every night open, and a sighting resumes it (#161). It
   is not removed to make a night complete.
 - **`Browse surprise items` ✅ (2026-11-22):** two rounds of three distinct products (`N/2` row,
   `N/3` counter). Tapping a tile opens `AIProductDetailActivity` (`Item 1/n`, `Add to cart` /

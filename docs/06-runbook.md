@@ -505,10 +505,15 @@ and the settled/blocked sets still remove finished work. A single read is only o
 before the walk may end with `no dispatchable row remains`, the engine re-opens the sheet once inside
 that pass and requires the new read to agree with the read before it. A changed set is a new pass,
 bounded by `AECOINS_MAX_PASSES`; it is reported as `budget` with the sample counts, never as
-complete. A catalogue family that no read saw and that is still claimable today also keeps
-`completed_night` false: its absence is unknown rotation, not proof the app offered nothing. A
-family already completed to today's daily limit is the carve-out — it was claimed earlier today, so
-its absence is expected; the report names it as already claimed rather than unseen. Any `failed` row
+complete. A catalogue family that no read saw is first treated as **unread**: its absence is
+unknown rotation, not proof the app offered nothing, so it keeps `completed_night` false. A family
+already completed to today's daily limit is a carve-out — it was claimed earlier today, so its
+absence is expected; the report names it as already claimed rather than unseen. The other carve-out
+is dormancy (#161): after `AECOINS_FAMILY_DORMANCY_DAYS` (default 7, startup floor 3) consecutive
+complete nights with no sighting, the family is named as `not_offered` with its streak and sample
+count, stops blocking completion, and is re-probed every `AECOINS_FAMILY_RETRY_DAYS` (default 7).
+A sighting clears the dormancy; a lost surface or unreadable rows record no absence and keep the
+roster incomplete. Any `failed` row
 whose taxonomy entry is retryable (`task_unverified`,
 including a timeout or a recovered unknown screen), or a visible action that could not be attached
 to a task row, keeps `completed_night` false even if another row completed, because unclaimed work
@@ -524,6 +529,19 @@ done — a recorded completion or a terminal executor outcome — and every disp
 re-checks instead of tapping from a stale
 roster. The decision is recorded as `last_night` in the daily state and printed by the report as
 one `Night:` line.
+
+**Not offered, not unread (#161).** The #149 rule needs an exit for a family the account simply is
+not being offered. Absence is counted in `state/family-observations.json`, once per local day, only
+from a pass the engine could prove was a complete read (confirmed rotation, no lost surface, no
+unreadable rows). After `AECOINS_FAMILY_DORMANCY_DAYS` consecutive unsighted days (default 7;
+startup floor 3) the family is reported as **`not_offered`** with `unseen_since`, its unsighted-day
+streak, the samples in that streak and zero sightings, and it becomes **dormant**. Dormant families
+are still in the catalogue and are scanned on every read; they stop keeping `completed_night` false
+and are re-probed on the slower `AECOINS_FAMILY_RETRY_DAYS` cadence (default 7). A sighting clears
+every field, makes the row dispatchable again and reverses the dormancy immediately. A pass that
+failed to read the surface still records no absence, so `unread_families` keeps the night open; that
+is the #149 regression guard. The report names both sets separately: `unread_families` is a read
+failure, `not_offered` is evidence about the app.
 
 **The in-night loop (#123, #141).** A night is no longer one roster sweep. After every real attempt —
 completed, failed, or a row that vanished between enumeration and dispatch — the engine
@@ -593,7 +611,7 @@ gate in #41.
 | **Surface** | the screen family the roster was read from (`rows_present`, `boost_page`, ...) |
 | **Route** | the route used and the routes tried, including a warm re-entry |
 | **Roster** | row count, allowed count and refused count, with the read status and any swallowed-row warning |
-| **Rotation** | how many Coins boost sheet samples backed the conclusion, whether two fresh reads agreed, and which catalogue families no read saw (still claimable vs already claimed today) |
+| **Rotation** | how many Coins boost sheet samples backed the conclusion, whether two fresh reads agreed, and which catalogue families no read saw (still unread, not offered/dormant with sample evidence, vs already claimed today) |
 | **Observations** | how many roster diffs were logged in `roster.jsonl` |
 | **Balance** | before and after, with the delta when both frames were readable |
 | **Popups closed** | verified dismissals by family, or `none` |
@@ -610,8 +628,10 @@ A good night looks like:
   `N` greater than zero, `M` the catalogue-allowed rows, and `D` the rows that still carry a
   dispatchable control;
 - `Rotation: confirmed after 2 agreeing sample(s) of N`, so the final “nothing left” conclusion was
-  not taken from one server-rotation sample; any still-claimable unseen families keep the night
-  open, while families already claimed today are named as absent-but-expected;
+  not taken from one server-rotation sample; an unseen family whose absence is still ambiguous keeps
+  the night open as `unread_families`, a family past the dormancy threshold is named as
+  `not_offered` with its evidence, and families already claimed today are named as
+  absent-but-expected;
 - at least one task row with `completed` and an evidence value that names what proved it (a balance
   move, a progress badge, a row gone from a complete surface, or a recorded state transition);
 - `Balance: <before> -> <after> (<delta>)` with a non-negative delta, or `unknown` when a frame was
@@ -680,7 +700,9 @@ deployment only the stop grace and SIGKILL remain.
 If the budget is routinely exhausted, look at the wall-clock budget
 (`AECOINS_RUN_BUDGET_SECONDS`, default 1200 s), the task cap
 (`AECOINS_MAX_TASKS_PER_RUN`, default 12), the pass ceiling (`AECOINS_MAX_PASSES`, default 12), the
-per-task attempt bound (`AECOINS_MAX_TASK_ATTEMPTS`, default 2) and the per-task time in the table.
+per-task attempt bound (`AECOINS_MAX_TASK_ATTEMPTS`, default 2), the family dormancy threshold
+(`AECOINS_FAMILY_DORMANCY_DAYS`, default 7, startup floor 3), the dormant-family re-probe interval
+(`AECOINS_FAMILY_RETRY_DAYS`, default 7 days) and the per-task time in the table.
 Raise a limit only deliberately; a larger budget is not a fix for a slow network or a stuck screen.
 
 ### `run.json`
@@ -693,14 +715,14 @@ Raise a limit only deliberately; a larger budget is not a fix for a slow network
 | `run_id`, `status`, `detail` | identity and terminal sentence |
 | `started_at`, `finished_at`, `budget` | wall-clock evidence |
 | `hygiene`, `geometry` | what the device said before the first capture |
-| `surface`, `roster`, `route_error`, `observations` | what the roster looked like; `roster.rotation` carries `samples`, `agreeing_samples`, `confirmed`, `unread_families` (still claimable and fatal) and `already_claimed_families` |
+| `surface`, `roster`, `route_error`, `observations` | what the roster looked like; `roster.rotation` carries `samples`, `agreeing_samples`, `confirmed`, `unread_families` (still claimable and fatal), `not_offered` / `not_offered_families` (dormant with evidence) and `already_claimed_families` |
 | `balance_before`, `balance_after`, `balance_delta`, `balance_note` | the two recorded frames, or why one is unknown |
 | `popups_closed`, `shots`, `artifact_errors` | artifacts and best-effort write failures |
 | `failure_recordings` | one entry per recorded attempt: task/key/attempt, failure or abort code, artifact directory, frame and sidecar paths |
 | `notification` | attempted, sink, ok and a class-plus-status error |
 | `plan`, `plan_note` | the dry-run plan, when there was one; `plan.probe_failed` distinguishes an unreadable probe from evidence about the day, and `stable_waits` / `content_waits` / `roster_waits` record settling, row re-reads and row-set confirmation |
 | `abort` | safety code, reason and the screen that triggered it |
-| `night` | the completion decision: `outcome`, dispatched/completed counts and retryable failures |
+| `night` | the completion decision: `outcome`, dispatched/completed counts, retryable failures and `dormant_families` with the evidence it relied on |
 | `passes`, `max_passes`, `max_task_attempts`, `attempts`, `blacklist` | the in-night loop's sweeps and absolute ceiling, per-task dispatch attempts and tasks skipped at their attempt bound (#123, #141) |
 | `failure` | code, stage, retry scope, retries, `abort_run`, sentence and detail |
 | `error` | the raw exception for a failed run, in addition to the named failure |
@@ -762,11 +784,13 @@ If a night claims nothing, check in this order:
    are absent because the server has already credited them, the day is claimed. Wait for the next
    reset; do not re-press a claimed card.
 7. **State.** Read `state/daily-<YYYY-MM-DD>.json`. `completed_night` is the scheduler's skip flag,
-   `last_night` records the decision behind it (`exhausted` or `retryable_failures`, with the
-   dispatch and failure counts), and `acted_unverified` names tasks that acted without proof and
-   still need a fresh-row re-check. A file that fails validation is moved aside as
-   `.corrupt-<timestamp>` and the day starts empty with a warning; that is deliberate, but it means
-   a resumed run may repeat a task.
+   `last_night` records the decision behind it (`exhausted`, `retryable_failures` or
+   `incomplete_roster`, with the dispatch and failure counts), and `acted_unverified` names tasks
+   that acted without proof and still need a fresh-row re-check. `last_night.dormant_families` names
+   every `not_offered` family with `unseen_since`, `missed_days`, `samples`, `dormant_since` and
+   `next_probe`. `state/family-observations.json` is the cross-day absence ledger; a sighting clears
+   its entry and makes the family dispatchable again. Both files are quarantined as
+   `.corrupt-<timestamp>` and restarted empty when unreadable; a resumed run may repeat a task.
 
 A night that finds the signed-out screen stops at the first detection with `app_logged_out`; it
 does not report every remaining task as separately failed.
