@@ -50,7 +50,7 @@ from typing import Any, Protocol, cast
 from aliexpress_coins.control.controller import Controller
 from aliexpress_coins.control.device import AdbInputDevice
 from aliexpress_coins.control.errors import PopupUnclosable
-from aliexpress_coins.control.popups import DismissReport, PopupCorpus, load_popup_corpus
+from aliexpress_coins.control.popups import DismissReport, PopupCorpus, dismiss_after, load_popup_corpus
 from aliexpress_coins.perception.artifacts import ArtifactStore
 from aliexpress_coins.perception.capture import AdbSnapshotter
 from aliexpress_coins.perception.errors import FrameDecodeError, SnapshotError, StateTimeout
@@ -75,12 +75,21 @@ from aliexpress_coins.runner.failures import (
 from aliexpress_coins.runner.levels import SKIPPED_ROW_LOG_LEVEL, run_log_level, task_log_level
 from aliexpress_coins.runner.notify import Notification, NotificationSink, build_notifier
 from aliexpress_coins.runner.recording import FailureRecorder
-from aliexpress_coins.runner.report import RunEventLog, RunReport, RunStatus, TaskRecord, prune_runs
+from aliexpress_coins.runner.report import (
+    RecoveryRecord,
+    RunEventLog,
+    RunReport,
+    RunStatus,
+    TaskRecord,
+    prune_runs,
+)
 from aliexpress_coins.runner.safety import (
     UNEXPECTED_SCREEN_LIMIT,
     AbortCode,
     RunAborted,
     SafetyGuard,
+    ScreenReport,
+    _screen_report,
     unwrap_capture,
 )
 from aliexpress_coins.runner.state import DailyStateStore, FamilyObservationStore, NightOutcome, NightRecord
@@ -128,12 +137,16 @@ from aliexpress_coins.tasks.surprise import run_surprise_task
 
 __all__ = [
     'DISPATCH_TABLE',
+    'KNOWN_GOOD_SURFACES',
     'MAX_NO_PROGRESS_PASSES',
+    'RESET_ATTEMPTS',
     'TASK_RECOVERY_ATTEMPTS',
     'EngineResult',
+    'ResetResult',
     'RunContext',
     'StopSignal',
     'TaskBudget',
+    'is_known_good_coins_page',
     'make_live_context',
     'resolve_task_budget',
     'run_once',
@@ -387,6 +400,8 @@ class RunContext:
     family_store: FamilyObservationStore | None = None
     templates: TemplateStore | None = None
     scroll_rosters: bool = True
+    start_normalisation: bool = True
+    task_recovery: bool = True
     clock: Callable[[], float] = time.monotonic
     sleep: Callable[[float], None] = time.sleep
     wall_clock: Callable[[], datetime] = _utc_now
@@ -434,6 +449,111 @@ TASK_RECOVERY_ATTEMPTS = UNEXPECTED_SCREEN_LIMIT
 The same number as the sighting limit keeps the rule easy to state: three
 sightings fail the task, three unsuccessful returns fail the night (#83).
 """
+
+RESET_ATTEMPTS = TASK_RECOVERY_ATTEMPTS
+"""How many shortcut entries one task reset to the known-good coins page may spend.
+
+A reset is the default recovery for every retryable task failure (#168), so it
+uses the same bounded route budget as the existing unexpected-screen recovery:
+three entries, each with its own poll deadline, then a named run abort. It never
+loops on the wall-clock budget.
+"""
+
+KNOWN_GOOD_SURFACES = frozenset({Surface.ROWS_PRESENT, Surface.ROWS_ABSENT})
+"""The coins-page variants a reset may call known-good (#168).
+
+The shortcut deep link lands on the coin page, not the rotating boost sheet and
+not "whatever a BACK left behind". Both a page with rows and its honest
+zero-row variant are accepted; the roster read decides what work is offered.
+"""
+
+_RECOVERABLE_SURFACES = KNOWN_GOOD_SURFACES | {Surface.BOOST_PAGE}
+"""Surface variants that prove a surface restart re-established usable work.
+
+The coin page and the populated boost sheet are the task surfaces a restart can
+land on. A launcher, unknown page, empty boost load fault or incomplete read is
+reported ``still_failed`` instead of claiming the recovery succeeded (#168).
+"""
+
+_RESET_RETRYABLE_CODES = frozenset(
+    {
+        FailureCode.TASK_UNVERIFIED,
+        FailureCode.NAVIGATION_FAILED,
+    },
+)
+"""Named task failures a reset can plausibly fix.
+
+These are navigation and state faults: a misrouted BACK, a wrong/absent surface,
+a foreground loss, an unverified task or an unreadable balance that makes the
+outcome unprovable. Policy refusals, genuinely absent controls, already-claimed
+rows and excluded families never reach a ``failed`` dispatch, so they cannot be
+retried by this rule.
+"""
+
+_NON_RETRYABLE_VERIFICATIONS = frozenset(
+    {
+        'not_found',
+        'search_field_not_found',
+        'options_not_found',
+        'go_back_not_found',
+        'shortcut_sheet_absent',
+        'launcher_shortcut_not_found',
+        'policy',
+        'daily_limit',
+        'already_done',
+        'row_complete',
+    },
+)
+"""Outcomes a reset cannot fix, even when the taxonomy calls them retryable.
+
+A reset changes navigation and surface state. It cannot make a control the app
+did not render appear, cannot turn a policy refusal into an allowed action and
+cannot improve an already-claimed row. Those are recorded once, not retried into
+a loop (#168).
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class ResetResult:
+    """What one reset attempt to the known-good coins page proved."""
+
+    recovered: bool
+    attempts: int
+    detail: str
+    surface: str | None = None
+    state: str | None = None
+    snapshot: Snapshot | None = None
+
+    def as_dict(self) -> dict[str, object]:
+        """Render the reset evidence without carrying the frame in ``run.json``."""
+        return {
+            'outcome': 'recovered' if self.recovered else 'still_failed',
+            'attempts': self.attempts,
+            'surface': self.surface,
+            'state': self.state,
+            'detail': self.detail,
+        }
+
+
+def is_known_good_coins_page(snapshot: Snapshot) -> bool:
+    """Whether ``snapshot`` is the settled coins page a reset promises (#168).
+
+    The surface classifier must name the coin page's rows-present or rows-absent
+    variant, and the frame classifier must not still be loading, covered by a
+    modal, unknown or dead. A boost sheet, product page, checkout sheet, launcher
+    or signed-out prompt is deliberately not known-good.
+    """
+    if is_logged_out(snapshot):
+        return False
+    if classify_surface(snapshot) not in KNOWN_GOOD_SURFACES:
+        return False
+    return classify(snapshot).state not in (
+        ScreenState.LOADING,
+        ScreenState.POPUP,
+        ScreenState.UNKNOWN,
+        ScreenState.ERROR,
+    )
+
 
 MAX_NO_PROGRESS_PASSES = 2
 """How many consecutive sweeps may dispatch and reveal nothing before the walk stops.
@@ -643,6 +763,7 @@ def run_once(
     status = RunStatus.COMPLETED
     detail: str | None = None
     attempted: set[str] = set()
+    reset_attempted: set[str] = set()
     blocked: set[str] = set()
     passes = 0
     attempts: dict[str, int] = {}
@@ -724,6 +845,15 @@ def run_once(
             log.info('%s', _event('run_hygiene', **hygiene.as_dict()))
 
             controller = controller if controller is not None else _controller(context, frame)
+            if context.start_normalisation:
+                frame = _normalise_start(
+                    context,
+                    controller,
+                    report,
+                    frame,
+                    log,
+                    on_dismiss=record_dismissal,
+                )
             _record_balance_before(
                 context,
                 controller,
@@ -808,6 +938,7 @@ def run_once(
                         context,
                         controller,
                         observer,
+                        report,
                         on_dismiss=record_dismissal,
                         reason=(
                             'dormant family probe due: take one extra sample for '
@@ -865,7 +996,7 @@ def run_once(
                     detail = f'wall-clock budget of {budget:g}s exhausted'
                     report.record_failure(failure(FailureCode.BUDGET_EXHAUSTED, detail=detail))
                     break
-                if len(report.tasks) >= task_limit:
+                if sum(attempts.values()) >= task_limit:
                     status = RunStatus.BUDGET
                     detail = task_budget.describe_stop()
                     report.record_failure(failure(FailureCode.BUDGET_EXHAUSTED, detail=detail))
@@ -924,6 +1055,7 @@ def run_once(
                             context,
                             controller,
                             observer,
+                            report,
                             on_dismiss=record_dismissal,
                             reason=surface_reason,
                         ),
@@ -978,6 +1110,7 @@ def run_once(
                                     context,
                                     controller,
                                     observer,
+                                    report,
                                     on_dismiss=record_dismissal,
                                     reason=(
                                         'one rotation sample is not proof the night is finished; '
@@ -1060,6 +1193,7 @@ def run_once(
                                 context,
                                 controller,
                                 observer,
+                                report,
                                 on_dismiss=record_dismissal,
                                 reason=restart_reason,
                             ),
@@ -1090,6 +1224,9 @@ def run_once(
                 def note_attempt(_identity: str = identity) -> None:
                     attempts[_identity] = attempts.get(_identity, 0) + 1
 
+                retry_record: RecoveryRecord | None = None
+                retry_dispatches = 0
+                settled_after_reset = False
                 try:
                     with _task_budget(context, started + budget):
                         result = _dispatch_with_retry(
@@ -1099,6 +1236,29 @@ def run_once(
                             on_attempt=note_attempt,
                             recorder=recorder,
                         )
+                        trigger = _reset_retry_trigger(result) if context.task_recovery else None
+                        if (
+                            trigger is not None
+                            and identity not in reset_attempted
+                            and failures.get(identity, 0) + 1 < max_attempts
+                            and sum(attempts.values()) < task_limit
+                        ):
+                            reset_attempted.add(identity)
+                            retried, retry_record, settled_after_reset = _reset_retry_task(
+                                context,
+                                controller,
+                                observer,
+                                report,
+                                entry,
+                                result,
+                                trigger=trigger,
+                                on_attempt=note_attempt,
+                                recorder=recorder,
+                                on_dismiss=record_dismissal,
+                            )
+                            if retried is not None:
+                                retry_dispatches = 1
+                                result = retried
                 except RunBudgetExceeded as exc:
                     # The task may have tapped before it was cut off, so a later
                     # run must re-check the fresh row instead of dispatching it
@@ -1127,6 +1287,11 @@ def run_once(
                 duration = max(0.0, context.clock() - task_started)
                 attempted.add(identity)
                 attempted_this_pass.add(identity)
+                if retry_record is not None:
+                    result = replace(
+                        result,
+                        payload={**result.payload, 'recovery': retry_record.as_dict()},
+                    )
                 _record_dismissals(report, result.as_dict())
                 report.finish_task(
                     task_index,
@@ -1181,15 +1346,28 @@ def run_once(
                     # the blacklist bound.
                     failures.pop(identity, None)
                     blacklist.pop(identity, None)
+                elif settled_after_reset:
+                    # The fresh post-reset read showed the row claimed or
+                    # without its action. Never re-press it from a stale roster
+                    # in a later pass (#137/#168).
+                    settled.add(identity)
                 elif made == 0:
                     # Nothing was tapped and no attempt was spent. Keep the
                     # #93 safety rule and do not spin the same refusal in a
                     # later pass; the row's failure remains in the report.
                     blocked.add(identity)
                 elif _needs_another_pass(result):
-                    failed = failures.get(identity, 0) + 1
+                    # The reset retry is a real dispatch against the same
+                    # per-task failure budget, so a retry that did not complete
+                    # spends the second failure slot (#168).
+                    failed = failures.get(identity, 0) + 1 + retry_dispatches
                     failures[identity] = failed
-                    if result.acted:
+                    if result.verification in _NON_RETRYABLE_VERIFICATIONS:
+                        # A reset cannot manufacture an absent control or a
+                        # refusal. Record the failure once and stop dispatching
+                        # this row rather than retry it into a loop (#168).
+                        blocked.add(identity)
+                    elif result.acted:
                         # #93: an action whose effect is unknown is never repeated
                         # inside the same run. The next day re-checks the fresh row.
                         blocked.add(identity)
@@ -2481,6 +2659,334 @@ def _attempt_dispatch(
         )
 
 
+def _reset_retry_trigger(result: EngineResult) -> str | None:
+    """Name the retryable fault a reset may fix, or return ``None`` (#168).
+
+    Only a failed dispatch whose taxonomy class is a navigation/state fault is
+    eligible. Policy refusals and genuinely absent/claimed rows are ``skipped``
+    by their executors and never reach here; a non-retryable failure is likewise
+    recorded once. The returned string is the evidence name (for example
+    ``return_failed`` or ``task_unverified``) used as the reset's trigger.
+    """
+    if result.completed or result.outcome != 'failed':
+        return None
+    if result.verification in _NON_RETRYABLE_VERIFICATIONS:
+        return None
+    named = result.failure
+    if named is None:
+        return result.verification or 'failed'
+    if not named.retryable or named.code not in _RESET_RETRYABLE_CODES:
+        return None
+    return result.verification or named.code.value
+
+
+def _is_abort_run_failure(exc: BaseException) -> bool:
+    """Whether a reset exception belongs to the run-level taxonomy, not the route.
+
+    A capture/device failure, an unclosable popup or an internal bug keeps its
+    named code; only a route-local timeout or similar becomes ``still_failed``
+    and the reset's own unexpected-screen abort (#168).
+    """
+    named = classify_exception(exc, default=FailureCode.INTERNAL_ERROR)
+    return named is not None and named.abort_run
+
+
+def _reset_to_known_good(
+    context: RunContext,
+    controller: Controller,
+    *,
+    trigger: str,
+    on_dismiss: Callable[[DismissReport], None] | None = None,
+) -> ResetResult:
+    """Reach the settled coins page through the measured shortcut route.
+
+    The existing return route does the bounded navigation, popup sweep and
+    proof poll. This wrapper then requires the surface classifier to name the
+    coin page (not a boost sheet, product page or redeem overlay) and the frame
+    classifier to say it has settled. A page that is still loading is given the
+    same coin-page wait the discovery path uses before the reset is called
+    failed. The unexpected-screen streak is suspended for the window because the
+    screen has already been attributed to the task or start-of-run read.
+    """
+    log = context.logger if context.logger is not None else LOG
+    window = context.safety.recovering() if context.safety is not None else nullcontext()
+    frame: Snapshot | None = None
+    error: str | None = None
+    returned_attempts = 0
+    returned = False
+
+    with window:
+        try:
+            result = return_to_coins_page(
+                controller,
+                context.capture,
+                context.corpus,
+                context.navigate,
+                snapshot=None,
+                templates=context.templates,
+                route=SurfaceRoute.SHORTCUT,
+                attempts=RESET_ATTEMPTS,
+                settle=context.config.settle_seconds,
+                clock=context.clock,
+                sleep=context.sleep,
+                logger=log,
+                on_dismiss=on_dismiss,
+            )
+        except RunAborted, RunInterrupted, AppLoggedOut:
+            raise
+        except Exception as exc:
+            if _is_abort_run_failure(exc):
+                raise
+            error = f'{type(exc).__name__}: {exc}'
+        else:
+            returned = result.returned
+            returned_attempts = result.attempts
+            error = result.error
+            frame = result.snapshot
+            if returned and frame is not None and not is_known_good_coins_page(frame):
+
+                def dismiss_popup(_snapshot: Snapshot) -> None:
+                    dismissal = dismiss_after(
+                        controller,
+                        context.capture,
+                        context.corpus,
+                        templates=context.templates,
+                        settle=context.config.settle_seconds,
+                        clock=context.clock,
+                        sleep=context.sleep,
+                        logger=log,
+                    )
+                    if on_dismiss is not None:
+                        on_dismiss(dismissal)
+
+                try:
+                    arrival = wait_for_coin_page(
+                        context.capture,
+                        timeout=DEFAULT_BOOST_TIMEOUT,
+                        interval=DEFAULT_BOOST_INTERVAL,
+                        clock=context.clock,
+                        sleep=context.sleep,
+                        dismiss_popup=dismiss_popup,
+                    )
+                except RunAborted, RunInterrupted, AppLoggedOut:
+                    raise
+                except Exception as exc:
+                    if _is_abort_run_failure(exc):
+                        raise
+                    error = f'{type(exc).__name__}: {exc}'
+                else:
+                    frame = arrival.snapshot
+        if frame is None:
+            try:
+                frame = _capture(context.capture)
+            except RunAborted, RunInterrupted, AppLoggedOut:
+                raise
+            except Exception as exc:
+                if _is_abort_run_failure(exc):
+                    raise
+                error = f'{type(exc).__name__}: {exc}'
+
+    state_name = classify(frame).state.value if frame is not None else None
+    surface_name = classify_surface(frame).value if frame is not None else None
+    recovered = returned and frame is not None and is_known_good_coins_page(frame)
+    if recovered:
+        detail = f'a settled coins page was proven after {returned_attempts} shortcut attempt(s)'
+    else:
+        detail = f'the coins page was not proven after {RESET_ATTEMPTS} bounded shortcut attempt(s)'
+        if error:
+            detail = f'{detail}; {error}'
+    log.log(
+        logging.INFO if recovered else logging.WARNING,
+        '%s',
+        _event(
+            'surface_reset',
+            trigger=trigger,
+            outcome='recovered' if recovered else 'still_failed',
+            attempts=returned_attempts,
+            surface=surface_name,
+            state=state_name,
+            detail=detail,
+        ),
+    )
+    return ResetResult(
+        recovered=recovered,
+        attempts=returned_attempts,
+        detail=detail,
+        surface=surface_name,
+        state=state_name,
+        snapshot=frame,
+    )
+
+
+def _reset_abort(context: RunContext, *, trigger: str, reset: ResetResult) -> RunAborted:
+    """Turn a failed reset into the run's named, bounded failure (#168)."""
+    frame = reset.snapshot
+    screen = _screen_for_frame(frame) if frame is not None else None
+    if screen is None and context.safety is not None:
+        screen = context.safety.last_screen
+    if screen is None:
+        screen = ScreenReport(
+            state='unknown',
+            surface='unknown',
+            labels=(),
+            fingerprint='unknown/unknown/no-frame',
+        )
+    reason = (
+        f'{trigger}; the reset could not reach the known-good coins page after '
+        f'{RESET_ATTEMPTS} bounded shortcut attempt(s): {reset.detail}'
+    )
+    return RunAborted(code=AbortCode.UNEXPECTED_SCREEN, reason=reason, screen=screen)
+
+
+def _screen_for_frame(frame: Snapshot) -> ScreenReport:
+    """Describe one frame with the same fingerprint the safety guard uses."""
+    return _screen_report(frame, classify(frame).state, classify_surface(frame))
+
+
+def _fresh_entry(roster: Roster | None, entry: RosterEntry) -> RosterEntry | None:
+    """Find the retried row in a fresh observation, never a stale coordinate."""
+    if roster is None:
+        return None
+    identity = _identity(entry)
+    for candidate in roster.entries:
+        if _identity(candidate) == identity:
+            return candidate
+    return None
+
+
+def _reset_retry_task(
+    context: RunContext,
+    controller: Controller,
+    observer: RosterObserver,
+    report: RunReport,
+    entry: RosterEntry,
+    first: EngineResult,
+    *,
+    trigger: str,
+    on_attempt: Callable[[], None],
+    recorder: FailureRecorder | None,
+    on_dismiss: Callable[[DismissReport], None] | None,
+) -> tuple[EngineResult | None, RecoveryRecord, bool]:
+    """Reset, re-observe and retry one failed dispatch exactly once (#168).
+
+    The retried row is resolved from the fresh observation, never from the
+    failed frame's coordinates. If the row is no longer dispatchable, or the
+    reset cannot reach the coins page, no blind tap is issued. The caller keeps
+    the first result in that case and records the recovery's own verdict.
+    """
+    log = context.logger if context.logger is not None else LOG
+    reset = _reset_to_known_good(
+        context,
+        controller,
+        trigger=trigger,
+        on_dismiss=on_dismiss,
+    )
+    if not reset.recovered:
+        record = RecoveryRecord(
+            scope='task',
+            trigger=trigger,
+            outcome='still_failed',
+            detail=reset.detail,
+            task=entry.title,
+            key=entry.key,
+            attempts=reset.attempts,
+            surface=reset.surface,
+        )
+        report.record_recovery(record)
+        log.warning(
+            '%s',
+            _event(
+                'task_recovery',
+                key=entry.key,
+                title=entry.title,
+                trigger=trigger,
+                outcome=record.outcome,
+                reset=reset.as_dict(),
+            ),
+        )
+        raise _reset_abort(context, trigger=trigger, reset=reset)
+
+    observation = _observe(
+        context,
+        controller,
+        observer,
+        route=None,
+        on_dismiss=on_dismiss,
+    )
+    _record_policy_skips(report, observation.roster if observation is not None else observer.roster, logger=log)
+    report.observations = observer.sequence
+    fresh_roster = (
+        observation.roster
+        if observation is not None
+        and observation.roster is not None
+        and not observation.failed
+        and not observation.cap_reached
+        else None
+    )
+    fresh = _fresh_entry(fresh_roster, entry)
+    retry: EngineResult | None = None
+    gone_on_complete_surface = (
+        fresh is None
+        and fresh_roster is not None
+        and fresh_roster.surface_variant is Surface.BOOST_PAGE
+        and not fresh_roster.incomplete
+    )
+    settled_after_reset = gone_on_complete_surface or (
+        fresh is not None and not _fresh_entry_is_dispatchable(fresh, context.state)
+    )
+    if fresh is not None and not settled_after_reset:
+        retry = _dispatch_with_retry(
+            context,
+            controller,
+            fresh,
+            on_attempt=on_attempt,
+            recorder=recorder,
+        )
+
+    retry_outcome = 'not retried' if retry is None else retry.outcome
+    outcome = 'recovered' if retry is not None and retry.completed else 'still_failed'
+    detail = f'{reset.detail}; retry: {retry_outcome}'
+    record = RecoveryRecord(
+        scope='task',
+        trigger=trigger,
+        outcome=outcome,
+        detail=detail,
+        task=entry.title,
+        key=entry.key,
+        attempts=reset.attempts,
+        surface=reset.surface,
+        retry=None if retry is None else retry.as_dict(),
+    )
+    report.record_recovery(record)
+    log.log(
+        logging.INFO if outcome == 'recovered' else logging.WARNING,
+        '%s',
+        _event(
+            'task_recovery',
+            key=entry.key,
+            title=entry.title,
+            trigger=trigger,
+            outcome=outcome,
+            reset=reset.as_dict(),
+            retry=retry_outcome,
+            retry_verification=None if retry is None else retry.verification,
+            retry_completed=None if retry is None else retry.completed,
+            first=first.detail,
+        ),
+    )
+    return retry, record, settled_after_reset
+
+
+def _fresh_entry_is_dispatchable(entry: RosterEntry, state: DailyStateStore) -> bool:
+    """Whether a re-observed row still has an unclaimed action to retry."""
+    return (
+        entry.allowed
+        and entry.spec is not None
+        and entry.dispatch_target is not None
+        and state.count(entry.spec.key) < entry.spec.max_per_run
+    )
+
+
 def _recover_task_screen(
     context: RunContext,
     controller: Controller,
@@ -3076,11 +3582,12 @@ def _restart_surface(
     context: RunContext,
     controller: Controller,
     observer: RosterObserver,
+    report: RunReport,
     *,
     on_dismiss: Callable[[DismissReport], None] | None,
     reason: str,
 ) -> RosterObservation | None:
-    """Fire the shortcut again, then re-read the best task surface."""
+    """Fire the shortcut again, re-read the best task surface and report it."""
     log = context.logger if context.logger is not None else LOG
     try:
         context.navigate(SurfaceRoute.SHORTCUT)
@@ -3089,10 +3596,62 @@ def _restart_surface(
         raise
     except Exception as exc:
         detail = f'{type(exc).__name__}: {exc}'
-        log.warning('%s', _event('surface_restart_failed', reason=reason, detail=detail))
+        _record_surface_recovery(report, reason=reason, observation=None, attempts=1, detail=detail)
+        log.warning(
+            '%s',
+            _event('surface_restart_failed', reason=reason, outcome='still_failed', detail=detail),
+        )
         return None
-    log.info('%s', _event('surface_restart', reason=reason, route=SurfaceRoute.SHORTCUT.value))
-    return _observe(context, controller, observer, route=None, on_dismiss=on_dismiss)
+    observation = _observe(context, controller, observer, route=None, on_dismiss=on_dismiss)
+    recovered = _readable_observation(observation)
+    detail = (
+        'the surface restart re-read a usable task surface'
+        if recovered
+        else 'the surface restart did not re-establish a usable task surface'
+    )
+    _record_surface_recovery(report, reason=reason, observation=observation, attempts=1, detail=detail)
+    log.log(
+        logging.INFO if recovered else logging.WARNING,
+        '%s',
+        _event(
+            'surface_restart',
+            reason=reason,
+            route=SurfaceRoute.SHORTCUT.value,
+            outcome='recovered' if recovered else 'still_failed',
+        ),
+    )
+    return observation
+
+
+def _readable_observation(observation: RosterObservation | None) -> bool:
+    """Whether a restart observation is a usable, complete task-surface read."""
+    if observation is None or observation.roster is None or observation.failed or observation.cap_reached:
+        return False
+    roster = observation.roster
+    return roster.surface_variant in _RECOVERABLE_SURFACES and not roster.incomplete
+
+
+def _record_surface_recovery(
+    report: RunReport,
+    *,
+    reason: str,
+    observation: RosterObservation | None,
+    attempts: int,
+    detail: str,
+) -> None:
+    """Record one shortcut restart so every reset appears in the recovery report."""
+    recovered = _readable_observation(observation)
+    roster = observation.roster if observation is not None else None
+    report.record_recovery(
+        RecoveryRecord(
+            scope='surface',
+            trigger=reason,
+            outcome='recovered' if recovered else 'still_failed',
+            detail=detail,
+            attempts=attempts,
+            surface=roster.surface_variant.value if roster is not None and roster.surface_variant is not None else None,
+        ),
+    )
 
 
 def _needs_another_pass(result: EngineResult) -> bool:
@@ -3795,6 +4354,56 @@ def _record_balance_before(
     _observe_balance(context, report.balance_before, log)
     if report.balance_before is None:
         report.balance_note = 'the coins page did not render a readable balance before the first task'
+
+
+def _normalise_start(
+    context: RunContext,
+    controller: Controller,
+    report: RunReport,
+    frame: Snapshot,
+    log: logging.Logger,
+    *,
+    on_dismiss: Callable[[DismissReport], None] | None = None,
+) -> Snapshot:
+    """Make the first roster read start from the known-good coins page (#168).
+
+    The app may have been left on a boost sheet, product page, checkout sheet or
+    launcher. A first frame that the surface classifier does not name as the
+    settled coins page is reset once before discovery, so whatever happened to
+    be on screen is never treated as the roster. A reset that cannot reach the
+    page aborts the run with the existing named unexpected-screen failure.
+    """
+    if is_known_good_coins_page(frame):
+        return frame
+    trigger = f'start_of_run:{classify_surface(frame).value}'
+    reset = _reset_to_known_good(
+        context,
+        controller,
+        trigger=trigger,
+        on_dismiss=on_dismiss,
+    )
+    record = RecoveryRecord(
+        scope='start',
+        trigger=trigger,
+        outcome='recovered' if reset.recovered else 'still_failed',
+        detail=reset.detail,
+        attempts=reset.attempts,
+        surface=reset.surface,
+    )
+    report.record_recovery(record)
+    log.log(
+        logging.INFO if reset.recovered else logging.WARNING,
+        '%s',
+        _event(
+            'start_normalisation',
+            trigger=trigger,
+            outcome=record.outcome,
+            reset=reset.as_dict(),
+        ),
+    )
+    if not reset.recovered:
+        raise _reset_abort(context, trigger=trigger, reset=reset)
+    return reset.snapshot if reset.snapshot is not None else frame
 
 
 def _finish_on_coins_page(

@@ -89,7 +89,7 @@ def test_a_full_report_round_trips_through_json_and_markdown(tmp_path: Path) -> 
     payload = json.loads(report.json_path.read_text(encoding='utf-8'))
     summary = report.summary_path.read_text(encoding='utf-8')
 
-    assert payload['schema'] == 6
+    assert payload['schema'] == 7
     assert payload['run_id'] == '20261122T033000Z'
     assert payload['status'] == 'budget'
     assert payload['budget'] == {'seconds': 1200.0, 'used_seconds': 60.0}
