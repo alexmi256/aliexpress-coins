@@ -114,6 +114,23 @@ def test_a_card_failure_for_a_different_title_is_not_removed() -> None:
     assert merged.incomplete is True
 
 
+@pytest.mark.parametrize('full_first', [True, False])
+def test_a_different_label_for_the_same_catalogue_key_is_not_a_failure(full_first: bool) -> None:
+    other_label = 'Add our widget to your homescreen'
+    full = _roster(_full_widget_frame())
+    bare = _roster(_bare_frame(other_label))
+
+    assert full.entries[0].key == 'coins_widget'
+    assert bare.card_structure_titles == (other_label,)
+
+    merged = merge_rosters(full, bare) if full_first else merge_rosters(bare, full)
+
+    assert merged.titles == (WIDGET,)
+    assert merged.card_structure_failures == 0
+    assert merged.card_structure_titles == ()
+    assert merged.incomplete is False
+
+
 def test_a_directly_built_roster_cannot_report_a_row_as_an_unreadable_card() -> None:
     full = _roster(_full_widget_frame())
     entry = full.entries[0]
@@ -169,6 +186,16 @@ def test_merge_frame_rosters_reconciles_a_failure_against_another_frame_row() ->
     assert merged.titles == (WIDGET,)
     assert merged.card_structure_failures == 0
     assert merged.card_structure_titles == ()
+
+
+def test_an_untitled_failure_does_not_inflate_when_merged_repeatedly() -> None:
+    sample = Roster(entries=(), card_structure_failures=1)
+
+    once = merge_rosters(sample, sample)
+    twice = merge_rosters(once, sample)
+
+    assert once.card_structure_failures == 1
+    assert twice.card_structure_failures == 1
 
 
 def test_a_merged_summary_counts_only_the_rows_it_records() -> None:
@@ -237,13 +264,35 @@ def test_the_report_rejects_a_warning_that_names_a_recorded_row() -> None:
         report_module._roster_summary(payload)
 
 
-def test_the_report_rejects_a_stale_warning_naming_a_row_without_a_failure_record() -> None:
+def test_a_denied_row_named_like_an_unread_family_key_is_not_a_contradiction() -> None:
+    frame = _snapshot(
+        _box('Coins boost', 100, 100, 500, 150),
+        _box('notifications', 100, 600, 700, 640),
+        _box('GO', 980, 620, 1040, 660),
+    )
+    roster = replace(_roster(frame), unread_families=('notifications',))
+
+    assert roster.entries[0].denied is True
+    assert roster.warning == "catalogue families still claimable today were not seen in any read: 'notifications'"
+
+    summary = report_module._roster_summary(roster.as_dict())
+
+    assert "warning: catalogue families still claimable today were not seen in any read: 'notifications'" in summary
+
+
+def test_a_contradictory_roster_is_rejected_before_run_json_is_written(tmp_path: Path) -> None:
     merged = merge_rosters(_roster(_full_widget_frame()), _roster(_bare_frame(WIDGET)))
     payload = merged.as_dict()
-    payload['warning'] = f"'{WIDGET}' had no readable card structure and were not counted"
+    payload['count'] = 2
+    report = report_module.RunReport.for_run(tmp_path, budget_seconds=1.0, clock=lambda: CAPTURED_AT)
+    report.roster = payload
+    report.finish(report_module.RunStatus.COMPLETED, budget_used_seconds=0.0, finished_at=CAPTURED_AT)
 
-    with pytest.raises(AssertionError, match='warning names row'):
-        report_module._roster_summary(payload)
+    with pytest.raises(AssertionError, match='count=2'):
+        report.write()
+
+    assert not report.json_path.exists()
+    assert not report.summary_path.exists()
 
 
 def test_a_roster_cannot_name_more_failures_than_it_counts() -> None:

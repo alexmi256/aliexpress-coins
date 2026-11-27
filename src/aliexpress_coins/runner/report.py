@@ -504,6 +504,8 @@ class RunReport:
 
     def write(self) -> Path:
         """Write ``run.json`` and ``summary.md`` atomically."""
+        if self.roster is not None:
+            _assert_roster_summary_consistent(self.roster)
         try:
             self.run_dir.mkdir(parents=True, exist_ok=True)
             payload = (
@@ -899,13 +901,6 @@ def _assert_roster_summary_consistent(roster: dict[str, Any]) -> None:
         conflicting = tuple(title for title in titles if normalize(str(title)) in row_titles)
         if conflicting:
             problems.append(f'card-structure failure(s) also listed as rows: {conflicting!r}')
-    warning = roster.get('warning')
-    if isinstance(warning, str):
-        named_rows = tuple(
-            str(entry.get('title')) for entry in rows if entry.get('title') and repr(entry.get('title')) in warning
-        )
-        if named_rows:
-            problems.append(f'warning names row(s) it also records: {named_rows!r}')
     assert not problems, '; '.join(problems)
 
 

@@ -413,10 +413,17 @@ def _reconcile_card_structure(
     another sample reads the same card completely. That title is then a read row,
     not proof of an unreadable family. A title no sample turned into an entry is
     kept, because no read ever proved it had a card.
+
+    Identity follows the row merge: the normalised title, plus every label that
+    an allowed row's catalogue family also answers to. That catches a sample
+    that names the same family with a different measured label pattern.
     """
     if not titles or not entries:
         return failures, tuple(titles)
     identities = {normalize(entry.title) for entry in entries}
+    for entry in entries:
+        if entry.spec is not None:
+            identities.update(normalize(pattern) for pattern in entry.spec.label_patterns)
     kept = tuple(dict.fromkeys(title for title in titles if normalize(title) not in identities))
     if kept == tuple(titles):
         return failures, kept
@@ -2268,11 +2275,16 @@ def _merged_card_structure(rosters: Sequence[Roster]) -> tuple[int, tuple[str, .
     """Union the card failures of several reads, keeping their untitled residual.
 
     The titles are deduplicated so two samples that both saw the same partial
-    render count as one failure. ``Roster`` reconciles the union against the
-    merged entries, which is what drops a title another sample read as a row.
+    render count as one failure. The untitled residual is the largest any sample
+    carried, because an unnamed failure has no identity to deduplicate against.
+    ``Roster`` reconciles the union against the merged entries, which is what
+    drops a title another sample read as a row.
     """
     titles = tuple(dict.fromkeys(title for roster in rosters for title in roster.card_structure_titles))
-    untitled = sum(max(0, roster.card_structure_failures - len(roster.card_structure_titles)) for roster in rosters)
+    untitled = max(
+        (max(0, roster.card_structure_failures - len(roster.card_structure_titles)) for roster in rosters),
+        default=0,
+    )
     return len(titles) + untitled, titles
 
 
