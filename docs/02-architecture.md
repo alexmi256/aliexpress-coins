@@ -104,9 +104,16 @@ by catalogue key (normalised title for a refused row). A row seen earlier remain
 daily state, the blacklist or a settled/blocked outcome removes it, so a later frame cannot make it
 vanish from the plan. Completion needs two consecutive reads that agree, and the engine spends one
 fresh re-open per pass to obtain the second; a different read spends another pass instead of being
-silently accepted (#149). A family that no read saw and that is still claimable today also keeps the
-roster incomplete; a family already completed to today's daily limit is named as already claimed and
-does not block completion.
+silently accepted (#149). A family that no read saw is kept as *unread* while the evidence is still
+ambiguous, so the roster stays incomplete and the day open. Once the cross-day evidence file records
+`AECOINS_FAMILY_DORMANCY_DAYS` (default 7, floor 3) consecutive complete days without a sighting,
+the family is reported as `not_offered` (dormant) with its streak and sample count instead: it stops
+blocking completion and remains visible in the report and day state. The ordinary nightly read
+still catches a return, and a dormant family also gets one explicit extra sample every
+`AECOINS_FAMILY_RETRY_DAYS`; a single sighting clears the dormancy. A family
+already completed to today's daily limit is named as already claimed rather than unseen (#161).
+A pass that lost a surface or had unreadable rows is never absence evidence, so it stays
+`unread_families` and keeps the night open (#161).
 
 Repeated failures are handled by the pass and attempt bounds (`_needs_another_pass`,
 `_blacklist_task`), not by moving a row around in the sort. The pass bound follows progress, not a

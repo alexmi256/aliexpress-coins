@@ -71,9 +71,9 @@ import json
 import logging
 import math
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
@@ -82,13 +82,17 @@ from typing import Any, cast
 from aliexpress_coins.perception.artifacts import atomic_write_bytes
 from aliexpress_coins.runner.errors import RunLockHeld, StateError, StateReadError, StateWriteError
 from aliexpress_coins.runner.lock import LOCK_FILENAME, RunLock
+from aliexpress_coins.tasks.families import FamilyEvidence
 
 __all__ = [
     'DAILY_STATE_SCHEMA',
+    'FAMILY_OBSERVATION_FILENAME',
+    'FAMILY_OBSERVATION_SCHEMA',
     'LOGGER_NAME',
     'RUN_LOCK_FILENAME',
     'DailySnapshot',
     'DailyStateStore',
+    'FamilyObservationStore',
     'NightOutcome',
     'NightRecord',
     'RunLock',
@@ -103,6 +107,12 @@ LOGGER_NAME = 'aliexpress_coins.runner.state'
 
 DAILY_STATE_SCHEMA = 1
 """The only on-disk schema this module reads or writes."""
+
+FAMILY_OBSERVATION_SCHEMA = 1
+"""The schema of the cross-day ``family-observations.json`` evidence file."""
+
+FAMILY_OBSERVATION_FILENAME = 'family-observations.json'
+"""Where a family's absence streak survives a day rollover (#161)."""
 
 RUN_LOCK_FILENAME = LOCK_FILENAME
 """The exclusive run lock's name inside the state directory (issue #78)."""
@@ -143,6 +153,8 @@ class NightRecord:
     dispatched: int = 0
     completed: int = 0
     retryable_failures: int = 0
+    dormant_families: tuple[FamilyEvidence, ...] = ()
+    """Families whose absence is proven enough to stop blocking this night."""
 
     @property
     def complete(self) -> bool:
@@ -151,12 +163,15 @@ class NightRecord:
 
     def as_dict(self) -> dict[str, Any]:
         """Render the decision for the daily state and the run report."""
-        return {
+        payload: dict[str, Any] = {
             'outcome': self.outcome.value,
             'dispatched': self.dispatched,
             'completed': self.completed,
             'retryable_failures': self.retryable_failures,
         }
+        if self.dormant_families:
+            payload['dormant_families'] = [family.as_dict() for family in self.dormant_families]
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -484,23 +499,207 @@ class DailyStateStore:
         self._state = state
 
     def _quarantine(self, path: Path, reason: _CorruptState) -> None:
-        stamp = self._clock().strftime('%Y%m%dT%H%M%S%fZ')
-        target = _unique_path(path.with_name(f'{path.name}.corrupt-{stamp}'))
-        fields: dict[str, object] = {'path': str(path), 'reason': str(reason)}
-        try:
-            os.replace(path, target)
-        except OSError as exc:
-            # The run must still proceed: the next commit replaces the bad file.
-            fields['quarantine_error'] = str(exc)
-        else:
-            fields['quarantined'] = str(target)
-        self._warn('state_corrupt', **fields)
+        _quarantine_file(path, reason, clock=self._clock, logger=self._logger)
 
     def _warn(self, event: str, **fields: object) -> None:
         self._logger.warning(
             '%s',
             json.dumps({'event': event, **fields}, separators=(',', ':'), sort_keys=True),
         )
+
+
+class FamilyObservationStore:
+    """Read and update the cross-day absence evidence for catalogue families.
+
+    The daily state file rotates at midnight, so it cannot answer "how many
+    days in a row was this family absent?". This store keeps one small file
+    beside the daily files and updates each family once per observed local day.
+    A second run on the same day does not advance the streak: it refreshes the
+    sample count with the larger of the two day's reads.
+
+    Absence is only evidence when the caller marks the read trustworthy. A run
+    whose surface was lost or whose rows were unreadable must not turn a bad
+    read into a dormant family (#161), so the engine passes the read's own
+    completion proof and skips the update otherwise.
+    """
+
+    def __init__(
+        self,
+        state_dir: str | Path,
+        *,
+        clock: Clock = _local_now,
+        logger: logging.Logger | None = None,
+    ) -> None:
+        self.state_dir = Path(state_dir)
+        self._clock = clock
+        self._logger = logger if logger is not None else logging.getLogger(LOGGER_NAME)
+        try:
+            self.state_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise StateError(f'could not create state directory {self.state_dir}: {exc}') from exc
+
+    @classmethod
+    def from_state(
+        cls,
+        state: DailyStateStore,
+        *,
+        clock: Clock = _local_now,
+        logger: logging.Logger | None = None,
+    ) -> FamilyObservationStore:
+        """Use the same directory as the day state it complements."""
+        return cls(state.state_dir, clock=clock, logger=logger)
+
+    @property
+    def path(self) -> Path:
+        """The evidence file, whether or not it exists yet."""
+        return self.state_dir / FAMILY_OBSERVATION_FILENAME
+
+    def load(self) -> Mapping[str, FamilyEvidence]:
+        """Return every remembered family, keyed by catalogue key."""
+        return MappingProxyType(self._load())
+
+    def peek(self, keys: Collection[str]) -> tuple[FamilyEvidence, ...]:
+        """Return the current evidence for ``keys`` without writing anything."""
+        current = self._load()
+        return tuple(current.get(key, FamilyEvidence(key=key)) for key in keys)
+
+    def due_for_probe(self, keys: Collection[str], day: date) -> tuple[str, ...]:
+        """Families whose periodic extra probe sample is due on ``day``."""
+        current = self._load()
+        return tuple(
+            key
+            for key in keys
+            if (evidence := current.get(key)) is not None
+            and evidence.dormant
+            and evidence.next_probe is not None
+            and day >= evidence.next_probe
+        )
+
+    def observe(
+        self,
+        *,
+        day: date,
+        keys: Collection[str],
+        seen: Collection[str],
+        samples: int,
+        dormancy_days: int,
+        retry_days: int,
+        probed: Collection[str] = (),
+    ) -> tuple[FamilyEvidence, ...]:
+        """Fold one trustworthy day's reads into the evidence and persist it.
+
+        ``keys`` is every family this day can decide about; a key not in it
+        keeps its previous record untouched. ``seen`` is the union of every
+        readable roster sample. ``samples`` is how many readable sheet reads
+        backed this day's conclusion. ``probed`` names due families whose
+        explicit extra sample was readable; without it a due probe is not
+        advanced.
+        """
+        if dormancy_days < 1:
+            raise ValueError(f'dormancy_days must be positive, got {dormancy_days!r}')
+        if retry_days < 1:
+            raise ValueError(f'retry_days must be positive, got {retry_days!r}')
+        if samples < 0:
+            raise ValueError(f'samples must not be negative, got {samples!r}')
+        current = self._load()
+        seen_keys = set(seen)
+        probed_keys = set(probed)
+        for key in keys:
+            previous = current.get(key, FamilyEvidence(key=key))
+            current[key] = _next_evidence(
+                previous,
+                day=day,
+                seen=key in seen_keys,
+                samples=samples,
+                dormancy_days=dormancy_days,
+                retry_days=retry_days,
+                probed=key in probed_keys,
+            )
+        self._commit(current)
+        return tuple(current[key] for key in keys)
+
+    def _load(self) -> dict[str, FamilyEvidence]:
+        path = self.path
+        try:
+            raw = path.read_bytes()
+        except FileNotFoundError:
+            return {}
+        except OSError as exc:
+            raise StateReadError(f'could not read {path}: {exc}') from exc
+
+        try:
+            return _parse_family_observations(raw)
+        except _CorruptState as exc:
+            _quarantine_file(path, exc, clock=self._clock, logger=self._logger)
+            return {}
+
+    def _commit(self, families: Mapping[str, FamilyEvidence]) -> None:
+        payload = {
+            'schema': FAMILY_OBSERVATION_SCHEMA,
+            'families': {key: families[key].as_dict() for key in sorted(families)},
+        }
+        data = (json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + '\n').encode('utf-8')
+        try:
+            atomic_write_bytes(self.path, data)
+        except OSError as exc:
+            raise StateWriteError(f'could not write {self.path}: {exc}') from exc
+
+
+def _next_evidence(
+    previous: FamilyEvidence,
+    *,
+    day: date,
+    seen: bool,
+    samples: int,
+    dormancy_days: int,
+    retry_days: int,
+    probed: bool,
+) -> FamilyEvidence:
+    """Apply one day's sighting or absence to a family's history."""
+    if seen:
+        return FamilyEvidence(key=previous.key, last_seen=day, last_checked=day)
+
+    same_day = previous.last_checked == day
+    if same_day:
+        # A second run on the same local day is another sample, not a second
+        # day of absence.
+        missed = previous.missed_days
+        total_samples = max(previous.samples, samples)
+    else:
+        missed = previous.missed_days + 1
+        total_samples = previous.samples + samples
+
+    unseen_since = previous.unseen_since if previous.unseen_since is not None else day
+    if missed < dormancy_days:
+        return FamilyEvidence(
+            key=previous.key,
+            last_seen=previous.last_seen,
+            unseen_since=unseen_since,
+            missed_days=missed,
+            samples=total_samples,
+            last_checked=day,
+        )
+
+    dormant_since = previous.dormant_since or day
+    next_probe = previous.next_probe
+    retried_on: date | None = None
+    if next_probe is None:
+        next_probe = day + timedelta(days=retry_days)
+    elif day >= next_probe and probed:
+        retried_on = day
+        next_probe = day + timedelta(days=retry_days)
+
+    return FamilyEvidence(
+        key=previous.key,
+        last_seen=previous.last_seen,
+        unseen_since=unseen_since,
+        missed_days=missed,
+        samples=total_samples,
+        dormant_since=dormant_since,
+        next_probe=next_probe,
+        last_checked=day,
+        retried_on=retried_on,
+    )
 
 
 class _CorruptState(Exception):
@@ -638,7 +837,95 @@ def _parse_night(raw: Any) -> NightRecord | None:
         dispatched=_night_count(data, 'dispatched'),
         completed=_night_count(data, 'completed'),
         retryable_failures=_night_count(data, 'retryable_failures'),
+        dormant_families=_parse_dormant_families(data.get('dormant_families', [])),
     )
+
+
+def _parse_dormant_families(raw: Any) -> tuple[FamilyEvidence, ...]:
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise _CorruptState("'last_night.dormant_families' must be a JSON array or null")
+    families: list[FamilyEvidence] = []
+    for value in raw:
+        if not isinstance(value, dict):
+            raise _CorruptState("'last_night.dormant_families' entries must be JSON objects")
+        family = _family_evidence(cast(dict[str, Any], value), field='last_night.dormant_families')
+        if not family.dormant:
+            raise _CorruptState("'last_night.dormant_families' must only name dormant families")
+        families.append(family)
+    return tuple(families)
+
+
+def _parse_family_observations(raw: bytes) -> dict[str, FamilyEvidence]:
+    try:
+        payload: Any = json.loads(raw.decode('utf-8'))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise _CorruptState(f'not valid UTF-8 JSON: {exc}') from exc
+
+    if not isinstance(payload, dict):
+        raise _CorruptState('family observations must be a JSON object')
+    data = cast(dict[str, Any], payload)
+
+    schema = _field(data, 'schema')
+    if isinstance(schema, bool) or not isinstance(schema, int) or schema != FAMILY_OBSERVATION_SCHEMA:
+        raise _CorruptState(f'unsupported schema: {schema!r}')
+
+    families_raw = _field(data, 'families')
+    if not isinstance(families_raw, dict):
+        raise _CorruptState("'families' must be a JSON object")
+
+    families: dict[str, FamilyEvidence] = {}
+    for key, value in cast(dict[str, Any], families_raw).items():
+        if not isinstance(key, str):
+            raise _CorruptState('family keys must be strings')
+        _family_key(key)
+        if not isinstance(value, dict):
+            raise _CorruptState(f'family {key!r} must be a JSON object')
+        family = _family_evidence(cast(dict[str, Any], value), field=f'families.{key}')
+        if family.key != key:
+            raise _CorruptState(f'family {key!r} records a different key {family.key!r}')
+        families[key] = family
+    return families
+
+
+def _family_evidence(data: Mapping[str, Any], *, field: str) -> FamilyEvidence:
+    key = data.get('key')
+    if not isinstance(key, str):
+        raise _CorruptState(f"'{field}.key' must be a string")
+    _family_key(key)
+    missed_days = _family_count(data, 'missed_days', field=field)
+    samples = _family_count(data, 'samples', field=field)
+    return FamilyEvidence(
+        key=key,
+        last_seen=_family_date(data, 'last_seen', field=field),
+        unseen_since=_family_date(data, 'unseen_since', field=field),
+        missed_days=missed_days,
+        samples=samples,
+        dormant_since=_family_date(data, 'dormant_since', field=field),
+        next_probe=_family_date(data, 'next_probe', field=field),
+        last_checked=_family_date(data, 'last_checked', field=field),
+        retried_on=_family_date(data, 'retried_on', field=field),
+    )
+
+
+def _family_count(data: Mapping[str, Any], key: str, *, field: str) -> int:
+    value = data.get(key, 0)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise _CorruptState(f"'{field}.{key}' must be a non-negative integer")
+    return value
+
+
+def _family_date(data: Mapping[str, Any], key: str, *, field: str) -> date | None:
+    value = data.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise _CorruptState(f"'{field}.{key}' must be an ISO date or null")
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise _CorruptState(f"'{field}.{key}' is not an ISO date: {value!r}") from exc
 
 
 def _night_count(data: Mapping[str, Any], key: str) -> int:
@@ -664,6 +951,13 @@ def _task_key(task_key: str) -> str:
     return task_key
 
 
+def _family_key(value: str) -> str:
+    try:
+        return _task_key(value)
+    except StateError as exc:
+        raise _CorruptState(str(exc)) from exc
+
+
 def _balance(balance: float) -> float:
     if isinstance(balance, bool) or not isinstance(balance, (int, float)):
         raise StateError(f'balance must be a finite number, got {balance!r}')
@@ -671,6 +965,24 @@ def _balance(balance: float) -> float:
     if not math.isfinite(value):
         raise StateError(f'balance must be a finite number, got {balance!r}')
     return value
+
+
+def _quarantine_file(path: Path, reason: _CorruptState, *, clock: Clock, logger: logging.Logger) -> None:
+    """Move a corrupt state file aside; never let it cost the run."""
+    stamp = clock().strftime('%Y%m%dT%H%M%S%fZ')
+    target = _unique_path(path.with_name(f'{path.name}.corrupt-{stamp}'))
+    fields: dict[str, object] = {'path': str(path), 'reason': str(reason)}
+    try:
+        os.replace(path, target)
+    except OSError as exc:
+        # The run must still proceed: the next commit replaces the bad file.
+        fields['quarantine_error'] = str(exc)
+    else:
+        fields['quarantined'] = str(target)
+    logger.warning(
+        '%s',
+        json.dumps({'event': 'state_corrupt', **fields}, separators=(',', ':'), sort_keys=True),
+    )
 
 
 def _unique_path(path: Path) -> Path:

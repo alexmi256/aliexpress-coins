@@ -25,6 +25,8 @@ __all__ = [
     'DEFAULT_APP_SETTLE_SECONDS',
     'DEFAULT_CATALOGUE_PATH',
     'DEFAULT_CORPUS_PATH',
+    'DEFAULT_FAMILY_DORMANCY_DAYS',
+    'DEFAULT_FAMILY_RETRY_DAYS',
     'DEFAULT_JITTER_SECONDS',
     'DEFAULT_KEEP_RUNS',
     'DEFAULT_MAX_PASSES',
@@ -36,6 +38,7 @@ __all__ = [
     'DEFAULT_SCHEDULE_TIME',
     'DEFAULT_SETTLE_SECONDS',
     'DEFAULT_STATE_DIR',
+    'MIN_FAMILY_DORMANCY_DAYS',
     'RunConfig',
     'timezone_from_environment',
 ]
@@ -102,6 +105,39 @@ task that keeps failing is skipped for the rest of the night after this many
 failures.
 """
 
+DEFAULT_FAMILY_DORMANCY_DAYS = 7
+"""How many consecutive unsighted days make a family ``not offered`` (issue #161).
+
+The ``Coins boost`` sheet rotates. #159 saw no ``learn_to_save`` row in 15 full
+reads in one evening, so one clean miss is not a fact about the app. A week of
+consecutive clean passes that each sampled the whole readable sheet is long
+enough to accept that the family is not on offer *for this account right now*,
+short enough that a genuinely removed row stops keeping every night open, and
+it is reset by a single sighting. The threshold is per **day**: a run only adds
+one unsighted day, and a pass that lost a surface or had unreadable rows adds
+none. :data:`MIN_FAMILY_DORMANCY_DAYS` is the startup-checked floor so one bad
+night can never write a family off.
+"""
+
+MIN_FAMILY_DORMANCY_DAYS = 3
+"""The smallest threshold that can ignore one or two bad nights.
+
+A single complete read can miss a rotating family — #159 saw zero sightings in
+15 samples in one evening — so writing a family off after one unsighted day
+would recreate the silent-drop defect this feature exists to prevent. Three is
+the floor that admits no such single-night verdict.
+"""
+
+DEFAULT_FAMILY_RETRY_DAYS = 7
+"""How often a dormant family gets an explicit extra probe sample.
+
+The normal nightly read already catches a returning row, but a dormant family is
+also due for one additional fresh read on this cadence so a family that rotates
+in on a night the ordinary samples missed still gets a dedicated chance. The
+probe is an extra sample, not a second dispatch policy: it never makes a missing
+family block the night.
+"""
+
 DEFAULT_APP_SETTLE_SECONDS = 10.0
 """The measured warm-up after starting the app normally (docs/07 §1)."""
 
@@ -132,6 +168,8 @@ class RunConfig:
     corpus_path: Path
     settle_seconds: float
     app_settle_seconds: float
+    family_dormancy_days: int = DEFAULT_FAMILY_DORMANCY_DAYS
+    family_retry_days: int = DEFAULT_FAMILY_RETRY_DAYS
     dry_run: bool = False
     max_passes: int = DEFAULT_MAX_PASSES
     max_task_attempts: int = DEFAULT_MAX_TASK_ATTEMPTS
@@ -177,9 +215,16 @@ class RunConfig:
                 'AECOINS_APP_SETTLE_SECONDS',
                 DEFAULT_APP_SETTLE_SECONDS,
             ),
+            family_dormancy_days=_int_at_least(
+                env,
+                'AECOINS_FAMILY_DORMANCY_DAYS',
+                DEFAULT_FAMILY_DORMANCY_DAYS,
+                MIN_FAMILY_DORMANCY_DAYS,
+            ),
             dry_run=_flag(env.get('AECOINS_DRY_RUN', ''), 'AECOINS_DRY_RUN'),
             max_passes=_positive_int(env, 'AECOINS_MAX_PASSES', DEFAULT_MAX_PASSES),
             max_task_attempts=_positive_int(env, 'AECOINS_MAX_TASK_ATTEMPTS', DEFAULT_MAX_TASK_ATTEMPTS),
+            family_retry_days=_positive_int(env, 'AECOINS_FAMILY_RETRY_DAYS', DEFAULT_FAMILY_RETRY_DAYS),
             keep_runs=_positive_int(env, 'AECOINS_KEEP_RUNS', DEFAULT_KEEP_RUNS),
             apprise_url=_optional(env, 'AECOINS_APPRISE_URL') or _optional(env, 'APPRISE_URL'),
             apprise_key=_optional(env, 'AECOINS_APPRISE_KEY') or _optional(env, 'APPRISE_KEY'),
@@ -245,6 +290,28 @@ def _non_negative_int(environment: Mapping[str, str], name: str, default: int) -
         raise ConfigError(f'{name} must be an integer, got {raw!r}') from exc
     if value < 0:
         raise ConfigError(f'{name} must not be negative, got {value!r}')
+    return value
+
+
+def _int_at_least(environment: Mapping[str, str], name: str, default: int, minimum: int) -> int:
+    """Read an integer that may not be low enough to lose evidence.
+
+    A startup rejection is deliberate: ``AECOINS_FAMILY_DORMANCY_DAYS=1`` would
+    turn one rotating sheet read into a verdict that a family is not offered,
+    which is the silent-drop defect #161 exists to prevent.
+    """
+    raw = environment.get(name, '').strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigError(f'{name} must be an integer, got {raw!r}') from exc
+    if value < minimum:
+        raise ConfigError(
+            f'{name} must be at least {minimum} consecutive unsighted days, got {value!r}; '
+            'a smaller value would write a rotating family off after one or two clean misses',
+        )
     return value
 
 

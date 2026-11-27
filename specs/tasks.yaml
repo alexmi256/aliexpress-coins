@@ -150,20 +150,24 @@ allowed:
   - key: learn_to_save
     label_patterns:
       - Learn to save money with Coins Credits
+      - Learn to save money
       - Stack with coins, coupons and other discounts
+      - Stack with coins
     category: browse_wait
     wait_seconds: 15
     repeatable: false
     max_per_run: 1
     notes: >-
-      The catalogue row is retained because an unseen still-claimable family
-      must keep the night open (#149); do not remove it to make a night look
-      complete. It was not offered in any of the repeated #159 samples on
-      2026-11-26 (docs/05 §4e), so the destination, badge/counter, return
-      route, timing and reward are unknown. The historical 2026-11-20 note
-      that an explainer page paid +1 retained no frame and is not a measured
-      contract. `browse_wait` remains the only allowed executor if the row
-      appears; `wait_seconds` is an unverified upper bound, not an observation.
+      The catalogue row is retained because an unseen family must stay visible
+      and reversible (#149/#161); do not remove it to make a night look complete.
+      It was not offered in any of the repeated #159 samples on 2026-11-26
+      (docs/05 §4e), so the destination, badge/counter, return route, timing and
+      reward are unknown. The two measured phrases from the #21 catalogue are
+      kept together with their title/subtitle prefixes so a changed suffix still
+      matches; the copy itself has not been re-measured. The historical
+      2026-11-20 note that an explainer page paid +1 retained no frame and is not
+      a measured contract. `browse_wait` remains the only allowed executor if the
+      row appears; `wait_seconds` is an unverified upper bound, not an observation.
 
   - key: recently_viewed
     label_patterns:
