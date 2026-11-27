@@ -2,11 +2,13 @@
 
 The sheet is server-driven and rotates rows between loads, so one read is one
 sample. These tests use fake captures and a scripted observer; no device is
-touched. They prove the union, the two-read completion rule and the report.
+touched. They prove the union, the coverage/sample-bound completion rule and the
+report.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
@@ -125,7 +127,7 @@ class _ScriptedObserver:
     def __init__(
         self,
         initial: Roster,
-        observations: list[RosterObservation | None],
+        observations: Sequence[RosterObservation | None],
     ) -> None:
         self._roster = initial
         self._observations = observations
@@ -262,7 +264,12 @@ def test_a_disagreeing_read_spends_a_pass_then_agreement_completes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    initial, observations = _idle_rotation_observations()
+    initial = _denied_roster('game')
+    observations = [
+        _observation(1, _denied_roster('social')),
+        _observation(2, _roster('super_discounts')),
+        _observation(3, _roster('super_discounts')),
+    ]
     scripted = _ScriptedObserver(initial, observations)
     monkeypatch.setattr(engine, 'discover_roster', lambda *args, **kwargs: initial)
     monkeypatch.setattr(engine, '_observe', lambda *args, **kwargs: scripted.observe())
@@ -273,44 +280,65 @@ def test_a_disagreeing_read_spends_a_pass_then_agreement_completes(
         corpus=CORPUS,
     )
     context.observer = cast(Any, scripted)
-    _seed_other_families(context, seen=set())
+    for spec in CATALOGUE.allowed:
+        if spec.key == 'super_discounts':
+            continue
+        for _ in range(spec.max_per_run):
+            context.state.record(spec.key)
+    dispatched: list[str] = []
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        dispatched.append(entry.key or '')
+        _context.state.record(entry.key or '')
+        return _complete(entry)
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
 
     report = engine.run_once(context)
 
+    assert dispatched == ['super_discounts']
     assert report.status is RunStatus.COMPLETED
-    assert report.passes == 2
+    assert report.passes == 1
+    assert context.state.snapshot().completed_night is True
     rotation = cast(dict[str, Any], cast(dict[str, Any], report.roster)['rotation'])
     assert rotation['confirmed'] is True
-    assert rotation['samples'] == 4
-    assert rotation['agreeing_samples'] == 2
+    assert rotation['samples'] >= 2
+    assert rotation['stopping_reason'] in {'coverage_reached', 'stable_sample_bound'}
+    assert len(rotation['union_sizes']) == rotation['samples']
+    assert len(rotation['sample_families']) == rotation['samples']
+    assert rotation['first_seen']
+    assert 'game_play_and_earn' in rotation['first_seen']
+    assert 'social' in rotation['first_seen']
 
 
 @pytest.mark.slow
-def test_a_sheet_that_keeps_disagreeing_stops_at_the_pass_bound(
+def test_a_stable_small_union_leaves_the_night_open_at_the_sample_bound(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    initial, observations = _idle_rotation_observations()
+    initial = _roster('coins_quiz')
+    observations = [_observation(index, initial) for index in range(1, 7)]
     scripted = _ScriptedObserver(initial, observations)
     monkeypatch.setattr(engine, 'discover_roster', lambda *args, **kwargs: initial)
     monkeypatch.setattr(engine, '_observe', lambda *args, **kwargs: scripted.observe())
     context = _context(
         tmp_path,
-        capture=_Capture(_denied_frame('game'), _coin_frame()),
+        capture=_Capture(_frame('coins_quiz'), _coin_frame()),
         catalogue=CATALOGUE,
         corpus=CORPUS,
     )
     context.observer = cast(Any, scripted)
-    context.config = replace(context.config, max_passes=1)
-    _seed_other_families(context, seen=set())
+    context.state.record('coins_quiz')
+    _seed_other_families(context, seen={'coins_quiz', 'surprise_items'})
 
     report = engine.run_once(context)
 
-    assert report.status is RunStatus.BUDGET
     assert context.state.snapshot().completed_night is False
     rotation = cast(dict[str, Any], cast(dict[str, Any], report.roster)['rotation'])
     assert rotation['confirmed'] is False
-    assert 'kept rotating without two agreeing reads' in str(report.detail)
+    assert rotation['stopping_reason'] == 'stable_sample_bound'
+    assert rotation['samples'] == 4
+    assert 'surprise_items' in cast(list[str], rotation['unread_families'])
 
 
 @pytest.mark.slow
@@ -355,7 +383,7 @@ def test_a_pass_plans_the_union_of_two_rotations(
     rotation = cast(dict[str, Any], cast(dict[str, Any], report.roster)['rotation'])
     assert rotation['confirmed'] is True
     assert rotation['samples'] >= 2
-    assert rotation['agreeing_samples'] >= 2
+    assert rotation['stable_samples'] >= 1
 
 
 @pytest.mark.slow
@@ -400,15 +428,14 @@ def test_a_lost_confirmation_read_does_not_complete_the_night(
         corpus=CORPUS,
     )
     context.observer = cast(Any, scripted)
-    context.config = replace(context.config, max_passes=1)
 
     report = engine.run_once(context)
 
-    assert report.status is RunStatus.BUDGET
     assert context.state.snapshot().completed_night is False
     rotation = cast(dict[str, Any], cast(dict[str, Any], report.roster)['rotation'])
     assert rotation['confirmed'] is False
-    assert 'kept rotating' in str(report.detail) or 'not been read' in str(report.detail)
+    assert rotation['stopping_reason'] == 'unreadable_surface'
+    assert 'coverage sample' in report.event_log_path.read_text(encoding='utf-8')
 
 
 @pytest.mark.slow
@@ -436,7 +463,7 @@ def test_two_agreeing_fresh_reads_still_complete_the_night(
     rotation = cast(dict[str, Any], cast(dict[str, Any], report.roster)['rotation'])
     assert rotation['confirmed'] is True
     assert rotation['samples'] >= 2
-    assert rotation['agreeing_samples'] >= 2
+    assert rotation['stable_samples'] >= 1
 
 
 @pytest.mark.slow
@@ -543,7 +570,8 @@ def test_a_late_titleless_sample_still_restarts_the_surface(
         corpus=CORPUS,
     )
     context.observer = cast(Any, scripted)
-    _seed_other_families(context, seen=set())
+    context.state.record('notifications')
+    _seed_other_families(context, seen={'notifications', 'surprise_items'})
 
     report = engine.run_once(context)
 
@@ -660,30 +688,43 @@ def test_learn_to_save_stays_claimable_and_unseen_keeps_the_night_open(
 def test_the_rotation_summary_states_the_samples_and_unread_families() -> None:
     assert report_module._rotation_summary(None) == 'not sampled'
     assert report_module._rotation_summary({'rotation': {'samples': 0}}) == 'not sampled'
-    assert (
-        report_module._rotation_summary(
-            {
-                'rotation': {
-                    'samples': 2,
-                    'agreeing_samples': 2,
-                    'confirmed': True,
-                    'unread_families': [],
-                },
+    confirmed = report_module._rotation_summary(
+        {
+            'rotation': {
+                'samples': 2,
+                'stable_samples': 1,
+                'union_sizes': [2, 2],
+                'first_seen': {'coins_quiz': 1},
+                'sample_families': [['coins_quiz', 'super_discounts'], ['coins_quiz']],
+                'stopping_reason': 'coverage_reached',
+                'stable': True,
+                'confirmed': True,
+                'unread_families': [],
             },
-        )
-        == 'confirmed after 2 agreeing sample(s) of 2'
+        },
     )
+    assert confirmed.startswith('confirmed after 2 sample(s)')
+    assert 'union size(s) 2 -> 2' in confirmed
+    assert 'stable union: yes' in confirmed
+    assert 'coverage reached' in confirmed
+    assert 'coins_quiz@1' in confirmed
+    assert '#1=coins_quiz|super_discounts' in confirmed
+    assert '#2=coins_quiz' in confirmed
     text = report_module._rotation_summary(
         {
             'rotation': {
-                'samples': 3,
-                'agreeing_samples': 1,
+                'samples': 4,
+                'stable_samples': 3,
+                'union_sizes': [1, 1, 1, 1],
+                'first_seen': {'coins_quiz': 1},
+                'stopping_reason': 'stable_sample_bound',
                 'confirmed': False,
                 'unread_families': ['super_discounts'],
             },
         },
     )
-    assert text.startswith('not confirmed after 3 sample(s)')
+    assert text.startswith('not confirmed after 4 sample(s)')
+    assert '3 sample(s) added no new family' in text
     assert 'super_discounts' in text
 
 
