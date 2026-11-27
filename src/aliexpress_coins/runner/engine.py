@@ -262,6 +262,12 @@ class TaskBudget:
         """Name the cap and the derived need when it stops the walk."""
         head = f'task budget of {self.limit} dispatch(es) exhausted'
         attempts = f'up to {self.max_task_attempts} attempt(s) per round'
+        if self.configured is not None and self.configured > self.ceiling:
+            return (
+                f'{head}; the absolute ceiling is the reason: AECOINS_MAX_TASKS_PER_RUN={self.configured} '
+                f"is above the {self.ceiling}-dispatch backstop; the catalogue's derived need was "
+                f'{self.need} dispatch(es) ({attempts})'
+            )
         if self.below_need:
             return (
                 f"{head}; the configured cap is the reason: the catalogue's derived need was "
@@ -273,11 +279,6 @@ class TaskBudget:
                 f"{head}; the absolute ceiling is the reason: the catalogue's derived need was "
                 f"{self.need} dispatch(es) ({attempts}), above AECOINS_MAX_TASKS_PER_RUN's "
                 f'{self.ceiling}-dispatch backstop'
-            )
-        if self.configured is not None and self.configured > self.ceiling:
-            return (
-                f'{head}; the absolute ceiling is the reason: AECOINS_MAX_TASKS_PER_RUN={self.configured} '
-                f'is above the {self.ceiling}-dispatch backstop, so the run cannot use the configured cap'
             )
         return (
             f"{head}; the catalogue's derived need was {self.need} dispatch(es) ({attempts}), "
@@ -2950,7 +2951,23 @@ def _warn_task_ceiling(task_budget: TaskBudget, log: logging.Logger) -> None:
     task stop names every row it left plus the derived need.
     """
     configured = task_budget.configured
-    if configured is not None and configured < task_budget.need:
+    if configured is not None and configured > task_budget.ceiling:
+        log.warning(
+            '%s',
+            _event(
+                'task_budget_above_absolute_ceiling',
+                max_tasks=configured,
+                effective_tasks=task_budget.limit,
+                derived_task_need=task_budget.need,
+                absolute_ceiling=task_budget.ceiling,
+                detail=(
+                    f'AECOINS_MAX_TASKS_PER_RUN={configured} is above the absolute ceiling; '
+                    f'the run will stop at {task_budget.limit} dispatches while the catalogue derives '
+                    f'{task_budget.need} dispatch(es)'
+                ),
+            ),
+        )
+    elif configured is not None and configured < task_budget.need:
         log.warning(
             '%s',
             _event(
@@ -2965,19 +2982,6 @@ def _warn_task_ceiling(task_budget: TaskBudget, log: logging.Logger) -> None:
                     'needed by the catalogue (sum of max_per_run times '
                     f'{task_budget.max_task_attempts} attempt(s) per round over allowed families); '
                     'a legitimate day can leave an allowed row unclaimed at this cap'
-                ),
-            ),
-        )
-    elif configured is not None and configured > task_budget.ceiling:
-        log.warning(
-            '%s',
-            _event(
-                'task_budget_above_absolute_ceiling',
-                max_tasks=configured,
-                absolute_ceiling=task_budget.ceiling,
-                detail=(
-                    f'AECOINS_MAX_TASKS_PER_RUN={configured} is above the absolute ceiling; '
-                    f'the run will stop at {task_budget.ceiling} dispatches'
                 ),
             ),
         )

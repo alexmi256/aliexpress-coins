@@ -289,6 +289,30 @@ def test_an_explicit_cap_above_the_absolute_ceiling_warns_and_is_clamped(caplog:
     assert 'stop at 64 dispatches' in str(warnings[0]['detail'])
 
 
+def test_a_clamped_cap_reports_the_ceiling_not_the_configured_value(caplog: pytest.LogCaptureFixture) -> None:
+    budget = TaskBudget(
+        limit=MAX_TASK_DISPATCHES, need=200, ceiling=MAX_TASK_DISPATCHES, configured=100, max_task_attempts=2
+    )
+    caplog.set_level(logging.WARNING)
+
+    engine._warn_task_ceiling(budget, logging.getLogger('test.task-ceiling'))
+    detail = budget.describe_stop()
+
+    assert 'task budget of 64 dispatch(es) exhausted' in detail
+    assert 'the absolute ceiling is the reason' in detail
+    assert 'the configured cap is the reason' not in detail
+    assert 'derived need was 200 dispatch(es)' in detail
+    assert 'AECOINS_MAX_TASKS_PER_RUN=100' in detail
+    assert '64-dispatch backstop' in detail
+    warnings = _warnings(caplog, 'task_budget_above_absolute_ceiling')
+    assert len(warnings) == 1
+    assert warnings[0]['max_tasks'] == 100
+    assert warnings[0]['effective_tasks'] == MAX_TASK_DISPATCHES
+    assert warnings[0]['derived_task_need'] == 200
+    assert 'stop at 64 dispatches' in str(warnings[0]['detail'])
+    assert not _warnings(caplog, 'task_budget_below_daily_capacity')
+
+
 def test_the_observer_derives_its_cap_when_the_config_has_none(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
