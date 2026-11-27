@@ -38,6 +38,7 @@ __all__ = [
     'DEFAULT_SCHEDULE_TIME',
     'DEFAULT_SETTLE_SECONDS',
     'DEFAULT_STATE_DIR',
+    'MAX_TASK_DISPATCHES',
     'MIN_FAMILY_DORMANCY_DAYS',
     'RunConfig',
     'timezone_from_environment',
@@ -79,8 +80,29 @@ subprocess timeout, and a native OCR/PIL call has no in-process timeout.
 An operator may raise it for a slower device or more passes.
 """
 
-DEFAULT_MAX_TASKS = 12
-"""The default number of task dispatches one run may make."""
+DEFAULT_MAX_TASKS: int | None = None
+"""The default task cap: ``None`` derives it from the catalogue (issue #166).
+
+The task budget used to be a fixed twelve dispatches. That number was smaller
+than a legitimate day: the shipped catalogue allows twenty-one completions
+across allowed families, and retries can push the safe worst case to
+``max_per_run * max_task_attempts`` per family. A run therefore derives its cap
+from the catalogue unless the operator sets ``AECOINS_MAX_TASKS_PER_RUN``.
+"""
+
+MAX_TASK_DISPATCHES = 64
+"""The absolute ceiling on dispatches, a backstop against a pathological catalogue.
+
+The derived need is normally well below this. An allowed row's ``max_per_run``
+and the retry headroom bound an ordinary night, but a catalogue edited with an
+absurd limit must not let one run dispatch forever. Sixty-four is above the
+shipped catalogue's derived need (42: twenty-one completions times two
+attempts) with room for new families, while still bounding a broken spec. An
+explicit ``AECOINS_MAX_TASKS_PER_RUN`` larger than this is clamped and warned
+about at startup; an explicitly smaller value is honoured so an operator can
+still ask for a short night, but it is warned about when it is below the
+catalogue's derived need.
+"""
 
 DEFAULT_MAX_PASSES = 12
 """The absolute ceiling on full re-enumerated roster sweeps one night may make (#123, #141).
@@ -158,7 +180,7 @@ class RunConfig:
 
     device: str | None
     budget_seconds: float
-    max_tasks: int
+    max_tasks: int | None
     schedule_time: time
     timezone: tzinfo
     jitter_seconds: int
@@ -201,7 +223,7 @@ class RunConfig:
         return cls(
             device=device,
             budget_seconds=_positive_float(env, 'AECOINS_RUN_BUDGET_SECONDS', DEFAULT_RUN_BUDGET_SECONDS),
-            max_tasks=_positive_int(env, 'AECOINS_MAX_TASKS_PER_RUN', DEFAULT_MAX_TASKS),
+            max_tasks=_optional_positive_int(env, 'AECOINS_MAX_TASKS_PER_RUN'),
             schedule_time=_time_value(env.get('AECOINS_SCHEDULE_TIME', '').strip()),
             timezone=timezone_from_environment(env),
             jitter_seconds=_non_negative_int(env, 'AECOINS_SCHEDULE_JITTER_SECONDS', DEFAULT_JITTER_SECONDS),
@@ -271,6 +293,20 @@ def _positive_int(environment: Mapping[str, str], name: str, default: int) -> in
     raw = environment.get(name, '').strip()
     if not raw:
         return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ConfigError(f'{name} must be an integer, got {raw!r}') from exc
+    if value < 1:
+        raise ConfigError(f'{name} must be positive, got {value!r}')
+    return value
+
+
+def _optional_positive_int(environment: Mapping[str, str], name: str) -> int | None:
+    """Read a positive integer, leaving an unset or empty value to be derived."""
+    raw = environment.get(name, '').strip()
+    if not raw:
+        return None
     try:
         value = int(raw)
     except ValueError as exc:

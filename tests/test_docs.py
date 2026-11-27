@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from aliexpress_coins.runner.config import DEFAULT_MAX_TASKS, DEFAULT_RUN_BUDGET_SECONDS
+from aliexpress_coins.runner.config import DEFAULT_RUN_BUDGET_SECONDS, MAX_TASK_DISPATCHES
 from aliexpress_coins.runner.failures import FAILURE_TABLE, FailureCode
 from aliexpress_coins.tasks.quiz_bank import normalize_question, question_key
 from aliexpress_coins.tasks.surface import Surface
@@ -310,7 +310,8 @@ def test_readme_claim_section_pins_the_shipped_bounds() -> None:
     section = _claim_section()
     checks = {
         'wall-clock default': rf'\b{DEFAULT_RUN_BUDGET_SECONDS:g}\b',
-        'task default': rf'\b{DEFAULT_MAX_TASKS}\b',
+        'task derivation': r'derived from the catalogue',
+        'task backstop': rf'\b{MAX_TASK_DISPATCHES}\b',
         'wall-clock setting': re.escape('AECOINS_RUN_BUDGET_SECONDS'),
         'task setting': re.escape('AECOINS_MAX_TASKS_PER_RUN'),
     }

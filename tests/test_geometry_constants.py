@@ -50,6 +50,7 @@ ALLOWED: dict[tuple[str, int | float], _Allowed] = {
     ('runner/config.py', 23): _Allowed(1, 'clock hour range, not pixels'),
     ('runner/config.py', 30): _Allowed(2, 'run-retention default in runs, not pixels'),
     ('runner/config.py', 59): _Allowed(1, 'clock minute range, not pixels'),
+    ('runner/config.py', 64): _Allowed(1, 'absolute task-dispatch backstop (#166), not pixels'),
     ('runner/config.py', 180): _Allowed(1, 'schedule jitter in seconds, not pixels'),
     ('runner/config.py', 1200.0): _Allowed(1, 'run wall-clock budget in seconds'),
     ('runner/lock.py', 64): _Allowed(1, 'owner-record read limit factor, not a pixel size'),

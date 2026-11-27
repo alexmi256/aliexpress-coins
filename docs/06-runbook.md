@@ -672,8 +672,10 @@ A budget stop is a **clean end**, not an error:
 - `Failure: budget_exhausted — The run used its whole time or task budget; the remaining rows wait
   for tomorrow.`;
 - `Detail` names one of `wall-clock budget of ...s exhausted`, `task budget of N dispatch(es)
-  exhausted`, `pass budget of N exhausted` when the sweep ceiling was reached, or `pass budget
-  stopped after N consecutive no-progress pass(es)` when the progress rule ended the walk;
+  exhausted` (with the catalogue's derived need and whether the configured cap or the absolute
+  backstop is the reason), `pass budget of N exhausted` when the sweep ceiling was reached, or
+  `pass budget stopped after N consecutive no-progress pass(es)` when the progress rule ended the
+  walk;
 - remaining rows appear under `Skipped` with reason `run budget` (a wall-clock or task stop) or
   `pass budget` (either pass bound);
 - the process exits `0`, and the nightly daemon treats the night as finished for scheduling
@@ -702,7 +704,8 @@ deployment only the stop grace and SIGKILL remain.
 
 If the budget is routinely exhausted, look at the wall-clock budget
 (`AECOINS_RUN_BUDGET_SECONDS`, default 1200 s), the task cap
-(`AECOINS_MAX_TASKS_PER_RUN`, default 12), the pass ceiling (`AECOINS_MAX_PASSES`, default 12), the
+(`AECOINS_MAX_TASKS_PER_RUN`, default derived from the catalogue, absolute backstop 64), the pass
+ceiling (`AECOINS_MAX_PASSES`, default 12), the
 per-task attempt bound (`AECOINS_MAX_TASK_ATTEMPTS`, default 2), the family dormancy threshold
 (`AECOINS_FAMILY_DORMANCY_DAYS`, default 7, startup floor 3), the dormant-family probe interval
 (`AECOINS_FAMILY_RETRY_DAYS`, default 7 days) and the per-task time in the table.
@@ -779,7 +782,8 @@ If a night claims nothing, check in this order:
    app normally, wait for the home feed, then send the shortcut intent.
 4. **Skipped reasons.** `policy` rows are refusals and are expected; `no executor` means the row is
    in the catalogue but this build has no executor for its category; `daily limit` means the state
-   file already counts the task today; `run budget` means the cap stopped the walk.
+   file already counts the task today; `run budget` means a wall-clock or task cap stopped the walk,
+   and the detail names the catalogue's derived task need when the task cap is the reason.
 5. **Timezone.** Confirm `AECOINS_TIMEZONE` equals
    `adb shell getprop persist.sys.timezone`; `doctor` prints both lines, and the scheduler now
    refuses a mismatch instead of starting. A mismatch is the classic "successful, empty night".
