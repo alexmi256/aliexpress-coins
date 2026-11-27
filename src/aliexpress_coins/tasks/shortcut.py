@@ -1442,9 +1442,10 @@ def _settled_action(
     swipe while the list was still moving, and the next frame had carried the
     row above the fold. If the settled frame no longer carries the row, the
     caller fails with ``row_not_settled`` instead of tapping a stale point.
-    The operator's ``settle`` knob may lengthen the bound but cannot disable it
-    after a search swipe; only a row already present in a settled roster frame
-    skips the extra capture when ``settle`` is zero.
+    The guard is mandatory after a search swipe, so the operator's ``settle``
+    knob cannot disable the case that failed live. A row already present in the
+    first capture is accepted from that roster/opened-sheet frame when
+    ``settle`` is zero; the list was not moved by this executor before the tap.
     """
     if settle <= 0 and not found.attempts:
         return found.target, found

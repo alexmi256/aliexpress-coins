@@ -262,7 +262,8 @@ returns; the full copy remains unmeasured (§4e table: row offer ❓).
   is already pinned, fires that item's own persisted intent
   (`SHORTCUT_LAUNCH_DEEP_LINK`, with `from=shortcut` / `shortcutId=coinsPromotion`), waits for the
   launched coin page to settle, polls for the readable `+1`, and only reloads the page once if the
-  first read cannot see it. A launcher frame after the dispatch is a foreground loss, never
+  first read cannot see it. A launcher frame after the dispatch gets the bounded return route;
+  if the app is still off the coin page after that recovery, it is a foreground loss, never
   completion. Cleanup runs `adb shell cmd shortcut clear-shortcuts com.alibaba.aliexpresshd`.
   Android exposes no per-pin adb delete, so this is package-wide: it also drops the app's ordinary
   long-press shortcuts (Search, Cart, Orders, Account), which the app republishes on its next

@@ -214,6 +214,16 @@ def _home_with_shortcut() -> Snapshot:
     )
 
 
+def _clock_surface() -> Snapshot:
+    """The measured launcher/clock frame, positively classified ``NON_APP``."""
+    return _snapshot(
+        _box('3:36', 20, 5, 100, 35),
+        _box('0', 1120, 5, 1160, 35),
+        _box('日', 500, 700, 560, 760),
+        _box('24', 580, 700, 640, 760),
+    )
+
+
 def _created_shortcut_frames(initial: Snapshot, after: str = '88') -> tuple[Snapshot, ...]:
     """The measured sheet -> launcher -> app -> reload path for one attempt."""
     return (
@@ -848,6 +858,7 @@ def test_the_home_shortcut_is_used_when_no_launcher_intent_is_injected(
     frame = _coin_page_with_row('87')
     entry = _entry(frame, catalogue)
     device = _Device()
+    routes = _Routes()
     frames = (
         frame,
         _shortcut_sheet(),
@@ -856,7 +867,7 @@ def test_the_home_shortcut_is_used_when_no_launcher_intent_is_injected(
         _shortcut_sheet(),
         _home_with_shortcut(),
         _home_with_shortcut(),
-        _home_with_shortcut(),  # the launcher frame immediately after the tap
+        _clock_surface(),  # the launcher/clock frame immediately after the tap
         _coin_page('88'),  # the bounded recovery returns the coin page
     )
 
@@ -866,12 +877,13 @@ def test_the_home_shortcut_is_used_when_no_launcher_intent_is_injected(
         corpus,
         _state(tmp_path),
         entry,
-        navigate=_Routes(),
+        navigate=routes,
         clock=_Clock(),
         sleep=_Clock().sleep,
     )
 
     assert result.outcome is ShortcutVisitOutcome.COMPLETED
+    assert routes.routes == [SurfaceRoute.SHORTCUT]
     assert device.keys == ['KEYCODE_HOME']
     assert [tap.label for tap in result.taps] == [
         entry.title,
@@ -2092,7 +2104,8 @@ def test_an_unreadable_coin_page_is_polled_before_spending_the_reload(
         _launcher_add_sheet(),
         _shortcut_sheet(),
         _shortcut_sheet(),
-        no_balance,  # settled coin page, balance band not rendered yet
+        _shortcut_sheet(),  # captured before the launch
+        no_balance,  # the arrival: settled coin page, balance not rendered yet
         _coin_page('88'),  # the readable balance arrives on a later poll
     )
     routes = _Routes()
@@ -2175,19 +2188,20 @@ def test_the_settled_search_waits_for_a_swipe_and_re_resolves_the_row() -> None:
         _Capture((top, below, below, below)),
         'Visit the page via coins',
         top,
-        settle=1.0,
+        settle=0.0,
         interval=0.5,
         clock=_Clock(),
         sleep=_Clock().sleep,
     )
 
     assert found.target is not None
+    # The after-swipe guard is independent of the operator's settle knob.
     action, settled = shortcut_module._settled_action(
         controller,
         _Capture((below, below, below, below)),
         'Visit the page via coins',
         found,
-        settle=1.0,
+        settle=0.0,
         interval=0.5,
         clock=_Clock(),
         sleep=_Clock().sleep,
