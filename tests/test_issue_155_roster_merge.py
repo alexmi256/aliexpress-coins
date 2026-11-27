@@ -124,10 +124,34 @@ def test_a_different_label_for_the_same_catalogue_key_is_not_a_failure(full_firs
 
     assert full.entries[0].key == 'coins_widget'
     assert bare.card_structure_titles == (other_label,)
+    assert bare.card_structure_keys == ('coins_widget',)
 
     merged = merge_rosters(full, bare) if full_first else merge_rosters(bare, full)
 
     assert merged.titles == (WIDGET,)
+    assert merged.card_structure_failures == 0
+    assert merged.card_structure_titles == ()
+    assert merged.incomplete is False
+
+
+@pytest.mark.parametrize('full_first', [True, False])
+def test_a_different_label_for_the_same_denied_rule_is_not_a_failure(full_first: bool) -> None:
+    row_frame = _snapshot(
+        _box('Coins boost', 100, 100, 500, 150),
+        _box('Play & Earn', 100, 600, 700, 640),
+        _box('GO', 980, 620, 1040, 660),
+    )
+    row = _roster(row_frame)
+    bare = _roster(_bare_frame('Play and Earn'))
+
+    assert row.entries[0].denied is True
+    assert row.entries[0].rule == 'game_play_and_earn'
+    assert bare.card_structure_titles == ('Play and Earn',)
+    assert bare.card_structure_keys == ('game_play_and_earn',)
+
+    merged = merge_rosters(row, bare) if full_first else merge_rosters(bare, row)
+
+    assert merged.titles == ('Play & Earn',)
     assert merged.card_structure_failures == 0
     assert merged.card_structure_titles == ()
     assert merged.incomplete is False
@@ -144,6 +168,20 @@ def test_a_directly_built_roster_cannot_report_a_row_as_an_unreadable_card() -> 
     assert roster.card_structure_failures == 1
     assert roster.incomplete is True
     assert roster.warning == '1 task title(s) had no readable card structure and were not counted'
+
+
+def test_a_directly_built_roster_counts_a_repeated_key_once() -> None:
+    entry = _roster(_full_widget_frame()).entries[0]
+    roster = Roster(
+        entries=(entry,),
+        card_structure_failures=2,
+        card_structure_titles=(NOTIFICATIONS, NOTIFICATIONS),
+        card_structure_keys=('notifications', 'notifications'),
+    )
+
+    assert roster.card_structure_failures == 1
+    assert roster.card_structure_titles == (NOTIFICATIONS,)
+    assert roster.card_structure_keys == ('notifications',)
 
 
 def test_collect_roster_drops_a_failure_when_a_scrolled_frame_reads_the_card() -> None:
@@ -198,6 +236,17 @@ def test_an_untitled_failure_does_not_inflate_when_merged_repeatedly() -> None:
 
     assert once.card_structure_failures == 1
     assert twice.card_structure_failures == 1
+
+
+def test_two_labels_for_one_failure_key_count_as_one_diagnostic() -> None:
+    first = _roster(_bare_frame(WIDGET))
+    second = _roster(_bare_frame('Add our widget to your homescreen'))
+
+    merged = merge_rosters(first, second)
+
+    assert merged.card_structure_failures == 1
+    assert merged.card_structure_titles == (WIDGET,)
+    assert merged.card_structure_keys == ('coins_widget',)
 
 
 def test_a_merged_summary_counts_only_the_rows_it_records() -> None:

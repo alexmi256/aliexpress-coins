@@ -402,11 +402,21 @@ class RosterSplitFailure:
         }
 
 
+def _aligned_card_keys(
+    titles: Sequence[str],
+    keys: Sequence[str | None],
+) -> tuple[str | None, ...]:
+    """Align failure keys with their titles, padding legacy rosters with ``None``."""
+    aligned = tuple(keys[: len(titles)])
+    return aligned + (None,) * (len(titles) - len(aligned))
+
+
 def _reconcile_card_structure(
     entries: Sequence[RosterEntry],
     titles: Sequence[str],
+    keys: Sequence[str | None],
     failures: int,
-) -> tuple[int, tuple[str, ...]]:
+) -> tuple[int, tuple[str, ...], tuple[str | None, ...]]:
     """Drop card-structure failures for titles the roster also read as rows.
 
     The rotating sheet can catch a card before its companion copy renders while
@@ -414,30 +424,36 @@ def _reconcile_card_structure(
     not proof of an unreadable family. A title no sample turned into an entry is
     kept, because no read ever proved it had a card.
 
-    Identity follows the row merge: the normalised title, plus every label that
-    an allowed row's catalogue family also answers to under the same matcher
-    that decided that row. That catches a sample naming the same catalogue key
-    with a different measured label pattern.
+    Identity follows the row merge: the catalogue key when the failure and a row
+    name the same key, otherwise the normalised title. The key covers both
+    allowed families and explicit deny rules, including a differently worded
+    label for the same family.
     """
+    keys = _aligned_card_keys(titles, keys)
     if not titles or not entries:
-        return failures, tuple(titles)
+        return failures, tuple(titles), keys
     row_titles = {normalize(entry.title) for entry in entries}
-    family_patterns = tuple(
-        pattern for entry in entries if entry.spec is not None for pattern in entry.spec.label_patterns
-    )
-
-    def is_read(title: str) -> bool:
+    row_keys = {entry.rule for entry in entries if entry.rule is not None}
+    kept_titles: list[str] = []
+    kept_keys: list[str | None] = []
+    seen: set[tuple[str, str]] = set()
+    for title, key in zip(titles, keys, strict=True):
+        if key is not None and key in row_keys:
+            continue
         if normalize(title) in row_titles:
-            return True
-        return any(similarity(pattern, title) >= DEFAULT_MIN_SCORE for pattern in family_patterns)
-
-    kept = tuple(dict.fromkeys(title for title in titles if not is_read(title)))
-    if kept == tuple(titles):
-        return failures, kept
+            continue
+        identity = ('key', key) if key is not None else ('title', normalize(title))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        kept_titles.append(title)
+        kept_keys.append(key)
+    if tuple(kept_titles) == tuple(titles):
+        return failures, tuple(kept_titles), tuple(kept_keys)
     # Preserve any count that has no title to reconcile against (a legacy or
     # hand-built roster), rather than silently clearing the failure.
     untitled = max(0, failures - len(titles))
-    return len(kept) + untitled, kept
+    return len(kept_titles) + untitled, tuple(kept_titles), tuple(kept_keys)
 
 
 @dataclass(frozen=True, slots=True)
@@ -463,6 +479,8 @@ class Roster:
     unreadable_count: int = 0
     card_structure_failures: int = 0
     card_structure_titles: tuple[str, ...] = ()
+    card_structure_keys: tuple[str | None, ...] = ()
+    """The catalogue key or deny rule that named each card failure, parallel to titles."""
     rotation_samples: int = 0
     """How many readable sheet reads this roster's night has seen."""
     rotation_agreeing_samples: int = 0
@@ -484,17 +502,20 @@ class Roster:
         object.__setattr__(self, 'variants_seen', tuple(self.variants_seen))
         object.__setattr__(self, 'split_failures', tuple(self.split_failures))
         object.__setattr__(self, 'card_structure_titles', tuple(self.card_structure_titles))
+        object.__setattr__(self, 'card_structure_keys', tuple(self.card_structure_keys))
         object.__setattr__(self, 'unread_families', tuple(self.unread_families))
         object.__setattr__(self, 'not_offered_families', tuple(self.not_offered_families))
         object.__setattr__(self, 'dormant_families', tuple(self.dormant_families))
         object.__setattr__(self, 'already_claimed_families', tuple(self.already_claimed_families))
-        failures, titles = _reconcile_card_structure(
+        failures, titles, keys = _reconcile_card_structure(
             self.entries,
             self.card_structure_titles,
+            self.card_structure_keys,
             self.card_structure_failures,
         )
         object.__setattr__(self, 'card_structure_failures', failures)
         object.__setattr__(self, 'card_structure_titles', titles)
+        object.__setattr__(self, 'card_structure_keys', keys)
         _assert_roster_consistent(self)
 
     @property
@@ -1903,6 +1924,7 @@ def enumerate_roster(
     assigned_actions: set[TextBox] = set()
     unreadable = 0
     card_failure_titles: list[str] = []
+    card_failure_keys: list[str | None] = []
     if streak_entry is not None and (streak_entry.action is not None or visible_action_count > 0):
         entries.append(streak_entry)
         seen.add(normalize(streak_entry.title))
@@ -1946,6 +1968,7 @@ def enumerate_roster(
                     )
                 ):
                     card_failure_titles.append(found[0])
+                    card_failure_keys.append(found[2].rule)
                 continue
             identity = normalize(claimed.title)
             if not identity or identity in seen:
@@ -1993,6 +2016,7 @@ def enumerate_roster(
         unreadable_count=unreadable,
         card_structure_failures=len(card_failure_titles),
         card_structure_titles=tuple(card_failure_titles),
+        card_structure_keys=tuple(card_failure_keys),
     )
 
 
@@ -2174,12 +2198,13 @@ def merge_rosters(accumulated: Roster | None, current: Roster) -> Roster:
         if identity not in entries:
             order.append(identity)
         entries[identity] = entry
-    card_failures, card_titles = _merged_card_structure((accumulated, current))
+    card_failures, card_titles, card_keys = _merged_card_structure((accumulated, current))
     return replace(
         current,
         entries=tuple(entries[identity] for identity in order),
         card_structure_failures=card_failures,
         card_structure_titles=card_titles,
+        card_structure_keys=card_keys,
     )
 
 
@@ -2278,21 +2303,32 @@ def _roster_swipe(controller: Controller, frame: Snapshot, *, down: bool) -> Swi
     )
 
 
-def _merged_card_structure(rosters: Sequence[Roster]) -> tuple[int, tuple[str, ...]]:
+def _merged_card_structure(rosters: Sequence[Roster]) -> tuple[int, tuple[str, ...], tuple[str | None, ...]]:
     """Union the card failures of several reads, keeping their untitled residual.
 
-    The titles are deduplicated so two samples that both saw the same partial
-    render count as one failure. The untitled residual is the largest any sample
-    carried, because an unnamed failure has no identity to deduplicate against.
-    ``Roster`` reconciles the union against the merged entries, which is what
-    drops a title another sample read as a row.
+    Failures with a known catalogue key are the same failure even when the OCR
+    label varies; without a key the normalised title is the identity. ``Roster``
+    reconciles the union against the merged entries, which is what drops a
+    failure another sample read as a row. The untitled residual is the largest
+    any sample carried, because an unnamed failure has no identity to
+    deduplicate against.
     """
-    titles = tuple(dict.fromkeys(title for roster in rosters for title in roster.card_structure_titles))
+    failures: dict[tuple[str, str], tuple[str, str | None]] = {}
+    for roster in rosters:
+        keys = _aligned_card_keys(roster.card_structure_titles, roster.card_structure_keys)
+        for title, key in zip(roster.card_structure_titles, keys, strict=True):
+            identity = ('key', key) if key is not None else ('title', normalize(title))
+            previous = failures.get(identity)
+            if previous is None or (previous[1] is None and key is not None):
+                failures[identity] = (title, key)
+    items = tuple(failures.values())
+    titles = tuple(title for title, _ in items)
+    keys = tuple(key for _, key in items)
     untitled = max(
         (max(0, roster.card_structure_failures - len(roster.card_structure_titles)) for roster in rosters),
         default=0,
     )
-    return len(titles) + untitled, titles
+    return len(titles) + untitled, titles, keys
 
 
 def _merge_frame_rosters(rosters: Sequence[Roster]) -> Roster:
@@ -2313,7 +2349,7 @@ def _merge_frame_rosters(rosters: Sequence[Roster]) -> Roster:
                 entries[identity] = entry
         for failure in roster.split_failures:
             failures.setdefault((failure.title, failure.container_title, failure.row, failure.recovered), failure)
-    card_failures, card_titles = _merged_card_structure(rosters)
+    card_failures, card_titles, card_keys = _merged_card_structure(rosters)
     return Roster(
         entries=tuple(entries[identity] for identity in order),
         route=first.route,
@@ -2322,6 +2358,7 @@ def _merge_frame_rosters(rosters: Sequence[Roster]) -> Roster:
         split_failures=tuple(failures.values()),
         card_structure_failures=card_failures,
         card_structure_titles=card_titles,
+        card_structure_keys=card_keys,
     )
 
 
