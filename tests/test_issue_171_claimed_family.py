@@ -5,8 +5,8 @@ whose last words are ``in-cart items``. Read as a title, that lower line matches
 the generic ``cart`` deny rule; read as the card's subtitle it is ordinary copy.
 The first test replays the recorded frame, so the reader is measured against the
 real layout. The remaining tests keep the day-state rule honest in both
-directions: a claimed/refused/blacklisted family cannot keep the night open, but
-an unsettled title that nothing could parse still does.
+directions: a claimed/refused/excluded/blacklisted family cannot keep the night
+open, but an unsettled title that nothing could parse still does.
 """
 
 from __future__ import annotations
@@ -145,6 +145,25 @@ def test_a_refused_family_does_not_keep_the_night_open(
     state = DailyStateStore(tmp_path, clock=lambda: CAPTURED_AT)
     reconciled = engine._with_settled_families(roster, state, catalogue)
 
+    assert reconciled.card_structure_failures == 0
+    assert reconciled.card_structure_titles == ()
+    assert reconciled.incomplete is False
+    assert reconciled.warning is None
+
+
+def test_an_excluded_family_does_not_keep_the_night_open(
+    catalogue: TaskCatalogue,
+    tmp_path: Path,
+) -> None:
+    bare = _snapshot(_box('Add & start using our widget', 247, 1082, 805, 1135))
+    roster = enumerate_roster(bare, catalogue, route=DiscoveryRoute.BOOST)
+    assert roster.card_structure_keys == ('coins_widget',)
+    assert roster.incomplete is True
+
+    state = DailyStateStore(tmp_path, clock=lambda: CAPTURED_AT)
+    reconciled = engine._with_settled_families(roster, state, catalogue)
+
+    assert 'coins_widget' in reconciled.settled_families
     assert reconciled.card_structure_failures == 0
     assert reconciled.card_structure_titles == ()
     assert reconciled.incomplete is False

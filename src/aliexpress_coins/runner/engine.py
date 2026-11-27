@@ -4029,13 +4029,17 @@ def _settled_family_keys(
     """Families the day state or policy has already settled (#171).
 
     A family cannot dispatch again today when its daily limit is reached, it is
-    blacklisted, or the catalogue refuses it. These identities let a
-    card-structure failure be reconciled against the day state exactly as #155
-    reconciles it against another sampled row. A state read failure leaves that
-    family unsettled, so an unknown card still keeps the night open.
+    blacklisted, the catalogue refuses it, or no executor owns its category.
+    These identities let a card-structure failure be reconciled against the day
+    state exactly as #155 reconciles it against another sampled row. A state
+    read failure leaves that family unsettled, so an unknown card still keeps
+    the night open.
     """
     settled: list[str] = list(catalogue.denied_keys)
     for spec in catalogue.allowed:
+        if spec.category not in _EXECUTORS:
+            settled.append(spec.key)
+            continue
         count = _daily_count(state, spec.key)
         if count is not None and count >= spec.max_per_run:
             settled.append(spec.key)

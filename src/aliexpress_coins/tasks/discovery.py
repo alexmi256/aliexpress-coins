@@ -423,9 +423,9 @@ def _reconcile_card_structure(
 
     A family is settled when the roster read it as a row (issue #155) or when the
     day state already accounts for it (issue #171): claimed to its daily limit,
-    blacklisted, or refused by policy. A settled family's unreadable card is not
-    unfinished work, so it must not keep the night open. A title nothing settles
-    stays a failure.
+    blacklisted, refused by policy, or excluded because no executor owns its
+    category. A settled family's unreadable card is not unfinished work, so it
+    must not keep the night open. A title nothing settles stays a failure.
 
     Identity follows the row merge: the catalogue key when the failure and a row
     name the same key, otherwise the normalised title. The key covers both
