@@ -23,9 +23,10 @@ This executor drives that measured path explicitly:
   ``shortcutId=coinsPromotion``); without that seam it goes to the home screen,
   proves the ``Coins`` shortcut label is there beside the ``AliExpress`` label,
   and taps it.
-* The coin page is reloaded once through the measured shortcut route so the
-  server-side +1 can be read. Completion needs a readable balance increase; a
-  launcher frame after the dispatch is a foreground loss, never a completion.
+* The launched coin page is polled for the server-side +1; the measured
+  shortcut route is fired once more only when the first read cannot see the
+  credit. Completion needs a readable balance increase; a launcher frame that
+  survives the bounded recovery is a foreground loss, never a completion.
 * The launcher item is removed afterwards through the injected cleanup seam
   (the live device runs ``adb shell cmd shortcut clear-shortcuts <package>``).
 
@@ -268,8 +269,8 @@ def run_shortcut_visit_task(
     ``launch_shortcut`` are the live launcher seams: the first reads whether the
     pinned item already exists, the second fires that item's own persisted
     intent (the measured launcher deep link). ``remove_shortcut`` removes the
-    launcher item this row created (or the existing one it reused) before the
-    result is returned.
+    launcher item this row created before the result is returned; an item that
+    already existed is reused and left for its owner.
     """
     log = logger if logger is not None else logging.getLogger(__name__)
     spec = _allowed_spec(entry)
@@ -434,7 +435,8 @@ def run_shortcut_visit_task(
                 detail=(
                     'the coin balance could not be read from a trusted coin page before the dispatch '
                     f'(surface={classify_surface(pre_read.snapshot).value}, '
-                    f'settled={pre_read.settled}, history={_history(pre_read)}); no tap was issued'
+                    f'settled={pre_read.settled}, history={_history(pre_read)}); '
+                    'no shortcut-row GO tap was issued'
                 ),
                 done_before=done_before,
             )
@@ -471,7 +473,7 @@ def run_shortcut_visit_task(
             verification='row_not_settled',
             detail=(
                 f'{entry.title!r} could not be re-read on a settled frame before the tap '
-                f'(surface={classify_surface(found.last).value}); no tap was issued'
+                f'(surface={classify_surface(found.last).value}); no shortcut-row GO tap was issued'
             ),
             done_before=done_before,
             balance_before=balance_before,
@@ -839,49 +841,12 @@ def _dispatch_launcher_shortcut(
         sleep=sleep,
     )
     launch_surface = classify_surface(arrival.snapshot)
-    in_app = foreground() if foreground is not None else None
-    if (
-        launch_surface is Surface.NON_APP
-        or in_app is False
-        or (launch_surface is Surface.UNKNOWN and not arrival.settled)
-    ):
-        # Keep the round-1 classification: a launcher frame after the dispatch
-        # is a foreground loss, never completion. Recover only to leave the app
-        # clean; the report keeps the launch surface that proved the loss.
-        recovered = _return_to_coin_page(
-            capture,
-            navigate,
-            route,
-            timeout=max(modal_timeout, DEFAULT_LAUNCH_TIMEOUT),
-            interval=interval,
-            clock=clock,
-            sleep=sleep,
-            log=log,
-        )
-        return _ShortcutUse(
-            created=created,
-            used=used,
-            failure='foreground_lost_after_action',
-            detail=(
-                'the shortcut was launched but the run did not finish on the coins page: '
-                f'launch_surface={launch_surface.value}, '
-                f'return_surface={classify_surface(recovered.snapshot).value}, settled={recovered.settled}, '
-                f'app_foreground={in_app!r}'
-            ),
-            labels=tuple(labels),
-            taps=tuple(taps),
-            balance_after=_trusted_balance(recovered.snapshot),
-            final_surface=classify_surface(recovered.snapshot),
-            pin_unconfirmed=pin_unconfirmed,
-        )
-
     final = arrival
     reloaded = False
-    balance = _trusted_balance(final.snapshot)
-    if not _is_trusted_coin_page(final.snapshot, balance):
-        # The pinned intent landed on a surface whose balance band is not
-        # trusted (or not on a readable coin page). One measured reload gets
-        # the coin page back without firing a second task action.
+    if not _is_coin_page_surface(final.snapshot):
+        # The pinned intent landed on a launcher/boost/unknown surface. Spend
+        # the one measured reload before judging foreground loss; the old path
+        # recovered the app this way and the home-screen fallback needs it.
         final = _return_to_coin_page(
             capture,
             navigate,
@@ -893,11 +858,31 @@ def _dispatch_launcher_shortcut(
             log=log,
         )
         reloaded = True
-        balance = _trusted_balance(final.snapshot)
 
-    if balance is not None and not _bright_increase(balance_before, balance):
-        # Let the server-side credit land on the page the pinned intent opened
-        # before touching the route again.
+    # Poll the settled page for the readable +1. This also covers a coin page
+    # whose balance band has not rendered yet, before spending a reload.
+    final, balance = _wait_for_balance(
+        capture,
+        balance_before,
+        timeout=DEFAULT_BALANCE_GRACE,
+        interval=interval,
+        clock=clock,
+        sleep=sleep,
+    )
+    if not _bright_increase(balance_before, balance) and not reloaded:
+        # The #130 observation needed a later coin-page reload to show the
+        # credit. Spend exactly one, then read again.
+        final = _return_to_coin_page(
+            capture,
+            navigate,
+            route,
+            timeout=max(modal_timeout, DEFAULT_LAUNCH_TIMEOUT),
+            interval=interval,
+            clock=clock,
+            sleep=sleep,
+            log=log,
+        )
+        reloaded = True
         final, balance = _wait_for_balance(
             capture,
             balance_before,
@@ -906,28 +891,6 @@ def _dispatch_launcher_shortcut(
             clock=clock,
             sleep=sleep,
         )
-        if not _bright_increase(balance_before, balance) and not reloaded:
-            # The #130 observation needed a later coin-page reload to show the
-            # credit. Spend exactly one, then read again.
-            final = _return_to_coin_page(
-                capture,
-                navigate,
-                route,
-                timeout=max(modal_timeout, DEFAULT_LAUNCH_TIMEOUT),
-                interval=interval,
-                clock=clock,
-                sleep=sleep,
-                log=log,
-            )
-            reloaded = True
-            final, balance = _wait_for_balance(
-                capture,
-                balance_before,
-                timeout=DEFAULT_BALANCE_GRACE,
-                interval=interval,
-                clock=clock,
-                sleep=sleep,
-            )
 
     final_surface = classify_surface(final.snapshot)
     in_app = foreground() if foreground is not None else None
@@ -1290,9 +1253,9 @@ def _wait_for_balance(
         frame = _capture(capture)
 
 
-def _is_trusted_coin_page(frame: Snapshot, balance: float | None) -> bool:
-    """Whether ``frame`` is a coin page whose balance can bracket a claim."""
-    return balance is not None and classify_surface(frame) in (Surface.ROWS_PRESENT, Surface.ROWS_ABSENT)
+def _is_coin_page_surface(frame: Snapshot) -> bool:
+    """Whether ``frame`` is a coin-page surface, even if its balance is unreadable."""
+    return classify_surface(frame) in (Surface.ROWS_PRESENT, Surface.ROWS_ABSENT)
 
 
 def _history(wait: CoinPageWait) -> str:
@@ -1435,21 +1398,19 @@ def _read_row(
 
     The run `20261127T140626Z` named the row in a frame captured while the
     search swipe was still flinging, then tapped it after the list had moved.
-    A live search therefore uses a gentler, slower swipe and waits for the
-    frame to stop changing before the target is accepted. Tests with
-    ``settle=0`` keep the fast, scripted path.
+    A search therefore uses a gentler, slower swipe and always waits for the
+    frame to stop changing before the target is accepted; the operator's
+    ``settle`` knob may lengthen the bound but cannot disable this guard.
     """
-    after_swipe: Callable[[], None] | None = None
-    if settle > 0:
 
-        def after_swipe() -> None:
-            wait_until_stable(
-                capture,
-                timeout=max(settle, DEFAULT_ROW_SETTLE_TIMEOUT),
-                interval=interval,
-                clock=clock,
-                sleep=sleep,
-            )
+    def after_swipe() -> None:
+        wait_until_stable(
+            capture,
+            timeout=max(settle, DEFAULT_ROW_SETTLE_TIMEOUT),
+            interval=interval,
+            clock=clock,
+            sleep=sleep,
+        )
 
     return scroll_until_found(
         controller,
@@ -1481,8 +1442,11 @@ def _settled_action(
     swipe while the list was still moving, and the next frame had carried the
     row above the fold. If the settled frame no longer carries the row, the
     caller fails with ``row_not_settled`` instead of tapping a stale point.
+    The operator's ``settle`` knob may lengthen the bound but cannot disable it
+    after a search swipe; only a row already present in a settled roster frame
+    skips the extra capture when ``settle`` is zero.
     """
-    if settle <= 0:
+    if settle <= 0 and not found.attempts:
         return found.target, found
     stable = wait_until_stable(
         capture,

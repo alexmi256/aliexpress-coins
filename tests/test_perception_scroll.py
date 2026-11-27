@@ -109,6 +109,24 @@ def test_each_swipe_is_a_fraction_of_the_current_frame() -> None:
         assert start[1] - end[1] == pytest.approx(height * SCROLL_VIEWPORT_FRACTION, abs=1)
 
 
+@pytest.mark.parametrize(('duration_ms', 'expected'), [(None, 300), (700, 700)])
+def test_the_swipe_duration_can_be_overridden(duration_ms: int | None, expected: int) -> None:
+    first = _snapshot((1200, 2000), shade=10)
+    second = _snapshot((1200, 2000), shade=80, target=True)
+    controller, device = _controller(first)
+
+    result = scroll_until_found(
+        controller,
+        _Capture((second,)),
+        _find_target,
+        initial=first,
+        duration_ms=duration_ms,
+    )
+
+    assert result.found
+    assert device.swipes[0][4] == expected
+
+
 def test_the_settle_hook_runs_between_each_swipe_and_capture() -> None:
     first = _snapshot((1200, 2000), shade=10)
     second = _snapshot((1200, 2000), shade=80, target=True)

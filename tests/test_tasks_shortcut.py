@@ -856,7 +856,8 @@ def test_the_home_shortcut_is_used_when_no_launcher_intent_is_injected(
         _shortcut_sheet(),
         _home_with_shortcut(),
         _home_with_shortcut(),
-        _coin_page('88'),
+        _home_with_shortcut(),  # the launcher frame immediately after the tap
+        _coin_page('88'),  # the bounded recovery returns the coin page
     )
 
     result = run_shortcut_visit_task(
@@ -1014,12 +1015,29 @@ def test_an_exhausted_scrolled_list_without_the_row_is_row_vanished(
     """Positive control: every swipe moved and the attempt bound ended the read."""
     entry = _entry(_boost(), catalogue)
     device = _Device()
-    frames = (
-        _boost_without_shortcut(shade='white'),
-        _boost_without_shortcut(shade='#e0e0e0'),
-        _boost_without_shortcut(shade='#d0d0d0'),
-        _boost_without_shortcut(shade='#c0c0c0'),
-        _boost_without_shortcut(shade='#b0b0b0'),
+    # Each settled swipe now spends frames proving the list stopped moving;
+    # repeat each shade so the stability wait can finish before the next move.
+    frames = tuple(
+        _boost_without_shortcut(shade=shade)
+        for shade in (
+            'white',
+            '#e0e0e0',
+            '#e0e0e0',
+            '#e0e0e0',
+            '#e0e0e0',
+            '#d0d0d0',
+            '#d0d0d0',
+            '#d0d0d0',
+            '#d0d0d0',
+            '#c0c0c0',
+            '#c0c0c0',
+            '#c0c0c0',
+            '#c0c0c0',
+            '#b0b0b0',
+            '#b0b0b0',
+            '#b0b0b0',
+            '#b0b0b0',
+        )
     )
 
     result = run_shortcut_visit_task(
@@ -1581,20 +1599,19 @@ def test_an_unreadable_pre_dispatch_balance_fails_with_that_reason_and_taps_noth
     tmp_path: Path,
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     frame = _boost('87')
     entry = _entry(frame, catalogue)
     device = _Device()
-    monkeypatch.setattr(
-        shortcut_module,
-        'open_boost_list',
-        lambda *_args, **_kwargs: _reopened_boost(_boost('87')),
+    no_balance_coin = _snapshot(
+        _box('Coins credits to redeem', 100, 330, 700, 380),
+        _box('Daily coins', 100, 560, 500, 610),
+        _box('Earn more', 916, 926, 1133, 967),
     )
 
     result = run_shortcut_visit_task(
         Controller.from_frame(device, frame, rng=random.Random(0)),
-        _Capture((frame, _boost('87'), _snapshot())),
+        _Capture((frame, no_balance_coin, no_balance_coin, _boost('87'))),
         corpus,
         _state(tmp_path),
         entry,
@@ -1605,10 +1622,12 @@ def test_an_unreadable_pre_dispatch_balance_fails_with_that_reason_and_taps_noth
 
     assert result.outcome is ShortcutVisitOutcome.FAILED
     assert result.verification == 'balance_unreadable_before'
-    assert 'no tap was issued' in result.detail
+    assert 'no shortcut-row GO tap was issued' in result.detail
     assert result.balance_before is None
     assert result.taps == ()
-    assert device.taps == []
+    # The pre-read really did tap Earn more; only the shortcut row's GO was
+    # withheld, which is what the detail now says.
+    assert device.taps
 
 
 def test_an_unreadable_post_dispatch_balance_fails_with_that_reason(
@@ -2056,6 +2075,45 @@ def test_a_direct_tap_with_an_unreadable_after_balance_names_the_read(
     assert result.balance_after is None
 
 
+def test_an_unreadable_coin_page_is_polled_before_spending_the_reload(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _coin_page_with_row('87')
+    entry = _entry(frame, catalogue)
+    no_balance = _snapshot(
+        _box('Coins credits to redeem', 100, 330, 700, 380),
+        _box('Daily coins', 100, 560, 500, 610),
+    )
+    frames = (
+        frame,
+        _shortcut_sheet(),
+        _launcher_add_sheet(),
+        _shortcut_sheet(),
+        _shortcut_sheet(),
+        no_balance,  # settled coin page, balance band not rendered yet
+        _coin_page('88'),  # the readable balance arrives on a later poll
+    )
+    routes = _Routes()
+
+    result = run_shortcut_visit_task(
+        Controller.from_frame(_Device(), frame, rng=random.Random(0)),
+        _Capture(frames),
+        corpus,
+        _state(tmp_path),
+        entry,
+        navigate=routes,
+        launch_shortcut=lambda: None,
+        clock=_Clock(),
+        sleep=_Clock().sleep,
+    )
+
+    assert result.outcome is ShortcutVisitOutcome.COMPLETED
+    assert (result.balance_before, result.balance_after) == (87.0, 88.0)
+    assert routes.routes == []
+
+
 def test_the_balance_can_arrive_after_the_launched_page_renders(
     tmp_path: Path,
     catalogue: TaskCatalogue,
@@ -2072,6 +2130,7 @@ def test_the_balance_can_arrive_after_the_launched_page_renders(
         _coin_page('87'),  # the pinned page renders before the credit is visible
         _coin_page('88'),  # the server-side +1 lands on a later poll
     )
+    routes = _Routes()
 
     result = run_shortcut_visit_task(
         Controller.from_frame(_Device(), frame, rng=random.Random(0)),
@@ -2079,7 +2138,7 @@ def test_the_balance_can_arrive_after_the_launched_page_renders(
         corpus,
         _state(tmp_path),
         entry,
-        navigate=_Routes(),
+        navigate=routes,
         launch_shortcut=lambda: None,
         clock=_Clock(),
         sleep=_Clock().sleep,
@@ -2087,6 +2146,8 @@ def test_the_balance_can_arrive_after_the_launched_page_renders(
 
     assert result.outcome is ShortcutVisitOutcome.COMPLETED
     assert (result.balance_before, result.balance_after) == (87.0, 88.0)
+    # The +1 arrived on the pinned page; no reload was spent before it landed.
+    assert routes.routes == []
 
 
 def test_a_launched_page_with_the_same_surface_but_a_new_frame_is_accepted() -> None:

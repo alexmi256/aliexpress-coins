@@ -11,7 +11,11 @@
     "attempt": 1,
     "frames": "failures/coins_shortcut_visit-attempt-1-20261127T141623Z",
     "frame_count": 22,
-    "row_tap": {"requested": [1007, 1528], "at": "2026-11-27T14:16:39.544278+00:00"},
+    "row_tap": {
+      "requested": [1007, 1528],
+      "point": [1009, 1528],
+      "at": "2026-11-27T14:16:39.544278+00:00"
+    },
     "observed_steps": {
       "create_sheet_opened": false,
       "create_tap_issued": false,
