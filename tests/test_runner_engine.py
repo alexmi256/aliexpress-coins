@@ -1016,7 +1016,10 @@ def test_a_full_walk_dispatches_in_policy_order_and_reports_the_task_budget(
     assert context.state.snapshot().completed_night is False
     assert any(skip.key == 'notifications' and skip.reason == 'run budget' for skip in report.skipped)
     summary = report.summary_path.read_text(encoding='utf-8')
-    assert '| Turn on notifications | run budget | task budget of 2 dispatch(es) exhausted |' in summary
+    assert (
+        '| Turn on notifications | run budget | task budget of 2 dispatch(es) exhausted; '
+        "the configured cap is the reason: the catalogue's derived need was 42 dispatch(es)" in summary
+    )
     assert 'no dispatchable row remains' not in summary
     assert report.summary_path.is_file()
     assert report.json_path.is_file()

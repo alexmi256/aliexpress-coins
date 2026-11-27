@@ -165,11 +165,12 @@ ROSTER_LOG_NAME = 'roster.jsonl'
 """The append-only observation log inside one run directory."""
 
 DEFAULT_OBSERVATION_CAP = 13
-"""The default number of re-enumerations a run may make.
+"""The standalone default number of re-enumerations a run may make.
 
-The measured ``AECOINS_MAX_TASKS_PER_RUN`` default is 12. One observation per
-completed task plus the final capture needs 13, so the cap always leaves room
-for that final capture. The cap is a churn guard, not a work budget.
+The engine derives its own observation cap from the task budget (#166), which
+is now the catalogue's ``max_per_run * max_task_attempts`` need bounded by the
+64-dispatch absolute ceiling. This constant is only the fallback for a caller
+that supplies no cap; it is a churn guard, not a work budget.
 """
 
 MAX_ROSTER_SCROLLS = 8

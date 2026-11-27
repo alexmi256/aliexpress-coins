@@ -60,7 +60,7 @@ from aliexpress_coins.perception.snapshot import Snapshot
 from aliexpress_coins.perception.state import CaptureSource, ScreenState, classify
 from aliexpress_coins.perception.templates import TemplateStore, load_templates
 from aliexpress_coins.perception.waits import wait_for_text, wait_until_stable
-from aliexpress_coins.runner.config import RunConfig
+from aliexpress_coins.runner.config import MAX_TASK_DISPATCHES, RunConfig
 from aliexpress_coins.runner.device import AdbDevice, HygieneDevice
 from aliexpress_coins.runner.errors import AppLoggedOut, ConfigError, RunBudgetExceeded, RunInterrupted
 from aliexpress_coins.runner.failures import (
@@ -133,7 +133,9 @@ __all__ = [
     'EngineResult',
     'RunContext',
     'StopSignal',
+    'TaskBudget',
     'make_live_context',
+    'resolve_task_budget',
     'run_once',
 ]
 
@@ -216,6 +218,100 @@ class EngineResult:
             'failure': None if self.failure is None else self.failure.as_dict(),
             'acted': self.acted,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class TaskBudget:
+    """How many dispatches this night may make, and why (#166).
+
+    ``need`` is the catalogue's safe worst case: every allowed family may
+    complete ``max_per_run`` rounds, and each round may spend up to
+    ``max_task_attempts`` dispatches before a success resets the failure streak.
+    ``configured`` is the operator's explicit cap, or ``None`` when the run
+    derived its allowance from the catalogue. ``ceiling`` is the unconditional
+    backstop, so even a pathological catalogue terminates.
+    """
+
+    limit: int
+    need: int
+    ceiling: int
+    configured: int | None
+    max_task_attempts: int
+
+    @property
+    def derived(self) -> bool:
+        """Whether the limit came from the catalogue rather than the operator."""
+        return self.configured is None
+
+    @property
+    def below_need(self) -> bool:
+        """Whether an explicit cap is smaller than the catalogue's safe need."""
+        return self.configured is not None and self.configured < self.need
+
+    def as_dict(self) -> dict[str, int | None]:
+        """Render the budget for the report and structured log."""
+        return {
+            'limit': self.limit,
+            'derived_need': self.need,
+            'configured': self.configured,
+            'absolute_ceiling': self.ceiling,
+            'max_task_attempts': self.max_task_attempts,
+        }
+
+    def describe_stop(self) -> str:
+        """Name the cap and the derived need when it stops the walk."""
+        head = f'task budget of {self.limit} dispatch(es) exhausted'
+        attempts = f'up to {self.max_task_attempts} attempt(s) per round'
+        if self.configured is not None and self.configured > self.ceiling:
+            return (
+                f'{head}; the absolute ceiling is the reason: AECOINS_MAX_TASKS_PER_RUN={self.configured} '
+                f"is above the {self.ceiling}-dispatch backstop; the catalogue's derived need was "
+                f'{self.need} dispatch(es) ({attempts})'
+            )
+        if self.below_need:
+            return (
+                f"{head}; the configured cap is the reason: the catalogue's derived need was "
+                f'{self.need} dispatch(es) ({attempts}), so AECOINS_MAX_TASKS_PER_RUN={self.configured} '
+                'is below a legitimate day'
+            )
+        if self.need > self.ceiling:
+            return (
+                f"{head}; the absolute ceiling is the reason: the catalogue's derived need was "
+                f"{self.need} dispatch(es) ({attempts}), above AECOINS_MAX_TASKS_PER_RUN's "
+                f'{self.ceiling}-dispatch backstop'
+            )
+        return (
+            f"{head}; the catalogue's derived need was {self.need} dispatch(es) ({attempts}), "
+            'so the night used the full worst-case allowance'
+        )
+
+
+def resolve_task_budget(
+    config: RunConfig,
+    catalogue: TaskCatalogue,
+    *,
+    max_tasks: int | None = None,
+) -> TaskBudget:
+    """Derive the task allowance and apply the absolute ceiling (#166).
+
+    An explicit ``max_tasks`` argument (a manual/dry-run override) wins over the
+    configuration. An explicit environment cap is honoured up to
+    :data:`MAX_TASK_DISPATCHES`; leaving it unset uses the catalogue's derived
+    need. The caller warns when the configured value is below that need, because
+    the cap can then skip a row a legitimate day would have claimed.
+    """
+    configured = config.max_tasks if max_tasks is None else max_tasks
+    if configured is not None and configured < 1:
+        raise ValueError(f'max_tasks must be positive, got {configured!r}')
+    need = sum(spec.max_per_run * config.max_task_attempts for spec in catalogue.allowed)
+    limit = min(MAX_TASK_DISPATCHES, need if configured is None else configured)
+    return TaskBudget(
+        limit=limit,
+        need=need,
+        ceiling=MAX_TASK_DISPATCHES,
+        configured=configured,
+        max_task_attempts=config.max_task_attempts,
+    )
 
 
 _RotationSignature = tuple[tuple[str, str | None, tuple[int, int] | None, str | None, bool], ...]
@@ -525,11 +621,10 @@ def run_once(
     """
     log = context.logger if context.logger is not None else LOG
     budget = context.config.budget_seconds if budget_seconds is None else budget_seconds
-    task_limit = context.config.max_tasks if max_tasks is None else max_tasks
+    task_budget = resolve_task_budget(context.config, context.catalogue, max_tasks=max_tasks)
+    task_limit = task_budget.limit
     if budget <= 0:
         raise ValueError(f'budget_seconds must be positive, got {budget!r}')
-    if task_limit < 1:
-        raise ValueError(f'max_tasks must be positive, got {task_limit!r}')
 
     started = context.clock()
     report = (
@@ -615,12 +710,13 @@ def run_once(
     try:
         report.write()
         _warn_pass_ceiling(context.config, context.catalogue, log)
+        _warn_task_ceiling(task_budget, log)
         hygiene = _retry_stage(context, 'hygiene', context.hygiene.prepare)
         report.hygiene = hygiene.as_dict()
         frame = _capture(context.capture)
         _guard_signed_in(context, frame)
         if context.config.dry_run:
-            _plan_dry_run(context, report, frame, gate, log, max_tasks=task_limit, budget_seconds=budget)
+            _plan_dry_run(context, report, frame, gate, log, task_budget=task_budget, budget_seconds=budget)
             status = report.status
             detail = report.detail or 'dry run planned no tasks'
         else:
@@ -771,7 +867,7 @@ def run_once(
                     break
                 if len(report.tasks) >= task_limit:
                     status = RunStatus.BUDGET
-                    detail = f'task budget of {task_limit} dispatch(es) exhausted'
+                    detail = task_budget.describe_stop()
                     report.record_failure(failure(FailureCode.BUDGET_EXHAUSTED, detail=detail))
                     break
 
@@ -1337,7 +1433,7 @@ def _plan_dry_run(
     gate: DispatchGate,
     log: logging.Logger,
     *,
-    max_tasks: int,
+    task_budget: TaskBudget,
     budget_seconds: float,
 ) -> None:
     """Plan the night from the settled visible surface without tapping.
@@ -1362,6 +1458,7 @@ def _plan_dry_run(
     as a ``navigation_failed`` dry run with ``surface_unknown`` in the detail,
     so the CLI exits non-zero instead of telling the operator the day is empty.
     """
+    max_tasks = task_budget.limit
     surface = classify_surface(frame)
     initial_state = classify(frame).state
     routes: list[SurfaceRoute] = []
@@ -1644,7 +1741,10 @@ def _plan_dry_run(
                 key=spec.key,
                 category=spec.category.value,
                 reason='run budget',
-                detail=f'the task budget of {max_tasks} would stop the walk here',
+                detail=(
+                    f'the task budget of {max_tasks} would stop the walk here; '
+                    f"the catalogue's derived need is {task_budget.need} dispatch(es)"
+                ),
             )
             continue
         steps.append(
@@ -1678,6 +1778,7 @@ def _plan_dry_run(
         'probe_failed': unreadable is not None,
         'surface': surface.value,
         'max_tasks': max_tasks,
+        'task_budget': task_budget.as_dict(),
         'budget_seconds': budget_seconds,
         'rows_read': rows_read,
         'rows_allowed': rows_allowed,
@@ -2648,7 +2749,11 @@ def _observer(
     *,
     max_observations: int | None = None,
 ) -> RosterObserver:
-    cap = context.config.max_tasks + context.config.max_passes + 2 if max_observations is None else max_observations
+    if max_observations is None:
+        task_limit = resolve_task_budget(context.config, context.catalogue).limit
+        cap = task_limit + context.config.max_passes + 2
+    else:
+        cap = max_observations
     return RosterObserver(
         context.catalogue,
         previous=roster,
@@ -2835,6 +2940,64 @@ def _dispatchable_identities(
             settled=settled,
         )
     )
+
+
+def _warn_task_ceiling(task_budget: TaskBudget, log: logging.Logger) -> None:
+    """Name a task cap that cannot finish the catalogue's legitimate day (#166).
+
+    The default is the catalogue's derived need, so this warning is for an
+    operator who set ``AECOINS_MAX_TASKS_PER_RUN`` below it (or above the
+    absolute backstop). The run still starts: the cap is a real bound, and a
+    task stop names every row it left plus the derived need.
+    """
+    configured = task_budget.configured
+    if configured is not None and configured > task_budget.ceiling:
+        log.warning(
+            '%s',
+            _event(
+                'task_budget_above_absolute_ceiling',
+                max_tasks=configured,
+                effective_tasks=task_budget.limit,
+                derived_task_need=task_budget.need,
+                absolute_ceiling=task_budget.ceiling,
+                detail=(
+                    f'AECOINS_MAX_TASKS_PER_RUN={configured} is above the absolute ceiling; '
+                    f'the run will stop at {task_budget.limit} dispatches while the catalogue derives '
+                    f'{task_budget.need} dispatch(es)'
+                ),
+            ),
+        )
+    elif configured is not None and configured < task_budget.need:
+        log.warning(
+            '%s',
+            _event(
+                'task_budget_below_daily_capacity',
+                max_tasks=configured,
+                recommended_tasks=task_budget.need,
+                derived_task_need=task_budget.need,
+                max_task_attempts=task_budget.max_task_attempts,
+                absolute_ceiling=task_budget.ceiling,
+                detail=(
+                    f'AECOINS_MAX_TASKS_PER_RUN={configured} is below the {task_budget.need} dispatches '
+                    'needed by the catalogue (sum of max_per_run times '
+                    f'{task_budget.max_task_attempts} attempt(s) per round over allowed families); '
+                    'a legitimate day can leave an allowed row unclaimed at this cap'
+                ),
+            ),
+        )
+    elif configured is None and task_budget.need > task_budget.ceiling:
+        log.warning(
+            '%s',
+            _event(
+                'task_budget_ceiling_below_daily_capacity',
+                derived_task_need=task_budget.need,
+                absolute_ceiling=task_budget.ceiling,
+                detail=(
+                    f'the catalogue derives {task_budget.need} dispatches but the absolute ceiling is '
+                    f'{task_budget.ceiling}; the backstop will stop the walk before a legitimate worst case'
+                ),
+            ),
+        )
 
 
 def _warn_pass_ceiling(config: RunConfig, catalogue: TaskCatalogue, log: logging.Logger) -> None:
