@@ -33,6 +33,7 @@ from aliexpress_coins.runner.state import NightOutcome
 
 __all__ = [
     'RUN_REPORT_SCHEMA',
+    'RecoveryRecord',
     'RunEventLog',
     'RunReport',
     'RunStatus',
@@ -42,8 +43,8 @@ __all__ = [
     'prune_runs',
 ]
 
-RUN_REPORT_SCHEMA = 6
-"""The on-disk schema this module reads or writes; 6 adds per-attempt failure recordings."""
+RUN_REPORT_SCHEMA = 7
+"""The on-disk schema this module reads or writes; 7 adds reset-and-retry recovery records."""
 
 _RUN_ID_PATTERN = re.compile(r'^\d{8}T\d{6}Z$')
 """The only directory names retention may delete."""
@@ -112,6 +113,43 @@ class TaskRecord:
             'completed': self.completed,
             'result': self.result,
             'failure': self.failure,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveryRecord:
+    """One reset to the known-good coins page and, for a task, its retry.
+
+    ``outcome`` is the recovery's own verdict: ``recovered`` when the coin page
+    was re-established and the retried task completed (or the start-of-run reset
+    made the first read honest), ``still_failed`` when the reset could not reach
+    the page or the retry failed again. ``retry`` is the retried executor's
+    normalised result, so a single ``task_unverified`` row can no longer hide
+    whether the task was tried a second time after a reset (#168).
+    """
+
+    scope: str
+    trigger: str
+    outcome: str
+    detail: str
+    task: str | None = None
+    key: str | None = None
+    attempts: int = 0
+    surface: str | None = None
+    retry: dict[str, Any] | None = None
+
+    def as_dict(self) -> dict[str, object]:
+        """Render the recovery for ``run.json`` and the summary table."""
+        return {
+            'scope': self.scope,
+            'task': self.task,
+            'key': self.key,
+            'trigger': self.trigger,
+            'outcome': self.outcome,
+            'detail': self.detail,
+            'attempts': self.attempts,
+            'surface': self.surface,
+            'retry': self.retry,
         }
 
 
@@ -191,6 +229,7 @@ class RunReport:
         self.blacklist: dict[str, int] = {}
         self.artifact_errors: list[str] = []
         self.failure_recordings: list[dict[str, Any]] = []
+        self.recoveries: list[RecoveryRecord] = []
         self.tasks: list[TaskRecord] = []
         self.skipped: list[SkippedRecord] = []
         self._skip_keys: set[tuple[str, str]] = set()
@@ -279,6 +318,10 @@ class RunReport:
     def record_failure_recording(self, recording: dict[str, Any]) -> None:
         """Remember one per-attempt failure artifact and its frame paths."""
         self.failure_recordings.append(recording)
+
+    def record_recovery(self, recovery: RecoveryRecord) -> None:
+        """Remember one reset to the known-good coins page (#168)."""
+        self.recoveries.append(recovery)
 
     def record_failure(self, failure: Failure) -> None:
         """Name the run-level failure once; the code is the report contract."""
@@ -494,6 +537,7 @@ class RunReport:
             'blacklist': dict(self.blacklist),
             'artifact_errors': list(self.artifact_errors),
             'failure_recordings': list(self.failure_recordings),
+            'recoveries': [recovery.as_dict() for recovery in self.recoveries],
             'returned_to_coins_page': self.returned_to_coins_page,
             'return_error': self.return_error,
             'failure': self.failure,
@@ -541,6 +585,7 @@ class RunReport:
             f'- **Balance:** {_balance_delta(self.balance_before, self.balance_after, self.balance_delta)}',
             f'- **Popups closed:** {_popup_summary(self.popups_closed)}',
             f'- **Back on coins page:** {_returned(self.returned_to_coins_page, self.return_error)}',
+            f'- **Recovery:** {_recovery_summary(self.recoveries)}',
         ]
         if self.balance_note:
             lines.append(f'- **Balance note:** {self.balance_note}')
@@ -580,6 +625,27 @@ class RunReport:
                 )
         else:
             lines.append('No task was dispatched.')
+        if self.recoveries:
+            lines.extend(
+                (
+                    '',
+                    '## Recoveries',
+                    '',
+                    '| scope | task | trigger | reset | retry | outcome |',
+                    '|---|---|---|---|---|---|',
+                ),
+            )
+            for recovery in self.recoveries:
+                retry = recovery.retry
+                retry_text = 'no retry'
+                if retry is not None:
+                    retry_text = f'{retry.get("outcome", "?")} ({retry.get("verification", "?")})'
+                surface = recovery.surface or 'unknown'
+                lines.append(
+                    f'| {_cell(recovery.scope)} | {_cell(recovery.task or "")} | {_cell(recovery.trigger)} | '
+                    f'{_cell(surface)} after {recovery.attempts} attempt(s) | {_cell(retry_text)} | '
+                    f'{_cell(recovery.outcome)} |',
+                )
         if self.failure_recordings:
             lines.extend(
                 (
@@ -760,6 +826,18 @@ def _failure_summary(failure: dict[str, Any]) -> str:
     detail = failure.get('detail') or failure.get('error')
     text = f'{code} — {sentence}' if sentence else str(code)
     return text if not detail else f'{text} ({detail})'
+
+
+def _recovery_summary(recoveries: list[RecoveryRecord]) -> str:
+    if not recoveries:
+        return 'none'
+    parts: list[str] = []
+    for recovery in recoveries:
+        who = recovery.task or 'start-of-run'
+        retry = recovery.retry
+        retry_text = 'no retry' if retry is None else f'retry {retry.get("outcome", "?")}'
+        parts.append(f'{who}: {recovery.trigger} -> {recovery.outcome} ({retry_text})')
+    return '; '.join(parts)
 
 
 def _route_summary(roster: dict[str, Any] | None) -> str:

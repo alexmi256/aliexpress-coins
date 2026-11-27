@@ -518,6 +518,8 @@ def _context(
     notifier: NotificationSink | None = None,
     notify_on_empty: bool = False,
     scroll_rosters: bool = False,
+    start_normalisation: bool = True,
+    task_recovery: bool = True,
 ) -> RunContext:
     config = replace(
         RunConfig.from_environment(
@@ -545,6 +547,8 @@ def _context(
         state=DailyStateStore(config.state_dir, clock=lambda: CAPTURED_AT),
         controller=Controller.from_frame(_RecordingDevice(), capture.frames[0], rng=random.Random(0)),
         scroll_rosters=scroll_rosters,
+        start_normalisation=start_normalisation,
+        task_recovery=task_recovery,
         clock=the_clock,
         sleep=the_clock.sleep,
         wall_clock=lambda: CAPTURED_AT,
@@ -1799,7 +1803,13 @@ def test_a_titleless_only_roster_does_not_complete_the_night(
         'open_boost_list',
         lambda *args, **kwargs: BoostList(snapshot=frame, route=DiscoveryRoute.BOOST, detail='test'),
     )
-    context = _context(tmp_path, capture=_Capture(frame), catalogue=catalogue, corpus=corpus)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame),
+        catalogue=catalogue,
+        corpus=corpus,
+        start_normalisation=False,
+    )
 
     report = engine.run_once(context)
 
@@ -2736,7 +2746,13 @@ def test_a_live_run_fails_when_route_discovery_recovers_only_to_non_app(
     corpus: PopupCorpus,
 ) -> None:
     frame = _non_app_clock_frame()
-    context = _context(tmp_path, capture=_Capture(frame), catalogue=catalogue, corpus=corpus)
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame),
+        catalogue=catalogue,
+        corpus=corpus,
+        start_normalisation=False,
+    )
     non_app_roster = Roster(
         entries=(),
         route=None,
@@ -4746,6 +4762,7 @@ def test_an_unproven_coin_page_leaves_the_balance_unknown_and_says_why(
         capture=_Capture(frame, _coin_frame()),
         catalogue=catalogue,
         corpus=corpus,
+        start_normalisation=False,
     )
     monkeypatch.setattr(
         engine,
@@ -4889,6 +4906,7 @@ def test_a_balance_capture_route_error_is_named_without_failing_the_run(
         capture=_Capture(frame, _coin_frame()),
         catalogue=catalogue,
         corpus=corpus,
+        start_normalisation=False,
     )
     monkeypatch.setattr(
         engine,
@@ -5021,6 +5039,7 @@ def test_popups_closed_during_discovery_observation_and_cleanup_are_counted(
         capture=_Capture(_home_frame(), _boost_header_frame()),
         catalogue=catalogue,
         corpus=corpus,
+        start_normalisation=False,
     )
 
     report = engine.run_once(context)
@@ -5951,6 +5970,8 @@ def test_an_unverified_task_is_retried_once_and_the_second_result_stands(
         catalogue=catalogue,
         corpus=corpus,
         clock=clock,
+        start_normalisation=False,
+        task_recovery=False,
     )
     attempts: list[int] = []
 
@@ -6004,6 +6025,8 @@ def test_an_unverified_task_that_stays_unverified_is_reported_and_the_walk_conti
         capture=_Capture(frame, _coin_frame()),
         catalogue=catalogue,
         corpus=corpus,
+        start_normalisation=False,
+        task_recovery=False,
     )
     attempts: list[int] = []
 
@@ -6054,6 +6077,8 @@ def test_all_retryable_failures_leave_the_night_open_for_a_later_run(
         capture=_Capture(frame, _coin_frame()),
         catalogue=catalogue,
         corpus=corpus,
+        start_normalisation=False,
+        task_recovery=False,
     )
     first.wall_clock = lambda: now[0]
     attempts: list[str] = []
@@ -6901,6 +6926,7 @@ def test_a_route_timeout_uses_the_route_policy_without_another_route_cycle(
         catalogue=catalogue,
         corpus=corpus,
         clock=clock,
+        start_normalisation=False,
     )
     calls: list[int] = []
 
@@ -7055,6 +7081,8 @@ def test_an_unverified_sign_in_is_dispatched_once_and_taps_once(
         capture=_Capture(frame, _coin_frame()),
         catalogue=catalogue,
         corpus=corpus,
+        start_normalisation=False,
+        task_recovery=False,
     )
     claims = _UnverifiedSignin()
     calls: list[int] = []
@@ -7195,6 +7223,8 @@ def test_a_sign_out_during_the_walk_stops_the_next_dispatch(
         capture=_Capture(frame, _logged_out_frame()),
         catalogue=catalogue,
         corpus=corpus,
+        start_normalisation=False,
+        task_recovery=False,
     )
     attempts: list[int] = []
 
@@ -7421,6 +7451,8 @@ def test_a_repeatedly_failing_task_is_blacklisted_and_the_rest_of_the_roster_con
         capture=_Capture(frame, _coin_frame()),
         catalogue=catalogue,
         corpus=corpus,
+        start_normalisation=False,
+        task_recovery=False,
     )
     attempts: list[str] = []
 
@@ -8434,6 +8466,8 @@ def test_successful_repeatable_attempts_do_not_count_towards_the_failure_blackli
         capture=_Capture(frame, _coin_frame()),
         catalogue=catalogue,
         corpus=corpus,
+        start_normalisation=False,
+        task_recovery=False,
     )
     context.config = replace(context.config, max_passes=5)
     calls: list[int] = []
@@ -8485,6 +8519,8 @@ def test_a_failed_task_records_the_tap_sequence_and_both_reports_reference_it(
         catalogue=catalogue,
         corpus=corpus,
         clock=clock,
+        start_normalisation=False,
+        task_recovery=False,
     )
 
     def dispatch(current: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
@@ -8606,6 +8642,8 @@ def test_a_failed_failure_capture_degrades_to_a_warning_and_the_task_still_fails
         capture=cast(Any, source),
         catalogue=catalogue,
         corpus=corpus,
+        start_normalisation=False,
+        task_recovery=False,
     )
     caplog.set_level(logging.WARNING)
 
@@ -8664,6 +8702,8 @@ def test_a_failed_task_whose_aftermath_is_empty_boost_does_not_abort_the_run(
         capture=cast(Any, source),
         catalogue=catalogue,
         corpus=corpus,
+        start_normalisation=False,
+        task_recovery=False,
     )
 
     def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
@@ -8716,6 +8756,7 @@ def test_a_dangerous_control_abort_flushes_the_buffered_frames(
         capture=cast(Any, source),
         catalogue=catalogue,
         corpus=corpus,
+        start_normalisation=False,
     )
     if injected_safety:
         context.safety = SafetyGuard(catalogue=catalogue)
@@ -8796,6 +8837,7 @@ def test_run_once_attaches_the_action_hook_to_factory_created_controllers(
         catalogue=catalogue,
         corpus=corpus,
         clock=clock,
+        task_recovery=False,
     )
     context.controller = None
     created: list[Controller] = []
@@ -8907,6 +8949,7 @@ def test_a_prewrapped_capture_with_an_injected_guard_is_not_inspected_twice(
         capture=cast(Any, source),
         catalogue=catalogue,
         corpus=corpus,
+        start_normalisation=False,
     )
     context.capture = cast(Any, guard.wrap(source))
     context.safety = guard

@@ -397,7 +397,7 @@ Local runs write under the current directory:
 ```text
 runs/<UTC timestamp>/          # e.g. runs/20261123T015402Z/
 ├── summary.md                 # the human report
-├── run.json                   # the machine-readable twin (schema 6)
+├── run.json                   # the machine-readable twin (schema 7)
 ├── run.jsonl                  # structured process log, one JSON object per line
 ├── roster.jsonl               # every roster observation and its diff
 ├── shots/
@@ -518,18 +518,28 @@ roster incomplete. Any `failed` row
 whose taxonomy entry is retryable (`task_unverified`,
 including a timeout or a recovered unknown screen), or a visible action that could not be attached
 to a task row, keeps `completed_night` false even if another row completed, because unclaimed work
-may still be hidden by the splitter. This is a cross-run retry, not the in-run rule that
-`acted=True` blocks a repeated tap. A task that acted without proof is recorded in
-`acted_unverified`; its next dispatch first re-reads the fresh task surface. A row that still shows
-its unclaimed `GO` may proceed, a row that is gone/checked on a complete surface is reported
-`already_done` with no tap, and an unreadable or partial surface stays retryable rather than
-guessing. The `chip_not_cleared` failure is deliberately not acted-marked: a missing row without a
-cleared dwell chip is the rotation evidence the gate rejected, so carrying the marker into the next
-run would turn it back into a terminal `already_done`. The marker remains until the row is proven
-done — a recorded completion or a terminal executor outcome — and every dispatch while it remains
-re-checks instead of tapping from a stale
+may still be hidden by the splitter. Before that failure is recorded, the run resets to the
+known-good coins page and retries the row once; after the reset it re-reads the fresh surface, so a
+row that still shows its unclaimed control is retried, while a row that is gone or checked on a
+complete surface is reported `already_done` with no tap (#168). This fresh-row proof is what keeps
+the retry from repeating an action whose effect may already have applied. A task that acted without
+proof is also recorded in `acted_unverified`; its next run applies the same re-check. A
+`chip_not_cleared` failure is deliberately not acted-marked: a missing row without a cleared dwell
+chip is the rotation evidence the gate rejected, so carrying the marker into the next run would turn
+it back into a terminal `already_done`. The marker remains until the row is proven done — a recorded
+completion or a terminal executor outcome — and every dispatch while it remains re-checks instead of
+tapping from a stale
 roster. The decision is recorded as `last_night` in the daily state and printed by the report as
 one `Night:` line.
+
+**Start-of-run normalisation (#168).** A run does not depend on what the previous run left on the
+tablet. If the first frame is not the settled coins page reached by the measured shortcut deep link
+— it may be the boost sheet, a product page, a checkout sheet or the launcher — the engine performs
+one bounded reset (three shortcut entries, each with its own poll deadline) before the first roster
+read, then records whether that reset ended `recovered` or `still_failed`. A signed-out screen is
+still `app_logged_out`, because no route can complete a task without an account. A start reset that
+cannot prove the coins page ends the run with the named, bounded `unexpected_screen` failure rather
+than treating the bad frame as the roster or spinning until the wall-clock budget.
 
 **Not offered, not unread (#161).** The #149 rule needs an exit for a family the account simply is
 not being offered. Absence is counted in `state/family-observations.json`, once per local day, only
@@ -619,6 +629,7 @@ gate in #41.
 | **Balance** | before and after, with the delta when both frames were readable |
 | **Popups closed** | verified dismissals by family, or `none` |
 | **Back on coins page** | whether the cleanup route proved the coin page |
+| **Recovery** | each reset's scope, task, trigger, outcome (`recovered` / `still_failed`) and retry result |
 | **Detail / Failure / Abort / Run error** | the terminal sentence and the named failure, when present |
 | **Failure recordings** | one row per recorded attempt, naming its artifact directory and frame count |
 
@@ -663,6 +674,13 @@ When a task fails, a `## Failure recordings` table follows the task table with o
 attempt: the task, attempt number, failure code, frame count and the artifact directory under
 `failures/`. A run-level abort or operator stop also flushes the frames already collected. A run
 with no recorded failure has no such section and no recording paths.
+
+A `## Recoveries` table follows the task table whenever the run reset to the known-good coins page:
+one row per start normalisation or task reset, naming the trigger, the surface that was proven, the
+retry result and whether the recovery ended `recovered` or `still_failed`. A task that failed once,
+was reset and then completed therefore has a completed task row plus a `recovered` recovery row;
+one that failed again has a failed task row and a `still_failed` recovery row, so the two cases are
+never hidden behind one `task_unverified`.
 
 ### A budget-exhausted night
 
@@ -713,11 +731,11 @@ Raise a limit only deliberately; a larger budget is not a fix for a slow network
 
 ### `run.json`
 
-`run.json` is the same report plus every field a script may need. Schema `6`. The important keys:
+`run.json` is the same report plus every field a script may need. Schema `7`. The important keys:
 
 | key | meaning |
 |---|---|
-| `schema` | report schema; `6` is this build |
+| `schema` | report schema; `7` is this build |
 | `run_id`, `status`, `detail` | identity and terminal sentence |
 | `started_at`, `finished_at`, `budget` | wall-clock evidence |
 | `hygiene`, `geometry` | what the device said before the first capture |
@@ -725,6 +743,7 @@ Raise a limit only deliberately; a larger budget is not a fix for a slow network
 | `balance_before`, `balance_after`, `balance_delta`, `balance_note` | the two recorded frames, or why one is unknown |
 | `popups_closed`, `shots`, `artifact_errors` | artifacts and best-effort write failures |
 | `failure_recordings` | one entry per recorded attempt: task/key/attempt, failure or abort code, artifact directory, frame and sidecar paths |
+| `recoveries` | one entry per start normalisation/task reset: scope, task/key, trigger, reset attempts and surface, outcome (`recovered` / `still_failed`) and the retried executor result |
 | `notification` | attempted, sink, ok and a class-plus-status error |
 | `plan`, `plan_note` | the dry-run plan, when there was one; `plan.probe_failed` distinguishes an unreadable probe from evidence about the day, and `stable_waits` / `content_waits` / `roster_waits` record settling, row re-reads and row-set confirmation |
 | `abort` | safety code, reason and the screen that triggered it |
@@ -745,8 +764,8 @@ their `.json` sidecars; the balance is the bare number in the top quarter of the
 
 `run.jsonl` is the process log. Every line is a JSON object; the useful `event` values are
 `run_started`, `run_hygiene`, `policy_refusal`, `task_skipped`, `task_outcome`, `failure_retry`,
-`roster_observe_failed`, `run_aborted`, `run_failed`, `notification_sent` / `notification_failed`,
-`runs_pruned` and `run_finished`. The level is on every line, so a pipeline can filter
+`surface_reset`, `start_normalisation`, `task_recovery`, `roster_observe_failed`, `run_aborted`,
+`run_failed`, `notification_sent` / `notification_failed`, `runs_pruned` and `run_finished`. The level is on every line, so a pipeline can filter
 `level=ERROR` without parsing prose.
 
 `roster.jsonl` is the observed task list over time: each observation, what appeared, what
@@ -810,8 +829,11 @@ does not report every remaining task as separately failed.
 Every class in `src/aliexpress_coins/runner/failures.py` has one row below. The **Retry** column is
 the taxonomy's own value (`stage ×1`, `task ×1` or `none`); `tests/test_docs.py` fails `just check`
 if a code is missing or the retry column disagrees with the table. A **stage** retry repeats a read
-or navigation; a **task** retry repeats a row dispatch only when the executor recorded no tap, key,
-swipe or page press. A result that may already have acted is reported, never repeated.
+or navigation. A **task** retry is now the default recovery for a navigation/state failure: reset to
+the known-good coins page, re-read the fresh row and dispatch once more only if it is still
+claimable. A result that may already have acted is never repeated blind; a row that is claimed or
+gone after the reset is reported `already_done` with no tap. A policy refusal, a genuinely absent
+control or an already-claimed row is recorded once and is not retried.
 
 | code | what it means | what the operator should check | Retry |
 |---|---|---|---|
@@ -825,7 +847,7 @@ swipe or page press. A result that may already have acted is reported, never rep
 | `app_logged_out` | The app shows a sign-in prompt instead of the account surface. | Sign in on the tablet; confirm the Account tab loads; `adb shell dumpsys window` for the focused app; run again. The run stops at the first detection. | none |
 | `navigation_failed` | The route did not reach the screen it promised; a live run records a fallback and may continue from the inline surface, while a dry run has no fallback and exits non-zero with a `surface_*` detail. When rows were legible but the surface was unrecognised, the detail is `surface_unverified` and the rows stay in `steps` as evidence. | Read `Route fallback` and `route_error`; for a dry run, read the `surface_*` detail and `plan.probe_failed`, then retry once the page settles; start the app normally, settle ~10 s, then send the shortcut intent; check for the empty `Coins boost` page and an app update that changed labels. | none |
 | `popup_unclosable` | A popup had no safe dismissal: no known label, no template match and no calibration for this profile. | Open the failure frame in `shots/`; note the app version and the `doctor` profile id; update the popup corpus (#11) or the profile calibration (#42). Never tap a guessed coordinate. | none |
-| `task_unverified` | The task did not prove completion on screen. | Read the task row's `code`, `outcome`, `verification` and `detail`; open the attempt directory named in `failure_recordings` (or the summary's `Failure recordings` row) and watch the frames around the tap; inspect `run.jsonl`; check `tasks[i].result.acted`. A task that acted is not retried, so verify by hand before the next night. | task ×1 |
+| `task_unverified` | The task did not prove completion on screen. | Read the task row's `code`, `outcome`, `verification` and `detail`; open the attempt directory named in `failure_recordings` (or the summary's `Failure recordings` row) and watch the frames around the tap; inspect `run.jsonl` and the `## Recoveries` table. A retryable failure is reset to the coins page and retried once; `recovered` means the retry completed, `still_failed` means it failed again after the reset. If the row acted and the retry was not safe, verify by hand before the next night. | task ×1 |
 | `unexpected_screen` | The same unrecognised or dead screen was seen three times in a row. Inside a task that fails the task and the run tries three shortcut entries back to the coins page; the run aborts only when that recovery fails. | Read `tasks[i].result.payload.screen` for a task-scoped failure, or `abort.screen` labels and fingerprint when the run aborted; check for an app update, a new popup or a hybrid page that did not render; capture a fixture for #11. | none |
 | `dangerous_control` | A short buy/checkout/cart/redeem action caption (for example `Buy now`, `Add to cart` or `Place order`) appeared while a task was running and was treated as a live control. A caption painted inside a product photograph on the surprise grid is not such a control: that card is skipped with a `tile_skipped_dangerous` event and the run continues. | Read `abort.screen`; do not tap it; confirm no purchase or redemption happened; check whether the app changed a row or layout; file an issue with the redacted frame and the label that triggered it. | none |
 | `balance_decreased` | The coin balance is lower than the baseline recorded before the first task. | Compare `shots/balance-before.*` and `shots/balance-after.*`; check account activity and orders; something acted outside the policy or a human used the tablet. Do not rerun until the cause is known. | none |
