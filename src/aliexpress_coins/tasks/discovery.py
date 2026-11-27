@@ -417,13 +417,15 @@ def _reconcile_card_structure(
     titles: Sequence[str],
     keys: Sequence[str | None],
     failures: int,
+    settled_families: Sequence[str] = (),
 ) -> tuple[int, tuple[str, ...], tuple[str | None, ...]]:
-    """Drop card-structure failures for titles the roster also read as rows.
+    """Drop card-structure failures for families already settled for the day.
 
-    The rotating sheet can catch a card before its companion copy renders while
-    another sample reads the same card completely. That title is then a read row,
-    not proof of an unreadable family. A title no sample turned into an entry is
-    kept, because no read ever proved it had a card.
+    A family is settled when the roster read it as a row (issue #155) or when the
+    day state already accounts for it (issue #171): claimed to its daily limit,
+    blacklisted, refused by policy, or excluded because no executor owns its
+    category. A settled family's unreadable card is not unfinished work, so it
+    must not keep the night open. A title nothing settles stays a failure.
 
     Identity follows the row merge: the catalogue key when the failure and a row
     name the same key, otherwise the normalised title. The key covers both
@@ -435,6 +437,7 @@ def _reconcile_card_structure(
         return failures, (), ()
     row_titles = {normalize(entry.title) for entry in entries}
     row_keys = {entry.rule for entry in entries if entry.rule is not None}
+    row_keys.update(settled_families)
     kept_titles: list[str] = []
     kept_keys: list[str | None] = []
     seen: set[tuple[str, str]] = set()
@@ -496,6 +499,8 @@ class Roster:
     """The subset of absent families whose dormancy this night relied on."""
     already_claimed_families: tuple[str, ...] = ()
     """Catalogue families already completed today that no read of this night showed."""
+    settled_families: tuple[str, ...] = ()
+    """Day-state identities (keys or deny rules) that can no longer dispatch (#171)."""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, 'entries', tuple(self.entries))
@@ -508,11 +513,13 @@ class Roster:
         object.__setattr__(self, 'not_offered_families', tuple(self.not_offered_families))
         object.__setattr__(self, 'dormant_families', tuple(self.dormant_families))
         object.__setattr__(self, 'already_claimed_families', tuple(self.already_claimed_families))
+        object.__setattr__(self, 'settled_families', tuple(self.settled_families))
         failures, titles, keys = _reconcile_card_structure(
             self.entries,
             self.card_structure_titles,
             self.card_structure_keys,
             self.card_structure_failures,
+            self.settled_families,
         )
         object.__setattr__(self, 'card_structure_failures', failures)
         object.__setattr__(self, 'card_structure_titles', titles)
@@ -688,6 +695,7 @@ class Roster:
             'unreadable_count': self.unreadable_count,
             'card_structure_failures': self.card_structure_failures,
             'card_structure_titles': list(self.card_structure_titles),
+            'settled_families': list(self.settled_families),
             'incomplete': self.incomplete,
             'warning': self.warning,
             'rotation': {
@@ -973,6 +981,7 @@ def observe_roster(
     surface_variant: Surface | None = None,
     known_candidates: Collection[str] = (),
     action_labels: Sequence[str] = DEFAULT_ACTION_LABELS,
+    settled_families: Collection[str] = (),
     route: DiscoveryRoute | None = None,
     roster: Roster | None = None,
     logger: logging.Logger | None = None,
@@ -1019,9 +1028,11 @@ def observe_roster(
                 catalogue,
                 route=route if route is not None else (previous.route if previous is not None else None),
                 action_labels=action_labels,
+                settled_families=settled_families,
             )
         )
-        current = replace(current, surface_variant=variant)
+        settled = tuple(dict.fromkeys((*current.settled_families, *settled_families)))
+        current = replace(current, surface_variant=variant, settled_families=settled)
     except (OcrError, OSError, SnapshotError, StateTimeout, _ObservationFailure) as exc:
         rows = _rows_of(previous)
         observation = RosterObservation(
@@ -1141,6 +1152,7 @@ class RosterObserver:
         max_observations: int = DEFAULT_OBSERVATION_CAP,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         action_labels: Sequence[str] = DEFAULT_ACTION_LABELS,
+        settled_families: Callable[[], Collection[str]] | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         if max_observations < 1:
@@ -1150,6 +1162,7 @@ class RosterObserver:
         self.max_observations = max_observations
         self._clock = clock
         self._action_labels = tuple(action_labels)
+        self._settled_families = settled_families
         self._logger = logger if logger is not None else logging.getLogger(__name__)
         self._roster = previous
         self._sequence = 0
@@ -1168,6 +1181,7 @@ class RosterObserver:
         log: RosterLog | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         action_labels: Sequence[str] = DEFAULT_ACTION_LABELS,
+        settled_families: Callable[[], Collection[str]] | None = None,
         logger: logging.Logger | None = None,
     ) -> RosterObserver:
         """Build the observer from the container's run directory and task caps."""
@@ -1181,6 +1195,7 @@ class RosterObserver:
             max_observations=_cap_from_environment(env),
             clock=clock,
             action_labels=action_labels,
+            settled_families=settled_families,
             logger=logger,
         )
 
@@ -1224,6 +1239,7 @@ class RosterObserver:
         """Take the next observation, or report the cap without capturing."""
         if len(self._observations) >= self.max_observations:
             return self._report_cap(timestamp)
+        settled = () if self._settled_families is None else self._settled_families()
         observation = observe_roster(
             source,
             self.catalogue,
@@ -1232,6 +1248,7 @@ class RosterObserver:
             timestamp=timestamp if timestamp is not None else self._clock(),
             known_candidates=self._seen_candidates,
             action_labels=self._action_labels,
+            settled_families=settled,
             route=route,
             roster=roster,
             logger=self._logger,
@@ -1880,6 +1897,7 @@ def enumerate_roster(
     *,
     route: DiscoveryRoute | None = None,
     action_labels: Sequence[str] = DEFAULT_ACTION_LABELS,
+    settled_families: Collection[str] = (),
 ) -> Roster:
     """Read every task surface in ``snapshot`` in reading order.
 
@@ -1892,6 +1910,9 @@ def enumerate_roster(
     with ``action=None`` so it is counted as read and never dispatched (#150).
     The policy is *not* used to filter: denied and unrecognised rows remain in
     the roster with their reason, and a denied claimed row stays denied.
+    ``settled_families`` are day-state identities that can no longer dispatch;
+    a card failure naming one is dropped so a finished family cannot make the
+    read look incomplete (#171).
 
     A known task title found in another row's copy is a split failure. The raw
     nearest-neighbour cluster is checked before the action-aware split, so a
@@ -2018,6 +2039,7 @@ def enumerate_roster(
         card_structure_failures=len(card_failure_titles),
         card_structure_titles=tuple(card_failure_titles),
         card_structure_keys=tuple(card_failure_keys),
+        settled_families=tuple(settled_families),
     )
 
 
@@ -2029,6 +2051,7 @@ def collect_roster(
     *,
     route: DiscoveryRoute | None = None,
     action_labels: Sequence[str] = DEFAULT_ACTION_LABELS,
+    settled_families: Collection[str] = (),
     max_scrolls: int = MAX_ROSTER_SCROLLS,
     settle: float = 0.0,
     sleep: Callable[[float], None] = time.sleep,
@@ -2067,7 +2090,13 @@ def collect_roster(
         raise ValueError(f'max_scrolls must be positive, got {max_scrolls!r}')
     if settle < 0:
         raise ValueError(f'settle must not be negative, got {settle!r}')
-    first = enumerate_roster(initial, catalogue, route=route, action_labels=action_labels)
+    first = enumerate_roster(
+        initial,
+        catalogue,
+        route=route,
+        action_labels=action_labels,
+        settled_families=settled_families,
+    )
     if not is_boost_page(initial) or is_empty_boost(initial):
         return first
     if not has_task_rows(initial):
@@ -2093,7 +2122,13 @@ def collect_roster(
             # The restore spent its whole budget without proving the top. A
             # mid-list frame is not the start of the roster.
             return replace(first, scroll_surface_unconfirmed=True)
-        first = enumerate_roster(frame, catalogue, route=route, action_labels=action_labels)
+        first = enumerate_roster(
+            frame,
+            catalogue,
+            route=route,
+            action_labels=action_labels,
+            settled_families=settled_families,
+        )
 
     rosters = [first]
     scrolls: list[SwipeRecord] = []
@@ -2115,7 +2150,13 @@ def collect_roster(
         if difference <= STABLE_FRAME_MAX_DIFFERENCE:
             break
         revealing_scrolls += 1
-        frame_roster = enumerate_roster(current, catalogue, route=route, action_labels=action_labels)
+        frame_roster = enumerate_roster(
+            current,
+            catalogue,
+            route=route,
+            action_labels=action_labels,
+            settled_families=settled_families,
+        )
         rosters.append(frame_roster)
         known = {normalize(entry.title) for roster in rosters[:-1] for entry in roster.entries}
         new_titles = {normalize(entry.title) for entry in frame_roster.entries if normalize(entry.title) not in known}
@@ -2200,12 +2241,14 @@ def merge_rosters(accumulated: Roster | None, current: Roster) -> Roster:
             order.append(identity)
         entries[identity] = entry
     card_failures, card_titles, card_keys = _merged_card_structure((accumulated, current))
+    settled = tuple(dict.fromkeys((*accumulated.settled_families, *current.settled_families)))
     return replace(
         current,
         entries=tuple(entries[identity] for identity in order),
         card_structure_failures=card_failures,
         card_structure_titles=card_titles,
         card_structure_keys=card_keys,
+        settled_families=settled,
     )
 
 
@@ -2365,6 +2408,7 @@ def _merge_frame_rosters(rosters: Sequence[Roster]) -> Roster:
         for failure in roster.split_failures:
             failures.setdefault((failure.title, failure.container_title, failure.row, failure.recovered), failure)
     card_failures, card_titles, card_keys = _merged_card_structure(rosters)
+    settled = tuple(dict.fromkeys(key for roster in rosters for key in roster.settled_families))
     return Roster(
         entries=tuple(entries[identity] for identity in order),
         route=first.route,
@@ -2374,6 +2418,7 @@ def _merge_frame_rosters(rosters: Sequence[Roster]) -> Roster:
         card_structure_failures=card_failures,
         card_structure_titles=card_titles,
         card_structure_keys=card_keys,
+        settled_families=settled,
     )
 
 
@@ -2765,6 +2810,29 @@ def _claimed_roster_entry(
     )
 
 
+def _is_other_family_title(
+    text: str,
+    *,
+    decision: TaskDecision,
+    catalogue: TaskCatalogue,
+) -> bool:
+    """Whether ``text`` names another family rather than this card's subtitle.
+
+    A subtitle can contain a generic deny word (``Coins deal on viewed, in-cart
+    items`` under ``Browse recently viewed items``). Read as a title, that line
+    matches the ``cart`` deny rule; read as the card's subtitle it is legitimate
+    copy. An allowed catalogue title always wins as another family, and a deny
+    line does too when the card's own title cannot own it.
+    """
+    other = catalogue.decide(text.strip())
+    if other.rule is None or other.rule == decision.rule:
+        return False
+    if other.spec is not None:
+        return True
+    owned = catalogue.decide(decision.title, subtitle=text.strip())
+    return owned.rule != decision.rule
+
+
 def _same_row_card_copy(
     row: Row,
     *,
@@ -2796,8 +2864,7 @@ def _same_row_card_copy(
             continue
         if not any(character.isalpha() for character in box.text):
             continue
-        other = catalogue.decide(box.text.strip())
-        if other.rule is not None and other.rule != decision.rule:
+        if _is_other_family_title(box.text, decision=decision, catalogue=catalogue):
             return False
         found = True
     return found if found else None
@@ -2892,6 +2959,9 @@ def _has_claimed_card_structure(
         later_found = _claimed_title_decision(snapshot, later, catalogue, action_labels)
         if later_found is not None:
             if later_found[2].rule == decision.rule:
+                return True
+            if not _is_other_family_title(later_found[0], decision=decision, catalogue=catalogue):
+                # The lower line is this card's subtitle, not another task.
                 return True
             break
         if _has_card_copy(later, action_labels):

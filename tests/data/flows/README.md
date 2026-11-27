@@ -53,6 +53,7 @@ arbitrary screenshots anywhere else in the tree.
 | `boost_rotation_issue_149_bottom.png` | `boost_rotation` / stable bottom (#149) | same sheet at a stable bottom, captured 15:26:41Z from `bottom-late.png`: `Browse recently viewed items`, `Add & start using our widget`, `Turn on notifications` | same mask; no account data |
 | `learn_to_save_issue_159_sheet_top.png` | `learn_to_save` / sample top (#159) | top of the sheet captured 21:48:51Z from `s07-sheet-00.png`: the four refused rows and no learn-to-save row | band `0..450` masked (coin balance, coin-credit balance, coin page behind the sheet); task rows retained; no account data |
 | `learn_to_save_issue_159_sheet_bottom.png` | `learn_to_save` / sample bottom (#159) | stable bottom of the same sheet captured 21:48:56Z from `s07-sheet-02.png`: `Add a coins shortcut`, `Add & start using our widget`, `Turn on notifications`, no learn-to-save row | same mask `0..450`; task rows retained; no account data |
+| `recently_viewed_issue_171_claimed.png` | `recently_viewed` / claimed card (#171) | the already-claimed `Browse recently viewed items` card on a `Coins boost` sheet: title, the two-line subtitle `Coins deal on viewed, in-cart` / `items`, and its drawn check badge | band `0..450` masked (coin balance, coin-credit balance, coin page behind the sheet); task rows retained; no account data |
 
 `search_results_issue_142.png` is the live results surface captured on 2026-11-25 while fixing the
 search task. The measured `OPPO` category tap did not navigate or submit (its grey placeholder was
@@ -116,6 +117,15 @@ sheet; no account nickname, order, cart, address or notification content remains
 observation JSON records all 15 sample timestamps and distinct rows, the live run
 `20261126T223057Z`, and the ❓ contract claims. These frames prove absence in the measured window,
 not that the family no longer exists.
+
+`recently_viewed_issue_171_claimed.png` is the already-claimed
+`Browse recently viewed items` card from the #159 sampling window
+(`s01-sheet-01.png`, captured 2026-11-26 22:26:26Z). It is a full 1200×2000
+frame with the band `y = 0..450` masked for the same account-data reason as the
+two learn-to-save frames; the card, its two-line subtitle and its drawn check
+are retained. The card's lower line ends in `in-cart items`; issue #171's test
+replays this frame to prove that the card reader treats that line as the card's
+subtitle rather than as the `cart` deny family.
 
 `shortcut_visit_issue_130.json` is sanitized evidence for issue #130's below-the-fold
 `Visit the page via coins shortcut` row. It records the row's two-line title, the Android

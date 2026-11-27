@@ -481,9 +481,9 @@ def test_a_restart_roster_keeps_card_keys_in_step_with_the_union_titles(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    widget = replace(_card_failure_roster('Add & start using our widget'), card_structure_keys=('coins_widget',))
+    notifications = replace(_card_failure_roster('Turn on notifications'), card_structure_keys=('notifications',))
     quiz = replace(_card_failure_roster('Take the coins quiz'), card_structure_keys=('coins_quiz',))
-    union = merge_rosters(widget, quiz)
+    union = merge_rosters(notifications, quiz)
     observations: list[RosterObservation | None] = [
         _observation(1, quiz),
         _observation(2, quiz),
@@ -508,13 +508,16 @@ def test_a_restart_roster_keeps_card_keys_in_step_with_the_union_titles(
         corpus=CORPUS,
     )
     context.observer = cast(Any, scripted)
-    _seed_other_families(context, seen=set())
+    # Keep both dispatchable families claimable: a claimed family's card failure
+    # is now settled by the day state (#171), so seeding them would remove the
+    # case this union test is about (two failure keys kept in step with titles).
+    _seed_other_families(context, seen={'coins_quiz', 'notifications'})
 
     engine.run_once(context)
 
     first = captured[0]
-    assert first.card_structure_titles == ('Add & start using our widget', 'Take the coins quiz')
-    assert first.card_structure_keys == ('coins_widget', 'coins_quiz')
+    assert first.card_structure_titles == ('Turn on notifications', 'Take the coins quiz')
+    assert first.card_structure_keys == ('notifications', 'coins_quiz')
 
 
 @pytest.mark.slow
