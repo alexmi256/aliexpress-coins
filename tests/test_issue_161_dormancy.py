@@ -289,6 +289,7 @@ def test_a_probe_due_day_takes_an_extra_sample_and_dispatches_a_returning_family
 
     assert 'learn_to_save' in dispatched
     assert len(calls) >= 2
+    assert 'dormant family probe due' in report.event_log_path.read_text(encoding='utf-8')
     stored = FamilyObservationStore(tmp_path / 'state', clock=lambda: CAPTURED_AT).load()['learn_to_save']
     assert stored.dormant is False
     assert stored.last_seen == DAY
@@ -362,7 +363,60 @@ def test_a_probe_due_but_absent_family_records_the_extra_sample(
     assert stored.retried_on == DAY
     assert stored.next_probe == date(2026, 11, 29)
     assert len(calls) >= 2
-    assert 'family_probe_due' in report.event_log_path.read_text(encoding='utf-8')
+    events = report.event_log_path.read_text(encoding='utf-8')
+    assert 'dormant family probe due' in events
+    assert 'family_probe_due' in events
+    assert report.night is not None
+    assert report.night['outcome'] == 'exhausted'
+
+
+def test_a_failed_probe_sample_does_not_advance_the_probe_cadence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    roster = _roster('coins_quiz')
+    frame = _frame('coins_quiz')
+    store = FamilyObservationStore(tmp_path / 'state', clock=lambda: CAPTURED_AT)
+    store.observe(
+        day=PREVIOUS_DAY,
+        keys=('learn_to_save',),
+        seen=(),
+        samples=2,
+        dormancy_days=1,
+        retry_days=1,
+    )
+    context = _context_for(tmp_path, monkeypatch, roster=roster, frame=frame)
+    context.state.record('coins_quiz')
+    _seed_other_families(context, seen={'coins_quiz', 'learn_to_save'})
+    calls: list[int] = []
+
+    def observe(*_args: object, **_kwargs: object) -> RosterObservation:
+        calls.append(1)
+        if len(calls) == 2:
+            return RosterObservation(
+                sequence=len(calls),
+                timestamp=CAPTURED_AT,
+                rows=(),
+                surface_variant=Surface.BOOST_PAGE,
+                error='the extra probe frame was lost',
+                roster=None,
+            )
+        return RosterObservation(
+            sequence=len(calls),
+            timestamp=CAPTURED_AT,
+            rows=(),
+            surface_variant=Surface.BOOST_PAGE,
+            roster=roster,
+        )
+
+    monkeypatch.setattr(engine, '_observe', observe)
+
+    report = engine.run_once(context)
+
+    stored = FamilyObservationStore(tmp_path / 'state', clock=lambda: CAPTURED_AT).load()['learn_to_save']
+    assert stored.retried_on is None
+    assert stored.next_probe == DAY
+    assert 'family_probe_failed' in report.event_log_path.read_text(encoding='utf-8')
     assert report.night is not None
     assert report.night['outcome'] == 'exhausted'
 
@@ -404,6 +458,7 @@ def test_a_sighting_during_an_incomplete_read_still_clears_dormancy(tmp_path: Pa
         samples=2,
         dormancy_days=2,
         retry_days=7,
+        probed=(),
         trustworthy=False,
         logger=logging.getLogger('test.issue_161'),
     )

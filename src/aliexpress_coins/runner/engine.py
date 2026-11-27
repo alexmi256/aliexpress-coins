@@ -40,7 +40,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime
@@ -702,11 +702,12 @@ def run_once(
 
             probe_day = context.wall_clock().astimezone(context.config.timezone).date()
             probe_due = _due_probe_keys(family_store, context.catalogue, probe_day, log)
+            probed: set[str] = set()
             if probe_due:
                 # A dormant family is due one explicit extra sample on the
                 # slower cadence. Take it before selection so a row that is back
                 # can be dispatched by this same run.
-                absorb(
+                if absorb(
                     _restart_surface(
                         context,
                         controller,
@@ -717,7 +718,17 @@ def run_once(
                             + ', '.join(repr(key) for key in probe_due)
                         ),
                     ),
-                )
+                ):
+                    probed.update(probe_due)
+                else:
+                    log.warning(
+                        '%s',
+                        _event(
+                            'family_probe_failed',
+                            families=list(probe_due),
+                            detail='the extra probe sample was not readable; its cadence does not advance',
+                        ),
+                    )
                 _record_policy_skips(
                     report,
                     observer.roster or roster,
@@ -1124,6 +1135,7 @@ def run_once(
                     samples=rotation.samples,
                     dormancy_days=context.config.family_dormancy_days,
                     retry_days=context.config.family_retry_days,
+                    probed=probed,
                     trustworthy=read_trustworthy,
                     logger=log,
                 )
@@ -3304,6 +3316,7 @@ def _family_rotation(
     samples: int,
     dormancy_days: int,
     retry_days: int,
+    probed: Collection[str],
     trustworthy: bool,
     logger: logging.Logger,
 ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[FamilyEvidence, ...], tuple[FamilyEvidence, ...]]:
@@ -3364,6 +3377,7 @@ def _family_rotation(
                 samples=samples,
                 dormancy_days=dormancy_days,
                 retry_days=retry_days,
+                probed=probed,
             )
         else:
             # A sighting is positive evidence even when another row made the
@@ -3377,6 +3391,7 @@ def _family_rotation(
                     samples=samples,
                     dormancy_days=dormancy_days,
                     retry_days=retry_days,
+                    probed=probed,
                 )
                 if seen_tracked
                 else ()

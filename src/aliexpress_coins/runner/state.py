@@ -584,13 +584,16 @@ class FamilyObservationStore:
         samples: int,
         dormancy_days: int,
         retry_days: int,
+        probed: Collection[str] = (),
     ) -> tuple[FamilyEvidence, ...]:
         """Fold one trustworthy day's reads into the evidence and persist it.
 
         ``keys`` is every family this day can decide about; a key not in it
         keeps its previous record untouched. ``seen`` is the union of every
         readable roster sample. ``samples`` is how many readable sheet reads
-        backed this day's conclusion.
+        backed this day's conclusion. ``probed`` names due families whose
+        explicit extra sample was readable; without it a due probe is not
+        advanced.
         """
         if dormancy_days < 1:
             raise ValueError(f'dormancy_days must be positive, got {dormancy_days!r}')
@@ -600,6 +603,7 @@ class FamilyObservationStore:
             raise ValueError(f'samples must not be negative, got {samples!r}')
         current = self._load()
         seen_keys = set(seen)
+        probed_keys = set(probed)
         for key in keys:
             previous = current.get(key, FamilyEvidence(key=key))
             current[key] = _next_evidence(
@@ -609,6 +613,7 @@ class FamilyObservationStore:
                 samples=samples,
                 dormancy_days=dormancy_days,
                 retry_days=retry_days,
+                probed=key in probed_keys,
             )
         self._commit(current)
         return tuple(current[key] for key in keys)
@@ -648,6 +653,7 @@ def _next_evidence(
     samples: int,
     dormancy_days: int,
     retry_days: int,
+    probed: bool,
 ) -> FamilyEvidence:
     """Apply one day's sighting or absence to a family's history."""
     if seen:
@@ -679,7 +685,7 @@ def _next_evidence(
     retried_on: date | None = None
     if next_probe is None:
         next_probe = day + timedelta(days=retry_days)
-    elif day >= next_probe:
+    elif day >= next_probe and probed:
         retried_on = day
         next_probe = day + timedelta(days=retry_days)
 

@@ -539,8 +539,9 @@ startup floor 3) the family is reported as **`not_offered`** with `unseen_since`
 streak, the samples in that streak and zero sightings, and it becomes **dormant**. Dormant families
 are still in the catalogue and are scanned on every read; they stop keeping `completed_night` false.
 The daily read still catches a return, and on the retry cadence the engine takes one explicit extra
-fresh sample for the dormant family. A sighting clears every field, makes the row dispatchable again
-and reverses the dormancy immediately. A pass that
+fresh sample for the dormant family. If that extra sample cannot be read, the cadence is not
+advanced and `family_probe_failed` is logged; the family stays dormant. A sighting clears every
+field, makes the row dispatchable again and reverses the dormancy immediately. A pass that
 failed to read the surface still records no absence, so `unread_families` keeps the night open; that
 is the #149 regression guard. The report names both sets separately: `unread_families` is a read
 failure, `not_offered` is evidence about the app.

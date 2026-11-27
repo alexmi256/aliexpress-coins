@@ -201,8 +201,8 @@ is reported as **`not_offered`** and becomes dormant. Its evidence — `unseen_s
 consecutive unsighted days, the readable samples in that streak and zero sightings — is written to
 `run.json`, `summary.md` and the day state. It stops keeping the night open, and gets one explicit
 extra sample every `AECOINS_FAMILY_RETRY_DAYS` (default 7); the ordinary nightly read still catches
-a return and a sighting clears dormancy immediately, making the row dispatchable again. A pass that
-lost the boost surface or
+a return and a sighting clears dormancy immediately, making the row dispatchable again. If the
+probe sample cannot be read, the cadence is not advanced. A pass that lost the boost surface or
 had unreadable rows records no absence: that is the #149 regression guard, and it still makes the
 roster incomplete. The label strings are **not** known to be stale: the #159 frames contain no row
 resembling either the title or the subtitle, so there is nothing for OCR to match. The title and

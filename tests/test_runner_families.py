@@ -50,6 +50,7 @@ def _observe(
     seen: tuple[str, ...] = (),
     samples: int = 1,
     keys: tuple[str, ...] = ('learn_to_save',),
+    probed: tuple[str, ...] = (),
 ) -> FamilyEvidence:
     return store.observe(
         day=day,
@@ -58,6 +59,7 @@ def _observe(
         samples=samples,
         dormancy_days=2,
         retry_days=7,
+        probed=probed,
     )[0]
 
 
@@ -120,7 +122,7 @@ def test_a_dormant_family_is_due_for_an_extra_probe_on_the_slower_cadence(tmp_pa
     assert store.due_for_probe(('learn_to_save',), date(2026, 11, 27)) == ()
     assert store.due_for_probe(('learn_to_save',), date(2026, 11, 28)) == ('learn_to_save',)
 
-    retried = _observe(store, date(2026, 11, 28))
+    retried = _observe(store, date(2026, 11, 28), probed=('learn_to_save',))
 
     assert retried.dormant is True
     assert retried.retried_on == date(2026, 11, 28)
