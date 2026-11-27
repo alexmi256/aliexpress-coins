@@ -662,6 +662,11 @@ def run_once(
                     max_observations=task_limit + context.config.max_passes + 2,
                 )
             )
+            family_store = context.family_store or FamilyObservationStore.from_state(
+                context.state,
+                clock=lambda: context.wall_clock().astimezone(context.config.timezone),
+                logger=log,
+            )
             union_roster: Roster | None = roster
             rotation = _RotationTracker()
             rotation.record(roster)
@@ -694,6 +699,33 @@ def run_once(
             _record_policy_skips(report, roster, logger=log, gate=gate)
             report.observations = observer.sequence
             report.write()
+
+            probe_day = context.wall_clock().astimezone(context.config.timezone).date()
+            probe_due = _due_probe_keys(family_store, context.catalogue, probe_day, log)
+            if probe_due:
+                # A dormant family is due one explicit extra sample on the
+                # slower cadence. Take it before selection so a row that is back
+                # can be dispatched by this same run.
+                absorb(
+                    _restart_surface(
+                        context,
+                        controller,
+                        observer,
+                        on_dismiss=record_dismissal,
+                        reason=(
+                            'dormant family probe due: take one extra sample for '
+                            + ', '.join(repr(key) for key in probe_due)
+                        ),
+                    ),
+                )
+                _record_policy_skips(
+                    report,
+                    observer.roster or roster,
+                    logger=log,
+                    gate=gate,
+                )
+                report.observations = observer.sequence
+                report.write()
 
             max_passes = context.config.max_passes
             max_attempts = context.config.max_task_attempts
@@ -1082,11 +1114,6 @@ def run_once(
             final_roster = merge_rosters(union_roster, latest_roster) if latest_roster is not None else union_roster
             if final_roster is not None:
                 read_trustworthy = rotation.confirmed and not rotation_incomplete and not final_roster.incomplete
-                family_store = context.family_store or FamilyObservationStore.from_state(
-                    context.state,
-                    clock=lambda: context.wall_clock().astimezone(context.config.timezone),
-                    logger=log,
-                )
                 unread_families, already_claimed_families, not_offered, dormant = _family_rotation(
                     final_roster,
                     context.catalogue,
@@ -1096,6 +1123,7 @@ def run_once(
                     day=context.wall_clock().astimezone(context.config.timezone).date(),
                     samples=rotation.samples,
                     dormancy_days=context.config.family_dormancy_days,
+                    retry_days=context.config.family_retry_days,
                     trustworthy=read_trustworthy,
                     logger=log,
                 )
@@ -3247,6 +3275,24 @@ def _daily_count(state: DailyStateStore, key: str) -> int | None:
         return None
 
 
+def _due_probe_keys(
+    store: FamilyObservationStore,
+    catalogue: TaskCatalogue,
+    day: date,
+    logger: logging.Logger,
+) -> tuple[str, ...]:
+    """Dormant families whose periodic extra sample is due, if the ledger reads."""
+    keys = tuple(spec.key for spec in catalogue.allowed if spec.category in _EXECUTORS)
+    try:
+        return store.due_for_probe(keys, day)
+    except Exception as exc:
+        logger.warning(
+            '%s',
+            _event('family_probe_check_failed', detail=f'{type(exc).__name__}: {exc}'),
+        )
+        return ()
+
+
 def _family_rotation(
     roster: Roster,
     catalogue: TaskCatalogue,
@@ -3257,13 +3303,14 @@ def _family_rotation(
     day: date,
     samples: int,
     dormancy_days: int,
+    retry_days: int,
     trustworthy: bool,
     logger: logging.Logger,
 ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[FamilyEvidence, ...], tuple[FamilyEvidence, ...]]:
     """Split unseen catalogue families into unread, claimed and not offered.
 
     The sheet rotates, so a family absent from the union of every readable sample
-    is not automatically "unread". This function keeps the cross-night evidence:
+    is not automatically "unread". This function keeps the cross-day evidence:
 
     * ``unread`` — no complete absence streak yet, so the read may have missed
       the family behind another rotation. It keeps the night open (#149).
@@ -3271,9 +3318,10 @@ def _family_rotation(
       limit, so its absence is expected.
     * ``not offered`` — the family crossed :data:`family_dormancy_days`
       consecutive complete days without a sighting. It no longer blocks
-      completion, but it is named with its streak and sample count. There is no
-      extra probe: the sheet is read every night, so a returning row is caught
-      by the next run and clears dormancy (#161).
+      completion, but it is named with its streak and sample count. A dormant
+      family also gets one explicit extra sample on the ``retry_days`` cadence,
+      so a returning row is still caught even if the ordinary samples miss it
+      (#161).
 
     A read with a lost surface or unreadable rows is *not* evidence of absence:
     ``trustworthy`` is false and the stored streak is left untouched, so the bad
@@ -3315,6 +3363,7 @@ def _family_rotation(
                 seen=seen,
                 samples=samples,
                 dormancy_days=dormancy_days,
+                retry_days=retry_days,
             )
         else:
             # A sighting is positive evidence even when another row made the
@@ -3327,6 +3376,7 @@ def _family_rotation(
                     seen=seen,
                     samples=samples,
                     dormancy_days=dormancy_days,
+                    retry_days=retry_days,
                 )
                 if seen_tracked
                 else ()
@@ -3367,6 +3417,18 @@ def _family_rotation(
                 trustworthy=trustworthy,
             ),
         )
+    for evidence in not_offered:
+        if evidence.probe_due:
+            logger.info(
+                '%s',
+                _event(
+                    'family_probe_due',
+                    key=evidence.key,
+                    missed_days=evidence.missed_days,
+                    samples=evidence.samples,
+                    next_probe=None if evidence.next_probe is None else evidence.next_probe.isoformat(),
+                ),
+            )
 
     dormant = tuple(evidence for evidence in observations if evidence.dormant)
     return tuple(unread), tuple(claimed), tuple(not_offered), dormant

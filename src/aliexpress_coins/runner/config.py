@@ -26,6 +26,7 @@ __all__ = [
     'DEFAULT_CATALOGUE_PATH',
     'DEFAULT_CORPUS_PATH',
     'DEFAULT_FAMILY_DORMANCY_DAYS',
+    'DEFAULT_FAMILY_RETRY_DAYS',
     'DEFAULT_JITTER_SECONDS',
     'DEFAULT_KEEP_RUNS',
     'DEFAULT_MAX_PASSES',
@@ -127,6 +128,16 @@ would recreate the silent-drop defect this feature exists to prevent. Three is
 the floor that admits no such single-night verdict.
 """
 
+DEFAULT_FAMILY_RETRY_DAYS = 7
+"""How often a dormant family gets an explicit extra probe sample.
+
+The normal nightly read already catches a returning row, but a dormant family is
+also due for one additional fresh read on this cadence so a family that rotates
+in on a night the ordinary samples missed still gets a dedicated chance. The
+probe is an extra sample, not a second dispatch policy: it never makes a missing
+family block the night.
+"""
+
 DEFAULT_APP_SETTLE_SECONDS = 10.0
 """The measured warm-up after starting the app normally (docs/07 §1)."""
 
@@ -158,6 +169,7 @@ class RunConfig:
     settle_seconds: float
     app_settle_seconds: float
     family_dormancy_days: int = DEFAULT_FAMILY_DORMANCY_DAYS
+    family_retry_days: int = DEFAULT_FAMILY_RETRY_DAYS
     dry_run: bool = False
     max_passes: int = DEFAULT_MAX_PASSES
     max_task_attempts: int = DEFAULT_MAX_TASK_ATTEMPTS
@@ -212,6 +224,7 @@ class RunConfig:
             dry_run=_flag(env.get('AECOINS_DRY_RUN', ''), 'AECOINS_DRY_RUN'),
             max_passes=_positive_int(env, 'AECOINS_MAX_PASSES', DEFAULT_MAX_PASSES),
             max_task_attempts=_positive_int(env, 'AECOINS_MAX_TASK_ATTEMPTS', DEFAULT_MAX_TASK_ATTEMPTS),
+            family_retry_days=_positive_int(env, 'AECOINS_FAMILY_RETRY_DAYS', DEFAULT_FAMILY_RETRY_DAYS),
             keep_runs=_positive_int(env, 'AECOINS_KEEP_RUNS', DEFAULT_KEEP_RUNS),
             apprise_url=_optional(env, 'AECOINS_APPRISE_URL') or _optional(env, 'APPRISE_URL'),
             apprise_key=_optional(env, 'AECOINS_APPRISE_KEY') or _optional(env, 'APPRISE_KEY'),

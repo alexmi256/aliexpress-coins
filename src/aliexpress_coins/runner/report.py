@@ -915,7 +915,13 @@ def _not_offered_summary(families: object) -> str:
         days = family.get('missed_days', 0)
         samples = family.get('samples', 0)
         since = family.get('dormant_since') or family.get('unseen_since') or 'unknown'
+        next_probe = family.get('next_probe')
+        retried = family.get('retried_on')
         text = f'{key} not offered for {days} day(s), dormant since {since}, 0 sightings in {samples} sample(s)'
+        if retried:
+            text = f'{text}; extra probe on {retried}'
+        if next_probe:
+            text = f'{text}; next extra probe {next_probe}'
         parts.append(text)
     if not parts:
         return 'not offered on this account'

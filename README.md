@@ -194,8 +194,9 @@ quiz, surprise items, search and notifications — lives in the executors under
   so the scheduler does not mistake an unfinished night for success. A catalogue family that no
   complete read has shown stays `unread` until `AECOINS_FAMILY_DORMANCY_DAYS` consecutive days
   (default 7, floor 3) prove it is not being offered; then it is reported as `not_offered`, named in
-  the day state, and the night may finish. The sheet is read every night, so a returning row is
-  caught on the next run; a sighting clears that dormancy immediately (#161).
+  the day state, and the night may finish. The everyday read still catches a return, and a dormant
+  family also gets one explicit extra sample every `AECOINS_FAMILY_RETRY_DAYS` (default 7); a
+  sighting clears that dormancy immediately (#161).
 - **Pass and attempt bounds (#123, #141):** a pass is a full re-enumerated sweep. The loop normally
   ends by progress: it keeps sweeping while a pass dispatched a row or revealed new dispatchable
   rows, and stops after two consecutive sweeps that did neither. `AECOINS_MAX_PASSES` is the

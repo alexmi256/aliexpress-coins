@@ -108,8 +108,9 @@ silently accepted (#149). A family that no read saw is kept as *unread* while th
 ambiguous, so the roster stays incomplete and the day open. Once the cross-day evidence file records
 `AECOINS_FAMILY_DORMANCY_DAYS` (default 7, floor 3) consecutive complete days without a sighting,
 the family is reported as `not_offered` (dormant) with its streak and sample count instead: it stops
-blocking completion and remains visible in the report and day state. The sheet is read every night,
-so a returning row is caught by the next run; a single sighting clears the dormancy. A family
+blocking completion and remains visible in the report and day state. The ordinary nightly read
+still catches a return, and a dormant family also gets one explicit extra sample every
+`AECOINS_FAMILY_RETRY_DAYS`; a single sighting clears the dormancy. A family
 already completed to today's daily limit is named as already claimed rather than unseen (#161).
 A pass that lost a surface or had unreadable rows is never absence evidence, so it stays
 `unread_families` and keeps the night open (#161).
