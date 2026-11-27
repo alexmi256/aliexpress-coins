@@ -1171,6 +1171,49 @@ def test_a_surface_restart_is_recorded_as_a_recovery(
     assert recovery.surface == 'boost_page'
 
 
+@pytest.mark.parametrize('variant', [Surface.NON_APP, Surface.UNKNOWN])
+def test_a_surface_restart_on_an_unusable_surface_is_not_called_recovered(
+    variant: Surface,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: Any,
+    full_roster: Roster,
+) -> None:
+    context = _context(
+        tmp_path,
+        capture=_Capture(_coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    report = RunReport(tmp_path / 'runs', '20261127T140626Z', budget_seconds=60.0, started_at=CAPTURED_AT)
+    monkeypatch.setattr(
+        engine,
+        '_observe',
+        lambda *args, **kwargs: RosterObservation(
+            sequence=1,
+            timestamp=CAPTURED_AT,
+            rows=(),
+            roster=replace(full_roster, surface_variant=variant),
+        ),
+    )
+
+    engine._restart_surface(
+        context,
+        cast(Controller, context.controller),
+        cast(Any, object()),
+        report,
+        on_dismiss=None,
+        reason='a lost surface needs a fresh read',
+    )
+
+    recovery = report.recoveries[0]
+    assert recovery.scope == 'surface'
+    assert recovery.outcome == 'still_failed'
+    assert recovery.surface == variant.value
+    assert 'did not re-establish a usable task surface' in recovery.detail
+
+
 def test_a_surface_restart_that_cannot_navigate_is_still_reported(
     tmp_path: Path,
     catalogue: TaskCatalogue,

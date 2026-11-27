@@ -467,6 +467,14 @@ not "whatever a BACK left behind". Both a page with rows and its honest
 zero-row variant are accepted; the roster read decides what work is offered.
 """
 
+_RECOVERABLE_SURFACES = KNOWN_GOOD_SURFACES | {Surface.BOOST_PAGE}
+"""Surface variants that prove a surface restart re-established usable work.
+
+The coin page and the populated boost sheet are the task surfaces a restart can
+land on. A launcher, unknown page, empty boost load fault or incomplete read is
+reported ``still_failed`` instead of claiming the recovery succeeded (#168).
+"""
+
 _RESET_RETRYABLE_CODES = frozenset(
     {
         FailureCode.TASK_UNVERIFIED,
@@ -3597,9 +3605,9 @@ def _restart_surface(
     observation = _observe(context, controller, observer, route=None, on_dismiss=on_dismiss)
     recovered = _readable_observation(observation)
     detail = (
-        'the surface restart re-read the task surface'
+        'the surface restart re-read a usable task surface'
         if recovered
-        else 'the surface restart did not produce a readable observation'
+        else 'the surface restart did not re-establish a usable task surface'
     )
     _record_surface_recovery(report, reason=reason, observation=observation, attempts=1, detail=detail)
     log.log(
@@ -3616,13 +3624,11 @@ def _restart_surface(
 
 
 def _readable_observation(observation: RosterObservation | None) -> bool:
-    """Whether a restart observation is a usable task-surface read."""
-    return (
-        observation is not None
-        and observation.roster is not None
-        and not observation.failed
-        and not observation.cap_reached
-    )
+    """Whether a restart observation is a usable, complete task-surface read."""
+    if observation is None or observation.roster is None or observation.failed or observation.cap_reached:
+        return False
+    roster = observation.roster
+    return roster.surface_variant in _RECOVERABLE_SURFACES and not roster.incomplete
 
 
 def _record_surface_recovery(
