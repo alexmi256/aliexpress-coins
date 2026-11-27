@@ -54,8 +54,9 @@ from aliexpress_coins.perception.scroll import (
     scroll_until_found,
 )
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
-from aliexpress_coins.perception.state import CaptureSource, ScreenState
+from aliexpress_coins.perception.state import CaptureSource, ScreenState, classify
 from aliexpress_coins.perception.templates import TemplateStore
+from aliexpress_coins.perception.waits import wait_until_stable
 from aliexpress_coins.runner.errors import RunInterrupted
 from aliexpress_coins.runner.safety import RunAborted
 from aliexpress_coins.runner.state import DailyStateStore
@@ -94,6 +95,29 @@ The bound is a ceiling, not a sleep: a rendered page ends the wait immediately.
 
 DEFAULT_INTERVAL = 0.5
 """How often the post-tap frame is read."""
+
+DEFAULT_ROW_SETTLE_TIMEOUT = 6.0
+"""How long the boost list may keep moving after a search swipe.
+
+The run `20261127T140626Z` tapped a row that was still in the swipe's fling:
+the frame that named the row was 1.4 s after the gesture, the next frame had
+moved the row above the fold, and the tap opened nothing. A row is only a
+target once the list has stopped moving.
+"""
+
+ROW_SCROLL_FRACTION = 0.4
+"""A gentler search swipe than the roster's one-viewport gesture.
+
+A full-height swipe carries enough momentum to overshoot the shortcut row and
+hide it above the fold; 0.4 of the frame moves far enough to reveal the next
+card without depending on the fling.
+"""
+
+ROW_SWIPE_DURATION_MS = 700
+"""A slower search swipe keeps the list under control between captures."""
+
+DEFAULT_BALANCE_GRACE = 6.0
+"""How long the launched coin page may take to show the server-side +1."""
 
 SHORTCUT_MODAL_MARKERS: tuple[str, ...] = (
     'Create shortcut',
@@ -272,12 +296,30 @@ def run_shortcut_visit_task(
     initial = snapshot if snapshot is not None else _capture(capture)
     balance_before = _trusted_balance(initial)
     restart_confirmed = False
-    found = _read_row(controller, capture, entry.title, initial)
+    found = _read_row(
+        controller,
+        capture,
+        entry.title,
+        initial,
+        clock=clock,
+        sleep=sleep,
+        settle=settle,
+        interval=interval,
+    )
     if found.target is None and not _absence_confirmed(found):
         # A no-op swipe or a frame that was not a readable boost list is not
         # evidence the row is gone. Re-read once from a fresh frame before
         # spending the one route restart.
-        found = _read_row(controller, capture, entry.title, _capture(capture))
+        found = _read_row(
+            controller,
+            capture,
+            entry.title,
+            _capture(capture),
+            clock=clock,
+            sleep=sleep,
+            settle=settle,
+            interval=interval,
+        )
     if found.target is None and not _absence_confirmed(found):
         # Still unconfirmed: restart through the measured route and re-open the
         # Coins boost sheet, then read it again. Do not reimplement the route.
@@ -304,7 +346,16 @@ def run_shortcut_visit_task(
             )
             if not opened.opened or opened.tap_attempts == 0:
                 restart_confirmed = False
-            found = _read_row(controller, capture, entry.title, opened.snapshot)
+            found = _read_row(
+                controller,
+                capture,
+                entry.title,
+                opened.snapshot,
+                clock=clock,
+                sleep=sleep,
+                settle=settle,
+                interval=interval,
+            )
         except RunAborted, RunInterrupted:
             raise
         except Exception as exc:
@@ -353,15 +404,17 @@ def run_shortcut_visit_task(
     if balance_before is None:
         # The live dispatch starts on the boost list, whose balance band is not
         # trusted for a claim (a lone control numeral can look like a balance).
-        # Read the balance from the coin page first, then re-open the list and
-        # re-resolve the row so the +1 is bracketed on the trusted surface.
-        balance_before, found, balance_confirmed = _read_balance_and_row(
+        # Read the balance from a *freshly loaded* coin page first, then re-open
+        # the list and re-resolve the row so the +1 is bracketed on the trusted
+        # surface. A stale pre-route boost frame is not a coin page.
+        balance_before, found, balance_confirmed, pre_read = _read_balance_and_row(
             controller,
             capture,
             corpus,
             navigate,
             route,
             entry.title,
+            before_route=found.last,
             templates=templates,
             modal_timeout=modal_timeout,
             interval=interval,
@@ -372,6 +425,21 @@ def run_shortcut_visit_task(
         )
         restart_confirmed = restart_confirmed or balance_confirmed
         action = found.target
+        if balance_before is None:
+            result = _result(
+                spec,
+                entry.title,
+                ShortcutVisitOutcome.FAILED,
+                verification='balance_unreadable_before',
+                detail=(
+                    'the coin balance could not be read from a trusted coin page before the dispatch '
+                    f'(surface={classify_surface(pre_read.snapshot).value}, '
+                    f'settled={pre_read.settled}, history={_history(pre_read)}); no tap was issued'
+                ),
+                done_before=done_before,
+            )
+            _log_result(log, result)
+            return result
         if action is None:
             result = _surface_failure(
                 spec,
@@ -384,6 +452,32 @@ def run_shortcut_visit_task(
             )
             _log_result(log, result)
             return result
+
+    action, found = _settled_action(
+        controller,
+        capture,
+        entry.title,
+        found,
+        settle=settle,
+        interval=interval,
+        clock=clock,
+        sleep=sleep,
+    )
+    if action is None:
+        result = _result(
+            spec,
+            entry.title,
+            ShortcutVisitOutcome.FAILED,
+            verification='row_not_settled',
+            detail=(
+                f'{entry.title!r} could not be re-read on a settled frame before the tap '
+                f'(surface={classify_surface(found.last).value}); no tap was issued'
+            ),
+            done_before=done_before,
+            balance_before=balance_before,
+        )
+        _log_result(log, result)
+        return result
 
     tap = controller.tap_box(action, why='open the shortcut row and read what its GO does', label=entry.title)
     taps = [tap]
@@ -403,6 +497,7 @@ def run_shortcut_visit_task(
             clock=clock,
             sleep=sleep,
             log=log,
+            balance_before=balance_before,
             preexisting=_read_shortcut_presence(shortcut_present, log),
             presence=shortcut_present,
             launch=launch_shortcut,
@@ -498,7 +593,8 @@ def run_shortcut_visit_task(
 
     # No shortcut sheet appeared. Keep the historical direct-credit path: some
     # builds may pay the row without exposing the dialog. A +1 is still the only
-    # completion evidence.
+    # completion evidence, but the failure names the missing step (the measured
+    # sheet) instead of collapsing into a generic "no +1".
     arrival = _return_to_coin_page(
         capture,
         navigate,
@@ -528,12 +624,25 @@ def run_shortcut_visit_task(
         _log_result(log, result)
         return result
 
+    if balance_after is None:
+        verification = 'balance_unreadable_after'
+        detail = (
+            f"{entry.title!r}'s GO did not open the measured shortcut sheet, and the balance could not be "
+            f'read afterwards (surface={classify_surface(arrival.snapshot).value}, '
+            f'settled={arrival.settled}, history={_history(arrival)})'
+        )
+    else:
+        verification = 'shortcut_sheet_absent'
+        detail = (
+            f'{entry.title!r} was tapped but the measured Create shortcut sheet did not appear; '
+            f'no pinned intent was fired (balance {balance_before!r} -> {balance_after!r})'
+        )
     result = _result(
         spec,
         entry.title,
         ShortcutVisitOutcome.FAILED,
-        verification='no_credit',
-        detail=f'{entry.title!r} was tapped but no +1 was observed (balance {balance_before!r} -> {balance_after!r})',
+        verification=verification,
+        detail=detail,
         done_before=done_before,
         balance_before=balance_before,
         balance_after=balance_after,
@@ -556,6 +665,7 @@ def _dispatch_launcher_shortcut(
     clock: Callable[[], float],
     sleep: Callable[[float], None],
     log: logging.Logger,
+    balance_before: float | None,
     preexisting: bool | None,
     presence: Callable[[], bool | None] | None,
     launch: Callable[[], None] | None,
@@ -614,7 +724,9 @@ def _dispatch_launcher_shortcut(
 
     stage, stage_frame = _wait_for_creation_stage(
         capture,
-        timeout=modal_timeout,
+        # The measured path leaves a ~6 s gap between accepting the sheet and
+        # the launcher's Add step; the bound must not race that transition.
+        timeout=max(modal_timeout, 10.0),
         interval=interval,
         clock=clock,
         sleep=sleep,
@@ -636,7 +748,7 @@ def _dispatch_launcher_shortcut(
         )
         _wait_for_add_to_finish(
             capture,
-            timeout=modal_timeout,
+            timeout=max(modal_timeout, 10.0),
             interval=interval,
             clock=clock,
             sleep=sleep,
@@ -726,16 +838,97 @@ def _dispatch_launcher_shortcut(
         clock=clock,
         sleep=sleep,
     )
-    final = _return_to_coin_page(
-        capture,
-        navigate,
-        route,
-        timeout=max(modal_timeout, DEFAULT_LAUNCH_TIMEOUT),
-        interval=interval,
-        clock=clock,
-        sleep=sleep,
-        log=log,
-    )
+    launch_surface = classify_surface(arrival.snapshot)
+    in_app = foreground() if foreground is not None else None
+    if (
+        launch_surface is Surface.NON_APP
+        or in_app is False
+        or (launch_surface is Surface.UNKNOWN and not arrival.settled)
+    ):
+        # Keep the round-1 classification: a launcher frame after the dispatch
+        # is a foreground loss, never completion. Recover only to leave the app
+        # clean; the report keeps the launch surface that proved the loss.
+        recovered = _return_to_coin_page(
+            capture,
+            navigate,
+            route,
+            timeout=max(modal_timeout, DEFAULT_LAUNCH_TIMEOUT),
+            interval=interval,
+            clock=clock,
+            sleep=sleep,
+            log=log,
+        )
+        return _ShortcutUse(
+            created=created,
+            used=used,
+            failure='foreground_lost_after_action',
+            detail=(
+                'the shortcut was launched but the run did not finish on the coins page: '
+                f'launch_surface={launch_surface.value}, '
+                f'return_surface={classify_surface(recovered.snapshot).value}, settled={recovered.settled}, '
+                f'app_foreground={in_app!r}'
+            ),
+            labels=tuple(labels),
+            taps=tuple(taps),
+            balance_after=_trusted_balance(recovered.snapshot),
+            final_surface=classify_surface(recovered.snapshot),
+            pin_unconfirmed=pin_unconfirmed,
+        )
+
+    final = arrival
+    reloaded = False
+    balance = _trusted_balance(final.snapshot)
+    if not _is_trusted_coin_page(final.snapshot, balance):
+        # The pinned intent landed on a surface whose balance band is not
+        # trusted (or not on a readable coin page). One measured reload gets
+        # the coin page back without firing a second task action.
+        final = _return_to_coin_page(
+            capture,
+            navigate,
+            route,
+            timeout=max(modal_timeout, DEFAULT_LAUNCH_TIMEOUT),
+            interval=interval,
+            clock=clock,
+            sleep=sleep,
+            log=log,
+        )
+        reloaded = True
+        balance = _trusted_balance(final.snapshot)
+
+    if balance is not None and not _bright_increase(balance_before, balance):
+        # Let the server-side credit land on the page the pinned intent opened
+        # before touching the route again.
+        final, balance = _wait_for_balance(
+            capture,
+            balance_before,
+            timeout=DEFAULT_BALANCE_GRACE,
+            interval=interval,
+            clock=clock,
+            sleep=sleep,
+        )
+        if not _bright_increase(balance_before, balance) and not reloaded:
+            # The #130 observation needed a later coin-page reload to show the
+            # credit. Spend exactly one, then read again.
+            final = _return_to_coin_page(
+                capture,
+                navigate,
+                route,
+                timeout=max(modal_timeout, DEFAULT_LAUNCH_TIMEOUT),
+                interval=interval,
+                clock=clock,
+                sleep=sleep,
+                log=log,
+            )
+            reloaded = True
+            final, balance = _wait_for_balance(
+                capture,
+                balance_before,
+                timeout=DEFAULT_BALANCE_GRACE,
+                interval=interval,
+                clock=clock,
+                sleep=sleep,
+            )
+
     final_surface = classify_surface(final.snapshot)
     in_app = foreground() if foreground is not None else None
     if final_surface is Surface.NON_APP or in_app is False or (final_surface is Surface.UNKNOWN and not final.settled):
@@ -745,13 +938,13 @@ def _dispatch_launcher_shortcut(
             failure='foreground_lost_after_action',
             detail=(
                 'the shortcut was launched but the run did not finish on the coins page: '
-                f'launch_surface={classify_surface(arrival.snapshot).value}, '
+                f'launch_surface={launch_surface.value}, '
                 f'return_surface={final_surface.value}, settled={final.settled}, '
                 f'app_foreground={in_app!r}'
             ),
             labels=tuple(labels),
             taps=tuple(taps),
-            balance_after=_trusted_balance(final.snapshot),
+            balance_after=balance,
             final_surface=final_surface,
             pin_unconfirmed=pin_unconfirmed,
         )
@@ -762,13 +955,29 @@ def _dispatch_launcher_shortcut(
             failure='return_to_coins_page_failed',
             detail=(
                 'the shortcut was launched but the run did not return to the coins page: '
-                f'launch_surface={classify_surface(arrival.snapshot).value}, '
+                f'launch_surface={launch_surface.value}, '
                 f'return_surface={final_surface.value}, settled={final.settled}, '
                 f'app_foreground={in_app!r}'
             ),
             labels=tuple(labels),
             taps=tuple(taps),
-            balance_after=_trusted_balance(final.snapshot),
+            balance_after=balance,
+            final_surface=final_surface,
+            pin_unconfirmed=pin_unconfirmed,
+        )
+    if balance is None:
+        return _ShortcutUse(
+            created=created,
+            used=used,
+            failure='balance_unreadable_after',
+            detail=(
+                'the shortcut was launched and the app returned to the coins page, but no trusted balance '
+                f'was readable (surface={final_surface.value}, settled={final.settled}, '
+                f'reloaded={reloaded}, history={_history(final)})'
+            ),
+            labels=tuple(labels),
+            taps=tuple(taps),
+            balance_after=None,
             final_surface=final_surface,
             pin_unconfirmed=pin_unconfirmed,
         )
@@ -776,10 +985,10 @@ def _dispatch_launcher_shortcut(
         created=created,
         used=used,
         failure=None,
-        detail=f'balance {_trusted_balance(arrival.snapshot)!r} -> {_trusted_balance(final.snapshot)!r}',
+        detail=f'balance {balance_before!r} -> {balance!r}',
         labels=tuple(labels),
         taps=tuple(taps),
-        balance_after=_trusted_balance(final.snapshot),
+        balance_after=balance,
         final_surface=final_surface,
         pin_unconfirmed=pin_unconfirmed,
     )
@@ -902,6 +1111,7 @@ def _read_balance_and_row(
     route: SurfaceRoute,
     title: str,
     *,
+    before_route: Snapshot,
     templates: TemplateStore | None,
     modal_timeout: float,
     interval: float,
@@ -909,16 +1119,25 @@ def _read_balance_and_row(
     clock: Callable[[], float],
     sleep: Callable[[float], None],
     log: logging.Logger,
-) -> tuple[float | None, ScrollResult[TextBox], bool]:
-    """Bracket the balance on the coin page, then re-resolve the boost row."""
+) -> tuple[float | None, ScrollResult[TextBox], bool, CoinPageWait]:
+    """Bracket the balance on a fresh coin page, then re-resolve the boost row.
+
+    A route fire is asynchronous: the first frame after ``navigate`` can still
+    be the boost sheet that was on screen before it. The run
+    `20261127T140626Z` read that stale frame as the coin page, so both balance
+    reads were ``None`` and a claim/failure could not be told apart. The wait
+    here therefore requires the frame to have changed from the pre-route frame
+    (or to have passed through loading) before the balance is trusted.
+    """
     try:
         navigate(route)
     except RunAborted, RunInterrupted:
         raise
     except Exception as exc:
         log.warning('%s', _json({'event': 'shortcut_balance_route_failed', 'detail': f'{type(exc).__name__}: {exc}'}))
-    arrival = wait_for_coin_page(
+    arrival = _wait_for_launched_page(
         capture,
+        before_route,
         timeout=max(modal_timeout, 10.0),
         interval=interval,
         clock=clock,
@@ -926,6 +1145,7 @@ def _read_balance_and_row(
     )
     balance = _trusted_balance(arrival.snapshot)
     confirmed = False
+    found: ScrollResult[TextBox]
     try:
         opened = open_boost_list(
             controller,
@@ -940,13 +1160,31 @@ def _read_balance_and_row(
             logger=log,
         )
         confirmed = opened.opened and opened.tap_attempts != 0
-        found = _read_row(controller, capture, title, opened.snapshot)
+        found = _read_row(
+            controller,
+            capture,
+            title,
+            opened.snapshot,
+            clock=clock,
+            sleep=sleep,
+            settle=settle,
+            interval=interval,
+        )
     except RunAborted, RunInterrupted:
         raise
     except Exception as exc:
         log.warning('%s', _json({'event': 'shortcut_balance_reopen_failed', 'detail': f'{type(exc).__name__}: {exc}'}))
-        found = _read_row(controller, capture, title, arrival.snapshot)
-    return balance, found, confirmed
+        found = _read_row(
+            controller,
+            capture,
+            title,
+            arrival.snapshot,
+            clock=clock,
+            sleep=sleep,
+            settle=settle,
+            interval=interval,
+        )
+    return balance, found, confirmed, arrival
 
 
 def _wait_for_launched_page(
@@ -984,11 +1222,82 @@ def _wait_for_launched_page(
             # A loading/unknown frame proves the launch replaced the stale
             # pre-launch page even when the settled page looks identical.
             return wait
+        if classify_surface(wait.snapshot) is not classify_surface(before_launch):
+            # A boost sheet and a coin page can share the same pixels in a
+            # scripted frame; the named surface still proves the route moved.
+            return wait
         if frame_difference(before_launch, wait.snapshot) > STABLE_FRAME_MAX_DIFFERENCE:
             return wait
         if clock() >= deadline:
             return wait
         sleep(min(interval, max(0.0, deadline - clock())))
+
+
+def _wait_for_balance(
+    capture: CaptureSource,
+    before: float | None,
+    *,
+    timeout: float,
+    interval: float,
+    clock: Callable[[], float],
+    sleep: Callable[[float], None],
+) -> tuple[CoinPageWait, float | None]:
+    """Poll a settled coin page for the server-side +1, bounded.
+
+    The pinned intent can render the page before the credit is visible. This is
+    a read poll, not a tap or a navigation: it stops as soon as a trusted frame
+    shows the advertised increase, and otherwise returns the last frame and
+    balance at the deadline so the caller can name which evidence is missing.
+    """
+    deadline = clock() + timeout
+    frame = _capture(capture)
+    history: list[ScreenState] = []
+    while True:
+        classification = classify(frame)
+        history.append(classification.state)
+        balance = _trusted_balance(frame)
+        if _bright_increase(before, balance):
+            return (
+                CoinPageWait(
+                    snapshot=frame,
+                    classification=classification,
+                    history=tuple(history),
+                    timed_out=False,
+                ),
+                balance,
+            )
+        now = clock()
+        if now >= deadline:
+            unsettled = (
+                classification.state
+                in (
+                    ScreenState.LOADING,
+                    ScreenState.POPUP,
+                    ScreenState.UNKNOWN,
+                )
+                or classify_surface(frame) is Surface.NON_APP
+            )
+            return (
+                CoinPageWait(
+                    snapshot=frame,
+                    classification=classification,
+                    history=tuple(history),
+                    timed_out=unsettled,
+                ),
+                balance,
+            )
+        sleep(min(interval, max(0.0, deadline - now)))
+        frame = _capture(capture)
+
+
+def _is_trusted_coin_page(frame: Snapshot, balance: float | None) -> bool:
+    """Whether ``frame`` is a coin page whose balance can bracket a claim."""
+    return balance is not None and classify_surface(frame) in (Surface.ROWS_PRESENT, Surface.ROWS_ABSENT)
+
+
+def _history(wait: CoinPageWait) -> str:
+    """Render a wait's state history for a failure detail."""
+    return '[' + ','.join(state.value for state in wait.history) + ']'
 
 
 def _return_to_coin_page(
@@ -1116,15 +1425,86 @@ def _read_row(
     capture: CaptureSource,
     title: str,
     initial: Snapshot,
+    *,
+    clock: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], None] = time.sleep,
+    settle: float = 0.0,
+    interval: float = DEFAULT_INTERVAL,
 ) -> ScrollResult[TextBox]:
-    """Search one frame for the row's own ``GO`` and keep the scroll evidence."""
+    """Search for the row's own ``GO`` on settled frames only.
+
+    The run `20261127T140626Z` named the row in a frame captured while the
+    search swipe was still flinging, then tapped it after the list had moved.
+    A live search therefore uses a gentler, slower swipe and waits for the
+    frame to stop changing before the target is accepted. Tests with
+    ``settle=0`` keep the fast, scripted path.
+    """
+    after_swipe: Callable[[], None] | None = None
+    if settle > 0:
+
+        def after_swipe() -> None:
+            wait_until_stable(
+                capture,
+                timeout=max(settle, DEFAULT_ROW_SETTLE_TIMEOUT),
+                interval=interval,
+                clock=clock,
+                sleep=sleep,
+            )
+
     return scroll_until_found(
         controller,
         lambda: _capture(capture),
         lambda frame: _action_for(frame, title),
         initial=initial,
         max_attempts=MAX_SCROLL_ATTEMPTS,
+        viewport_fraction=ROW_SCROLL_FRACTION,
+        after_swipe=after_swipe,
+        duration_ms=ROW_SWIPE_DURATION_MS,
         why='find the shortcut-row GO below the boost fold',
+    )
+
+
+def _settled_action(
+    controller: Controller,
+    capture: CaptureSource,
+    title: str,
+    found: ScrollResult[TextBox],
+    *,
+    settle: float,
+    interval: float,
+    clock: Callable[[], float],
+    sleep: Callable[[float], None],
+) -> tuple[TextBox | None, ScrollResult[TextBox]]:
+    """Re-resolve the row on a frame that has stopped moving before tapping.
+
+    This is the guard the failed run lacked: the row was named 1.4 s after a
+    swipe while the list was still moving, and the next frame had carried the
+    row above the fold. If the settled frame no longer carries the row, the
+    caller fails with ``row_not_settled`` instead of tapping a stale point.
+    """
+    if settle <= 0:
+        return found.target, found
+    stable = wait_until_stable(
+        capture,
+        timeout=max(settle, DEFAULT_ROW_SETTLE_TIMEOUT),
+        interval=interval,
+        clock=clock,
+        sleep=sleep,
+        initial=_capture(capture),
+    )
+    action = _action_for(stable.frame, title)
+    if stable.timed_out or action is None:
+        return None, ScrollResult(
+            outcome=ScrollOutcome.STABLE if stable.timed_out else found.outcome,
+            target=None,
+            frames=(*found.frames, stable.frame),
+            attempts=found.attempts,
+        )
+    return action, ScrollResult(
+        outcome=ScrollOutcome.FOUND,
+        target=action,
+        frames=(*found.frames, stable.frame),
+        attempts=found.attempts,
     )
 
 

@@ -127,6 +127,7 @@ def scroll_until_found[T](
     viewport_fraction: float = SCROLL_VIEWPORT_FRACTION,
     stable_threshold: float = STABLE_FRAME_MAX_DIFFERENCE,
     after_swipe: Callable[[], None] | None = None,
+    duration_ms: int | None = None,
     why: str = 'scroll to find the target',
 ) -> ScrollResult[T]:
     """Search down the current surface for ``find``'s target.
@@ -155,7 +156,11 @@ def scroll_until_found[T](
     for index in range(1, max_attempts + 1):
         start = (frame.width / 2.0, frame.height * SCROLL_START_FRACTION)
         end = (frame.width / 2.0, frame.height * (SCROLL_START_FRACTION - viewport_fraction))
-        swipe = controller.swipe(start, end, why=why, label='scroll search')
+        swipe = (
+            controller.swipe(start, end, why=why, label='scroll search')
+            if duration_ms is None
+            else controller.swipe(start, end, why=why, label='scroll search', duration_ms=duration_ms)
+        )
         if after_swipe is not None:
             after_swipe()
         frame = capture()
