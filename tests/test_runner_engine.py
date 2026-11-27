@@ -7813,6 +7813,7 @@ def test_a_restart_that_cannot_fire_the_shortcut_is_logged_and_returns_none(
             context,
             context.controller,
             observer,
+            report,
             on_dismiss=None,
             reason='test restart',
         )
@@ -8192,6 +8193,7 @@ def test_restart_surface_re_raises_a_stop(
             context,
             context.controller,
             observer,
+            report,
             on_dismiss=None,
             reason='test restart',
         )

@@ -19,7 +19,7 @@ import pytest
 
 from aliexpress_coins.control.controller import Controller
 from aliexpress_coins.control.popups import DismissReport, PopupCorpus, load_popup_corpus
-from aliexpress_coins.perception.errors import SnapshotError
+from aliexpress_coins.perception.errors import SnapshotError, StateTimeout
 from aliexpress_coins.perception.ocr import RapidOcrEngine
 from aliexpress_coins.perception.snapshot import Snapshot
 from aliexpress_coins.runner import engine
@@ -231,6 +231,114 @@ def test_a_dispatch_failure_resets_reobserves_and_completes_on_the_retry(
     assert recovery.retry['outcome'] == 'completed'
 
 
+def test_a_reset_retry_counts_against_the_dispatch_cap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: Any,
+    full_roster: Roster,
+) -> None:
+    wanted = ('coins_quiz', 'notifications')
+    roster = replace(full_roster, entries=tuple(_entry(full_roster, key) for key in wanted))
+    _surface(monkeypatch, roster, _boost_frame(*wanted))
+    good = _coin_frame()
+    monkeypatch.setattr(
+        engine,
+        '_reset_to_known_good',
+        lambda *args, **kwargs: _recovered_reset(good),
+    )
+    context = _context(
+        tmp_path,
+        capture=_Capture(good),
+        catalogue=catalogue,
+        corpus=corpus,
+        max_tasks=2,
+    )
+    calls: list[str] = []
+    _seed_other_families(context, catalogue, roster)
+
+    def dispatch(current: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        calls.append(entry.key or '')
+        if len(calls) == 1:
+            return EngineResult(
+                'failed',
+                'return_failed',
+                'the return route did not prove the coins page',
+                False,
+                {'key': entry.key},
+                failure=failure(FailureCode.TASK_UNVERIFIED, detail='misrouted BACK'),
+            )
+        current.state.record(entry.key or '')
+        return EngineResult('completed', 'progress_badge', 'the round moved', True, {'key': entry.key})
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert calls == ['coins_quiz', 'coins_quiz']
+    assert report.attempts['coins_quiz'] == 2
+    assert 'notifications' not in report.attempts
+    assert report.status is RunStatus.BUDGET
+    assert report.detail is not None
+    assert 'task budget of 2 dispatch(es) exhausted' in report.detail
+
+
+def test_a_row_missing_from_a_complete_fresh_surface_is_settled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: Any,
+    full_roster: Roster,
+) -> None:
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    _surface(monkeypatch, roster, _boost_frame('coins_quiz'))
+    good = _coin_frame()
+    monkeypatch.setattr(
+        engine,
+        '_reset_to_known_good',
+        lambda *args, **kwargs: _recovered_reset(good),
+    )
+    context = _context(
+        tmp_path,
+        capture=_Capture(good),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    attempts: list[int] = []
+    _seed_other_families(context, catalogue, roster)
+    absent = replace(roster, entries=(), surface_variant=Surface.BOOST_PAGE)
+    monkeypatch.setattr(
+        engine,
+        '_observe',
+        lambda *args, **kwargs: RosterObservation(
+            sequence=1,
+            timestamp=CAPTURED_AT,
+            rows=(),
+            roster=absent,
+        ),
+    )
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        attempts.append(1)
+        return EngineResult(
+            'failed',
+            'return_failed',
+            'the return route did not prove the coins page',
+            False,
+            {'key': entry.key},
+            failure=failure(FailureCode.TASK_UNVERIFIED, detail='misrouted BACK'),
+        )
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert attempts == [1]
+    assert len(report.tasks) == 1
+    assert report.recoveries[0].retry is None
+    assert report.recoveries[0].outcome == 'still_failed'
+
+
 def test_a_refusal_is_recorded_once_and_never_retried(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -271,7 +379,7 @@ def test_a_refusal_is_recorded_once_and_never_retried(
 
     assert attempts == [1]
     assert resets == []
-    assert report.recoveries == []
+    assert not [recovery for recovery in report.recoveries if recovery.scope == 'task']
     assert report.tasks[0].outcome == 'skipped'
 
 
@@ -316,7 +424,7 @@ def test_an_absent_control_is_recorded_once_and_never_retried(
 
     assert attempts == [1]
     assert resets == []
-    assert report.recoveries == []
+    assert not [recovery for recovery in report.recoveries if recovery.scope == 'task']
     assert report.tasks[0].outcome == 'failed'
     assert report.tasks[0].verification == 'search_field_not_found'
 
@@ -635,14 +743,98 @@ def test_the_reset_helper_turns_a_route_exception_into_still_failed(
     )
 
     def explode(*args: Any, **kwargs: Any) -> ReturnResult:
-        raise RuntimeError('route died')
+        raise StateTimeout('route died')
 
     monkeypatch.setattr(engine, 'return_to_coins_page', explode)
 
     reset = engine._reset_to_known_good(context, cast(Controller, context.controller), trigger='test')
 
     assert reset.recovered is False
-    assert 'RuntimeError: route died' in reset.detail
+    assert 'StateTimeout: route died' in reset.detail
+
+
+@pytest.mark.parametrize('where', ['return', 'wait', 'capture'])
+def test_a_device_failure_during_a_reset_keeps_its_own_named_code(
+    where: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: Any,
+    full_roster: Roster,
+) -> None:
+    roster = replace(full_roster, entries=(_entry(full_roster, 'coins_quiz'),))
+    _surface(monkeypatch, roster, _boost_frame('coins_quiz'))
+    context = _context(
+        tmp_path,
+        capture=_Capture(_coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    attempts: list[int] = []
+    _seed_other_families(context, catalogue, roster)
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        attempts.append(1)
+        return EngineResult(
+            'failed',
+            'return_failed',
+            'the return route did not prove the coins page',
+            False,
+            {'key': entry.key},
+            failure=failure(FailureCode.TASK_UNVERIFIED, detail='misrouted BACK'),
+        )
+
+    def dead_device(*args: Any, **kwargs: Any) -> Any:
+        raise SnapshotError('the device stopped answering')
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+    if where == 'return':
+        monkeypatch.setattr(engine, 'return_to_coins_page', dead_device)
+    elif where == 'wait':
+        monkeypatch.setattr(
+            engine,
+            'return_to_coins_page',
+            lambda *args, **kwargs: ReturnResult(
+                returned=True,
+                reentered=True,
+                attempts=1,
+                route=SurfaceRoute.SHORTCUT,
+                elapsed=1.0,
+                snapshot=_boost_frame('coins_quiz'),
+            ),
+        )
+        monkeypatch.setattr(engine, 'wait_for_coin_page', dead_device)
+    else:
+
+        class _FirstGoodThenDead:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def capture(self) -> Snapshot:
+                self.calls += 1
+                if self.calls > 1:
+                    raise SnapshotError('the device stopped answering')
+                return _coin_frame()
+
+        context.capture = cast(Any, _FirstGoodThenDead())
+        monkeypatch.setattr(
+            engine,
+            'return_to_coins_page',
+            lambda *args, **kwargs: ReturnResult(
+                returned=False,
+                reentered=True,
+                attempts=engine.RESET_ATTEMPTS,
+                route=SurfaceRoute.SHORTCUT,
+                elapsed=1.0,
+            ),
+        )
+
+    report = engine.run_once(context)
+
+    assert attempts == [1]
+    assert report.status is RunStatus.FAILED
+    assert report.failure_code == FailureCode.DEVICE_OFFLINE.value
+    assert report.failure_code != FailureCode.UNEXPECTED_SCREEN.value
 
 
 def test_the_reset_helper_dismisses_a_popup_while_settling_the_coins_page(
@@ -713,14 +905,14 @@ def test_the_reset_helper_names_a_settle_exception(
     )
 
     def explode(*args: Any, **kwargs: Any) -> Any:
-        raise SnapshotError('the page capture died')
+        raise StateTimeout('the page capture timed out')
 
     monkeypatch.setattr(engine, 'wait_for_coin_page', explode)
 
     reset = engine._reset_to_known_good(context, cast(Controller, context.controller), trigger='test')
 
     assert reset.recovered is False
-    assert 'SnapshotError: the page capture died' in reset.detail
+    assert 'StateTimeout: the page capture timed out' in reset.detail
 
 
 def test_the_reset_helper_names_a_capture_failure_after_a_failed_return(
@@ -729,9 +921,9 @@ def test_the_reset_helper_names_a_capture_failure_after_a_failed_return(
     catalogue: TaskCatalogue,
     corpus: Any,
 ) -> None:
-    class _DeadCapture:
+    class _TimedOutCapture:
         def capture(self) -> Snapshot:
-            raise SnapshotError('the device stopped answering')
+            raise StateTimeout('the capture timed out')
 
     context = _context(
         tmp_path,
@@ -739,7 +931,7 @@ def test_the_reset_helper_names_a_capture_failure_after_a_failed_return(
         catalogue=catalogue,
         corpus=corpus,
     )
-    context.capture = cast(Any, _DeadCapture())
+    context.capture = cast(Any, _TimedOutCapture())
     monkeypatch.setattr(
         engine,
         'return_to_coins_page',
@@ -755,7 +947,7 @@ def test_the_reset_helper_names_a_capture_failure_after_a_failed_return(
     reset = engine._reset_to_known_good(context, cast(Controller, context.controller), trigger='test')
 
     assert reset.recovered is False
-    assert 'SnapshotError: the device stopped answering' in reset.detail
+    assert 'StateTimeout: the capture timed out' in reset.detail
 
 
 @pytest.mark.parametrize('where', ['return', 'wait', 'capture'])
@@ -936,6 +1128,80 @@ def test_the_report_keeps_recovered_and_still_failed_recoveries_distinct(tmp_pat
     assert 'Browse surprise items: return_failed -> recovered' in summary
     assert 'Visit the page via coins: task_unverified -> still_failed' in summary
     assert '| task | Browse surprise items | return_failed |' in summary
+
+
+def test_a_surface_restart_is_recorded_as_a_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    catalogue: TaskCatalogue,
+    corpus: Any,
+    full_roster: Roster,
+) -> None:
+    context = _context(
+        tmp_path,
+        capture=_Capture(_coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    report = RunReport(tmp_path / 'runs', '20261127T140626Z', budget_seconds=60.0, started_at=CAPTURED_AT)
+    monkeypatch.setattr(
+        engine,
+        '_observe',
+        lambda *args, **kwargs: RosterObservation(
+            sequence=1,
+            timestamp=CAPTURED_AT,
+            rows=(),
+            roster=full_roster,
+        ),
+    )
+
+    engine._restart_surface(
+        context,
+        cast(Controller, context.controller),
+        cast(Any, object()),
+        report,
+        on_dismiss=None,
+        reason='a stuck row needs a fresh surface',
+    )
+
+    recovery = report.recoveries[0]
+    assert recovery.scope == 'surface'
+    assert recovery.trigger == 'a stuck row needs a fresh surface'
+    assert recovery.outcome == 'recovered'
+    assert recovery.surface == 'boost_page'
+
+
+def test_a_surface_restart_that_cannot_navigate_is_still_reported(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: Any,
+) -> None:
+    context = _context(
+        tmp_path,
+        capture=_Capture(_coin_frame()),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    report = RunReport(tmp_path / 'runs', '20261127T140626Z', budget_seconds=60.0, started_at=CAPTURED_AT)
+
+    def dead_route(_route: SurfaceRoute) -> None:
+        raise StateTimeout('the shortcut route did not start')
+
+    context.navigate = cast(Any, dead_route)
+
+    result = engine._restart_surface(
+        context,
+        cast(Controller, context.controller),
+        cast(Any, object()),
+        report,
+        on_dismiss=None,
+        reason='a stuck row needs a fresh surface',
+    )
+
+    assert result is None
+    assert report.recoveries[0].scope == 'surface'
+    assert report.recoveries[0].outcome == 'still_failed'
+    assert 'StateTimeout' in report.recoveries[0].detail
 
 
 def test_the_recovery_log_carries_its_trigger_outcome_and_retry(

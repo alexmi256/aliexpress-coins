@@ -930,6 +930,7 @@ def run_once(
                         context,
                         controller,
                         observer,
+                        report,
                         on_dismiss=record_dismissal,
                         reason=(
                             'dormant family probe due: take one extra sample for '
@@ -987,7 +988,7 @@ def run_once(
                     detail = f'wall-clock budget of {budget:g}s exhausted'
                     report.record_failure(failure(FailureCode.BUDGET_EXHAUSTED, detail=detail))
                     break
-                if len(report.tasks) >= task_limit:
+                if sum(attempts.values()) >= task_limit:
                     status = RunStatus.BUDGET
                     detail = task_budget.describe_stop()
                     report.record_failure(failure(FailureCode.BUDGET_EXHAUSTED, detail=detail))
@@ -1046,6 +1047,7 @@ def run_once(
                             context,
                             controller,
                             observer,
+                            report,
                             on_dismiss=record_dismissal,
                             reason=surface_reason,
                         ),
@@ -1100,6 +1102,7 @@ def run_once(
                                     context,
                                     controller,
                                     observer,
+                                    report,
                                     on_dismiss=record_dismissal,
                                     reason=(
                                         'one rotation sample is not proof the night is finished; '
@@ -1182,6 +1185,7 @@ def run_once(
                                 context,
                                 controller,
                                 observer,
+                                report,
                                 on_dismiss=record_dismissal,
                                 reason=restart_reason,
                             ),
@@ -1229,7 +1233,7 @@ def run_once(
                             trigger is not None
                             and identity not in reset_attempted
                             and failures.get(identity, 0) + 1 < max_attempts
-                            and len(report.tasks) < task_limit
+                            and sum(attempts.values()) < task_limit
                         ):
                             reset_attempted.add(identity)
                             retried, retry_record, settled_after_reset = _reset_retry_task(
@@ -2668,6 +2672,17 @@ def _reset_retry_trigger(result: EngineResult) -> str | None:
     return result.verification or named.code.value
 
 
+def _is_abort_run_failure(exc: BaseException) -> bool:
+    """Whether a reset exception belongs to the run-level taxonomy, not the route.
+
+    A capture/device failure, an unclosable popup or an internal bug keeps its
+    named code; only a route-local timeout or similar becomes ``still_failed``
+    and the reset's own unexpected-screen abort (#168).
+    """
+    named = classify_exception(exc, default=FailureCode.INTERNAL_ERROR)
+    return named is not None and named.abort_run
+
+
 def _reset_to_known_good(
     context: RunContext,
     controller: Controller,
@@ -2712,6 +2727,8 @@ def _reset_to_known_good(
         except RunAborted, RunInterrupted, AppLoggedOut:
             raise
         except Exception as exc:
+            if _is_abort_run_failure(exc):
+                raise
             error = f'{type(exc).__name__}: {exc}'
         else:
             returned = result.returned
@@ -2746,6 +2763,8 @@ def _reset_to_known_good(
                 except RunAborted, RunInterrupted, AppLoggedOut:
                     raise
                 except Exception as exc:
+                    if _is_abort_run_failure(exc):
+                        raise
                     error = f'{type(exc).__name__}: {exc}'
                 else:
                     frame = arrival.snapshot
@@ -2755,6 +2774,8 @@ def _reset_to_known_good(
             except RunAborted, RunInterrupted, AppLoggedOut:
                 raise
             except Exception as exc:
+                if _is_abort_run_failure(exc):
+                    raise
                 error = f'{type(exc).__name__}: {exc}'
 
     state_name = classify(frame).state.value if frame is not None else None
@@ -2896,7 +2917,15 @@ def _reset_retry_task(
     )
     fresh = _fresh_entry(fresh_roster, entry)
     retry: EngineResult | None = None
-    settled_after_reset = fresh is not None and not _fresh_entry_is_dispatchable(fresh, context.state)
+    gone_on_complete_surface = (
+        fresh is None
+        and fresh_roster is not None
+        and fresh_roster.surface_variant is Surface.BOOST_PAGE
+        and not fresh_roster.incomplete
+    )
+    settled_after_reset = gone_on_complete_surface or (
+        fresh is not None and not _fresh_entry_is_dispatchable(fresh, context.state)
+    )
     if fresh is not None and not settled_after_reset:
         retry = _dispatch_with_retry(
             context,
@@ -3545,11 +3574,12 @@ def _restart_surface(
     context: RunContext,
     controller: Controller,
     observer: RosterObserver,
+    report: RunReport,
     *,
     on_dismiss: Callable[[DismissReport], None] | None,
     reason: str,
 ) -> RosterObservation | None:
-    """Fire the shortcut again, then re-read the best task surface."""
+    """Fire the shortcut again, re-read the best task surface and report it."""
     log = context.logger if context.logger is not None else LOG
     try:
         context.navigate(SurfaceRoute.SHORTCUT)
@@ -3558,10 +3588,64 @@ def _restart_surface(
         raise
     except Exception as exc:
         detail = f'{type(exc).__name__}: {exc}'
-        log.warning('%s', _event('surface_restart_failed', reason=reason, detail=detail))
+        _record_surface_recovery(report, reason=reason, observation=None, attempts=1, detail=detail)
+        log.warning(
+            '%s',
+            _event('surface_restart_failed', reason=reason, outcome='still_failed', detail=detail),
+        )
         return None
-    log.info('%s', _event('surface_restart', reason=reason, route=SurfaceRoute.SHORTCUT.value))
-    return _observe(context, controller, observer, route=None, on_dismiss=on_dismiss)
+    observation = _observe(context, controller, observer, route=None, on_dismiss=on_dismiss)
+    recovered = _readable_observation(observation)
+    detail = (
+        'the surface restart re-read the task surface'
+        if recovered
+        else 'the surface restart did not produce a readable observation'
+    )
+    _record_surface_recovery(report, reason=reason, observation=observation, attempts=1, detail=detail)
+    log.log(
+        logging.INFO if recovered else logging.WARNING,
+        '%s',
+        _event(
+            'surface_restart',
+            reason=reason,
+            route=SurfaceRoute.SHORTCUT.value,
+            outcome='recovered' if recovered else 'still_failed',
+        ),
+    )
+    return observation
+
+
+def _readable_observation(observation: RosterObservation | None) -> bool:
+    """Whether a restart observation is a usable task-surface read."""
+    return (
+        observation is not None
+        and observation.roster is not None
+        and not observation.failed
+        and not observation.cap_reached
+    )
+
+
+def _record_surface_recovery(
+    report: RunReport,
+    *,
+    reason: str,
+    observation: RosterObservation | None,
+    attempts: int,
+    detail: str,
+) -> None:
+    """Record one shortcut restart so every reset appears in the recovery report."""
+    recovered = _readable_observation(observation)
+    roster = observation.roster if observation is not None else None
+    report.record_recovery(
+        RecoveryRecord(
+            scope='surface',
+            trigger=reason,
+            outcome='recovered' if recovered else 'still_failed',
+            detail=detail,
+            attempts=attempts,
+            surface=roster.surface_variant.value if roster is not None and roster.surface_variant is not None else None,
+        ),
+    )
 
 
 def _needs_another_pass(result: EngineResult) -> bool:

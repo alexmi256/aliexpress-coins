@@ -676,8 +676,9 @@ attempt: the task, attempt number, failure code, frame count and the artifact di
 with no recorded failure has no such section and no recording paths.
 
 A `## Recoveries` table follows the task table whenever the run reset to the known-good coins page:
-one row per start normalisation or task reset, naming the trigger, the surface that was proven, the
-retry result and whether the recovery ended `recovered` or `still_failed`. A task that failed once,
+one row per start normalisation, task reset or surface restart, naming the trigger, the surface that
+was proven, the retry result (where one was issued) and whether the recovery ended `recovered` or
+`still_failed`. A task that failed once,
 was reset and then completed therefore has a completed task row plus a `recovered` recovery row;
 one that failed again has a failed task row and a `still_failed` recovery row, so the two cases are
 never hidden behind one `task_unverified`.
@@ -743,7 +744,7 @@ Raise a limit only deliberately; a larger budget is not a fix for a slow network
 | `balance_before`, `balance_after`, `balance_delta`, `balance_note` | the two recorded frames, or why one is unknown |
 | `popups_closed`, `shots`, `artifact_errors` | artifacts and best-effort write failures |
 | `failure_recordings` | one entry per recorded attempt: task/key/attempt, failure or abort code, artifact directory, frame and sidecar paths |
-| `recoveries` | one entry per start normalisation/task reset: scope, task/key, trigger, reset attempts and surface, outcome (`recovered` / `still_failed`) and the retried executor result |
+| `recoveries` | one entry per start normalisation, task reset or surface restart: scope, task/key, trigger, reset attempts and surface, outcome (`recovered` / `still_failed`) and the retried executor result when one was issued |
 | `notification` | attempted, sink, ok and a class-plus-status error |
 | `plan`, `plan_note` | the dry-run plan, when there was one; `plan.probe_failed` distinguishes an unreadable probe from evidence about the day, and `stable_waits` / `content_waits` / `roster_waits` record settling, row re-reads and row-set confirmation |
 | `abort` | safety code, reason and the screen that triggered it |
