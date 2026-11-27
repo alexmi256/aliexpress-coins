@@ -106,13 +106,11 @@ vanish from the plan. Completion needs two consecutive reads that agree, and the
 fresh re-open per pass to obtain the second; a different read spends another pass instead of being
 silently accepted (#149). A family that no read saw is kept as *unread* while the evidence is still
 ambiguous, so the roster stays incomplete and the day open. Once the cross-day evidence file records
-`AECOINS_FAMILY_DORMANCY_DAYS` (default 7, floor 3) consecutive complete nights without a sighting,
+`AECOINS_FAMILY_DORMANCY_DAYS` (default 7, floor 3) consecutive complete days without a sighting,
 the family is reported as `not_offered` (dormant) with its streak and sample count instead: it stops
-blocking completion, remains visible in the report and day state, and is re-probed on the
-`AECOINS_FAMILY_RETRY_DAYS` (default 7) cadence. A single sighting clears the dormancy, and a family
-already completed to today's daily limit is named as already claimed rather than unseen (#161). A family absent from **every complete read for the configured number of
-consecutive local days** is different again: it is reported `not_offered` (dormant) with its
-absence streak and sample count, stops blocking completion, and is re-probed on a slower cadence.
+blocking completion and remains visible in the report and day state. The sheet is read every night,
+so a returning row is caught by the next run; a single sighting clears the dormancy. A family
+already completed to today's daily limit is named as already claimed rather than unseen (#161).
 A pass that lost a surface or had unreadable rows is never absence evidence, so it stays
 `unread_families` and keeps the night open (#161).
 

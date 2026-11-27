@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from dataclasses import replace
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -90,7 +90,6 @@ def _seed_absence(tmp_path: Path, days: Iterable[date], *, samples: int = 2) -> 
             seen=(),
             samples=samples,
             dormancy_days=2,
-            retry_days=7,
         )
 
 
@@ -109,12 +108,34 @@ def _context_for(
         catalogue=CATALOGUE,
         corpus=CORPUS,
     )
-    context.config = replace(context.config, family_dormancy_days=dormancy_days, family_retry_days=7)
+    context.config = replace(context.config, family_dormancy_days=dormancy_days)
     return context
 
 
 def _rotation(report: Any) -> dict[str, Any]:
     return cast(dict[str, Any], cast(dict[str, Any], report.roster)['rotation'])
+
+
+class _FixedObserver:
+    """Return the same possibly-defective roster on every observation."""
+
+    def __init__(self, roster: Roster) -> None:
+        self._roster = roster
+        self.sequence = 0
+
+    @property
+    def roster(self) -> Roster:
+        return self._roster
+
+    def observe(self, *_args: object, **_kwargs: object) -> RosterObservation:
+        self.sequence += 1
+        return RosterObservation(
+            sequence=self.sequence,
+            timestamp=CAPTURED_AT,
+            rows=(),
+            surface_variant=Surface.BOOST_PAGE,
+            roster=self._roster,
+        )
 
 
 @pytest.mark.slow
@@ -187,24 +208,15 @@ def test_a_failed_read_does_not_advance_dormancy_or_complete_the_night(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A lost surface is not evidence that the family was not offered."""
-    roster = _roster('coins_quiz')
-    unreadable = replace(roster, scroll_surface_lost=True)
+    roster = replace(_roster('coins_quiz'), scroll_surface_lost=True)
     frame = _frame('coins_quiz')
     _seed_absence(tmp_path, [PREVIOUS_DAY], samples=4)
     context = _context_for(tmp_path, monkeypatch, roster=roster, frame=frame)
     context.state.record('coins_quiz')
     _seed_other_families(context, seen={'coins_quiz', 'learn_to_save'})
-    monkeypatch.setattr(
-        engine,
-        '_observe',
-        lambda *args, **kwargs: RosterObservation(
-            sequence=1,
-            timestamp=CAPTURED_AT,
-            rows=(),
-            surface_variant=Surface.BOOST_PAGE,
-            roster=unreadable,
-        ),
-    )
+    observer = _FixedObserver(roster)
+    context.observer = cast(Any, observer)
+    monkeypatch.setattr(engine, '_observe', lambda *args, **kwargs: observer.observe())
 
     report = engine.run_once(context)
 
@@ -217,31 +229,8 @@ def test_a_failed_read_does_not_advance_dormancy_or_complete_the_night(
     assert rotation['not_offered_families'] == []
     assert report.roster is not None
     assert report.roster['incomplete'] is True
-    assert report.night is not None
-    assert report.night['outcome'] == 'incomplete_roster'
+    assert report.status is RunStatus.BUDGET
     assert context.state.snapshot().completed_night is False
-
-
-@pytest.mark.slow
-def test_a_dormant_family_is_reprobed_on_the_slower_cadence(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    roster = _roster('coins_quiz')
-    frame = _frame('coins_quiz')
-    _seed_absence(tmp_path, [date(2026, 11, 13), date(2026, 11, 14)])
-    context = _context_for(tmp_path, monkeypatch, roster=roster, frame=frame)
-    context.state.record('coins_quiz')
-    _seed_other_families(context, seen={'coins_quiz', 'learn_to_save'})
-
-    report = engine.run_once(context)
-
-    evidence = cast(dict[str, Any], _rotation(report)['not_offered'][0])
-    assert evidence['retried_on'] == DAY.isoformat()
-    assert evidence['next_probe'] == '2026-11-29'
-    assert 'family_probe_due' in report.event_log_path.read_text(encoding='utf-8')
-    assert report.night is not None
-    assert report.night['outcome'] == 'exhausted'
 
 
 @pytest.mark.slow
@@ -276,7 +265,7 @@ def test_an_evidence_store_failure_falls_back_to_the_unread_rule(
 @pytest.mark.slow
 def test_a_sighting_during_an_incomplete_read_still_clears_dormancy(tmp_path: Path) -> None:
     state = FamilyObservationStore(tmp_path / 'state', clock=lambda: CAPTURED_AT)
-    state.observe(day=SEED, keys=('learn_to_save',), seen=(), samples=2, dormancy_days=1, retry_days=7)
+    state.observe(day=SEED, keys=('learn_to_save',), seen=(), samples=2, dormancy_days=1)
     assert state.load()['learn_to_save'].dormant is True
 
     unread, _claimed, not_offered, dormant = engine._family_rotation(
@@ -288,7 +277,6 @@ def test_a_sighting_during_an_incomplete_read_still_clears_dormancy(tmp_path: Pa
         day=DAY,
         samples=2,
         dormancy_days=2,
-        retry_days=7,
         trustworthy=False,
         logger=logging.getLogger('test.issue_161'),
     )
@@ -299,6 +287,114 @@ def test_a_sighting_during_an_incomplete_read_still_clears_dormancy(tmp_path: Pa
     stored = FamilyObservationStore(tmp_path / 'state', clock=lambda: CAPTURED_AT).load()['learn_to_save']
     assert stored == FamilyEvidence(key='learn_to_save', last_seen=DAY, last_checked=DAY)
     assert stored.dormant is False
+
+
+@pytest.mark.slow
+def test_a_transient_failed_observation_does_not_block_a_later_clean_night(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    roster = _roster('coins_quiz')
+    frame = _frame('coins_quiz')
+    first_day = datetime(2026, 11, 21, 3, 30, tzinfo=UTC)
+    second_day = datetime(2026, 11, 22, 3, 30, tzinfo=UTC)
+    _surface(monkeypatch, roster, frame)
+
+    first = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=CATALOGUE,
+        corpus=CORPUS,
+    )
+    first.state = DailyStateStore(tmp_path / 'state', clock=lambda: first_day)
+    first.wall_clock = lambda: first_day
+    first.state.record('coins_quiz')
+    _seed_other_families(first, seen={'coins_quiz', 'learn_to_save'})
+    monkeypatch.setattr(engine, '_observe', lambda *args, **kwargs: None)
+
+    first_report = engine.run_once(first)
+
+    assert first_report.status is RunStatus.BUDGET
+    assert first.state.snapshot().completed_night is False
+    assert (
+        'learn_to_save'
+        not in FamilyObservationStore(
+            tmp_path / 'state',
+            clock=lambda: first_day,
+        ).load()
+    )
+
+    second = _context(
+        tmp_path,
+        capture=_Capture(frame, _coin_frame()),
+        catalogue=CATALOGUE,
+        corpus=CORPUS,
+    )
+    second.state = DailyStateStore(tmp_path / 'state', clock=lambda: second_day)
+    second.wall_clock = lambda: second_day
+    second.state.record('coins_quiz')
+    _seed_other_families(second, seen={'coins_quiz', 'learn_to_save'})
+    _surface(monkeypatch, roster, frame)
+    monkeypatch.setattr(
+        engine,
+        '_observe',
+        lambda *args, **kwargs: RosterObservation(
+            sequence=1,
+            timestamp=CAPTURED_AT,
+            rows=(),
+            surface_variant=Surface.BOOST_PAGE,
+            roster=roster,
+        ),
+    )
+
+    second_report = engine.run_once(second)
+
+    stored = FamilyObservationStore(tmp_path / 'state', clock=lambda: second_day).load()['learn_to_save']
+    assert stored.missed_days == 1
+    assert stored.dormant is False
+    assert second_report.night is not None
+    assert second_report.night['outcome'] == 'incomplete_roster'
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize('kind', ['none', 'error', 'cap'])
+def test_a_failed_observation_does_not_advance_dormancy_or_complete_the_night(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+) -> None:
+    roster = _roster('coins_quiz')
+    frame = _frame('coins_quiz')
+    _seed_absence(tmp_path, [PREVIOUS_DAY], samples=4)
+    context = _context_for(tmp_path, monkeypatch, roster=roster, frame=frame)
+    context.state.record('coins_quiz')
+    _seed_other_families(context, seen={'coins_quiz', 'learn_to_save'})
+
+    def failed(*_args: object, **_kwargs: object) -> RosterObservation | None:
+        if kind == 'none':
+            return None
+        return RosterObservation(
+            sequence=1,
+            timestamp=CAPTURED_AT,
+            rows=(),
+            surface_variant=Surface.BOOST_PAGE,
+            error=None if kind == 'cap' else 'the surface was lost',
+            cap_reached=kind == 'cap',
+            roster=None,
+        )
+
+    monkeypatch.setattr(engine, '_observe', failed)
+
+    report = engine.run_once(context)
+
+    stored = FamilyObservationStore(tmp_path / 'state', clock=lambda: CAPTURED_AT).load()['learn_to_save']
+    assert stored.missed_days == 1
+    assert stored.samples == 4
+    assert stored.dormant is False
+    rotation = _rotation(report)
+    assert rotation['unread_families'] == ['learn_to_save']
+    assert rotation['not_offered_families'] == []
+    assert context.state.snapshot().completed_night is False
 
 
 @pytest.mark.slow

@@ -57,7 +57,6 @@ def _observe(
         seen=seen,
         samples=samples,
         dormancy_days=2,
-        retry_days=7,
     )[0]
 
 
@@ -68,7 +67,6 @@ def test_a_missing_file_peeks_at_a_neutral_evidence_record(tmp_path: Path) -> No
     evidence = store.peek(('learn_to_save',))[0]
     assert evidence == FamilyEvidence(key='learn_to_save')
     assert evidence.dormant is False
-    assert evidence.probe_due is False
 
 
 def test_absence_is_counted_once_per_night_and_becomes_dormant_at_the_threshold(tmp_path: Path) -> None:
@@ -84,7 +82,6 @@ def test_absence_is_counted_once_per_night_and_becomes_dormant_at_the_threshold(
     assert second.samples == 5
     assert second.dormant is True
     assert second.dormant_since == DAY2
-    assert second.next_probe == date(2026, 11, 28)
     assert _store(tmp_path).load()['learn_to_save'] == second
 
 
@@ -112,33 +109,6 @@ def test_a_sighting_clears_the_absence_and_dormancy(tmp_path: Path) -> None:
     assert _store(tmp_path).load()['learn_to_save'] == seen
 
 
-def test_a_dormant_family_is_retried_on_the_slower_cadence(tmp_path: Path) -> None:
-    store = _store(tmp_path)
-    _observe(store, DAY1)
-    dormant = _observe(store, DAY2)
-    assert dormant.next_probe == date(2026, 11, 28)
-
-    retried = _observe(store, date(2026, 11, 28))
-
-    assert retried.dormant is True
-    assert retried.retried_on == date(2026, 11, 28)
-    assert retried.probe_due is True
-    assert retried.next_probe == date(2026, 12, 5)
-    assert retried.missed_days == 3
-
-
-def test_a_sighting_during_the_probe_clears_dormancy(tmp_path: Path) -> None:
-    store = _store(tmp_path)
-    _observe(store, DAY1)
-    _observe(store, DAY2)
-
-    seen = _observe(store, date(2026, 11, 28), seen=('learn_to_save',))
-
-    assert seen.dormant is False
-    assert seen.retried_on is None
-    assert seen.next_probe is None
-
-
 def test_untouched_families_keep_their_previous_evidence(tmp_path: Path) -> None:
     store = _store(tmp_path)
     _observe(store, DAY1, keys=('learn_to_save', 'recently_viewed'))
@@ -152,7 +122,7 @@ def test_untouched_families_keep_their_previous_evidence(tmp_path: Path) -> None
 
 def test_invalid_thresholds_and_samples_are_rejected(tmp_path: Path) -> None:
     store = _store(tmp_path)
-    for field, _value in (('dormancy_days', 0), ('retry_days', 0), ('samples', -1)):
+    for field in ('dormancy_days', 'samples'):
         with pytest.raises(ValueError, match=field):
             store.observe(
                 day=DAY1,
@@ -160,7 +130,6 @@ def test_invalid_thresholds_and_samples_are_rejected(tmp_path: Path) -> None:
                 seen=(),
                 samples=-1 if field == 'samples' else 1,
                 dormancy_days=0 if field == 'dormancy_days' else 2,
-                retry_days=0 if field == 'retry_days' else 7,
             )
 
 
@@ -247,7 +216,6 @@ def test_the_night_record_serialises_dormant_families_only_when_present() -> Non
         missed_days=3,
         samples=15,
         dormant_since=DAY2,
-        next_probe=date(2026, 11, 28),
         last_checked=DAY3,
     )
     night = NightRecord(NightOutcome.EXHAUSTED, dispatched=1, completed=1, dormant_families=(family,))
@@ -255,19 +223,6 @@ def test_the_night_record_serialises_dormant_families_only_when_present() -> Non
     payload = night.as_dict()
     assert payload['dormant_families'] == [family.as_dict()]
     assert payload['dormant_families'][0]['samples'] == 15
-
-
-def test_a_dormant_record_between_probes_keeps_its_schedule(tmp_path: Path) -> None:
-    store = _store(tmp_path)
-    _observe(store, DAY1)
-    dormant = _observe(store, DAY2)
-
-    between = _observe(store, DAY3)
-
-    assert between.dormant is True
-    assert between.probe_due is False
-    assert between.retried_on is None
-    assert between.next_probe == dormant.next_probe
 
 
 def test_family_store_names_creation_read_and_write_failures(
@@ -291,7 +246,7 @@ def test_family_store_names_creation_read_and_write_failures(
 
     monkeypatch.setattr(state_module, 'atomic_write_bytes', broken_write)
     with pytest.raises(StateWriteError, match='could not write'):
-        write_store.observe(day=DAY1, keys=('learn_to_save',), seen=(), samples=1, dormancy_days=2, retry_days=7)
+        write_store.observe(day=DAY1, keys=('learn_to_save',), seen=(), samples=1, dormancy_days=2)
 
 
 def test_malformed_dormant_family_payloads_are_rejected() -> None:
@@ -302,7 +257,6 @@ def test_malformed_dormant_family_payloads_are_rejected() -> None:
         missed_days=3,
         samples=15,
         dormant_since=DAY2,
-        next_probe=date(2026, 11, 28),
         last_checked=DAY3,
     )
     assert _parse_dormant_families([dormant.as_dict()]) == (dormant,)
@@ -340,18 +294,3 @@ def test_report_dormant_summaries_handle_bad_or_partial_payloads() -> None:
     )
     assert 'learn_to_save not offered for 14 day(s)' in plain
     assert '0 sightings in 63 sample(s)' in plain
-
-    probed = report_module._not_offered_summary(
-        [
-            {
-                'key': 'learn_to_save',
-                'missed_days': 14,
-                'samples': 63,
-                'dormant_since': DAY1.isoformat(),
-                'retried_on': DAY2.isoformat(),
-                'next_probe': DAY3.isoformat(),
-            },
-        ],
-    )
-    assert f'retried on {DAY2.isoformat()}' in probed
-    assert f'next probe {DAY3.isoformat()}' in probed

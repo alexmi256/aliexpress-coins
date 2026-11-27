@@ -665,7 +665,6 @@ def run_once(
             union_roster: Roster | None = roster
             rotation = _RotationTracker()
             rotation.record(roster)
-            read_defect_seen = _roster_incomplete_without_rotation(roster.as_dict())
             confirmation_attempted = False
             confirmation_read = False
             rotation_incomplete = False
@@ -673,17 +672,10 @@ def run_once(
 
             def absorb(observation: RosterObservation | None) -> bool:
                 """Fold one readable observation into the night's union of rows."""
-                nonlocal union_roster, last_observation, read_defect_seen
+                nonlocal union_roster, last_observation
                 last_observation = observation
                 if observation is None:
-                    read_defect_seen = True
                     return False
-                if observation.failed or observation.cap_reached:
-                    read_defect_seen = True
-                if observation.roster is not None and _roster_incomplete_without_rotation(
-                    observation.roster.as_dict(),
-                ):
-                    read_defect_seen = True
                 if observation.roster is None or observation.failed or observation.cap_reached:
                     return False
                 union_roster = merge_rosters(union_roster, observation.roster)
@@ -1089,12 +1081,7 @@ def run_once(
             latest_roster = observer.roster if observer is not None and observer.roster is not None else roster
             final_roster = merge_rosters(union_roster, latest_roster) if latest_roster is not None else union_roster
             if final_roster is not None:
-                read_trustworthy = (
-                    rotation.confirmed
-                    and not rotation_incomplete
-                    and not final_roster.incomplete
-                    and not read_defect_seen
-                )
+                read_trustworthy = rotation.confirmed and not rotation_incomplete and not final_roster.incomplete
                 family_store = context.family_store or FamilyObservationStore.from_state(
                     context.state,
                     clock=lambda: context.wall_clock().astimezone(context.config.timezone),
@@ -1109,7 +1096,6 @@ def run_once(
                     day=context.wall_clock().astimezone(context.config.timezone).date(),
                     samples=rotation.samples,
                     dormancy_days=context.config.family_dormancy_days,
-                    retry_days=context.config.family_retry_days,
                     trustworthy=read_trustworthy,
                     logger=log,
                 )
@@ -3271,7 +3257,6 @@ def _family_rotation(
     day: date,
     samples: int,
     dormancy_days: int,
-    retry_days: int,
     trustworthy: bool,
     logger: logging.Logger,
 ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[FamilyEvidence, ...], tuple[FamilyEvidence, ...]]:
@@ -3286,8 +3271,9 @@ def _family_rotation(
       limit, so its absence is expected.
     * ``not offered`` — the family crossed :data:`family_dormancy_days`
       consecutive complete days without a sighting. It no longer blocks
-      completion, but it is named with its streak and sample count and is
-      re-probed on the slower ``retry_days`` cadence (#161).
+      completion, but it is named with its streak and sample count. There is no
+      extra probe: the sheet is read every night, so a returning row is caught
+      by the next run and clears dormancy (#161).
 
     A read with a lost surface or unreadable rows is *not* evidence of absence:
     ``trustworthy`` is false and the stored streak is left untouched, so the bad
@@ -3329,7 +3315,6 @@ def _family_rotation(
                 seen=seen,
                 samples=samples,
                 dormancy_days=dormancy_days,
-                retry_days=retry_days,
             )
         else:
             # A sighting is positive evidence even when another row made the
@@ -3342,7 +3327,6 @@ def _family_rotation(
                     seen=seen,
                     samples=samples,
                     dormancy_days=dormancy_days,
-                    retry_days=retry_days,
                 )
                 if seen_tracked
                 else ()
@@ -3383,18 +3367,6 @@ def _family_rotation(
                 trustworthy=trustworthy,
             ),
         )
-    for evidence in not_offered:
-        if evidence.probe_due:
-            logger.info(
-                '%s',
-                _event(
-                    'family_probe_due',
-                    key=evidence.key,
-                    missed_days=evidence.missed_days,
-                    samples=evidence.samples,
-                    next_probe=None if evidence.next_probe is None else evidence.next_probe.isoformat(),
-                ),
-            )
 
     dormant = tuple(evidence for evidence in observations if evidence.dormant)
     return tuple(unread), tuple(claimed), tuple(not_offered), dormant

@@ -73,7 +73,7 @@ import math
 import os
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from enum import StrEnum
 from pathlib import Path
 from types import MappingProxyType
@@ -571,7 +571,6 @@ class FamilyObservationStore:
         seen: Collection[str],
         samples: int,
         dormancy_days: int,
-        retry_days: int,
     ) -> tuple[FamilyEvidence, ...]:
         """Fold one trustworthy day's reads into the evidence and persist it.
 
@@ -582,8 +581,6 @@ class FamilyObservationStore:
         """
         if dormancy_days < 1:
             raise ValueError(f'dormancy_days must be positive, got {dormancy_days!r}')
-        if retry_days < 1:
-            raise ValueError(f'retry_days must be positive, got {retry_days!r}')
         if samples < 0:
             raise ValueError(f'samples must not be negative, got {samples!r}')
         current = self._load()
@@ -596,7 +593,6 @@ class FamilyObservationStore:
                 seen=key in seen_keys,
                 samples=samples,
                 dormancy_days=dormancy_days,
-                retry_days=retry_days,
             )
         self._commit(current)
         return tuple(current[key] for key in keys)
@@ -635,7 +631,6 @@ def _next_evidence(
     seen: bool,
     samples: int,
     dormancy_days: int,
-    retry_days: int,
 ) -> FamilyEvidence:
     """Apply one day's sighting or absence to a family's history."""
     if seen:
@@ -644,7 +639,7 @@ def _next_evidence(
     same_day = previous.last_checked == day
     if same_day:
         # A second run on the same local day is another sample, not a second
-        # night of absence.
+        # day of absence.
         missed = previous.missed_days
         total_samples = max(previous.samples, samples)
     else:
@@ -652,24 +647,7 @@ def _next_evidence(
         total_samples = previous.samples + samples
 
     unseen_since = previous.unseen_since if previous.unseen_since is not None else day
-    dormant_since = previous.dormant_since
-    next_probe = previous.next_probe
-    retried_on = previous.retried_on
-
-    if missed >= dormancy_days:
-        if dormant_since is None:
-            dormant_since = day
-            retried_on = None
-        if next_probe is None:
-            next_probe = day + timedelta(days=retry_days)
-        elif day >= next_probe:
-            # The slower cadence is due: this night is the scheduled re-probe.
-            retried_on = day
-            next_probe = day + timedelta(days=retry_days)
-    else:
-        dormant_since = None
-        next_probe = None
-        retried_on = None
+    dormant_since = (previous.dormant_since or day) if missed >= dormancy_days else None
 
     return FamilyEvidence(
         key=previous.key,
@@ -678,9 +656,7 @@ def _next_evidence(
         missed_days=missed,
         samples=total_samples,
         dormant_since=dormant_since,
-        next_probe=next_probe,
         last_checked=day,
-        retried_on=retried_on,
     )
 
 
@@ -885,9 +861,7 @@ def _family_evidence(data: Mapping[str, Any], *, field: str) -> FamilyEvidence:
         missed_days=missed_days,
         samples=samples,
         dormant_since=_family_date(data, 'dormant_since', field=field),
-        next_probe=_family_date(data, 'next_probe', field=field),
         last_checked=_family_date(data, 'last_checked', field=field),
-        retried_on=_family_date(data, 'retried_on', field=field),
     )
 
 

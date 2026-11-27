@@ -142,10 +142,10 @@ in the day state — its absence is expected because it was claimed earlier toda
 still named in the report as already claimed, not as unseen. `super_discounts` is the motivating
 case: run `20261126T100143Z` claimed it at 10:08Z, so its absence from every later sheet is expected,
 while an unseen and unclaimed family keeps the day open (#149). The second carve-out is dormancy
-(#161): after `AECOINS_FAMILY_DORMANCY_DAYS` (default 7, floor 3) consecutive complete nights with
-no sighting, the family is reported as `not_offered`, stops blocking completion, remains named with
-its `missed_days`/`samples`, and is re-probed every `AECOINS_FAMILY_RETRY_DAYS` (default 7). A
-sighting clears the record, so a returning row resumes normal dispatch immediately.
+(#161): after `AECOINS_FAMILY_DORMANCY_DAYS` (default 7, floor 3) consecutive complete days with
+no sighting, the family is reported as `not_offered` and stops blocking completion, while remaining
+named with its `missed_days`/`samples`. The sheet is read every night, so a returning row is caught
+by the next run; a sighting clears the record and resumes normal dispatch immediately.
 
 ### 4e. `learn_to_save` was not offered in the #159 sample window ❓
 
@@ -198,9 +198,9 @@ not a completed night. The catalogue row is deliberately **not** removed to make
 complete read for `AECOINS_FAMILY_DORMANCY_DAYS` consecutive local days (default 7; startup floor 3)
 is reported as **`not_offered`** and becomes dormant. Its evidence — `unseen_since`, the number of
 consecutive unsighted days, the readable samples in that streak and zero sightings — is written to
-`run.json`, `summary.md` and the day state. It stops keeping the night open, and a weekly re-probe
-(`AECOINS_FAMILY_RETRY_DAYS`, default 7) revalidates the verdict. A sighting anywhere clears
-dormancy immediately and makes the row dispatchable again. A pass that lost the boost surface or
+`run.json`, `summary.md` and the day state. It stops keeping the night open. The sheet is read
+every night, so a returning row is caught by the next run and a sighting clears dormancy
+immediately, making the row dispatchable again. A pass that lost the boost surface or
 had unreadable rows records no absence: that is the #149 regression guard, and it still makes the
 roster incomplete. The label strings are **not** known to be stale: the #159 frames contain no row
 resembling either the title or the subtitle, so there is nothing for OCR to match. The title and
