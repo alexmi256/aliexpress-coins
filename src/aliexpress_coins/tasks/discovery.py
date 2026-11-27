@@ -415,16 +415,23 @@ def _reconcile_card_structure(
     kept, because no read ever proved it had a card.
 
     Identity follows the row merge: the normalised title, plus every label that
-    an allowed row's catalogue family also answers to. That catches a sample
-    that names the same family with a different measured label pattern.
+    an allowed row's catalogue family also answers to under the same matcher
+    that decided that row. That catches a sample naming the same catalogue key
+    with a different measured label pattern.
     """
     if not titles or not entries:
         return failures, tuple(titles)
-    identities = {normalize(entry.title) for entry in entries}
-    for entry in entries:
-        if entry.spec is not None:
-            identities.update(normalize(pattern) for pattern in entry.spec.label_patterns)
-    kept = tuple(dict.fromkeys(title for title in titles if normalize(title) not in identities))
+    row_titles = {normalize(entry.title) for entry in entries}
+    family_patterns = tuple(
+        pattern for entry in entries if entry.spec is not None for pattern in entry.spec.label_patterns
+    )
+
+    def is_read(title: str) -> bool:
+        if normalize(title) in row_titles:
+            return True
+        return any(similarity(pattern, title) >= DEFAULT_MIN_SCORE for pattern in family_patterns)
+
+    kept = tuple(dict.fromkeys(title for title in titles if not is_read(title)))
     if kept == tuple(titles):
         return failures, kept
     # Preserve any count that has no title to reconcile against (a legacy or

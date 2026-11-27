@@ -8,10 +8,12 @@ These tests use hand-built frames and no device.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 from PIL import Image
@@ -29,7 +31,7 @@ from aliexpress_coins.tasks.discovery import (
     enumerate_roster,
     merge_rosters,
 )
-from tests.test_runner_engine import _box, _snapshot
+from tests.test_runner_engine import _box, _Notifier, _snapshot
 from tests.test_tasks_discovery import _Capture, _controller, _RecordingDevice
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -264,7 +266,7 @@ def test_the_report_rejects_a_warning_that_names_a_recorded_row() -> None:
         report_module._roster_summary(payload)
 
 
-def test_a_denied_row_named_like_an_unread_family_key_is_not_a_contradiction() -> None:
+def test_a_denied_row_named_like_an_unread_family_key_is_not_a_contradiction(tmp_path: Path) -> None:
     frame = _snapshot(
         _box('Coins boost', 100, 100, 500, 150),
         _box('notifications', 100, 600, 700, 640),
@@ -276,8 +278,25 @@ def test_a_denied_row_named_like_an_unread_family_key_is_not_a_contradiction() -
     assert roster.warning == "catalogue families still claimable today were not seen in any read: 'notifications'"
 
     summary = report_module._roster_summary(roster.as_dict())
-
     assert "warning: catalogue families still claimable today were not seen in any read: 'notifications'" in summary
+
+    notifier = _Notifier()
+    context = SimpleNamespace(
+        notifier=notifier,
+        config=SimpleNamespace(notify_on_empty=True, apprise_url=None, notify_balance_delta=False),
+    )
+    report = report_module.RunReport.for_run(tmp_path, budget_seconds=1.0, clock=lambda: CAPTURED_AT)
+    report.roster = roster.as_dict()
+    report.finish(report_module.RunStatus.COMPLETED, budget_used_seconds=0.0, finished_at=CAPTURED_AT)
+
+    engine._notify(cast(Any, context), report, logging.getLogger('test.issue155'))
+
+    assert len(notifier.messages) == 1
+    assert report.notification == {'attempted': True, 'ok': True, 'sink': 'webhook', 'error': None}
+    assert report.json_path.exists()
+    assert "catalogue families still claimable today were not seen in any read: 'notifications'" in (
+        report.summary_path.read_text(encoding='utf-8')
+    )
 
 
 def test_a_contradictory_roster_is_rejected_before_run_json_is_written(tmp_path: Path) -> None:
