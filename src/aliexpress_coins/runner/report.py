@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from aliexpress_coins.perception.artifacts import atomic_write_bytes
+from aliexpress_coins.perception.matching import normalize
 from aliexpress_coins.runner.errors import ReportError
 from aliexpress_coins.runner.failures import Failure
 from aliexpress_coins.runner.state import NightOutcome
@@ -859,9 +860,59 @@ def _geometry_summary(geometry: dict[str, Any] | None) -> str:
     )
 
 
+def _assert_roster_summary_consistent(roster: dict[str, Any]) -> None:
+    """Fail if the roster summary counts contradict its per-title records.
+
+    A merge may not widen the row set while carrying a failure from another
+    sample. The rows are the source of truth: ``count``, ``allowed``, ``refused``,
+    ``dispatchable`` and ``claimed`` must describe them, and a card-structure
+    failure may not name a title that is also a row (#155).
+    """
+    entries = roster.get('entries')
+    if not isinstance(entries, list):
+        # Older/synthetic reports only carry the summary counts.
+        return
+    rows = [entry for entry in entries if isinstance(entry, dict)]
+    problems: list[str] = []
+    count = roster.get('count')
+    if isinstance(count, int):
+        if count != len(rows):
+            problems.append(f'count={count} but {len(rows)} entr(ies) were recorded')
+        allowed = roster.get('allowed_count')
+        refused = roster.get('denied_count')
+        if isinstance(allowed, int) and isinstance(refused, int) and allowed + refused != count:
+            problems.append(f'{allowed} allowed + {refused} refused != {count} read')
+        claimed = roster.get('claimed_count')
+        claimed_rows = sum(1 for entry in rows if entry.get('claimed'))
+        if isinstance(claimed, int) and claimed != claimed_rows:
+            problems.append(f'claimed_count={claimed} but the entries name {claimed_rows}')
+        dispatchable = roster.get('dispatchable_count')
+        dispatchable_rows = sum(1 for entry in rows if entry.get('dispatchable'))
+        if isinstance(dispatchable, int) and dispatchable != dispatchable_rows:
+            problems.append(f'dispatchable_count={dispatchable} but the entries name {dispatchable_rows}')
+    failures = roster.get('card_structure_failures')
+    titles = roster.get('card_structure_titles')
+    if isinstance(failures, int) and isinstance(titles, list):
+        if failures < len(titles):
+            problems.append(f'{failures} card failure(s) for {len(titles)} named title(s)')
+        row_titles = {normalize(str(entry.get('title', ''))) for entry in rows}
+        conflicting = tuple(title for title in titles if normalize(str(title)) in row_titles)
+        if conflicting:
+            problems.append(f'card-structure failure(s) also listed as rows: {conflicting!r}')
+    warning = roster.get('warning')
+    if isinstance(warning, str):
+        named_rows = tuple(
+            str(entry.get('title')) for entry in rows if entry.get('title') and repr(entry.get('title')) in warning
+        )
+        if named_rows:
+            problems.append(f'warning names row(s) it also records: {named_rows!r}')
+    assert not problems, '; '.join(problems)
+
+
 def _roster_summary(roster: dict[str, Any] | None) -> str:
     if not roster:
         return 'not read'
+    _assert_roster_summary_consistent(roster)
     summary = (
         f'{roster.get("status", "?")}; {roster.get("count", 0)} row(s) read, '
         f'{roster.get("allowed_count", 0)} allowed, {roster.get("denied_count", 0)} refused, '

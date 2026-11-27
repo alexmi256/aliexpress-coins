@@ -792,7 +792,16 @@ def run_once(
                     current_dispatchable,
                     pass_start_dispatchable,
                 )
-                surface_reason = _pass_restart_reason(latest, last_observation)
+                # Keep the latest sample's entries and unreadable count so a
+                # titleless partial render still restarts (#137); use the
+                # reconciled union for card failures so a stale bare title
+                # cannot reopen a night another sample read.
+                restart_roster = replace(
+                    latest,
+                    card_structure_failures=current.card_structure_failures,
+                    card_structure_titles=current.card_structure_titles,
+                )
+                surface_reason = _pass_restart_reason(restart_roster, last_observation)
                 if surface_reason is not None:
                     bound, no_progress_passes = _next_pass_bound(
                         passes=passes,
@@ -856,7 +865,7 @@ def run_once(
                         blacklisted=blacklist,
                     )
                     if pending is None and restart_reason is None:
-                        if latest.incomplete:
+                        if current.incomplete:
                             # The read already proves the night is open. Another
                             # sample cannot turn an incomplete roster into proof.
                             detail = 'no dispatchable row remains'
