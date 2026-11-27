@@ -2005,6 +2005,41 @@ def test_a_dry_run_keeps_a_mixed_sheet_with_one_partial_title(
     assert device.taps == []
 
 
+def test_a_dry_run_keeps_a_bare_title_no_sample_read_as_a_card(
+    tmp_path: Path,
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+) -> None:
+    frame = _snapshot(
+        _box('Coins boost', 100, 100, 500, 150),
+        _box('Take the coins quiz', 100, 600, 700, 640),
+    )
+    context = _context(
+        tmp_path,
+        capture=_Capture(frame),
+        catalogue=catalogue,
+        corpus=corpus,
+    )
+    context.config = replace(context.config, dry_run=True)
+    device = _RecordingDevice()
+    context.controller = Controller.from_frame(device, frame, rng=random.Random(0))
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.FAILED
+    assert report.failure_code == FailureCode.NAVIGATION_FAILED.value
+    assert report.detail is not None
+    assert report.detail.startswith('surface_incomplete')
+    assert report.roster is not None
+    assert report.roster['card_structure_failures'] == 1
+    assert report.roster['card_structure_titles'] == ['Take the coins quiz']
+    assert report.roster['incomplete'] is True
+    summary = report.summary_path.read_text(encoding='utf-8')
+    assert "'Take the coins quiz' had no readable card structure" in summary
+    assert context.controller.tap_count == 0
+    assert device.taps == []
+
+
 def test_the_dry_run_plan_reports_every_reason_a_row_is_not_a_step(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

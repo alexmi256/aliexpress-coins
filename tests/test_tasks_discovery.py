@@ -2011,6 +2011,50 @@ def test_discover_roster_records_the_route_it_used(
     assert len(device.taps) == 1
 
 
+def test_collect_roster_drops_a_card_failure_a_later_frame_read_as_a_row(
+    catalogue: TaskCatalogue,
+) -> None:
+    """A bare title in the first frame is a row once a later frame shows its card."""
+    bare = _boost_frame((_box('Turn on notifications', 80, 600, 700, 640),))
+    full = _boost_frame(_task_row('Turn on notifications', 600, subtitle='Stay informed when rewards drop'))
+    changed = _with_image_change(full, (100, 600, 700, 1200), (0, 0, 0))
+
+    roster = collect_roster(
+        _controller(_RecordingDevice(), bare),
+        _Capture((changed, changed, changed)),
+        catalogue,
+        bare,
+        max_scrolls=2,
+    )
+
+    assert roster.titles == ('Turn on notifications',)
+    assert roster.card_structure_failures == 0
+    assert roster.card_structure_titles == ()
+    assert roster.incomplete is False
+    assert roster.warning is None
+
+
+def test_collect_roster_keeps_a_card_failure_every_frame_read_as_a_bare_title(
+    catalogue: TaskCatalogue,
+) -> None:
+    bare = _boost_frame((_box('Take the coins quiz', 80, 600, 700, 640),))
+    changed = _with_image_change(bare, (100, 600, 700, 1200), (0, 0, 0))
+
+    roster = collect_roster(
+        _controller(_RecordingDevice(), bare),
+        _Capture((changed, changed, changed)),
+        catalogue,
+        bare,
+        max_scrolls=1,
+    )
+
+    assert roster.entries == ()
+    assert roster.card_structure_failures == 1
+    assert roster.card_structure_titles == ('Take the coins quiz',)
+    assert roster.incomplete is True
+    assert roster.warning == "'Take the coins quiz' had no readable card structure and were not counted"
+
+
 def test_collect_roster_scrolls_and_merges_rows_below_the_first_screenful(
     catalogue: TaskCatalogue,
 ) -> None:

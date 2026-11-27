@@ -185,6 +185,66 @@ def test_merge_rosters_does_not_duplicate_an_identity_already_seen() -> None:
     assert [entry.subtitle for entry in union.entries] == ['a second copy']
 
 
+def _card_failure_roster(*titles: str) -> Roster:
+    """A sample that read bare titles and no card for them."""
+    return replace(
+        _empty_roster(),
+        card_structure_failures=len(titles),
+        card_structure_titles=titles,
+    )
+
+
+@pytest.mark.parametrize('full_first', [True, False])
+def test_merge_rosters_drops_a_card_failure_another_sample_read_as_a_row(full_first: bool) -> None:
+    title = 'Turn on notifications'
+    full = _roster('notifications')
+    bare = _card_failure_roster(title)
+
+    union = merge_rosters(full, bare) if full_first else merge_rosters(bare, full)
+
+    assert [entry.title for entry in union.entries] == [title]
+    assert union.card_structure_failures == 0
+    assert union.card_structure_titles == ()
+    assert union.incomplete is False
+    assert union.warning is None
+
+
+def test_merge_rosters_keeps_a_card_failure_no_sample_read_as_a_row() -> None:
+    title = 'Take the coins quiz'
+
+    union = merge_rosters(_card_failure_roster(title), _card_failure_roster(title))
+
+    assert union.entries == ()
+    assert union.card_structure_failures == 1
+    assert union.card_structure_titles == (title,)
+    assert union.incomplete is True
+    assert union.warning == f"'{title}' had no readable card structure and were not counted"
+
+
+def test_merge_rosters_keeps_every_distinct_bare_title() -> None:
+    quiz = 'Take the coins quiz'
+    notifications = 'Turn on notifications'
+
+    union = merge_rosters(_card_failure_roster(quiz), _card_failure_roster(notifications))
+
+    assert union.card_structure_failures == 2
+    assert union.card_structure_titles == (quiz, notifications)
+    assert union.incomplete is True
+
+
+def test_a_merged_roster_warning_never_names_a_title_it_lists_as_a_row() -> None:
+    read = 'Turn on notifications'
+    unread = 'Take the coins quiz'
+    union = merge_rosters(_roster('notifications'), _card_failure_roster(read, unread))
+
+    assert [entry.title for entry in union.entries] == [read]
+    assert union.card_structure_failures == 1
+    assert union.card_structure_titles == (unread,)
+    assert union.warning is not None
+    assert repr(read) not in union.warning
+    assert repr(unread) in union.warning
+
+
 def _idle_rotation_observations() -> tuple[Roster, list[RosterObservation | None]]:
     """Initial A, then B, then B twice: one disagreement earns a second pass."""
     first = _denied_roster('game')
@@ -377,6 +437,117 @@ def test_two_agreeing_fresh_reads_still_complete_the_night(
     assert rotation['confirmed'] is True
     assert rotation['samples'] >= 2
     assert rotation['agreeing_samples'] >= 2
+
+
+@pytest.mark.slow
+def test_a_stale_bare_title_sample_does_not_reopen_a_reconciled_night(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A later bare sample cannot undo a card another sample already read."""
+    full = _roster('notifications')
+    bare = _card_failure_roster('Turn on notifications')
+    observations: list[RosterObservation | None] = [
+        _observation(1, full),
+        _observation(2, bare),
+        _observation(3, bare),
+        _observation(4, bare),
+    ]
+    scripted = _ScriptedObserver(full, observations)
+    monkeypatch.setattr(engine, 'discover_roster', lambda *args, **kwargs: full)
+    monkeypatch.setattr(engine, '_observe', lambda *args, **kwargs: scripted.observe())
+    context = _context(
+        tmp_path,
+        capture=_Capture(_frame('notifications'), _coin_frame()),
+        catalogue=CATALOGUE,
+        corpus=CORPUS,
+    )
+    context.observer = cast(Any, scripted)
+    _seed_other_families(context, seen=set())
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.COMPLETED
+    assert report.roster is not None
+    assert report.roster['incomplete'] is False
+    assert report.roster['card_structure_failures'] == 0
+    assert report.roster['card_structure_titles'] == []
+    assert report.night is not None
+    assert context.state.snapshot().completed_night is True
+
+
+@pytest.mark.slow
+def test_a_restart_roster_keeps_card_keys_in_step_with_the_union_titles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    widget = replace(_card_failure_roster('Add & start using our widget'), card_structure_keys=('coins_widget',))
+    quiz = replace(_card_failure_roster('Take the coins quiz'), card_structure_keys=('coins_quiz',))
+    union = merge_rosters(widget, quiz)
+    observations: list[RosterObservation | None] = [
+        _observation(1, quiz),
+        _observation(2, quiz),
+        _observation(3, quiz),
+    ]
+    scripted = _ScriptedObserver(quiz, observations)
+    captured: list[Roster] = []
+    original = engine._pass_restart_reason
+
+    def capture(roster: Roster | None, observation: RosterObservation | None) -> str | None:
+        if roster is not None:
+            captured.append(roster)
+        return original(roster, observation)
+
+    monkeypatch.setattr(engine, 'discover_roster', lambda *args, **kwargs: union)
+    monkeypatch.setattr(engine, '_observe', lambda *args, **kwargs: scripted.observe())
+    monkeypatch.setattr(engine, '_pass_restart_reason', capture)
+    context = _context(
+        tmp_path,
+        capture=_Capture(_frame('notifications'), _coin_frame()),
+        catalogue=CATALOGUE,
+        corpus=CORPUS,
+    )
+    context.observer = cast(Any, scripted)
+    _seed_other_families(context, seen=set())
+
+    engine.run_once(context)
+
+    first = captured[0]
+    assert first.card_structure_titles == ('Add & start using our widget', 'Take the coins quiz')
+    assert first.card_structure_keys == ('coins_widget', 'coins_quiz')
+
+
+@pytest.mark.slow
+def test_a_late_titleless_sample_still_restarts_the_surface(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transient titleless frame keeps #137's recovery read."""
+    readable = _roster('notifications')
+    titleless = replace(_empty_roster(), unreadable_count=1)
+    observations: list[RosterObservation | None] = [
+        _observation(1, readable),
+        _observation(2, titleless),
+        _observation(3, titleless),
+    ]
+    scripted = _ScriptedObserver(readable, observations)
+    monkeypatch.setattr(engine, 'discover_roster', lambda *args, **kwargs: readable)
+    monkeypatch.setattr(engine, '_observe', lambda *args, **kwargs: scripted.observe())
+    context = _context(
+        tmp_path,
+        capture=_Capture(_frame('notifications'), _coin_frame()),
+        catalogue=CATALOGUE,
+        corpus=CORPUS,
+    )
+    context.observer = cast(Any, scripted)
+    _seed_other_families(context, seen=set())
+
+    report = engine.run_once(context)
+
+    assert report.status is RunStatus.BUDGET
+    assert report.passes == 2
+    assert report.detail is not None
+    assert 'had no readable title' in report.detail
 
 
 @pytest.mark.slow
