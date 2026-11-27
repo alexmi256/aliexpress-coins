@@ -1002,24 +1002,71 @@ def _roster_summary(roster: dict[str, Any] | None) -> str:
 
 
 def _rotation_summary(roster: dict[str, Any] | None) -> str:
-    """Name how many sheet reads backed the completion decision and what was missed."""
+    """Name the sampling evidence and what it could not cover (#165).
+
+    A rotating sheet is proved by the union of its samples, not by two identical
+    photographs. The line therefore carries the sample count, every per-sample
+    union size, the first sample each family appeared in, and why sampling
+    stopped. A family that is claimable but unseen is named separately from one
+    that is legitimately not offered.
+    """
     rotation = (roster or {}).get('rotation')
     if not isinstance(rotation, dict):
         return 'not sampled'
     samples = rotation.get('samples', 0)
-    agreeing = rotation.get('agreeing_samples', 0)
     if not samples:
         return 'not sampled'
     confirmed = rotation.get('confirmed')
+    stable_samples = rotation.get('stable_samples', 0)
+    bound = rotation.get('sample_bound')
+    stop_reason = rotation.get('stopping_reason')
+    union_sizes = rotation.get('union_sizes') or []
+    unions = ' -> '.join(str(size) for size in union_sizes) if union_sizes else 'not recorded'
+    first_seen = rotation.get('first_seen')
+    first_text = ''
+    if isinstance(first_seen, dict) and first_seen:
+        first_text = ', '.join(
+            f'{key}@{sample}' for key, sample in sorted(first_seen.items(), key=lambda item: (item[1], item[0]))
+        )
+    sample_families = rotation.get('sample_families')
+    families_text = ''
+    if isinstance(sample_families, list) and sample_families:
+        families_text = '; families per sample: ' + '; '.join(
+            f'#{index}={"|".join(str(family) for family in families) or "none"}'
+            for index, families in enumerate(sample_families, start=1)
+            if isinstance(families, list)
+        )
+    stable = rotation.get('stable')
+    if stop_reason == 'coverage_reached':
+        stopped = 'coverage reached'
+    elif stop_reason == 'stable_sample_bound':
+        stopped = f'sample bound: {stable_samples} sample(s) added no new family'
+    elif stop_reason == 'total_sample_bound':
+        stopped = f'sample bound of {bound} sample(s) reached with the union still growing'
+    elif stop_reason == 'incomplete_roster':
+        stopped = 'the read was incomplete'
+    elif stop_reason == 'unreadable_surface':
+        stopped = 'the last fresh open was unreadable'
+    elif stop_reason == 'unreadable_history':
+        stopped = 'an earlier sample was unreadable'
+    else:
+        stopped = 'the run ended before coverage was proved'
+    detail = (
+        f'{"confirmed" if confirmed else "not confirmed"} after {samples} sample(s); '
+        f'union size(s) {unions}; stable union: {"yes" if stable else "no"}; stopped on {stopped}'
+    )
+    if first_text:
+        detail = f'{detail}; first seen: {first_text}'
+    if families_text:
+        detail = f'{detail}{families_text}'
     unread = rotation.get('unread_families') or []
     not_offered = rotation.get('not_offered') or []
     claimed = rotation.get('already_claimed_families') or []
-    if confirmed:
-        detail = f'confirmed after {agreeing} agreeing sample(s) of {samples}'
-    else:
-        detail = f'not confirmed after {samples} sample(s); two freshly opened reads did not agree'
     if unread:
-        detail = f'{detail}; not seen in any read and still claimable today: {", ".join(str(key) for key in unread)}'
+        detail = (
+            f'{detail}; claimable but unseen in every read, still claimable today: '
+            f'{", ".join(str(key) for key in unread)}'
+        )
     if not_offered:
         detail = f'{detail}; {_not_offered_summary(not_offered)}'
     if claimed:

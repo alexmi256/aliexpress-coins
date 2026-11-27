@@ -624,7 +624,7 @@ gate in #41.
 | **Surface** | the screen family the roster was read from (`rows_present`, `boost_page`, ...) |
 | **Route** | the route used and the routes tried, including a warm re-entry |
 | **Roster** | row count, allowed count and refused count, with the read status and any swallowed-row warning |
-| **Rotation** | how many Coins boost sheet samples backed the conclusion, whether two fresh reads agreed, and which catalogue families no read saw (still unread, not offered/dormant with sample evidence, vs already claimed today) |
+| **Rotation** | how many Coins boost sheet samples backed the conclusion, the union size after each sample, the sample in which each family first appeared, whether the union was stable, why sampling stopped, and which catalogue families no read saw (still unread, not offered/dormant with sample evidence, vs already claimed today) |
 | **Observations** | how many roster diffs were logged in `roster.jsonl` |
 | **Balance** | before and after, with the delta when both frames were readable |
 | **Popups closed** | verified dismissals by family, or `none` |
@@ -641,11 +641,14 @@ A good night looks like:
 - `Roster: available; N row(s) read, M allowed, K refused, D dispatchable, C already claimed` with
   `N` greater than zero, `M` the catalogue-allowed rows, and `D` the rows that still carry a
   dispatchable control;
-- `Rotation: confirmed after 2 agreeing sample(s) of N`, so the final “nothing left” conclusion was
-  not taken from one server-rotation sample; an unseen family whose absence is still ambiguous keeps
-  the night open as `unread_families`, a family past the dormancy threshold is named as
-  `not_offered` with its evidence, and families already claimed today are named as
-  absent-but-expected;
+- `Rotation: confirmed after N sample(s); union size(s) …; stable union: yes|no; stopped on coverage
+  reached, the sample bound, or an earlier unreadable sample …`, so the final “nothing left” conclusion was not taken from one server-rotation sample;
+  `stable union: yes` means the trailing samples proved the union stopped growing, while a night
+  completed by coverage may report `no` and names `coverage reached` as its stopping reason; the
+  line also names the sample in which each family first appeared and the families in each
+  sample; an unseen family whose absence is still ambiguous keeps the night open as
+  `unread_families`, a family past the dormancy threshold is named as `not_offered` with its
+  evidence, and families already claimed today are named as absent-but-expected;
 - at least one task row with `completed` and an evidence value that names what proved it (a balance
   move, a progress badge, a row gone from a complete surface, or a recorded state transition);
 - `Balance: <before> -> <after> (<delta>)` with a non-negative delta, or `unknown` when a frame was
@@ -740,7 +743,7 @@ Raise a limit only deliberately; a larger budget is not a fix for a slow network
 | `run_id`, `status`, `detail` | identity and terminal sentence |
 | `started_at`, `finished_at`, `budget` | wall-clock evidence |
 | `hygiene`, `geometry` | what the device said before the first capture |
-| `surface`, `roster`, `route_error`, `observations` | what the roster looked like; `roster.rotation` carries `samples`, `agreeing_samples`, `confirmed`, `unread_families` (still claimable and fatal), `not_offered` / `not_offered_families` (dormant with evidence) and `already_claimed_families` |
+| `surface`, `roster`, `route_error`, `observations` | what the roster looked like; `roster.rotation` carries `samples`, `stable_samples`, `union_sizes` (the union size after each sample), `first_seen` (family → sample), `sample_families` (families in each sample), `stopping_reason`, `sample_bound`, `stable`, `confirmed`, `unread_families` (still claimable and fatal), `not_offered` / `not_offered_families` (dormant with evidence) and `already_claimed_families` |
 | `balance_before`, `balance_after`, `balance_delta`, `balance_note` | the two recorded frames, or why one is unknown |
 | `popups_closed`, `shots`, `artifact_errors` | artifacts and best-effort write failures |
 | `failure_recordings` | one entry per recorded attempt: task/key/attempt, failure or abort code, artifact directory, frame and sidecar paths |

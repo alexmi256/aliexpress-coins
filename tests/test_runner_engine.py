@@ -7544,7 +7544,9 @@ def test_an_unknown_surface_after_a_task_restarts_from_the_shortcut(
     assert any(
         event.get('event') == 'surface_restart' and 'could not be read' in str(event.get('reason')) for event in events
     )
-    assert context.state.snapshot().completed_night is True
+    # The restart recovered, but the unconfirmed read happened in this pass;
+    # #149/#165 keep that night open rather than forgetting the bad sample.
+    assert context.state.snapshot().completed_night is False
 
 
 @pytest.mark.slow

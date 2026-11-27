@@ -488,9 +488,23 @@ class Roster:
     rotation_samples: int = 0
     """How many readable sheet reads this roster's night has seen."""
     rotation_agreeing_samples: int = 0
-    """How many of the most recent reads agreed, including the first of the streak."""
+    """How many trailing samples added no new row; kept for the older report schema."""
+    rotation_stable_samples: int = 0
+    """How many trailing readable samples added no new catalogue family."""
+    rotation_union_sizes: tuple[int, ...] = ()
+    """The union's row count after each readable sample, in sample order (#165)."""
+    rotation_first_seen: tuple[tuple[str, int], ...] = ()
+    """Each family identity and the 1-based sample in which it first appeared (#165)."""
+    rotation_sample_families: tuple[tuple[str, ...], ...] = ()
+    """The row identities each readable sample showed, in sample order (#165)."""
+    rotation_stop_reason: str | None = None
+    """Why sampling stopped: coverage reached, a sample bound, or an incomplete read."""
+    rotation_sample_bound: int | None = None
+    """The explicit limit on fresh coverage samples for this night."""
+    rotation_stable: bool = False
+    """Whether the trailing samples proved the union stopped growing; coverage is separate."""
     rotation_confirmed: bool = True
-    """Whether two consecutive freshly opened reads agreed before a night was closed."""
+    """Whether the readable union covered every claimable family or legitimately settled one."""
     unread_families: tuple[str, ...] = ()
     """Catalogue families still claimable today that no read of this night showed."""
     not_offered_families: tuple[FamilyEvidence, ...] = ()
@@ -509,6 +523,13 @@ class Roster:
         object.__setattr__(self, 'split_failures', tuple(self.split_failures))
         object.__setattr__(self, 'card_structure_titles', tuple(self.card_structure_titles))
         object.__setattr__(self, 'card_structure_keys', tuple(self.card_structure_keys))
+        object.__setattr__(self, 'rotation_union_sizes', tuple(self.rotation_union_sizes))
+        object.__setattr__(self, 'rotation_first_seen', tuple(self.rotation_first_seen))
+        object.__setattr__(
+            self,
+            'rotation_sample_families',
+            tuple(tuple(families) for families in self.rotation_sample_families),
+        )
         object.__setattr__(self, 'unread_families', tuple(self.unread_families))
         object.__setattr__(self, 'not_offered_families', tuple(self.not_offered_families))
         object.__setattr__(self, 'dormant_families', tuple(self.dormant_families))
@@ -651,7 +672,7 @@ class Roster:
             problems.append('the Coins boost list did not prove it was open before its rows were read')
         if not self.rotation_confirmed:
             problems.append(
-                'the Coins boost sheet did not produce two agreeing reads after a fresh open; '
+                'the Coins boost sheet never confirmed a stable, fully readable union; '
                 'a single rotation sample is not proof the night is finished'
             )
         if self.unread_families:
@@ -701,6 +722,13 @@ class Roster:
             'rotation': {
                 'samples': self.rotation_samples,
                 'agreeing_samples': self.rotation_agreeing_samples,
+                'stable_samples': self.rotation_stable_samples,
+                'union_sizes': list(self.rotation_union_sizes),
+                'first_seen': dict(self.rotation_first_seen),
+                'sample_families': [list(families) for families in self.rotation_sample_families],
+                'stopping_reason': self.rotation_stop_reason,
+                'sample_bound': self.rotation_sample_bound,
+                'stable': self.rotation_stable,
                 'confirmed': self.rotation_confirmed,
                 'unread_families': list(self.unread_families),
                 'not_offered': [family.as_dict() for family in self.not_offered_families],

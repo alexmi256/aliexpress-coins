@@ -327,55 +327,185 @@ def resolve_task_budget(
     )
 
 
-_RotationSignature = tuple[tuple[str, str | None, tuple[int, int] | None, str | None, bool], ...]
+MIN_COVERAGE_SAMPLES = 2
+"""A finished night needs more than one readable photograph of a rotating sheet (#149/#165)."""
+
+COVERAGE_STALE_SAMPLES = 3
+"""How many consecutive samples may add no family before the union is called stable."""
+
+MAX_COVERAGE_SAMPLES = 12
+"""The absolute cap on fresh coverage samples in one night.
+
+The effective bound is clamped to the configured pass and task budgets; see
+:func:`_coverage_sample_limit`. It is a sampling bound, not a dispatch bound.
+"""
 
 
 @dataclass(slots=True)
-class _RotationTracker:
-    """Count readable sheet samples and how long the latest content has agreed.
+class _CoverageTracker:
+    """Prove a rotating sheet was sampled to a stable, readable union (#165).
 
-    The sheet rotates between loads, so one read is one sample. A night may only
-    be called finished when the last two readable reads agree *and* one of them
-    was a fresh re-open. ``agreeing`` is the trailing run length, including the
-    first read of that run; a changed row set (even a pure reorder is ignored by
-    the signature's sort) resets it to one.
+    Whole-sample equality is neither necessary (the sheet rotates) nor
+    sufficient (a stable but small window can omit a claimable family). The
+    night's evidence is instead the union of family identities across fresh
+    samples: sampling ends when the union covers every claimable family, or
+    when an explicit number of samples adds no new family. A sample that is
+    unreadable or whose fresh open was not confirmed does not make the union
+    trustworthy. ``stable_samples`` is the trailing run of readable samples
+    that added no new identity.
     """
 
+    sample_limit: int
     samples: int = 0
-    agreeing: int = 0
-    signature: _RotationSignature | None = None
+    attempts: int = 0
+    stable_samples: int = 0
+    union_sizes: list[int] = field(default_factory=list)
+    sample_families: list[tuple[str, ...]] = field(default_factory=list)
+    first_seen: dict[str, int] = field(default_factory=dict)
+    seen_keys: set[str] = field(default_factory=set)
+    last_readable: bool = False
+    last_incomplete: bool = False
+    any_unreadable: bool = False
+    stop_reason: str = 'not_started'
 
-    def record(self, roster: Roster) -> None:
-        """Record one readable roster read."""
-        current = _rotation_signature(roster)
+    def record(self, roster: Roster, union: Roster) -> None:
+        """Record one readable sample and the union it produced."""
+        self.attempts += 1
         self.samples += 1
-        self.agreeing = self.agreeing + 1 if current == self.signature else 1
-        self.signature = current
-
-    @property
-    def confirmed(self) -> bool:
-        """Whether the latest reads agree on the visible row set."""
-        return self.agreeing >= 2
-
-
-def _rotation_signature(roster: Roster) -> _RotationSignature:
-    """The content set two rotation samples must share before a night closes."""
-    rows = tuple(
-        (
-            normalize(entry.title),
-            entry.key,
-            (entry.progress.completed, entry.progress.total) if entry.progress is not None else None,
-            normalize(entry.action.text) if entry.action is not None else None,
-            entry.claimed,
+        self.last_readable = True
+        self.last_incomplete = roster.incomplete
+        unreadable = bool(
+            roster.unreadable_count
+            or roster.scroll_surface_lost
+            or roster.scroll_surface_unconfirmed
+            or roster.surface_variant
+            in {
+                Surface.UNKNOWN,
+                Surface.EMPTY_BOOST,
+                Surface.NON_APP,
+                Surface.ROWS_ABSENT,
+            }
         )
-        for entry in roster.entries
-    )
-    return tuple(
-        sorted(
-            rows,
-            key=lambda row: (row[0], row[1] or '', row[2] or (-1, -1), row[3] or '', row[4]),
-        ),
-    )
+        self.any_unreadable = self.any_unreadable or unreadable
+        before = len(self.first_seen)
+        sample: set[str] = set()
+        for entry in roster.allowed_entries:
+            identity = entry.key or entry.rule or normalize(entry.title)
+            sample.add(identity)
+            if identity not in self.first_seen:
+                self.first_seen[identity] = self.samples
+        for entry in roster.denied_entries:
+            identity = entry.rule or normalize(entry.title)
+            sample.add(identity)
+            if identity not in self.first_seen:
+                self.first_seen[identity] = self.samples
+        self.sample_families.append(tuple(sorted(sample)))
+        added = len(self.first_seen) > before
+        if unreadable:
+            self.stable_samples = 0
+        else:
+            self.stable_samples = 0 if added or self.samples == 1 else self.stable_samples + 1
+        self.union_sizes.append(len(union.entries))
+        self.seen_keys = {entry.key for entry in union.allowed_entries if entry.key is not None}
+
+    def record_failure(self) -> None:
+        """Record a fresh open that did not produce a readable roster."""
+        self.attempts += 1
+        self.last_readable = False
+        self.last_incomplete = True
+        self.any_unreadable = True
+        self.stable_samples = 0
+
+    def reached(self, required: Collection[str]) -> bool:
+        """Whether the union has seen every currently claimable family."""
+        return all(key in self.seen_keys for key in required)
+
+    def unseen(self, required: Collection[str]) -> tuple[str, ...]:
+        """The claimable families absent from every readable sample so far."""
+        return tuple(key for key in required if key not in self.seen_keys)
+
+    def wants_sample(self, required: Collection[str]) -> bool:
+        """Whether another fresh sample can still improve the completion proof."""
+        if self.samples >= MIN_COVERAGE_SAMPLES and self.reached(required):
+            return False
+        if self.attempts >= self.sample_limit:
+            return False
+        return not (self.stable_samples >= COVERAGE_STALE_SAMPLES and self.samples >= MIN_COVERAGE_SAMPLES)
+
+    def finish(self, required: Collection[str]) -> None:
+        """Name why sampling stopped, without claiming a bound the union disproves."""
+        if not self.last_readable and self.attempts:
+            self.stop_reason = 'unreadable_surface'
+        elif self.any_unreadable:
+            self.stop_reason = 'unreadable_history'
+        elif self.samples >= MIN_COVERAGE_SAMPLES and self.reached(required):
+            self.stop_reason = 'coverage_reached'
+        elif self.attempts >= self.sample_limit:
+            self.stop_reason = 'total_sample_bound'
+        elif self.stable_samples >= COVERAGE_STALE_SAMPLES and self.samples >= MIN_COVERAGE_SAMPLES:
+            self.stop_reason = 'stable_sample_bound'
+        else:
+            self.stop_reason = 'run_ended'
+
+    def assessed(self, required: Collection[str]) -> bool:
+        """Whether the union is a trustworthy completeness proof."""
+        return (
+            self.samples >= MIN_COVERAGE_SAMPLES
+            and self.last_readable
+            and not self.last_incomplete
+            and not self.any_unreadable
+            and (self.reached(required) or self.stable_samples >= COVERAGE_STALE_SAMPLES)
+        )
+
+    def sample_reason(self, required: Collection[str], union: Roster) -> str:
+        """The logged reason for the next fresh coverage sample."""
+        unseen = self.unseen(required)
+        missing = ', '.join(repr(key) for key in unseen) if unseen else 'none'
+        return (
+            f'coverage sample {self.attempts + 1}/{self.sample_limit}: '
+            f'union has {len(union.entries)} row(s); '
+            f'{self.stable_samples} sample(s) without a new family; unseen claimable: {missing}'
+        )
+
+    def stop_detail(self, required: Collection[str]) -> str:
+        """The numeric explanation of why sampling stopped."""
+        unseen = self.unseen(required)
+        missing = ', '.join(repr(key) for key in unseen)
+        if self.stop_reason == 'coverage_reached':
+            return f'coverage reached after {self.samples} readable sample(s)'
+        if self.stop_reason == 'stable_sample_bound':
+            detail = (
+                f'sample bound after {self.stable_samples} sample(s) added no new family '
+                f'({self.samples} readable sample(s) of at most {self.sample_limit})'
+            )
+        elif self.stop_reason == 'total_sample_bound':
+            detail = (
+                f'sample bound of {self.sample_limit} reached with the union still growing '
+                f'({self.samples} readable sample(s))'
+            )
+        elif self.stop_reason == 'incomplete_roster':
+            return f'the read was incomplete after {self.samples} readable sample(s)'
+        elif self.stop_reason == 'unreadable_surface':
+            return (
+                f'the last fresh open was unreadable after {self.attempts} attempt(s) '
+                f'({self.samples} readable sample(s))'
+            )
+        elif self.stop_reason == 'unreadable_history':
+            detail = f'an earlier sample was unreadable ({self.samples} readable sample(s))'
+            if missing:
+                detail = f'{detail}; claimable but unseen: {missing}'
+            return detail
+        else:
+            return f'sampling stopped after {self.samples} readable sample(s)'
+        if missing:
+            detail = f'{detail}; claimable but unseen: {missing}'
+        return detail
+
+
+def _coverage_sample_limit(*, max_passes: int, task_limit: int) -> int:
+    """Clamp the sampling bound to the configured pass and task budgets (#141/#166)."""
+    budget_bound = min(max_passes, task_limit)
+    return max(MIN_COVERAGE_SAMPLES, min(MAX_COVERAGE_SAMPLES, budget_bound))
 
 
 @dataclass(slots=True)
@@ -895,23 +1025,24 @@ def run_once(
                 logger=log,
             )
             union_roster: Roster | None = roster
-            rotation = _RotationTracker()
-            rotation.record(roster)
-            confirmation_attempted = False
-            confirmation_read = False
-            rotation_incomplete = False
+            coverage = _CoverageTracker(
+                sample_limit=_coverage_sample_limit(
+                    max_passes=context.config.max_passes,
+                    task_limit=task_limit,
+                ),
+            )
+            coverage.record(roster, roster)
             last_observation: RosterObservation | None = None
 
             def absorb(observation: RosterObservation | None) -> bool:
                 """Fold one readable observation into the night's union of rows."""
                 nonlocal union_roster, last_observation
                 last_observation = observation
-                if observation is None:
-                    return False
-                if observation.roster is None or observation.failed or observation.cap_reached:
+                if observation is None or observation.roster is None or observation.failed or observation.cap_reached:
+                    coverage.record_failure()
                     return False
                 union_roster = merge_rosters(union_roster, observation.roster)
-                rotation.record(observation.roster)
+                coverage.record(observation.roster, union_roster)
                 return True
 
             absorb(
@@ -1042,14 +1173,11 @@ def run_once(
                         status = RunStatus.BUDGET
                         detail = f'{bound}; {surface_reason}'
                         report.record_failure(failure(FailureCode.BUDGET_EXHAUSTED, detail=detail))
-                        rotation_incomplete = confirmation_attempted and not confirmation_read
                         break
                     passes += 1
                     report.passes = passes
                     attempted_this_pass.clear()
                     dispatched_this_pass = False
-                    confirmation_attempted = False
-                    confirmation_read = False
                     pass_start_dispatchable = current_dispatchable
                     absorb(
                         _restart_surface(
@@ -1095,28 +1223,32 @@ def run_once(
                         blacklisted=blacklist,
                     )
                     if pending is None and restart_reason is None:
+                        required = _claimable_coverage_keys(
+                            context.catalogue,
+                            context.state,
+                            blacklist,
+                            family_store,
+                            log,
+                        )
                         if current.incomplete:
                             # The read already proves the night is open. Another
                             # sample cannot turn an incomplete roster into proof.
+                            coverage.stop_reason = 'incomplete_roster'
                             detail = 'no dispatchable row remains'
                             break
-                        if not confirmation_attempted:
-                            # A finished pass is only one rotation sample. Re-open
-                            # the sheet once inside this pass and compare what comes
-                            # back before the night may be called complete. This is
-                            # the bound: one proof read per pass, not a poll.
-                            confirmation_attempted = True
-                            confirmation_read = absorb(
+                        if coverage.wants_sample(required):
+                            # A finished pass is one sample of a rotating sheet.
+                            # Sample until the union covers every claimable family,
+                            # or until an explicit bound proves no new family is
+                            # appearing. Whole-sample agreement is not the test.
+                            absorb(
                                 _restart_surface(
                                     context,
                                     controller,
                                     observer,
                                     report,
                                     on_dismiss=record_dismissal,
-                                    reason=(
-                                        'one rotation sample is not proof the night is finished; '
-                                        're-open the Coins boost sheet'
-                                    ),
+                                    reason=coverage.sample_reason(required, current),
                                 ),
                             )
                             _record_policy_skips(
@@ -1128,44 +1260,12 @@ def run_once(
                             report.observations = observer.sequence
                             report.write()
                             continue
-                        if (
-                            confirmation_read
-                            and rotation.confirmed
-                            and last_observation is not None
-                            and not last_observation.failed
-                        ):
+                        coverage.finish(required)
+                        if coverage.reached(required):
                             detail = 'no dispatchable row remains'
-                            break
-                        # The fresh open still disagrees with the read before it.
-                        # Spend a pass, never a busy loop, and stop honestly if
-                        # the sheet keeps rotating without two agreeing reads.
-                        bound, no_progress_passes = _next_pass_bound(
-                            passes=passes,
-                            max_passes=max_passes,
-                            no_progress_passes=no_progress_passes,
-                            progressed=progressed,
-                        )
-                        if bound is not None:
-                            status = RunStatus.BUDGET
-                            detail = (
-                                f'{bound}; the Coins boost sheet kept rotating without two agreeing reads '
-                                f'({rotation.samples} sample(s), {rotation.agreeing} agreeing)'
-                            )
-                            report.record_failure(failure(FailureCode.BUDGET_EXHAUSTED, detail=detail))
-                            rotation_incomplete = True
-                            break
-                        passes += 1
-                        report.passes = passes
-                        attempted_this_pass.clear()
-                        dispatched_this_pass = False
-                        confirmation_attempted = False
-                        confirmation_read = False
-                        pass_start_dispatchable = current_dispatchable
-                        # The next loop's confirmation branch performs the fresh
-                        # open for this pass; opening here too spent two reads per
-                        # disagreeing pass.
-                        report.write()
-                        continue
+                        else:
+                            detail = f'no dispatchable row remains; {coverage.stop_detail(required)}'
+                        break
                     bound, no_progress_passes = _next_pass_bound(
                         passes=passes,
                         max_passes=max_passes,
@@ -1185,8 +1285,6 @@ def run_once(
                     report.passes = passes
                     attempted_this_pass.clear()
                     dispatched_this_pass = False
-                    confirmation_attempted = False
-                    confirmation_read = False
                     pass_start_dispatchable = current_dispatchable
                     if restart_reason is not None:
                         absorb(
@@ -1325,8 +1423,6 @@ def run_once(
                     # Re-enumerate after every real attempt, including a failure
                     # and a row that vanished between enumeration and dispatch.
                     # A no-tap refusal/re-check did not change the surface.
-                    confirmation_attempted = False
-                    confirmation_read = False
                     absorb(
                         _observe(
                             context,
@@ -1409,7 +1505,17 @@ def run_once(
             latest_roster = observer.roster if observer is not None and observer.roster is not None else roster
             final_roster = merge_rosters(union_roster, latest_roster) if latest_roster is not None else union_roster
             if final_roster is not None:
-                read_trustworthy = rotation.confirmed and not rotation_incomplete and not final_roster.incomplete
+                required = _claimable_coverage_keys(
+                    context.catalogue,
+                    context.state,
+                    blacklist,
+                    family_store,
+                    log,
+                )
+                if coverage.stop_reason in {'not_started', 'run_ended'}:
+                    coverage.finish(required)
+                stable = coverage.samples >= MIN_COVERAGE_SAMPLES and coverage.stable_samples >= COVERAGE_STALE_SAMPLES
+                read_trustworthy = coverage.assessed(required) and not final_roster.incomplete
                 unread_families, already_claimed_families, not_offered, dormant = _family_rotation(
                     final_roster,
                     context.catalogue,
@@ -1417,7 +1523,7 @@ def run_once(
                     blacklist,
                     family_store,
                     day=context.wall_clock().astimezone(context.config.timezone).date(),
-                    samples=rotation.samples,
+                    samples=coverage.samples,
                     dormancy_days=context.config.family_dormancy_days,
                     retry_days=context.config.family_retry_days,
                     probed=probed,
@@ -1426,9 +1532,19 @@ def run_once(
                 )
                 final_roster = replace(
                     final_roster,
-                    rotation_samples=rotation.samples,
-                    rotation_agreeing_samples=rotation.agreeing,
-                    rotation_confirmed=rotation.confirmed and not rotation_incomplete,
+                    rotation_samples=coverage.samples,
+                    rotation_agreeing_samples=coverage.stable_samples,
+                    rotation_stable_samples=coverage.stable_samples,
+                    rotation_union_sizes=tuple(coverage.union_sizes),
+                    rotation_first_seen=tuple(sorted(coverage.first_seen.items(), key=lambda item: (item[1], item[0]))),
+                    rotation_sample_families=tuple(coverage.sample_families),
+                    rotation_stop_reason=coverage.stop_reason,
+                    rotation_sample_bound=coverage.sample_limit,
+                    rotation_stable=stable,
+                    # Coverage is the completion proof, but a claimable family
+                    # absent from a stable union is still a third state (#165):
+                    # more sampling was wanted, so the night stays open.
+                    rotation_confirmed=read_trustworthy and not unread_families,
                     unread_families=unread_families,
                     not_offered_families=not_offered,
                     dormant_families=dormant,
@@ -1536,9 +1652,13 @@ def run_once(
             log.error('%s', _event('run_aborted', code=exc.code.value, detail=detail))
         if status in (RunStatus.COMPLETED, RunStatus.BUDGET) and not context.config.dry_run:
             finished_walk = status is RunStatus.COMPLETED
+            rotation_payload = cast(dict[str, Any], (report.roster or {}).get('rotation') or {})
             rotation_open = bool(
                 report.roster
-                and cast(dict[str, Any], report.roster.get('rotation') or {}).get('confirmed') is False
+                and rotation_payload.get('confirmed') is False
+                # An abrupt budget stop did not finish the sampling decision; it
+                # is not a night record, exactly as before #165.
+                and rotation_payload.get('stopping_reason') != 'run_ended'
                 and not _roster_incomplete_without_rotation(report.roster),
             )
             incomplete = _incomplete_run_detail(report, context.state, context.catalogue)
@@ -4065,6 +4185,41 @@ def _with_settled_families(
     if settled == roster.settled_families:
         return roster
     return replace(roster, settled_families=settled)
+
+
+def _claimable_coverage_keys(
+    catalogue: TaskCatalogue,
+    state: DailyStateStore,
+    blacklisted: Mapping[str, int],
+    store: FamilyObservationStore,
+    logger: logging.Logger,
+) -> tuple[str, ...]:
+    """Families the readable union must cover before sampling can stop (#165).
+
+    A family already at its daily limit, blacklisted for the day, without an
+    executor, or already dormant under #161 is legitimately settled: its absence
+    is expected rather than evidence of a missed sample. Everything else is
+    claimable today and therefore part of the coverage target.
+    """
+    candidates: list[str] = []
+    for spec in catalogue.allowed:
+        if spec.category not in _EXECUTORS or spec.key in blacklisted:
+            continue
+        count = _daily_count(state, spec.key)
+        if count is not None and count >= spec.max_per_run:
+            continue
+        candidates.append(spec.key)
+    try:
+        evidence = store.peek(candidates)
+    except Exception as exc:
+        logger.warning(
+            '%s',
+            _event('family_coverage_check_failed', detail=f'{type(exc).__name__}: {exc}'),
+        )
+        dormant: set[str] = set()
+    else:
+        dormant = {family.key for family in evidence if family.dormant}
+    return tuple(key for key in candidates if key not in dormant)
 
 
 def _due_probe_keys(

@@ -133,20 +133,24 @@ source files, commands and hashes are in
   in-place swap while the same frame is left open was not reproduced today ❓.
 
 The runner therefore treats every readable read as one rotation sample, merges samples by
-catalogue key (normalised title for refused rows), and requires two freshly opened reads to agree
-before it may report `no dispatchable row remains`; a changed sample spends another pass and its
-rows stay in the union. A catalogue family no read saw is **not** silently equated with "the app had
-nothing": while the absence is still ambiguous it is `unread` and makes the roster incomplete and
-the night `INCOMPLETE_ROSTER`. The first carve-out is a family already completed to its daily limit
-in the day state — its absence is expected because it was claimed earlier today. Those families are
-still named in the report as already claimed, not as unseen. `super_discounts` is the motivating
-case: run `20261126T100143Z` claimed it at 10:08Z, so its absence from every later sheet is expected,
-while an unseen and unclaimed family keeps the day open (#149). The second carve-out is dormancy
-(#161): after `AECOINS_FAMILY_DORMANCY_DAYS` (default 7, floor 3) consecutive complete days with
-no sighting, the family is reported as `not_offered` and stops blocking completion, while remaining
-named with its `missed_days`/`samples`, and gets one explicit extra sample every
-`AECOINS_FAMILY_RETRY_DAYS` (default 7). The ordinary nightly read still catches a return; a
-sighting clears the record and resumes normal dispatch immediately.
+catalogue key (normalised title for refused rows), and samples until the union covers every catalogue
+family still claimable today or until a bounded run of fresh samples adds no new family (#165).
+Whole-sample equality is neither necessary nor sufficient: the sheet rotates, so identical
+photographs never arrive, while a stable but small window can still omit a claimable family. The
+report names the sample count, the union size after each sample, the sample in which each family
+first appeared, and why sampling stopped. It is a fresh open, not one photograph, that may end the
+sampling; a lost surface or unreadable roster keeps the night open. A catalogue family no read saw
+is **not** silently equated with "the app had nothing": while the absence is still ambiguous it is
+`unread` and makes the roster incomplete and the night `INCOMPLETE_ROSTER`. The first carve-out is a
+family already completed to its daily limit in the day state — its absence is expected because it
+was claimed earlier today. Those families are still named in the report as already claimed, not as
+unseen. `super_discounts` is the motivating case: run `20261126T100143Z` claimed it at 10:08Z, so its
+absence from every later sheet is expected, while an unseen and unclaimed family keeps the day open
+(#149). The second carve-out is dormancy (#161): after `AECOINS_FAMILY_DORMANCY_DAYS` (default 7,
+floor 3) consecutive complete days with no sighting, the family is reported as `not_offered` and
+stops blocking completion, while remaining named with its `missed_days`/`samples`, and gets one
+explicit extra sample every `AECOINS_FAMILY_RETRY_DAYS` (default 7). The ordinary nightly read still
+catches a return; a sighting clears the record and resumes normal dispatch immediately.
 
 ### 4e. `learn_to_save` was not offered in the #159 sample window ❓
 
