@@ -864,6 +864,7 @@ def run_once(
                 record_dismissal,
             )
             roster, route_error = _discover_or_fallback(context, controller, on_dismiss=record_dismissal)
+            roster = _with_settled_families(roster, context.state, context.catalogue)
             report.route_error = route_error
             if roster.empty and roster.surface_variant is Surface.UNKNOWN:
                 # An empty roster is a load fault when the signed-out screen is
@@ -1823,6 +1824,7 @@ def _plan_dry_run(
     if surface in (Surface.ROWS_ABSENT, Surface.ROWS_PRESENT, Surface.BOOST_PAGE):
         roster = confirm_roster(roster)
 
+    roster = _with_settled_families(roster, context.state, context.catalogue)
     frame_state = classify(frame).state
     unreadable = _unreadable_plan_reason(
         roster,
@@ -3276,6 +3278,7 @@ def _observer(
         log=RosterLog.for_run(context.config.runs_dir, report.run_id),
         max_observations=max(2, cap),
         clock=context.wall_clock,
+        settled_families=lambda: _settled_family_keys(context.state, context.catalogue),
         logger=context.logger,
     )
 
@@ -4017,6 +4020,47 @@ def _daily_count(state: DailyStateStore, key: str) -> int | None:
             _event('state_claimability_failed', key=key, detail=f'{type(exc).__name__}: {exc}'),
         )
         return None
+
+
+def _settled_family_keys(
+    state: DailyStateStore,
+    catalogue: TaskCatalogue,
+) -> tuple[str, ...]:
+    """Families the day state or policy has already settled (#171).
+
+    A family cannot dispatch again today when its daily limit is reached, it is
+    blacklisted, or the catalogue refuses it. These identities let a
+    card-structure failure be reconciled against the day state exactly as #155
+    reconciles it against another sampled row. A state read failure leaves that
+    family unsettled, so an unknown card still keeps the night open.
+    """
+    settled: list[str] = list(catalogue.denied_keys)
+    for spec in catalogue.allowed:
+        count = _daily_count(state, spec.key)
+        if count is not None and count >= spec.max_per_run:
+            settled.append(spec.key)
+    try:
+        blacklist = state.snapshot().blacklist
+    except Exception as exc:
+        LOG.warning(
+            '%s',
+            _event('state_blacklist_read_failed', detail=f'{type(exc).__name__}: {exc}'),
+        )
+    else:
+        settled.extend(blacklist)
+    return tuple(dict.fromkeys(settled))
+
+
+def _with_settled_families(
+    roster: Roster,
+    state: DailyStateStore,
+    catalogue: TaskCatalogue,
+) -> Roster:
+    """Reconcile a roster's card failures against the day state (#171)."""
+    settled = tuple(dict.fromkeys((*roster.settled_families, *_settled_family_keys(state, catalogue))))
+    if settled == roster.settled_families:
+        return roster
+    return replace(roster, settled_families=settled)
 
 
 def _due_probe_keys(

@@ -508,7 +508,10 @@ def test_a_restart_roster_keeps_card_keys_in_step_with_the_union_titles(
         corpus=CORPUS,
     )
     context.observer = cast(Any, scripted)
-    _seed_other_families(context, seen=set())
+    # Keep both families claimable: a claimed family's card failure is now
+    # settled by the day state (#171), so seeding them would remove the case
+    # this union test is about (two failure keys kept in step with their titles).
+    _seed_other_families(context, seen={'coins_widget', 'coins_quiz'})
 
     engine.run_once(context)
 
