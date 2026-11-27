@@ -1047,6 +1047,8 @@ def _rotation_summary(roster: dict[str, Any] | None) -> str:
         stopped = 'the read was incomplete'
     elif stop_reason == 'unreadable_surface':
         stopped = 'the last fresh open was unreadable'
+    elif stop_reason == 'unreadable_history':
+        stopped = 'an earlier sample was unreadable'
     else:
         stopped = 'the run ended before coverage was proved'
     detail = (

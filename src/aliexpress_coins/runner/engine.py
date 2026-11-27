@@ -374,9 +374,19 @@ class _CoverageTracker:
         self.samples += 1
         self.last_readable = True
         self.last_incomplete = roster.incomplete
-        self.any_unreadable = self.any_unreadable or bool(
-            roster.unreadable_count or roster.scroll_surface_lost or roster.scroll_surface_unconfirmed,
+        unreadable = bool(
+            roster.unreadable_count
+            or roster.scroll_surface_lost
+            or roster.scroll_surface_unconfirmed
+            or roster.surface_variant
+            in {
+                Surface.UNKNOWN,
+                Surface.EMPTY_BOOST,
+                Surface.NON_APP,
+                Surface.ROWS_ABSENT,
+            }
         )
+        self.any_unreadable = self.any_unreadable or unreadable
         before = len(self.first_seen)
         sample: set[str] = set()
         for entry in roster.allowed_entries:
@@ -391,7 +401,10 @@ class _CoverageTracker:
                 self.first_seen[identity] = self.samples
         self.sample_families.append(tuple(sorted(sample)))
         added = len(self.first_seen) > before
-        self.stable_samples = 0 if added or self.samples == 1 else self.stable_samples + 1
+        if unreadable:
+            self.stable_samples = 0
+        else:
+            self.stable_samples = 0 if added or self.samples == 1 else self.stable_samples + 1
         self.union_sizes.append(len(union.entries))
         self.seen_keys = {entry.key for entry in union.allowed_entries if entry.key is not None}
 
@@ -401,6 +414,7 @@ class _CoverageTracker:
         self.last_readable = False
         self.last_incomplete = True
         self.any_unreadable = True
+        self.stable_samples = 0
 
     def reached(self, required: Collection[str]) -> bool:
         """Whether the union has seen every currently claimable family."""
@@ -422,6 +436,8 @@ class _CoverageTracker:
         """Name why sampling stopped, without claiming a bound the union disproves."""
         if not self.last_readable and self.attempts:
             self.stop_reason = 'unreadable_surface'
+        elif self.any_unreadable:
+            self.stop_reason = 'unreadable_history'
         elif self.samples >= MIN_COVERAGE_SAMPLES and self.reached(required):
             self.stop_reason = 'coverage_reached'
         elif self.attempts >= self.sample_limit:
@@ -474,6 +490,11 @@ class _CoverageTracker:
                 f'the last fresh open was unreadable after {self.attempts} attempt(s) '
                 f'({self.samples} readable sample(s))'
             )
+        elif self.stop_reason == 'unreadable_history':
+            detail = f'an earlier sample was unreadable ({self.samples} readable sample(s))'
+            if missing:
+                detail = f'{detail}; claimable but unseen: {missing}'
+            return detail
         else:
             return f'sampling stopped after {self.samples} readable sample(s)'
         if missing:

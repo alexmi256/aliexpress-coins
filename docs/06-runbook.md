@@ -642,7 +642,7 @@ A good night looks like:
   `N` greater than zero, `M` the catalogue-allowed rows, and `D` the rows that still carry a
   dispatchable control;
 - `Rotation: confirmed after N sample(s); union size(s) …; stable union: yes|no; stopped on coverage
-  reached …`, so the final “nothing left” conclusion was not taken from one server-rotation sample;
+  reached, the sample bound, or an earlier unreadable sample …`, so the final “nothing left” conclusion was not taken from one server-rotation sample;
   `stable union: yes` means the trailing samples proved the union stopped growing, while a night
   completed by coverage may report `no` and names `coverage reached` as its stopping reason; the
   line also names the sample in which each family first appeared and the families in each

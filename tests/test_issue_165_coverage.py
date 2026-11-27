@@ -22,6 +22,7 @@ from aliexpress_coins.runner.engine import EngineResult, RunContext
 from aliexpress_coins.runner.report import RunStatus
 from aliexpress_coins.tasks.catalogue import TaskCatalogue, load_task_catalogue
 from aliexpress_coins.tasks.discovery import RosterEntry
+from aliexpress_coins.tasks.surface import Surface
 from tests.test_issue_149_rotation import (
     _empty_roster,
     _frame,
@@ -233,6 +234,11 @@ def test_the_coverage_tracker_names_every_stopping_reason() -> None:
     unreadable = tracker.stop_detail(('coins_quiz',))
     assert 'the last fresh open was unreadable after 2 attempt(s)' in unreadable
 
+    tracker.stop_reason = 'unreadable_history'
+    history = tracker.stop_detail(('coins_quiz', 'surprise_items'))
+    assert 'an earlier sample was unreadable' in history
+    assert 'surprise_items' in history
+
     tracker.stop_reason = 'run_ended'
     assert tracker.stop_detail(('coins_quiz',)) == 'sampling stopped after 2 readable sample(s)'
 
@@ -253,6 +259,15 @@ def test_the_coverage_tracker_names_each_finish_condition() -> None:
     tracker.seen_keys = {'coins_quiz'}
     tracker.finish(('coins_quiz',))
     assert tracker.stop_reason == 'coverage_reached'
+
+    tracker = engine._CoverageTracker(sample_limit=4)
+    tracker.samples = 2
+    tracker.attempts = 2
+    tracker.last_readable = True
+    tracker.seen_keys = {'coins_quiz'}
+    tracker.any_unreadable = True
+    tracker.finish(('coins_quiz',))
+    assert tracker.stop_reason == 'unreadable_history'
 
     tracker = engine._CoverageTracker(sample_limit=4)
     tracker.samples = 2
@@ -338,6 +353,54 @@ def test_a_lost_fresh_open_does_not_let_a_later_clean_sample_complete_the_night(
     assert context.state.snapshot().completed_night is False
     rotation = _rotation(report)
     assert rotation['confirmed'] is False
-    assert rotation['stopping_reason'] == 'coverage_reached'
+    assert rotation['stopping_reason'] == 'unreadable_history'
     assert report.night is not None
     assert report.night['outcome'] == 'incomplete_roster'
+
+
+@pytest.mark.slow
+def test_a_transient_unknown_surface_does_not_let_a_later_clean_sample_complete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An UNKNOWN sample is an unreadable surface even when a later read recovers."""
+    initial = _roster('coins_quiz')
+    unknown = replace(_empty_roster(), surface_variant=Surface.UNKNOWN)
+    observations = [
+        _observation(1, initial),
+        _observation(2, unknown),
+        _observation(3, _roster('super_discounts')),
+        _observation(4, _roster('coins_quiz')),
+        _observation(5, _roster('super_discounts')),
+        _observation(6, _roster('coins_quiz')),
+    ]
+    scripted = _ScriptedObserver(initial, observations)
+    monkeypatch.setattr(engine, 'discover_roster', lambda *args, **kwargs: initial)
+    monkeypatch.setattr(engine, '_observe', lambda *args, **kwargs: scripted.observe())
+    context = _context(
+        tmp_path,
+        capture=_Capture(_frame('coins_quiz'), _coin_frame()),
+        catalogue=CATALOGUE,
+        corpus=CORPUS,
+    )
+    context.observer = cast(Any, scripted)
+    _seed_other_families(context, seen={'coins_quiz', 'super_discounts'})
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        _context.state.record(entry.key or '')
+        return EngineResult('completed', 'progress_badge', 'the row moved', True, {'key': entry.key})
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert context.state.snapshot().completed_night is False
+    rotation = _rotation(report)
+    assert rotation['confirmed'] is False
+    assert rotation['stopping_reason'] == 'unreadable_history'
+    line = next(
+        line
+        for line in report.summary_path.read_text(encoding='utf-8').splitlines()
+        if line.startswith('- **Rotation:**')
+    )
+    assert 'an earlier sample was unreadable' in line
