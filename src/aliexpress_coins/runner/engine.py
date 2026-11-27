@@ -365,6 +365,7 @@ class _CoverageTracker:
     seen_keys: set[str] = field(default_factory=set)
     last_readable: bool = False
     last_incomplete: bool = False
+    any_unreadable: bool = False
     stop_reason: str = 'not_started'
 
     def record(self, roster: Roster, union: Roster) -> None:
@@ -373,6 +374,9 @@ class _CoverageTracker:
         self.samples += 1
         self.last_readable = True
         self.last_incomplete = roster.incomplete
+        self.any_unreadable = self.any_unreadable or bool(
+            roster.unreadable_count or roster.scroll_surface_lost or roster.scroll_surface_unconfirmed,
+        )
         before = len(self.first_seen)
         sample: set[str] = set()
         for entry in roster.allowed_entries:
@@ -396,6 +400,7 @@ class _CoverageTracker:
         self.attempts += 1
         self.last_readable = False
         self.last_incomplete = True
+        self.any_unreadable = True
 
     def reached(self, required: Collection[str]) -> bool:
         """Whether the union has seen every currently claimable family."""
@@ -432,6 +437,7 @@ class _CoverageTracker:
             self.samples >= MIN_COVERAGE_SAMPLES
             and self.last_readable
             and not self.last_incomplete
+            and not self.any_unreadable
             and (self.reached(required) or self.stable_samples >= COVERAGE_STALE_SAMPLES)
         )
 
@@ -1487,8 +1493,8 @@ def run_once(
                 )
                 if coverage.stop_reason in {'not_started', 'run_ended'}:
                     coverage.finish(required)
-                stable = coverage.assessed(required)
-                read_trustworthy = stable and not final_roster.incomplete
+                stable = coverage.samples >= MIN_COVERAGE_SAMPLES and coverage.stable_samples >= COVERAGE_STALE_SAMPLES
+                read_trustworthy = coverage.assessed(required) and not final_roster.incomplete
                 unread_families, already_claimed_families, not_offered, dormant = _family_rotation(
                     final_roster,
                     context.catalogue,

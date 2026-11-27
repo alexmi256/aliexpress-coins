@@ -502,7 +502,7 @@ class Roster:
     rotation_sample_bound: int | None = None
     """The explicit limit on fresh coverage samples for this night."""
     rotation_stable: bool = False
-    """Whether the union was stable or covered the claimable set when sampling stopped."""
+    """Whether the trailing samples proved the union stopped growing; coverage is separate."""
     rotation_confirmed: bool = True
     """Whether the readable union covered every claimable family or legitimately settled one."""
     unread_families: tuple[str, ...] = ()

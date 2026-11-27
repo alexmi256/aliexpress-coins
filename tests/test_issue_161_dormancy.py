@@ -418,7 +418,9 @@ def test_a_failed_probe_sample_does_not_advance_the_probe_cadence(
     assert stored.next_probe == DAY
     assert 'family_probe_failed' in report.event_log_path.read_text(encoding='utf-8')
     assert report.night is not None
-    assert report.night['outcome'] == 'exhausted'
+    # A lost fresh open is a bad sample even when the probe cadence does not
+    # advance; the night stays open under #149/#165.
+    assert report.night['outcome'] == 'incomplete_roster'
 
 
 def test_a_probe_check_failure_does_not_fail_the_run(

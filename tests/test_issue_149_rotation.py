@@ -697,7 +697,7 @@ def test_the_rotation_summary_states_the_samples_and_unread_families() -> None:
                 'first_seen': {'coins_quiz': 1},
                 'sample_families': [['coins_quiz', 'super_discounts'], ['coins_quiz']],
                 'stopping_reason': 'coverage_reached',
-                'stable': True,
+                'stable': False,
                 'confirmed': True,
                 'unread_families': [],
             },
@@ -705,7 +705,7 @@ def test_the_rotation_summary_states_the_samples_and_unread_families() -> None:
     )
     assert confirmed.startswith('confirmed after 2 sample(s)')
     assert 'union size(s) 2 -> 2' in confirmed
-    assert 'stable union: yes' in confirmed
+    assert 'stable union: no' in confirmed
     assert 'coverage reached' in confirmed
     assert 'coins_quiz@1' in confirmed
     assert '#1=coins_quiz|super_discounts' in confirmed

@@ -641,9 +641,11 @@ A good night looks like:
 - `Roster: available; N row(s) read, M allowed, K refused, D dispatchable, C already claimed` with
   `N` greater than zero, `M` the catalogue-allowed rows, and `D` the rows that still carry a
   dispatchable control;
-- `Rotation: confirmed after N sample(s); union size(s) …; stable union: yes; stopped on coverage
+- `Rotation: confirmed after N sample(s); union size(s) …; stable union: yes|no; stopped on coverage
   reached …`, so the final “nothing left” conclusion was not taken from one server-rotation sample;
-  the line also names the sample in which each family first appeared and the families in each
+  `stable union: yes` means the trailing samples proved the union stopped growing, while a night
+  completed by coverage may report `no` and names `coverage reached` as its stopping reason; the
+  line also names the sample in which each family first appeared and the families in each
   sample; an unseen family whose absence is still ambiguous keeps the night open as
   `unread_families`, a family past the dormancy threshold is named as `not_offered` with its
   evidence, and families already claimed today are named as absent-but-expected;

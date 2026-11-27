@@ -298,3 +298,46 @@ def test_a_broken_family_evidence_store_leaves_every_claimable_family_required(
 
     assert 'coins_quiz' in keys
     assert 'surprise_items' in keys
+
+
+@pytest.mark.slow
+def test_a_lost_fresh_open_does_not_let_a_later_clean_sample_complete_the_night(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A transient unconfirmed read stays in the pass history (#149/#165)."""
+    initial = _roster('coins_quiz')
+    observations = [
+        _observation(1, initial),
+        None,
+        _observation(3, _roster('super_discounts')),
+        _observation(4, _roster('coins_quiz')),
+        _observation(5, _roster('super_discounts')),
+        _observation(6, _roster('coins_quiz')),
+    ]
+    scripted = _ScriptedObserver(initial, observations)
+    monkeypatch.setattr(engine, 'discover_roster', lambda *args, **kwargs: initial)
+    monkeypatch.setattr(engine, '_observe', lambda *args, **kwargs: scripted.observe())
+    context = _context(
+        tmp_path,
+        capture=_Capture(_frame('coins_quiz'), _coin_frame()),
+        catalogue=CATALOGUE,
+        corpus=CORPUS,
+    )
+    context.observer = cast(Any, scripted)
+    _seed_other_families(context, seen={'coins_quiz', 'super_discounts'})
+
+    def dispatch(_context: RunContext, _controller: Controller, entry: RosterEntry) -> EngineResult:
+        _context.state.record(entry.key or '')
+        return EngineResult('completed', 'progress_badge', 'the row moved', True, {'key': entry.key})
+
+    monkeypatch.setattr(engine, '_dispatch_entry', dispatch)
+
+    report = engine.run_once(context)
+
+    assert context.state.snapshot().completed_night is False
+    rotation = _rotation(report)
+    assert rotation['confirmed'] is False
+    assert rotation['stopping_reason'] == 'coverage_reached'
+    assert report.night is not None
+    assert report.night['outcome'] == 'incomplete_roster'
