@@ -24,6 +24,12 @@ Three facts keep this executor honest:
   returned row agrees. A counter seen before any tile tap, or read from a
   headerless crop, is not that evidence. A failed task writes no completion and
   cannot consume the day's limit or foreclose its retry.
+* **a returned grid is recognised structurally, and other landings are
+  re-entered.** BACK can return to the headerless scrolled grid, whose new cards
+  were not in the labels read before the tap; the executor accepts that structure,
+  restores the top and proves the surprise header before reading the counter. If
+  BACK lands anywhere else, it re-opens the grid through the shortcut/boost route.
+  A tap that never returns is not progress (#164).
 
 The run never taps a purchase control: only a product card, the page's own
 ``Next round``, the overlay, and BACK. Every completion is recorded from a
@@ -46,15 +52,15 @@ from enum import StrEnum
 from aliexpress_coins.control.controller import LOGGER_NAME, Controller, KeyRecord, SwipeRecord, TapRecord
 from aliexpress_coins.control.errors import InputError, PopupUnclosable
 from aliexpress_coins.control.popups import DismissReport, PopupCorpus, dismiss_after
-from aliexpress_coins.perception.errors import OcrError
+from aliexpress_coins.perception.errors import OcrError, StateTimeout
 from aliexpress_coins.perception.layout import ProgressBadge
 from aliexpress_coins.perception.matching import DEFAULT_MIN_OCR_SCORE, normalize
 from aliexpress_coins.perception.ocr import OcrEngine, RapidOcrEngine
-from aliexpress_coins.perception.scroll import SCROLL_START_FRACTION, SCROLL_VIEWPORT_FRACTION
+from aliexpress_coins.perception.scroll import SCROLL_START_FRACTION, SCROLL_VIEWPORT_FRACTION, scroll_until_found
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.state import CaptureSource, ScreenState, classify
 from aliexpress_coins.perception.templates import TemplateStore
-from aliexpress_coins.perception.waits import wait_for_text_gone
+from aliexpress_coins.perception.waits import wait_for_text_gone, wait_until_stable
 from aliexpress_coins.runner.errors import RunInterrupted
 from aliexpress_coins.runner.safety import RunAborted, find_control_captions
 from aliexpress_coins.runner.state import DailyStateStore
@@ -65,9 +71,10 @@ from aliexpress_coins.tasks.browse import (
     return_to_coins_page,
 )
 from aliexpress_coins.tasks.catalogue import AllowedTaskSpec, TaskCategory
-from aliexpress_coins.tasks.discovery import RosterEntry
+from aliexpress_coins.tasks.discovery import DEFAULT_BOOST_TIMEOUT, RosterEntry, open_boost_list
 from aliexpress_coins.tasks.dispatch import authorization_of
 from aliexpress_coins.tasks.errors import TaskError
+from aliexpress_coins.tasks.shortcut import DEFAULT_ROW_SETTLE_TIMEOUT, ROW_SCROLL_FRACTION, ROW_SWIPE_DURATION_MS
 from aliexpress_coins.tasks.surface import (
     BOOST_MARKER,
     COIN_PAGE_MARKERS,
@@ -1165,10 +1172,15 @@ def run_surprise_task(
                 spec=spec,
                 task_tried=task_tried,
                 templates=templates,
+                navigate=navigate,
+                route=route,
                 arrival_timeout=arrival_timeout,
                 exit_timeout=exit_timeout,
                 counter_timeout=counter_timeout,
                 tile_timeout=tile_timeout,
+                return_timeout=return_timeout,
+                return_interval=return_interval,
+                return_attempts=return_attempts,
                 interval=interval,
                 settle=settle,
                 back=back,
@@ -1443,6 +1455,11 @@ def _run_round(
     keys: list[KeyRecord],
     swipes: list[SwipeRecord],
     dismissals: list[DismissReport],
+    navigate: RouteFirer | None = None,
+    route: SurfaceRoute = SurfaceRoute.SHORTCUT,
+    return_timeout: float = DEFAULT_RETURN_TIMEOUT,
+    return_interval: float = DEFAULT_RETURN_INTERVAL,
+    return_attempts: int = DEFAULT_RETURN_ATTEMPTS,
 ) -> tuple[RoundRecord, Snapshot, str | None]:
     """Walk one round until its counter is complete or the round proves stuck."""
     if record_round_grid is not None:
@@ -1450,6 +1467,7 @@ def _run_round(
     first = _read_grid_counter(snapshot)
     total = first.total if first is not None else 3
     before = first.completed if first is not None else None
+    record_before = before
     current = snapshot
     round_tried = _TriedTiles()
     mode = RULE_PATH_REUSE
@@ -1636,7 +1654,7 @@ def _run_round(
                 controller,
                 capture,
                 corpus,
-                lambda frame: _is_round_surface(frame, grid_labels),
+                lambda frame: _is_return_surface(frame, grid_labels),
                 timeout=exit_timeout,
                 interval=interval,
                 settle=settle,
@@ -1651,9 +1669,71 @@ def _run_round(
             if stop is not None:
                 detail = 'the reward interstitial appeared while returning from a product'
                 break
+            if arrived and not is_surprise_grid(current) and find_next_round(current) is None:
+                # A product return can land on the headerless scrolled grid
+                # (the recorded #164 frames did exactly that). Restore its top
+                # before the counter is read; only the surprise header proves
+                # the page is the grid. An injected scroll seam is opaque, so it
+                # keeps its existing trust of the caller-supplied grid.
+                scrolled_return = _is_scrolled_grid(current)
+                if scrolled_return:
+                    current, restored = _restore_grid_top(controller, capture, current, scroll)
+                    if restored is not None:
+                        swipes.append(restored)
+                known_scrolled = _is_scrolled_grid(current, grid_labels)
+                if not is_surprise_grid(current) and not known_scrolled and (scroll is None or not scrolled_return):
+                    arrived = False
             if not arrived:
-                detail = 'BACK did not return to the grid; no completion was recorded'
-                break
+                # BACK normally returns straight to the grid, but a measured
+                # misroute can also leave the app on the coin page or the boost
+                # sheet. Re-open the grid explicitly rather than spending the
+                # round on whatever BACK happened to leave behind (#164).
+                recovered, stop = _reenter_grid(
+                    controller,
+                    capture,
+                    corpus,
+                    navigate,
+                    current,
+                    spec=spec,
+                    templates=templates,
+                    route=route,
+                    arrival_timeout=arrival_timeout,
+                    return_timeout=return_timeout,
+                    return_interval=return_interval,
+                    return_attempts=return_attempts,
+                    interval=interval,
+                    settle=settle,
+                    clock=clock,
+                    sleep=sleep,
+                    logger=logger,
+                    taps=taps,
+                    swipes=swipes,
+                    dismissals=dismissals,
+                )
+                if stop is not None:
+                    detail = 'the reward interstitial appeared while re-entering the grid after a misrouted BACK'
+                    break
+                if recovered is None:
+                    detail = (
+                        'BACK did not return to the grid and the shortcut/boost route could not re-enter it; '
+                        'no completion was recorded'
+                    )
+                    break
+                current = recovered
+                reentered = _read_grid_counter(current)
+                if before is not None and reentered is not None and reentered.completed < before:
+                    # Re-entering through the shortcut can reset the page's
+                    # counter. Keep only the post-reset credits; otherwise the
+                    # round would report pre-reset products and miss the ones
+                    # that actually completed it.
+                    before = reentered.completed
+                    record_before = reentered.completed
+                    items.clear()
+                    round_tried = _TriedTiles()
+                    inert = 0
+                    pending_item = None
+                    baseline_unknown = False
+                    last_miss = None
             current, stop = _dismiss_mission(
                 controller,
                 capture,
@@ -1757,7 +1837,7 @@ def _run_round(
     return (
         RoundRecord(
             index=index,
-            counter_before=first.completed if first is not None else None,
+            counter_before=record_before,
             counter_after=before,
             total=total,
             taps=round_taps,
@@ -1770,6 +1850,206 @@ def _run_round(
         ),
         current,
         stop,
+    )
+
+
+def _reenter_grid(
+    controller: Controller,
+    capture: CaptureSource,
+    corpus: PopupCorpus,
+    navigate: RouteFirer | None,
+    snapshot: Snapshot,
+    *,
+    spec: AllowedTaskSpec,
+    templates: TemplateStore | None,
+    route: SurfaceRoute,
+    arrival_timeout: float,
+    return_timeout: float,
+    return_interval: float,
+    return_attempts: int,
+    interval: float,
+    settle: float,
+    clock: Callable[[], float],
+    sleep: Callable[[float], None],
+    logger: logging.Logger,
+    taps: list[TapRecord],
+    dismissals: list[DismissReport],
+    swipes: list[SwipeRecord] | None = None,
+) -> tuple[Snapshot | None, str | None]:
+    """Re-open the surprise grid after BACK lands somewhere other than it.
+
+    The measured product page returns to the grid with one BACK, but a misrouted
+    BACK can leave the app on the coin page or the boost sheet. In that case the
+    grid is re-entered through the same explicit route every task return uses:
+    the shortcut proves the coin page, the boost sheet (or its inline rows)
+    supplies the row, and the row's own ``GO`` opens the grid. No tile is tapped
+    from a guessed coordinate and no purchase control is involved (#164).
+
+    Returns the settled grid frame, or ``None`` when the route cannot prove one;
+    a reward interstitial is returned as the caller's ``stop``.
+    """
+    swipe_records = [] if swipes is None else swipes
+    if navigate is None:
+        _warn_grid_reentry(logger, spec.key, 'no navigation route was supplied for the explicit grid re-entry')
+        return None, None
+    try:
+        returned = return_to_coins_page(
+            controller,
+            capture,
+            corpus,
+            navigate,
+            snapshot=snapshot,
+            templates=templates,
+            route=route,
+            timeout=return_timeout,
+            interval=return_interval,
+            attempts=return_attempts,
+            settle=settle,
+            clock=clock,
+            sleep=sleep,
+            logger=logger,
+            on_dismiss=dismissals.append,
+        )
+    except RunAborted, RunInterrupted:
+        raise
+    except (StateTimeout, InputError) as exc:
+        _warn_grid_reentry(logger, spec.key, f'{type(exc).__name__}: {exc}')
+        return None, None
+    if not returned.returned or returned.snapshot is None:
+        _warn_grid_reentry(logger, spec.key, 'the shortcut route did not prove the coins page')
+        return None, None
+
+    current = returned.snapshot
+    if contains_text(current, REDEEM_MARKER):
+        return current, REDEEM_INTERSTITIAL
+    row, action, _ = find_task_row(current, SURPRISE_TITLE)
+    if row is None or action is None:
+        try:
+            boost = open_boost_list(
+                controller,
+                capture,
+                corpus,
+                templates=templates,
+                timeout=DEFAULT_BOOST_TIMEOUT,
+                interval=interval,
+                settle=settle,
+                clock=clock,
+                sleep=sleep,
+                logger=logger,
+                on_dismiss=dismissals.append,
+            )
+        except RunAborted, RunInterrupted:
+            raise
+        except (StateTimeout, InputError) as exc:
+            _warn_grid_reentry(logger, spec.key, f'{type(exc).__name__}: {exc}')
+            return None, None
+        if boost.tap is not None:
+            taps.append(boost.tap)
+        if boost.retap is not None:
+            taps.append(boost.retap)
+        current = boost.snapshot
+        row, action, _ = find_task_row(current, SURPRISE_TITLE)
+        if row is None or action is None:
+            # The boost sheet scrolls and rotates; the row may be below the
+            # first viewport even when the app still offers it. Search with the
+            # same settled-row guard as the shortcut visit: a row named while
+            # the sheet is still flinging is not a tap target (#158, #164).
+            settle_timeout = max(settle, DEFAULT_ROW_SETTLE_TIMEOUT)
+
+            def _wait_for_sheet() -> None:
+                wait_until_stable(
+                    capture,
+                    timeout=settle_timeout,
+                    interval=interval,
+                    clock=clock,
+                    sleep=sleep,
+                )
+
+            try:
+                search = scroll_until_found(
+                    controller,
+                    lambda: _capture(capture),
+                    lambda frame: find_task_row(frame, SURPRISE_TITLE)[1],
+                    initial=current,
+                    viewport_fraction=ROW_SCROLL_FRACTION,
+                    after_swipe=_wait_for_sheet,
+                    duration_ms=ROW_SWIPE_DURATION_MS,
+                    why=f'surprise {spec.key}: find the surprise row below the fold',
+                )
+            except InputError as exc:
+                _warn_grid_reentry(logger, spec.key, f'{type(exc).__name__}: {exc}')
+                return None, None
+            swipe_records.extend(search.swipes)
+            if search.target is not None:
+                stable = wait_until_stable(
+                    capture,
+                    timeout=settle_timeout,
+                    interval=interval,
+                    clock=clock,
+                    sleep=sleep,
+                    initial=_capture(capture),
+                )
+                if not stable.timed_out:
+                    current = stable.frame
+                    row, action, _ = find_task_row(current, SURPRISE_TITLE)
+
+    if row is None or action is None:
+        _warn_grid_reentry(logger, spec.key, f'{SURPRISE_TITLE!r} is not on the returned task surface')
+        return None, None
+
+    taps.append(
+        controller.tap_box(
+            action,
+            why=f'surprise {spec.key}: re-enter the grid after a misrouted BACK',
+            label=action.text,
+        ),
+    )
+    current, arrived, dismiss, stop = _wait_for_surface(
+        controller,
+        capture,
+        corpus,
+        _is_grid_surface,
+        timeout=arrival_timeout,
+        interval=interval,
+        settle=settle,
+        clock=clock,
+        sleep=sleep,
+        logger=logger,
+        templates=templates,
+        taps=taps,
+    )
+    if dismiss is not None:
+        dismissals.append(dismiss)
+    if stop is not None:
+        return current, stop
+    if not arrived or _read_grid_counter(current) is None:
+        _warn_grid_reentry(logger, spec.key, 'the row did not open a grid with a readable counter')
+        return None, None
+
+    logger.info(
+        '%s',
+        json.dumps(
+            {
+                'event': 'surprise_grid_reentry',
+                'key': spec.key,
+                'detail': 'BACK left the grid; the shortcut/boost route re-entered it',
+            },
+            separators=(',', ':'),
+            sort_keys=True,
+        ),
+    )
+    return current, None
+
+
+def _warn_grid_reentry(logger: logging.Logger, key: str | None, detail: str) -> None:
+    """Record why the explicit route could not put the executor back on the grid."""
+    logger.warning(
+        '%s',
+        json.dumps(
+            {'event': 'surprise_grid_reentry_failed', 'key': key, 'detail': detail},
+            separators=(',', ':'),
+            sort_keys=True,
+        ),
     )
 
 
@@ -2282,6 +2562,23 @@ def _is_grid_surface(snapshot: Snapshot) -> bool:
 def _is_round_surface(snapshot: Snapshot, known_labels: set[str]) -> bool:
     return (
         is_surprise_grid(snapshot) or _is_scrolled_grid(snapshot, known_labels) or find_next_round(snapshot) is not None
+    )
+
+
+def _is_return_surface(snapshot: Snapshot, known_labels: set[str]) -> bool:
+    """A product return may land on the header or a headerless scrolled grid.
+
+    The recorded #164 miss was a valid scrolled grid whose new cards were not in
+    the labels read before the tap. The structural check accepts it, and the
+    caller restores the top and proves the surprise header before reading the
+    counter. The explicit shortcut route remains the fallback for any other
+    landing.
+    """
+    if _is_coin_page(snapshot) or contains_text(snapshot, REDEEM_MARKER):
+        return False
+    state = classify(snapshot).state
+    return _is_round_surface(snapshot, known_labels) or (
+        state in (ScreenState.PAGE, ScreenState.UNKNOWN) and _is_scrolled_grid(snapshot)
     )
 
 
