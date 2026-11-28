@@ -41,6 +41,7 @@ arbitrary screenshots anywhere else in the tree.
 | `notifications_after_grant.png` | `notifications` / `after_grant` | same OS page after the permission is granted: switch on, `Categories` list, `Allow notification dot` | no account data |
 | `surprise_items_issue_115_loading_grid.png` | `surprise_items` / opening load (#115) | `Browse surprise items` header and `0/3` pill over empty skeleton cards; `find_surprise_tiles` returns none | status-bar clock retained; no account data |
 | `surprise_items_issue_115_loaded_grid.png` | `surprise_items` / settled grid (#115) | the same `0/3` grid a moment later, with product cards, titles and prices painted | status-bar clock retained; product titles and prices only; no account data |
+| `surprise_items_issue_164_scrolled_back.png` | `surprise_items` / product BACK return (#164) | the headerless scrolled grid BACK returned to in run `20261127T140626Z` (`frame-006`); no grid title or `N/3` pill is visible, only product cards and prices | status-bar clock retained; product titles and prices only; no account data |
 | `search_results_issue_142.png` | `search_for_what_you_love` / results (#142) | the product-results surface after submitting `wireless phone`: query in the field, product cards, `200 sold 4.9`, `C$32.99` and `Disc:` prices | status-bar clock retained; no account nickname, balance, order, cart or address; the query is the benign test query from `SEARCH_QUERIES` |
 | `recently_viewed_issue_116_entry.png` | `recently_viewed` / entry (#116) | the settled inline coin page carrying `Browse recently viewed items`, `GO`, `+1` and the coin-page markers | coin balance and coin-credit amounts masked; task rows retained |
 | `recently_viewed_issue_116_destination.png` | `recently_viewed` / destination (#116) | `Recently viewed`, `Stack Coins, Save More!`, `History` / `Cart` tabs, product cards and the right-edge `4s` dwell chip | top balance and operator search text masked; product titles/prices retained; no account data |
@@ -164,6 +165,12 @@ gap: the first frame proves the header and `0/3` pill are readable while every p
 a skeleton, and the second proves the same grid paints its tiles moments later. The executor now
 records each round's first grid frame and OCR sidecar under
 `runs/<run-id>/shots/surprise-items-round-<n>-grid.*`.
+
+`surprise_items_issue_164_scrolled_back.png` is a palette-quantized copy of `frame-006` from the
+failure recorder's `20261127T140626Z` attempt. It proves the return shape for #164: BACK from a
+product landed on the headerless scrolled grid, so the grid's title and `N/3` pill were absent
+while its product cards remained. The frame has no nickname, balance, order, cart, address or
+notification content; only product titles and prices are retained.
 
 Three states in `specs/flows.yaml` have **no frame** and say so in the file, rather than being
 backed by a screenshot that does not exist: `coins_quiz/result`, `coins_quiz/redeem_interstitial`
