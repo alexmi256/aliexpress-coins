@@ -260,6 +260,22 @@ def test_the_recorded_headerless_grid_is_recognised_and_restored(
     assert world.keys == ['KEYCODE_BACK'] * 3
 
 
+def test_a_coin_page_with_prices_and_task_rows_is_not_a_scrolled_grid() -> None:
+    coin = _snapshot(
+        *_coins_frame().boxes,
+        _box('Wireless Earbuds', 60, 1000, 560, 1050),
+        _box('C$12.99', 60, 1060, 300, 1100),
+        _box('Phone Case', 690, 1000, 1140, 1050),
+        _box('C$9.99', 690, 1060, 900, 1100),
+        _box('Explore sponsored items', 60, 1500, 700, 1550),
+        _box('6/6', 1000, 1500, 1080, 1550),
+        _box('GO', 1090, 1500, 1160, 1550),
+    )
+
+    assert _is_scrolled_grid(coin) is True
+    assert _is_return_surface(coin, set()) is False
+
+
 def test_a_known_one_column_scrolled_return_uses_the_existing_restore(
     catalogue: TaskCatalogue,
     corpus: PopupCorpus,
@@ -369,7 +385,8 @@ def test_a_lower_counter_after_reentry_resets_the_round_baseline(
 
     record = result.round_records[0]
     assert result.outcome is SurpriseOutcome.COMPLETED
-    assert record.counter_change == '1/3 -> 3/3'
+    assert record.counter_change == '0/3 -> 3/3'
+    assert record.delta == 3
     # The reset round may offer the earlier product again; its lost credit is
     # not carried into the record, and only the post-reset credits are named.
     assert record.taps == 5
@@ -762,6 +779,45 @@ def test_a_known_scrolled_grid_without_a_detail_return_is_still_restored(
     )
 
     assert any(swipe.label == 'grid restore' for swipe in result.swipes)
+
+
+def test_a_moving_boost_sheet_is_not_tapped_before_it_settles(
+    catalogue: TaskCatalogue,
+    corpus: PopupCorpus,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    top = _snapshot(_box('Coins boost', 80, 90, 400, 150), _box('GO', 1000, 480, 1080, 530))
+    moving = _boost_frame(progress='1/2')
+    world = _SwipeWorld(
+        {'top': (top,), 'moving': (moving, top)},
+        {},
+        start='top',
+        on_swipe=lambda screen: 'moving' if screen == 'top' else None,
+    )
+    monkeypatch.setattr(
+        surprise_module,
+        'return_to_coins_page',
+        lambda *_args, **_kwargs: ReturnResult(
+            True,
+            True,
+            1,
+            SurfaceRoute.SHORTCUT,
+            0.0,
+            snapshot=_coins_frame(),
+        ),
+    )
+    monkeypatch.setattr(
+        surprise_module,
+        'open_boost_list',
+        lambda *_args, **_kwargs: BoostList(snapshot=top, route=DiscoveryRoute.BOOST, detail='opened'),
+    )
+    taps: list[TapRecord] = []
+
+    current, stop = _call_reenter(world, catalogue, corpus, navigate=world.navigate, taps=taps)
+
+    assert current is None
+    assert stop is None
+    assert taps == []
 
 
 def test_a_failed_row_search_gesture_is_named_not_retried_forever(

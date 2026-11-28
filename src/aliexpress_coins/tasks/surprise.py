@@ -60,7 +60,7 @@ from aliexpress_coins.perception.scroll import SCROLL_START_FRACTION, SCROLL_VIE
 from aliexpress_coins.perception.snapshot import Snapshot, TextBox
 from aliexpress_coins.perception.state import CaptureSource, ScreenState, classify
 from aliexpress_coins.perception.templates import TemplateStore
-from aliexpress_coins.perception.waits import wait_for_text_gone
+from aliexpress_coins.perception.waits import wait_for_text_gone, wait_until_stable
 from aliexpress_coins.runner.errors import RunInterrupted
 from aliexpress_coins.runner.safety import RunAborted, find_control_captions
 from aliexpress_coins.runner.state import DailyStateStore
@@ -74,6 +74,7 @@ from aliexpress_coins.tasks.catalogue import AllowedTaskSpec, TaskCategory
 from aliexpress_coins.tasks.discovery import DEFAULT_BOOST_TIMEOUT, RosterEntry, open_boost_list
 from aliexpress_coins.tasks.dispatch import authorization_of
 from aliexpress_coins.tasks.errors import TaskError
+from aliexpress_coins.tasks.shortcut import DEFAULT_ROW_SETTLE_TIMEOUT, ROW_SCROLL_FRACTION, ROW_SWIPE_DURATION_MS
 from aliexpress_coins.tasks.surface import (
     BOOST_MARKER,
     COIN_PAGE_MARKERS,
@@ -1466,6 +1467,7 @@ def _run_round(
     first = _read_grid_counter(snapshot)
     total = first.total if first is not None else 3
     before = first.completed if first is not None else None
+    record_before = before
     current = snapshot
     round_tried = _TriedTiles()
     mode = RULE_PATH_REUSE
@@ -1725,6 +1727,7 @@ def _run_round(
                     # round would report pre-reset products and miss the ones
                     # that actually completed it.
                     before = reentered.completed
+                    record_before = reentered.completed
                     items.clear()
                     round_tried = _TriedTiles()
                     inert = 0
@@ -1834,7 +1837,7 @@ def _run_round(
     return (
         RoundRecord(
             index=index,
-            counter_before=first.completed if first is not None else None,
+            counter_before=record_before,
             counter_after=before,
             total=total,
             taps=round_taps,
@@ -1948,13 +1951,29 @@ def _reenter_grid(
         row, action, _ = find_task_row(current, SURPRISE_TITLE)
         if row is None or action is None:
             # The boost sheet scrolls and rotates; the row may be below the
-            # first viewport even when the app still offers it.
+            # first viewport even when the app still offers it. Search with the
+            # same settled-row guard as the shortcut visit: a row named while
+            # the sheet is still flinging is not a tap target (#158, #164).
+            settle_timeout = max(settle, DEFAULT_ROW_SETTLE_TIMEOUT)
+
+            def _wait_for_sheet() -> None:
+                wait_until_stable(
+                    capture,
+                    timeout=settle_timeout,
+                    interval=interval,
+                    clock=clock,
+                    sleep=sleep,
+                )
+
             try:
                 search = scroll_until_found(
                     controller,
                     lambda: _capture(capture),
                     lambda frame: find_task_row(frame, SURPRISE_TITLE)[1],
                     initial=current,
+                    viewport_fraction=ROW_SCROLL_FRACTION,
+                    after_swipe=_wait_for_sheet,
+                    duration_ms=ROW_SWIPE_DURATION_MS,
                     why=f'surprise {spec.key}: find the surprise row below the fold',
                 )
             except InputError as exc:
@@ -1962,8 +1981,17 @@ def _reenter_grid(
                 return None, None
             swipe_records.extend(search.swipes)
             if search.target is not None:
-                current = search.last
-                row, action, _ = find_task_row(current, SURPRISE_TITLE)
+                stable = wait_until_stable(
+                    capture,
+                    timeout=settle_timeout,
+                    interval=interval,
+                    clock=clock,
+                    sleep=sleep,
+                    initial=_capture(capture),
+                )
+                if not stable.timed_out:
+                    current = stable.frame
+                    row, action, _ = find_task_row(current, SURPRISE_TITLE)
 
     if row is None or action is None:
         _warn_grid_reentry(logger, spec.key, f'{SURPRISE_TITLE!r} is not on the returned task surface')
@@ -2546,6 +2574,8 @@ def _is_return_surface(snapshot: Snapshot, known_labels: set[str]) -> bool:
     counter. The explicit shortcut route remains the fallback for any other
     landing.
     """
+    if _is_coin_page(snapshot) or contains_text(snapshot, REDEEM_MARKER):
+        return False
     state = classify(snapshot).state
     return _is_round_surface(snapshot, known_labels) or (
         state in (ScreenState.PAGE, ScreenState.UNKNOWN) and _is_scrolled_grid(snapshot)
