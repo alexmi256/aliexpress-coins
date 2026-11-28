@@ -11,9 +11,9 @@ ruff==0.17.6
 
 # Static type checking. pytest ships its own type information; PyYAML does not.
 mypy==2.4.1
-types-PyYAML==6.0.12.20261113
+types-PyYAML==6.0.12.20261122
 
 # Test runner and coverage ratchet.
 pytest==9.2.0
 pytest-cov==7.1.0
-coverage==7.17.4
+coverage==7.17.5

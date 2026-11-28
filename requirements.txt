@@ -40,10 +40,10 @@ tzlocal==5.4.5
 # Transitive pins reported by pip for the runtime packages above.
 annotated-types==0.8.0
 certifi==2026.11.20
-charset-normalizer==3.5.2
+charset-normalizer==3.5.3
 flatbuffers==25.12.19
 idna==3.20
-packaging==26.3
+packaging==26.4
 protobuf==7.36.2
 pydantic-core==2.50.5
 typing-extensions==4.16.0
